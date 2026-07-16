@@ -85,7 +85,7 @@ export function createProductionStudioAdapter(
         );
       } catch (error) {
         console.warn(
-          `[chengfeng-VideoCut] Bundling ${projectDir} failed; serving source HTML instead.`,
+          `[chengfeng-videocut] Bundling ${projectDir} failed; serving source HTML instead.`,
           error instanceof Error ? error.message : String(error),
         );
         return null;
@@ -115,7 +115,7 @@ export function createProductionStudioAdapter(
         progress: 0,
         outputPath: renderOptions.outputPath,
         error:
-          "Legacy Studio render jobs are disabled. Use the confirmation-gated chengfeng-VideoCut workflow and chengfeng-videocut render run.",
+          "Legacy Studio render jobs are disabled. Use the confirmation-gated chengfeng-videocut workflow and chengfeng-videocut render run.",
       };
     },
   };

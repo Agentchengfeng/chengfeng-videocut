@@ -1,17 +1,17 @@
-# chengfeng-VideoCut CLI
+# chengfeng-videocut CLI
 
-`chengfeng-videocut` 是 chengfeng-VideoCut 的本地命令行入口。它负责启动 Studio，并为 Skills、Agent 和脚本提供稳定的项目、剪切与渲染接口。
+`chengfeng-videocut` 是 chengfeng-videocut 的本地命令行入口。它负责启动 Studio，并为 Skills、Agent 和脚本提供稳定的项目、剪切与渲染接口。
 
 ## 安装
 
-CLI 随 [chengfeng-VideoCut GitHub Release](https://github.com/Agentchengfeng/chengfeng-VideoCut/releases/latest) 的便携包一起分发，不通过 npm 发布，也不需要 `bunx` 或 DMG。
+CLI 随 [chengfeng-videocut GitHub Release](https://github.com/Agentchengfeng/chengfeng-videocut/releases/latest) 的便携包一起分发，不通过 npm 发布，也不需要 `bunx` 或 DMG。
 
 运行要求：
 
 - Bun 1.2 或更高版本
 - FFmpeg，包含可执行的 `ffmpeg` 和 `ffprobe`
 
-推荐使用仓库根目录 README 中的一行安装器，或下载 `chengfeng-VideoCut-portable.tar.gz` 手动解压。安装后先执行：
+推荐使用仓库根目录 README 中的一行安装器，或下载 `chengfeng-videocut-portable.tar.gz` 手动解压。安装后先执行：
 
 ```bash
 chengfeng-videocut doctor

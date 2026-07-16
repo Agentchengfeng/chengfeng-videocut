@@ -1,10 +1,20 @@
-import { readdir, writeFile } from "node:fs/promises";
+import { readdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 const rootDir = resolve(import.meta.dir, "..");
 const releaseDir = join(rootDir, "release");
 const checksumPath = join(releaseDir, "SHA256SUMS.txt");
-const productPrefixes = ["chengfeng-VideoCut", "chengfeng-videocut"];
+const packageJson = JSON.parse(await readFile(join(rootDir, "package.json"), "utf8")) as {
+  version: string;
+};
+const version = packageJson.version;
+const releaseAssets = new Set([
+  `chengfeng-videocut-${version}-portable.tar.gz`,
+  "chengfeng-videocut-portable.tar.gz",
+  `chengfeng-videocut-${version}.tgz`,
+  "chengfeng-videocut.tgz",
+  `chengfeng-videocut-${version}-source.tar.gz`,
+]);
 
 const entries = await readdir(releaseDir, { withFileTypes: true });
 const artifactNames = entries
@@ -12,13 +22,13 @@ const artifactNames = entries
     (entry) =>
       entry.isFile() &&
       entry.name !== "SHA256SUMS.txt" &&
-      productPrefixes.some((prefix) => entry.name.startsWith(prefix)),
+      releaseAssets.has(entry.name),
   )
   .map((entry) => entry.name)
   .sort((left, right) => left.localeCompare(right, "en"));
 
 if (artifactNames.length === 0) {
-  throw new Error(`No chengfeng-VideoCut release assets found in ${releaseDir}`);
+  throw new Error(`No chengfeng-videocut ${version} release assets found in ${releaseDir}`);
 }
 
 const lines: string[] = [];

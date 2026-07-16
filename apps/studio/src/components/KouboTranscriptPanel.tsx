@@ -12,9 +12,10 @@ import {
   buildTranscriptDisplayCues,
   buildCutTimeRanges,
   KOU_BO_TRANSCRIPT_COPY,
+  resolveCutPlaybackSkipTarget,
+  toggleTranscriptCutRange,
   type TranscriptCue,
   type TranscriptDisplayWord,
-  type TranscriptSuggestion,
   type TranscriptWord,
 } from "./kouboTranscript";
 import type { CutSaveState } from "./useProjectCutSelection";
@@ -47,14 +48,6 @@ interface PopoverPosition {
   x: number;
   y: number;
 }
-
-const SUGGESTION_LABELS: Record<TranscriptSuggestion, string> = {
-  silence: "停顿建议",
-  filler: "语气词建议",
-  repeat: "重复建议",
-  stutter: "卡顿建议",
-  incomplete: "残句建议",
-};
 
 function formatTimestamp(seconds: number): string {
   const safe = Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
@@ -138,6 +131,7 @@ export function KouboTranscriptPanel({
     moved: boolean;
     originX: number;
     originY: number;
+    shiftKey: boolean;
   } | null>(null);
   const wordsRef = useRef<TranscriptWord[]>([]);
   const cutWordIdsRef = useRef<Set<string>>(new Set());
@@ -189,6 +183,17 @@ export function KouboTranscriptPanel({
         const word = wordsRef.current[drag.start];
         setSelectionRange(null);
         setPopover(null);
+        if (drag.shiftKey) {
+          const nextCut = toggleTranscriptCutRange(
+            wordsRef.current,
+            cutWordIdsRef.current,
+            drag.start,
+            drag.end,
+          );
+          cutWordIdsRef.current = nextCut;
+          onCutWordIdsChange(nextCut);
+          return;
+        }
         if (word) requestSeek(word.start);
         return;
       }
@@ -212,7 +217,7 @@ export function KouboTranscriptPanel({
       document.removeEventListener("pointerup", finishDrag);
       document.removeEventListener("pointercancel", cancelDrag);
     };
-  }, [requestSeek]);
+  }, [onCutWordIdsChange, requestSeek]);
 
   useEffect(() => {
     if (!isPlaying) {
@@ -229,7 +234,9 @@ export function KouboTranscriptPanel({
     const rangeKey = `${activeRange.start}:${activeRange.end}`;
     if (lastSkippedRangeRef.current === rangeKey) return;
     lastSkippedRangeRef.current = rangeKey;
-    requestSeek(Math.min(duration, activeRange.end), { keepPlaying: true });
+    requestSeek(resolveCutPlaybackSkipTarget(activeRange, duration), {
+      keepPlaying: true,
+    });
   }, [cutTimeRanges, duration, isPlaying, playheadTime, requestSeek]);
 
   useEffect(() => {
@@ -290,6 +297,7 @@ export function KouboTranscriptPanel({
       moved: false,
       originX: event.clientX,
       originY: event.clientY,
+      shiftKey: event.shiftKey,
     };
     setSelectionRange(null);
     setPopover(null);
@@ -355,7 +363,6 @@ export function KouboTranscriptPanel({
                     const classes = [
                       "cf-cut-word",
                       word.isGap ? "is-gap" : "",
-                      word.suggestion ? "is-suggested" : "",
                       cut ? "is-cut-selected" : "",
                       pending ? "is-pending-selection" : "",
                       playheadTime >= word.start && playheadTime < word.end ? "is-current" : "",
@@ -367,7 +374,6 @@ export function KouboTranscriptPanel({
                         data-word-id={word.id}
                         data-word-start-index={index}
                         data-word-end-index={endIndex}
-                        title={word.suggestion ? SUGGESTION_LABELS[word.suggestion] : undefined}
                         onPointerDown={(event) => handleWordPointerDown(index, endIndex, event)}
                         onPointerEnter={(event) => handleWordPointerEnter(index, endIndex, event)}
                       >

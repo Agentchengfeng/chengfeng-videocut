@@ -19,7 +19,7 @@ function workflowErrorMessage(error: unknown): string {
     return "任务状态读取失败，请重试。";
   }
   if (error.status === 0) {
-    return "无法连接本地 chengfeng-VideoCut 服务，请确认服务已启动。";
+    return "无法连接本地 chengfeng-videocut 服务，请确认服务已启动。";
   }
   if (error.code === "revision_conflict") {
     return "任务状态已更新，请按最新状态重试。";

@@ -122,7 +122,7 @@ async function fetchResponse(url: string, init: RequestInit): Promise<Response> 
     return await fetch(url, init);
   } catch (cause) {
     throw new WorkflowApiError(
-      "Cannot reach the local chengfeng-VideoCut service",
+      "Cannot reach the local chengfeng-videocut service",
       {
         status: 0,
         code: "service_unavailable",

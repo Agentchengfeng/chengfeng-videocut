@@ -1,7 +1,7 @@
 {
   "name": "chengfeng-videocut",
-  "version": "0.1.0",
-  "description": "CLI and local Studio server for chengfeng-VideoCut",
+  "version": "0.1.1",
+  "description": "CLI and local Studio server for chengfeng-videocut",
   "type": "module",
   "bin": {
     "chengfeng-videocut": "./dist/cli.js"
@@ -33,12 +33,12 @@
   "author": "成峰 / AI产品自由",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Agentchengfeng/chengfeng-VideoCut.git"
+    "url": "git+https://github.com/Agentchengfeng/chengfeng-videocut.git"
   },
   "bugs": {
-    "url": "https://github.com/Agentchengfeng/chengfeng-VideoCut/issues"
+    "url": "https://github.com/Agentchengfeng/chengfeng-videocut/issues"
   },
-  "homepage": "https://github.com/Agentchengfeng/chengfeng-VideoCut#readme",
+  "homepage": "https://github.com/Agentchengfeng/chengfeng-videocut#readme",
   "publishConfig": {
     "access": "public"
   }

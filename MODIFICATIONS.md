@@ -1,6 +1,6 @@
 # Modifications to HyperFrames
 
-chengfeng-VideoCut contains a modified Studio interface and runtime components derived from [HyperFrames](https://github.com/heygen-com/hyperframes), licensed under the Apache License 2.0.
+chengfeng-videocut contains a modified Studio interface and runtime components derived from [HyperFrames](https://github.com/heygen-com/hyperframes), licensed under the Apache License 2.0.
 
 ## Baseline
 
@@ -15,7 +15,7 @@ The version above identifies the intended integration baseline. Exact dependency
 
 Relative to the upstream Studio and runtime, this project has made material changes including:
 
-1. Rebranded the product as `chengfeng-VideoCut` and removed upstream product wordmarks from the distributed interface.
+1. Rebranded the product as `chengfeng-videocut` and removed upstream product wordmarks from the distributed interface.
 2. Added product-owned project, transcript, cut-selection, revision and render-status contracts.
 3. Added the `chengfeng-videocut` CLI and a local server intended for Skills, scripts and Agent automation.
 4. Added local project registration, revision-aware writes, atomic cut-selection updates and confirmation-gated rendering.

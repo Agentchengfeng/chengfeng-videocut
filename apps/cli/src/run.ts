@@ -257,7 +257,7 @@ async function updateCutsThroughApi(options: {
   } catch (error) {
     throw new CliRequestError(
       "service_unavailable",
-      `Cannot reach chengfeng-VideoCut at ${options.apiBase}`,
+      `Cannot reach chengfeng-videocut at ${options.apiBase}`,
       { endpoint, cause: error instanceof Error ? error.message : String(error) },
     );
   }
@@ -268,7 +268,7 @@ async function updateCutsThroughApi(options: {
   } catch {
     throw new CliRequestError(
       "service_unavailable",
-      `chengfeng-VideoCut returned an invalid response (${response.status})`,
+      `chengfeng-videocut returned an invalid response (${response.status})`,
       { endpoint, status: response.status },
     );
   }
@@ -279,7 +279,7 @@ async function updateCutsThroughApi(options: {
       typeof errorRecord?.code === "string" ? errorRecord.code : "service_unavailable",
       typeof errorRecord?.message === "string"
         ? errorRecord.message
-        : `chengfeng-VideoCut request failed (${response.status})`,
+        : `chengfeng-videocut request failed (${response.status})`,
       objectRecord(errorRecord?.details) ?? { endpoint, status: response.status },
     );
   }
@@ -301,7 +301,7 @@ async function updateCutsThroughApi(options: {
   ) {
     throw new CliRequestError(
       "service_unavailable",
-      "chengfeng-VideoCut returned an incompatible cuts response",
+      "chengfeng-videocut returned an incompatible cuts response",
       { endpoint, status: response.status },
     );
   }
@@ -347,7 +347,7 @@ async function requestWorkflowApi(options: {
   } catch (error) {
     throw new CliRequestError(
       "service_unavailable",
-      `Cannot reach chengfeng-VideoCut at ${options.apiBase}`,
+      `Cannot reach chengfeng-videocut at ${options.apiBase}`,
       { endpoint, cause: error instanceof Error ? error.message : String(error) },
     );
   }
@@ -357,7 +357,7 @@ async function requestWorkflowApi(options: {
   } catch {
     throw new CliRequestError(
       "service_unavailable",
-      `chengfeng-VideoCut returned an invalid response (${response.status})`,
+      `chengfeng-videocut returned an invalid response (${response.status})`,
       { endpoint, status: response.status },
     );
   }
@@ -368,7 +368,7 @@ async function requestWorkflowApi(options: {
       typeof errorRecord?.code === "string" ? errorRecord.code : "service_unavailable",
       typeof errorRecord?.message === "string"
         ? errorRecord.message
-        : `chengfeng-VideoCut request failed (${response.status})`,
+        : `chengfeng-videocut request failed (${response.status})`,
       objectRecord(errorRecord?.details) ?? { endpoint, status: response.status },
     );
   }
@@ -377,7 +377,7 @@ async function requestWorkflowApi(options: {
       !objectRecord(record.project)) {
     throw new CliRequestError(
       "service_unavailable",
-      "chengfeng-VideoCut returned an incompatible workflow response",
+      "chengfeng-videocut returned an incompatible workflow response",
       { endpoint, status: response.status },
     );
   }

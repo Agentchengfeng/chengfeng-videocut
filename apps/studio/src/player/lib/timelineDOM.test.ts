@@ -37,6 +37,50 @@ function mockComputedZIndex(doc: Document, zIndexById: ReadonlyMap<string, strin
 }
 
 describe("parseTimelineFromDOM — hfId from data-hf-id", () => {
+  it("does not synthesize a captions track when the project only authors A-roll", () => {
+    const doc = makeDoc(`
+      <main data-composition-id="main" data-duration="10">
+        <video
+          id="a-roll-main"
+          data-start="0"
+          data-duration="10"
+          data-track-index="1"
+          data-timeline-role="a-roll"
+        ></video>
+      </main>
+    `);
+
+    const elements = parseTimelineFromDOM(doc, 10);
+
+    expect(elements.map((element) => element.timelineRole)).toEqual(["a-roll"]);
+    expect(elements.some((element) => element.timelineRole === "captions")).toBe(false);
+  });
+
+  it("recognizes the actual plural captions role when a caption source is authored", () => {
+    const doc = makeDoc(`
+      <main data-composition-id="main" data-duration="10">
+        <video
+          id="a-roll-main"
+          data-start="0"
+          data-duration="10"
+          data-track-index="1"
+          data-timeline-role="a-roll"
+        ></video>
+        <div
+          id="captions-main"
+          data-start="0"
+          data-duration="10"
+          data-track-index="2"
+          data-timeline-role="captions"
+        ></div>
+      </main>
+    `);
+
+    const elements = parseTimelineFromDOM(doc, 10);
+
+    expect(elements.some((element) => element.timelineRole === "captions")).toBe(true);
+  });
+
   it("harvests hfId from a data-start element that has data-hf-id", () => {
     const doc = makeDoc(`
       <div data-composition-id="root">

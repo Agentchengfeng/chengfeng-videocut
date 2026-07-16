@@ -14,7 +14,7 @@ export function StudioHeader() {
       <div className="flex min-w-0 items-center gap-3">
         <div className="cf-brand-lockup">
           <span className="cf-brand-mark" aria-hidden="true" />
-          <span className="cf-brand-name">chengfeng-VideoCut</span>
+          <span className="cf-brand-name">chengfeng-videocut</span>
         </div>
         <span className="cf-header-divider" aria-hidden="true" />
         <span className="cf-project-name truncate text-[12px] font-medium text-neutral-300">
