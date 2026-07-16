@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-chengfeng-VideoCut bundles or builds upon third-party software. This file records the direct, material dependencies used by the distributed product. Transitive dependency versions and the exact dependency graph are recorded in `bun.lock`.
+chengfeng-videocut bundles or builds upon third-party software. This file records the direct, material dependencies used by the distributed product. Transitive dependency versions and the exact dependency graph are recorded in `bun.lock`.
 
 The complete license texts collected for binary distribution are in `THIRD_PARTY_LICENSES.md`. Apache License 2.0 is also reproduced in the repository root `LICENSE`.
 
@@ -16,7 +16,7 @@ This project contains a modified Studio interface and runtime components derived
 
 The upstream Apache License is included at `LICENSES/HyperFrames-Apache-2.0.txt`. Material changes are described in `MODIFICATIONS.md`.
 
-chengfeng-VideoCut is not an official HyperFrames or HeyGen product. HyperFrames and HeyGen names and marks belong to their respective owners.
+chengfeng-videocut is not an official HyperFrames or HeyGen product. HyperFrames and HeyGen names and marks belong to their respective owners.
 
 ## Other direct dependencies
 
@@ -32,14 +32,14 @@ chengfeng-VideoCut is not an official HyperFrames or HeyGen product. HyperFrames
 | Mediabunny | Browser media processing | MPL-2.0 |
 | GSAP 3.15.0, including MotionPathPlugin | Animation runtime | GSAP Standard “no charge” license |
 
-The GSAP 3.15.0 package identifies its license as “Standard 'no charge' license.” GSAP and MotionPathPlugin are Copyright GreenSock/Webflow and their respective rights holders. Redistribution and use remain subject to https://gsap.com/standard-license/. The Apache-2.0 license for chengfeng-VideoCut does not replace those terms.
+The GSAP 3.15.0 package identifies its license as “Standard 'no charge' license.” GSAP and MotionPathPlugin are Copyright GreenSock/Webflow and their respective rights holders. Redistribution and use remain subject to https://gsap.com/standard-license/. The Apache-2.0 license for chengfeng-videocut does not replace those terms.
 
 ## License scope
 
-Third-party components remain under their own licenses. Apache-2.0 applies to chengfeng-VideoCut project-owned code and the HyperFrames-derived Apache-2.0 portions, not to the complete bundled binary. Users are responsible for complying with applicable third-party terms; this notice does not provide a legal compliance guarantee.
+Third-party components remain under their own licenses. Apache-2.0 applies to chengfeng-videocut project-owned code and the HyperFrames-derived Apache-2.0 portions, not to the complete bundled binary. Users are responsible for complying with applicable third-party terms; this notice does not provide a legal compliance guarantee.
 
-chengfeng-VideoCut is not affiliated with or endorsed by HyperFrames, HeyGen, GSAP, GreenSock, or Webflow.
+chengfeng-videocut is not affiliated with or endorsed by HyperFrames, HeyGen, GSAP, GreenSock, or Webflow.
 
 For the exact source corresponding to a published release, use the Git tag with the same version at:
 
-https://github.com/Agentchengfeng/chengfeng-VideoCut
+https://github.com/Agentchengfeng/chengfeng-videocut

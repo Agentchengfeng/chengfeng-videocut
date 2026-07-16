@@ -1,9 +1,9 @@
 #!/bin/sh
 set -eu
 
-REPOSITORY="Agentchengfeng/chengfeng-VideoCut"
-VERSION="0.1.0"
-ARCHIVE_NAME="chengfeng-VideoCut-portable.tar.gz"
+REPOSITORY="Agentchengfeng/chengfeng-videocut"
+VERSION="0.1.1"
+ARCHIVE_NAME="chengfeng-videocut-portable.tar.gz"
 CHECKSUM_NAME="SHA256SUMS.txt"
 DOWNLOAD_BASE="${CHENGFENG_VIDEOCUT_DOWNLOAD_BASE:-https://github.com/$REPOSITORY/releases/latest/download}"
 INSTALL_ROOT="${CHENGFENG_VIDEOCUT_HOME:-${HOME:-}/.chengfeng-videocut}"
@@ -73,7 +73,7 @@ trap 'exit 143' TERM
 ARCHIVE_PATH="$TMP_DIR/$ARCHIVE_NAME"
 CHECKSUM_PATH="$TMP_DIR/$CHECKSUM_NAME"
 
-printf '%s\n' "正在从 GitHub 下载 chengfeng-VideoCut ${VERSION}…"
+printf '%s\n' "正在从 GitHub 下载 chengfeng-videocut ${VERSION}…"
 curl -fL --retry 3 --connect-timeout 15 "$DOWNLOAD_BASE/$ARCHIVE_NAME" -o "$ARCHIVE_PATH"
 curl -fL --retry 3 --connect-timeout 15 "$DOWNLOAD_BASE/$CHECKSUM_NAME" -o "$CHECKSUM_PATH"
 
@@ -86,7 +86,7 @@ if tar -tzf "$ARCHIVE_PATH" | grep -E '(^/|(^|/)\.\.(/|$))' >/dev/null 2>&1; the
 fi
 
 tar -xzf "$ARCHIVE_PATH" -C "$TMP_DIR"
-PACKAGE_DIR="$TMP_DIR/chengfeng-VideoCut-$VERSION"
+PACKAGE_DIR="$TMP_DIR/chengfeng-videocut-$VERSION"
 [ -f "$PACKAGE_DIR/cli.js" ] || fail "安装包缺少 cli.js。"
 [ -f "$PACKAGE_DIR/studio/index.html" ] || fail "安装包缺少 Studio。"
 [ -f "$PACKAGE_DIR/legal/LICENSE" ] || fail "安装包缺少许可证。"
@@ -124,7 +124,7 @@ fi
 ln -sfn "$VERSION" "$CURRENT_LINK"
 ln -sfn "../app/current/chengfeng-videocut" "$BIN_LINK"
 
-printf '\n%s\n' "chengfeng-VideoCut $VERSION 已安装完成。"
+printf '\n%s\n' "chengfeng-videocut $VERSION 已安装完成。"
 printf '%s\n' "启动：$BIN_LINK start --open"
 printf '%s\n' "检查：$BIN_LINK doctor"
 printf '%s\n' "如果希望直接输入 chengfeng-videocut，请把下面这一行加入 shell 配置："

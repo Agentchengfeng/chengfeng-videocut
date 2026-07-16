@@ -37,6 +37,7 @@ import {
   parseTimelineFromDOM,
 } from "../lib/timelineDOM";
 import {
+  resolvePreviewPlayerPlaybackAdapter,
   setPreviewMediaMuted,
   setPreviewPlaybackRate,
   shouldMutePreviewAudio,
@@ -139,16 +140,19 @@ export function useTimelinePlayer() {
       const playerAdapter =
         win.__player && typeof win.__player.play === "function" ? win.__player : null;
       const docDuration = readTimelineDurationFromDocument(iframe.contentDocument);
-      const adapterDur = getAdapterDuration(playerAdapter);
+      const withPreviewHost = (adapter: PlaybackAdapter | null): PlaybackAdapter | null =>
+        resolvePreviewPlayerPlaybackAdapter(iframe, adapter) ?? adapter;
+      const hostedPlayerAdapter = withPreviewHost(playerAdapter);
+      const adapterDur = getAdapterDuration(hostedPlayerAdapter);
 
       if (adapterDur > 0 && docDuration <= adapterDur) {
         releaseStaticSeekCache(staticSeekAdapterRef, staticSeekWarnedRef);
-        return playerAdapter;
+        return hostedPlayerAdapter;
       }
 
       let timelineAdapter: PlaybackAdapter | null = null;
       if (win.__timeline) {
-        const adapter = wrapTimeline(win.__timeline);
+        const adapter = withPreviewHost(wrapTimeline(win.__timeline));
         const dur = getAdapterDuration(adapter);
         if (dur > 0 && docDuration <= dur) {
           releaseStaticSeekCache(staticSeekAdapterRef, staticSeekWarnedRef);
@@ -166,7 +170,7 @@ export function useTimelinePlayer() {
             ?.querySelector("[data-composition-id]")
             ?.getAttribute("data-composition-id");
           const key = rootId && rootId in win.__timelines ? rootId : keys[keys.length - 1];
-          const adapter = wrapTimeline(win.__timelines[key]);
+          const adapter = withPreviewHost(wrapTimeline(win.__timelines[key]));
           const dur = getAdapterDuration(adapter);
           if (dur > 0 && docDuration <= dur) {
             releaseStaticSeekCache(staticSeekAdapterRef, staticSeekWarnedRef);
@@ -179,7 +183,7 @@ export function useTimelinePlayer() {
       // The document timeline extends past every native adapter's duration.
       // Wrap the best available adapter with the effective duration so the
       // seek slider, seek clamping, and duration display cover the full range.
-      const bestAdapter = playerAdapter ?? timelineAdapter;
+      const bestAdapter = hostedPlayerAdapter ?? timelineAdapter;
       const effectiveDuration = Math.max(
         usePlayerStore.getState().duration,
         docDuration,

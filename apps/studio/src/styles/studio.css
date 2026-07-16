@@ -274,7 +274,7 @@ body {
 }
 
 /*
- * chengfeng-VideoCut loader. Shared by preview overlays that need a calm,
+ * chengfeng-videocut loader. Shared by preview overlays that need a calm,
  * product loading state instead of a generic spinner.
  */
 .hf-loader {
@@ -1094,10 +1094,6 @@ body {
 
 .cf-cut-word:hover {
   background: rgba(217, 119, 87, 0.09);
-}
-
-.cf-cut-word.is-suggested {
-  box-shadow: inset 0 -1px 0 rgba(198, 145, 42, 0.58);
 }
 
 .cf-cut-word.is-current {

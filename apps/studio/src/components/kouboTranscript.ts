@@ -3,6 +3,7 @@ import {
   buildCutTimeRanges as buildCoreCutTimeRanges,
   type CutTimeRange,
 } from "@video-workbench/core";
+import { STUDIO_PREVIEW_FPS } from "../player/lib/time";
 
 export const KOU_BO_TRANSCRIPT_COPY = {
   sectionLabel: "口播转录",
@@ -35,6 +36,23 @@ export interface TranscriptCue {
 }
 
 export type TranscriptTimeRange = CutTimeRange;
+
+/**
+ * Seek one preview frame beyond a removed range instead of exactly onto its
+ * end boundary. Native media seeks may resolve to the preceding decoded frame;
+ * seeking to `range.end` can therefore leave the playhead inside the same cut
+ * and stall the preview while the outer transport still reports playback.
+ */
+export function resolveCutPlaybackSkipTarget(
+  range: TranscriptTimeRange,
+  duration: number,
+): number {
+  const safeEnd = Math.max(0, Number.isFinite(range.end) ? range.end : 0);
+  const safeDuration = Math.max(0, Number.isFinite(duration) ? duration : 0);
+  if (safeDuration <= 0) return safeEnd + 1 / STUDIO_PREVIEW_FPS;
+  if (safeEnd >= safeDuration) return safeDuration;
+  return Math.min(safeDuration, safeEnd + 1 / STUDIO_PREVIEW_FPS);
+}
 
 export interface TranscriptDisplayWord extends TranscriptWord {
   sourceWordIds: string[];
@@ -319,6 +337,32 @@ export function buildCutTimeRanges(
   cutWordIds: ReadonlySet<string>,
 ): TranscriptTimeRange[] {
   return buildCoreCutTimeRanges(words, cutWordIds);
+}
+
+/**
+ * Toggle one contiguous transcript range between the only two user-facing cut
+ * states: deleted and retained. A mixed range resolves to deleted so one
+ * Shift+click on a merged silence token has the same result as the popover's
+ * Delete action.
+ */
+export function toggleTranscriptCutRange(
+  words: readonly TranscriptWord[],
+  cutWordIds: ReadonlySet<string>,
+  startIndex: number,
+  endIndex: number,
+): Set<string> {
+  const next = new Set(cutWordIds);
+  if (words.length === 0) return next;
+  const start = Math.max(0, Math.min(startIndex, endIndex));
+  const end = Math.min(words.length - 1, Math.max(startIndex, endIndex));
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start > end) return next;
+  const selected = words.slice(start, end + 1);
+  const restore = selected.length > 0 && selected.every((word) => next.has(word.id));
+  for (const word of selected) {
+    if (restore) next.delete(word.id);
+    else next.add(word.id);
+  }
+  return next;
 }
 
 export function sourceTimeToEditedTime(

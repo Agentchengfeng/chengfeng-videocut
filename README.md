@@ -1,12 +1,12 @@
-# chengfeng-VideoCut
+# chengfeng-videocut
 
-chengfeng-VideoCut 是一个本地优先的口播视频剪辑产品：浏览器工作台负责预览、时间线、逐字稿与剪切审核，`chengfeng-videocut` CLI 为 Skills、脚本和 Agent 提供稳定的操作边界。
+chengfeng-videocut 是一个本地优先的口播视频剪辑产品：浏览器工作台负责预览、时间线、逐字稿与剪切审核，`chengfeng-videocut` CLI 为 Skills、脚本和 Agent 提供稳定的操作边界。
 
 产品本体与 Skills 分开发布。用户只需安装一次工作台；不同 Skills 通过 CLI 填充项目、读取状态和提交剪切结果，无需复制工作台源码。
 
 ## 下载与安装
 
-正式分发只走 [GitHub Releases](https://github.com/Agentchengfeng/chengfeng-VideoCut/releases)。不发布 npm 包，不需要 `bunx`，当前也不提供 DMG。
+正式分发只走 [GitHub Releases](https://github.com/Agentchengfeng/chengfeng-videocut/releases)。不发布 npm 包，不需要 `bunx`，当前也不提供 DMG。
 
 运行要求：
 
@@ -17,7 +17,7 @@ chengfeng-VideoCut 是一个本地优先的口播视频剪辑产品：浏览器�
 一行安装：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Agentchengfeng/chengfeng-VideoCut/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Agentchengfeng/chengfeng-videocut/main/install.sh | sh
 ```
 
 安装后可运行：
@@ -31,12 +31,12 @@ chengfeng-videocut start --open
 
 ### 手动安装
 
-1. 从 [最新 Release](https://github.com/Agentchengfeng/chengfeng-VideoCut/releases/latest) 下载稳定资产 `chengfeng-VideoCut-portable.tar.gz` 和 `SHA256SUMS.txt`。
+1. 从 [最新 Release](https://github.com/Agentchengfeng/chengfeng-videocut/releases/latest) 下载稳定资产 `chengfeng-videocut-portable.tar.gz` 和 `SHA256SUMS.txt`。
 2. 对照 `SHA256SUMS.txt` 校验下载文件。
 3. 解压后，在目录中运行 `./chengfeng-videocut doctor`。
 4. 运行 `./chengfeng-videocut start --open` 启动工作台。
 
-版本化资产用于固定版本和回滚；不带版本号的 `chengfeng-VideoCut-portable.tar.gz` 始终指向该次 Release 的便携包。
+版本化资产用于固定版本和回滚；不带版本号的 `chengfeng-videocut-portable.tar.gz` 始终指向该次 Release 的便携包。
 
 ## 基本使用
 
@@ -73,7 +73,7 @@ chengfeng-videocut render run /absolute/project \
 
 ## 产品与 Skills 的边界
 
-chengfeng-VideoCut 负责确定性的产品能力：
+chengfeng-videocut 负责确定性的产品能力：
 
 - 项目注册、解析与修订控制
 - 本地 Studio、预览、逐字稿、字幕列和时间线
@@ -123,7 +123,7 @@ bun run package:check
 
 分发的便携包还捆绑 GSAP 3.15.0 与 MotionPathPlugin，它们单独受 [GSAP Standard License](https://gsap.com/standard-license/) 约束，不适用本项目的 Apache-2.0 许可。下载和使用者需要自行遵守相应第三方条款；本说明不构成法律合规保证。
 
-chengfeng-VideoCut 与 HyperFrames、HeyGen、GSAP、GreenSock、Webflow 均无隶属或官方背书关系。
+chengfeng-videocut 与 HyperFrames、HeyGen、GSAP、GreenSock、Webflow 均无隶属或官方背书关系。
 
 ## 官方账号
 

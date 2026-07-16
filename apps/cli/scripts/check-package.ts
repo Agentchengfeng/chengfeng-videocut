@@ -57,7 +57,7 @@ check(
   "dist/cli.js still resolves a runtime dependency from node_modules",
 );
 const index = await readFile(join(distDir, "studio/index.html"), "utf8");
-check(index.includes("<title>chengfeng-VideoCut</title>"), "Studio package title is not branded");
+check(index.includes("<title>chengfeng-videocut</title>"), "Studio package title is not branded");
 
 const files = await walk(distDir);
 check(

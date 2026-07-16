@@ -15,10 +15,10 @@ if (!version || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) {
   throw new Error(`Invalid package version: ${String(version)}`);
 }
 
-const bundleName = `chengfeng-VideoCut-${version}`;
+const bundleName = `chengfeng-videocut-${version}`;
 const bundleDir = join(stageDir, bundleName);
 const versionedArchive = join(releaseDir, `${bundleName}-portable.tar.gz`);
-const stableArchive = join(releaseDir, "chengfeng-VideoCut-portable.tar.gz");
+const stableArchive = join(releaseDir, "chengfeng-videocut-portable.tar.gz");
 
 async function requirePath(path: string, label: string): Promise<void> {
   try {
@@ -77,7 +77,7 @@ find_bun() {
 }
 
 if ! BUN_EXECUTABLE=$(find_bun); then
-  printf '%s\\n' 'chengfeng-VideoCut 需要 Bun 1.2 或更高版本。' >&2
+  printf '%s\\n' 'chengfeng-videocut 需要 Bun 1.2 或更高版本。' >&2
   printf '%s\\n' '安装说明：https://bun.sh/docs/installation' >&2
   exit 127
 fi

@@ -52,6 +52,14 @@ function isCutSelectionFileChange(payload: unknown, projectId: string): boolean 
   );
 }
 
+export function shouldSyncCutSelectionAfterFileChange(
+  payload: unknown,
+  projectId: string,
+  pendingSaves: number,
+): boolean {
+  return isCutSelectionFileChange(payload, projectId) && pendingSaves <= 0;
+}
+
 export function useProjectCutSelection(
   projectId: string,
   cues: TranscriptCue[],
@@ -72,7 +80,6 @@ export function useProjectCutSelection(
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const saveGenerationRef = useRef(0);
   const pendingSavesRef = useRef(0);
-  const reloadAfterSaveRef = useRef(false);
   const serverRevisionRef = useRef("none");
   const selectionDocumentRef = useRef<unknown>(null);
   const selectionReadyRef = useRef(false);
@@ -117,7 +124,6 @@ export function useProjectCutSelection(
     saveGenerationRef.current += 1;
     saveQueueRef.current = Promise.resolve();
     pendingSavesRef.current = 0;
-    reloadAfterSaveRef.current = false;
     serverRevisionRef.current = "none";
     selectionDocumentRef.current = null;
     selectionReadyRef.current = false;
@@ -136,12 +142,34 @@ export function useProjectCutSelection(
 
   useEffect(() => {
     const handleChange = (payload: unknown) => {
-      if (!isCutSelectionFileChange(payload, projectId)) return;
-      if (pendingSavesRef.current > 0) {
-        reloadAfterSaveRef.current = true;
+      if (
+        isCutSelectionFileChange(payload, projectId) &&
+        pendingSavesRef.current > 0
+      ) {
+        // The cuts API writes cut-selection.json before resolving the request,
+        // so the project watcher reports our own optimistic save while it is
+        // still pending. The API response already carries the canonical
+        // document + revision; reloading here would temporarily unmount the
+        // transcript and reset its scroll position to the top. A genuine
+        // concurrent external write is still protected by the revision CAS and
+        // reloads through the conflict path below.
         return;
       }
-      void reloadSelection();
+      if (
+        shouldSyncCutSelectionAfterFileChange(
+          payload,
+          projectId,
+          pendingSavesRef.current,
+        )
+      ) {
+        // A single API write is also observed later by the native project
+        // watcher. That second event can arrive after the PUT has resolved, so
+        // pendingSaves alone cannot identify it as our own write. Synchronize
+        // the canonical document without entering the initial-loading state:
+        // replacing the transcript with a loading placeholder would unmount
+        // its scroll container and reset the user to the first cue.
+        void loadSelection();
+      }
     };
     if (import.meta.hot) {
       import.meta.hot.on("hf:file-change", handleChange);
@@ -150,7 +178,7 @@ export function useProjectCutSelection(
     const events = new EventSource("/api/events");
     events.addEventListener("file-change", handleChange);
     return () => events.close();
-  }, [projectId, reloadSelection]);
+  }, [loadSelection, projectId]);
 
   const updateCutWordIds = useCallback((next: ReadonlySet<string>) => {
     const nextCut = new Set(next);
@@ -215,19 +243,11 @@ export function useProjectCutSelection(
       (saved) => {
         if (projectEpoch !== projectEpochRef.current) return saved;
         pendingSavesRef.current = Math.max(0, pendingSavesRef.current - 1);
-        if (pendingSavesRef.current === 0 && reloadAfterSaveRef.current) {
-          reloadAfterSaveRef.current = false;
-          void reloadSelection();
-        }
         return saved;
       },
       (error) => {
         if (projectEpoch !== projectEpochRef.current) throw error;
         pendingSavesRef.current = Math.max(0, pendingSavesRef.current - 1);
-        if (pendingSavesRef.current === 0 && reloadAfterSaveRef.current) {
-          reloadAfterSaveRef.current = false;
-          void reloadSelection();
-        }
         throw error;
       },
     );

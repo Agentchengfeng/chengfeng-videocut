@@ -11,7 +11,7 @@
  */
 
 import type { TimelineElement } from "../store/playerStore";
-import type { IframeWindow } from "./playbackTypes";
+import type { IframeWindow, PlaybackAdapter } from "./playbackTypes";
 import {
   getTimelineElementSelector,
   getTimelineElementSourceFile,
@@ -79,7 +79,24 @@ export function autoHealMissingCompositionIds(doc: Document): void {
 type PreviewPlayerHost = HTMLElement & {
   muted?: boolean;
   playbackRate?: number;
+  currentTime?: number;
+  duration?: number;
+  paused?: boolean;
+  ready?: boolean;
+  play?: () => void;
+  pause?: () => void;
+  seek?: (time: number) => void;
 };
+
+type PreviewPlayerAdapterCacheEntry = {
+  fallback: PlaybackAdapter | null;
+  adapter: PlaybackAdapter;
+};
+
+const previewPlayerAdapterCache = new WeakMap<
+  PreviewPlayerHost,
+  PreviewPlayerAdapterCacheEntry
+>();
 
 function isPreviewPlayerHost(value: unknown): value is PreviewPlayerHost {
   return value instanceof HTMLElement;
@@ -95,6 +112,111 @@ function resolvePreviewPlayerHost(iframe: HTMLIFrameElement): PreviewPlayerHost 
     return root.host;
   }
   return null;
+}
+
+/**
+ * Route Studio transport through the owning `<hyperframes-player>` whenever
+ * the iframe is hosted by one. The web component owns the parent-frame media
+ * proxy used after an iframe reports `media-autoplay-blocked`; bypassing its
+ * play/pause/seek methods leaves that proxy paused even while the inner
+ * timeline is running.
+ *
+ * The fallback keeps standalone iframe previews working and supplies current
+ * duration while the host is still hydrating. Entries are cached per host so
+ * static-seek adapter selection remains stable across animation frames.
+ */
+export function resolvePreviewPlayerPlaybackAdapter(
+  iframe: HTMLIFrameElement,
+  fallback: PlaybackAdapter | null,
+): PlaybackAdapter | null {
+  const host = resolvePreviewPlayerHost(iframe);
+  if (
+    !host ||
+    typeof host.play !== "function" ||
+    typeof host.pause !== "function" ||
+    typeof host.seek !== "function"
+  ) {
+    return null;
+  }
+
+  const cached = previewPlayerAdapterCache.get(host);
+  if (cached) {
+    cached.fallback = fallback;
+    return cached.adapter;
+  }
+
+  const entry = {
+    fallback,
+    adapter: null as unknown as PlaybackAdapter,
+  } satisfies PreviewPlayerAdapterCacheEntry;
+
+  const fallbackTime = () => {
+    try {
+      return Number(entry.fallback?.getTime() ?? 0);
+    } catch {
+      return 0;
+    }
+  };
+  const fallbackDuration = () => {
+    try {
+      const duration = Number(entry.fallback?.getDuration() ?? 0);
+      return Number.isFinite(duration) && duration > 0 ? duration : 0;
+    } catch {
+      return 0;
+    }
+  };
+  const fallbackIsPlaying = () => {
+    try {
+      return entry.fallback?.isPlaying() ?? false;
+    } catch {
+      return false;
+    }
+  };
+
+  entry.adapter = {
+    play: () => {
+      try {
+        host.play?.();
+      } catch {
+        entry.fallback?.play();
+      }
+    },
+    pause: () => {
+      try {
+        host.pause?.();
+      } catch {
+        entry.fallback?.pause();
+      }
+    },
+    seek: (time, options) => {
+      const wasPlaying =
+        typeof host.paused === "boolean" ? !host.paused : fallbackIsPlaying();
+      try {
+        host.seek?.(time);
+        if (options?.keepPlaying && wasPlaying) host.play?.();
+      } catch {
+        entry.fallback?.seek(time, options);
+      }
+    },
+    getTime: () => {
+      const hostTime = Number(host.currentTime);
+      if (host.ready !== false && Number.isFinite(hostTime) && hostTime >= 0) return hostTime;
+      return fallbackTime();
+    },
+    getDuration: () => {
+      // The iframe adapter is tied to the currently loaded document, while a
+      // host can briefly retain the previous duration during src refreshes.
+      const currentDuration = fallbackDuration();
+      if (currentDuration > 0) return currentDuration;
+      const hostDuration = Number(host.duration);
+      return Number.isFinite(hostDuration) && hostDuration > 0 ? hostDuration : 0;
+    },
+    isPlaying: () =>
+      typeof host.paused === "boolean" ? !host.paused : fallbackIsPlaying(),
+  };
+
+  previewPlayerAdapterCache.set(host, entry);
+  return entry.adapter;
 }
 
 function postPreviewControl(

@@ -2,9 +2,9 @@
 
 ## 唯一公开分发入口
 
-chengfeng-VideoCut 的正式二进制分发入口是 GitHub Releases：
+chengfeng-videocut 的正式二进制分发入口是 GitHub Releases：
 
-https://github.com/Agentchengfeng/chengfeng-VideoCut/releases
+https://github.com/Agentchengfeng/chengfeng-videocut/releases
 
 当前不发布 npm 包，不使用 `bunx` 作为用户入口，也不提供 DMG。这样可以避免用户安装时依赖 npm registry，并让下载文件、校验值、版本说明和回滚版本都集中在同一个 Release 中。
 
@@ -17,8 +17,8 @@ https://github.com/Agentchengfeng/chengfeng-VideoCut/releases
 
 每个正式版本至少应提供：
 
-- `chengfeng-VideoCut-<version>-portable.tar.gz`：版本化便携包
-- `chengfeng-VideoCut-portable.tar.gz`：与本次 Release 内容相同的稳定文件名
+- `chengfeng-videocut-<version>-portable.tar.gz`：版本化便携包
+- `chengfeng-videocut-portable.tar.gz`：与本次 Release 内容相同的稳定文件名
 - `chengfeng-videocut-<version>.tgz`：版本化 CLI 包，供诊断或受控安装
 - `chengfeng-videocut.tgz`：与本次 Release 内容相同的稳定 CLI 文件名
 - `SHA256SUMS.txt`：所有上传资产的 SHA-256 校验值
@@ -30,12 +30,12 @@ https://github.com/Agentchengfeng/chengfeng-VideoCut/releases
 推荐安装命令：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Agentchengfeng/chengfeng-VideoCut/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Agentchengfeng/chengfeng-videocut/main/install.sh | sh
 ```
 
-安装器只应从 `Agentchengfeng/chengfeng-VideoCut` 的 GitHub Release 下载资产，校验 `SHA256SUMS.txt`，并写入产品自己的用户目录。它不得修改用户项目、媒体或其他工具目录。
+安装器只应从 `Agentchengfeng/chengfeng-videocut` 的 GitHub Release 下载资产，校验 `SHA256SUMS.txt`，并写入产品自己的用户目录。它不得修改用户项目、媒体或其他工具目录。
 
-手动安装用户可以下载 `chengfeng-VideoCut-portable.tar.gz`，校验后解压，并直接运行：
+手动安装用户可以下载 `chengfeng-videocut-portable.tar.gz`，校验后解压，并直接运行：
 
 ```bash
 ./chengfeng-videocut doctor
@@ -94,4 +94,4 @@ curl -fsSL https://raw.githubusercontent.com/Agentchengfeng/chengfeng-VideoCut/m
 - `THIRD_PARTY_LICENSES.md`
 - `LICENSES/HyperFrames-Apache-2.0.txt` 或等价完整 Apache-2.0 文本
 
-chengfeng-VideoCut 与 HyperFrames、HeyGen、GSAP、GreenSock、Webflow 均无隶属或官方背书关系。发布页、截图和安装界面不得暗示官方关系或商标背书。发布维护者和用户仍需自行确认其具体使用方式符合所有适用条款；本清单不构成法律合规保证。
+chengfeng-videocut 与 HyperFrames、HeyGen、GSAP、GreenSock、Webflow 均无隶属或官方背书关系。发布页、截图和安装界面不得暗示官方关系或商标背书。发布维护者和用户仍需自行确认其具体使用方式符合所有适用条款；本清单不构成法律合规保证。

@@ -295,7 +295,7 @@ export function WorkbenchTaskPanel({ projectId }: { projectId: string }) {
           notice={{
             tone: workflowError ? "error" : "progress",
             title: workflowError ? "任务状态读取失败" : "正在读取任务状态",
-            detail: workflowError ?? "正在连接本地 chengfeng-VideoCut 服务。",
+            detail: workflowError ?? "正在连接本地 chengfeng-videocut 服务。",
           }}
           status="loading"
           retry={workflowError ? () => void refreshWorkflow() : undefined}
@@ -417,7 +417,7 @@ export function WorkbenchTaskPanel({ projectId }: { projectId: string }) {
               notice={{
                 tone: workflowError ? "error" : "progress",
                 title: workflowError ? "任务状态读取失败" : "正在读取任务状态",
-                detail: workflowError ?? "正在连接本地 chengfeng-VideoCut 服务。",
+                detail: workflowError ?? "正在连接本地 chengfeng-videocut 服务。",
               }}
               status="loading"
               retry={workflowError ? () => void refreshWorkflow() : undefined}

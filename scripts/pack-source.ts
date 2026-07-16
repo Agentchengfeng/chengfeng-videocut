@@ -7,7 +7,7 @@ const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
   version: string;
 };
 const releaseDir = join(root, "release");
-const folderName = `chengfeng-VideoCut-${pkg.version}`;
+const folderName = `chengfeng-videocut-${pkg.version}`;
 const archive = join(releaseDir, `${folderName}-source.tar.gz`);
 
 await import("./release-check");

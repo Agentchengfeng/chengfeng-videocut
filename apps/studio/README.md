@@ -1,6 +1,6 @@
-# chengfeng-VideoCut Studio
+# chengfeng-videocut Studio
 
-The browser editing shell for `chengfeng-VideoCut`. It runs as an independent
+The browser editing shell for `chengfeng-videocut`. It runs as an independent
 application against versioned HyperFrames engine packages, while the talking-head
 workflow, confirmation gates, and final render are owned by the product adapters.
 

@@ -1,13 +1,13 @@
 {
   "name": "chengfeng-videocut-monorepo",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
   "author": "成峰 / AI产品自由",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Agentchengfeng/chengfeng-VideoCut.git"
+    "url": "https://github.com/Agentchengfeng/chengfeng-videocut.git"
   },
   "workspaces": [
     "apps/*",

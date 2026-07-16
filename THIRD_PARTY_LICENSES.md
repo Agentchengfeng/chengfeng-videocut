@@ -1,6 +1,6 @@
 # Collected Third-Party License Texts
 
-This file collects the license texts and notices for direct third-party components bundled into chengfeng-VideoCut. The dependency lockfile records exact resolved versions. Transitive packages remain subject to the license files in their source distributions.
+This file collects the license texts and notices for direct third-party components bundled into chengfeng-videocut. The dependency lockfile records exact resolved versions. Transitive packages remain subject to the license files in their source distributions.
 
 HyperFrames and DOMPurify are used under Apache License 2.0; the complete text is the repository root `LICENSE` and `LICENSES/HyperFrames-Apache-2.0.txt`.
 
@@ -189,7 +189,7 @@ SOFTWARE.
 
 ## Mediabunny — Mozilla Public License 2.0
 
-Mediabunny source is available from https://github.com/Vanilagy/mediabunny. The exact version used by a chengfeng-VideoCut release is recorded in `bun.lock`.
+Mediabunny source is available from https://github.com/Vanilagy/mediabunny. The exact version used by a chengfeng-videocut release is recorded in `bun.lock`.
 
 ```text
 Mozilla Public License Version 2.0

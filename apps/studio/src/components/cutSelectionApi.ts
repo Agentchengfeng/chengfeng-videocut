@@ -79,7 +79,7 @@ async function requestCuts(url: string, init?: RequestInit): Promise<CutSelectio
   try {
     response = await fetch(url, init);
   } catch (cause) {
-    throw new CutSelectionApiError("Cannot reach the local chengfeng-VideoCut service", {
+    throw new CutSelectionApiError("Cannot reach the local chengfeng-videocut service", {
       status: 0,
       code: "service_unavailable",
       details: cause instanceof Error ? { cause: cause.message } : undefined,

@@ -97,6 +97,78 @@ function renderAttachedTimelinePlayer() {
   return { api, root, adapter };
 }
 
+function attachHostedIframeAdapter(api: ReturnType<typeof useTimelinePlayer>) {
+  const host = document.createElement("hyperframes-player") as HTMLElement & {
+    play: () => void;
+    pause: () => void;
+    seek: (time: number) => void;
+    currentTime: number;
+    duration: number;
+    paused: boolean;
+    ready: boolean;
+  };
+  const shadow = host.attachShadow({ mode: "open" });
+  const iframe = document.createElement("iframe");
+  let innerTime = 0;
+  let innerPlaying = false;
+  const innerAdapter = {
+    play: vi.fn(() => {
+      innerPlaying = true;
+    }),
+    pause: vi.fn(() => {
+      innerPlaying = false;
+    }),
+    seek: vi.fn((time: number) => {
+      innerTime = time;
+    }),
+    getTime: () => innerTime,
+    getDuration: () => 30,
+    isPlaying: () => innerPlaying,
+  };
+  Object.defineProperty(iframe, "contentWindow", {
+    value: {
+      __player: innerAdapter,
+      postMessage: () => {},
+      scrollTo: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    },
+    configurable: true,
+  });
+  Object.defineProperty(iframe, "contentDocument", {
+    value: document.implementation.createHTMLDocument("preview"),
+    configurable: true,
+  });
+
+  let hostTime = 0;
+  let hostPaused = true;
+  const hostPlay = vi.fn(() => {
+    hostPaused = false;
+  });
+  const hostPause = vi.fn(() => {
+    hostPaused = true;
+  });
+  const hostSeek = vi.fn((time: number) => {
+    hostTime = time;
+    hostPaused = true;
+  });
+  Object.assign(host, { play: hostPlay, pause: hostPause, seek: hostSeek });
+  Object.defineProperties(host, {
+    currentTime: { get: () => hostTime },
+    duration: { get: () => 30 },
+    paused: { get: () => hostPaused },
+    ready: { get: () => true },
+  });
+  shadow.appendChild(iframe);
+  document.body.appendChild(host);
+
+  act(() => {
+    api.iframeRef.current = iframe;
+    api.onIframeLoad();
+  });
+  return { hostPlay, hostPause, hostSeek, innerAdapter };
+}
+
 function setStorePlaying() {
   act(() => {
     usePlayerStore.setState({ isPlaying: true });
@@ -172,6 +244,26 @@ describe("useTimelinePlayer seek hydration", () => {
 });
 
 describe("useTimelinePlayer audio controls (#835)", () => {
+  it("uses the hyperframes-player transport so autoplay fallback audio is not left paused", () => {
+    const { api, root } = renderTimelinePlayerHarness();
+    const { hostPlay, hostPause, hostSeek, innerAdapter } = attachHostedIframeAdapter(api);
+
+    act(() => api.play());
+    expect(hostPlay).toHaveBeenCalledTimes(1);
+    expect(innerAdapter.play).not.toHaveBeenCalled();
+    expect(usePlayerStore.getState().isPlaying).toBe(true);
+
+    act(() => api.pause());
+    expect(hostPause).toHaveBeenCalled();
+    expect(innerAdapter.pause).not.toHaveBeenCalled();
+
+    seekWithAct(api, 6.5);
+    expect(hostSeek).toHaveBeenCalledWith(6.5);
+    expect(innerAdapter.seek).not.toHaveBeenCalled();
+
+    unmountWithAct(root);
+  });
+
   it("applies playback-rate changes immediately and auto-mutes audio above 1x", () => {
     const { api, root } = renderTimelinePlayerHarness();
     const postMessage = vi.fn();

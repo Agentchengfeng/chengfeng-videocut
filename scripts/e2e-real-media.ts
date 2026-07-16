@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 /**
- * Isolated real-media smoke for the complete chengfeng-VideoCut workflow.
+ * Isolated real-media smoke for the complete chengfeng-videocut workflow.
  *
  * The source recording and original Koubo task are read-only inputs. Every
  * generated file, registry link, physical cut, artifact, render, and report is
@@ -410,7 +410,7 @@ body{background:#101114;color:#fff;font-family:-apple-system,BlinkMacSystemFont,
 .eyebrow{font-size:34px;color:#9aa4b5;letter-spacing:.12em}.title{margin-top:30px;font-size:92px;font-weight:850;line-height:1.08}
 .accent{color:#8bffba}body[data-step="1"] .title{transform:scale(1.04)}.title{transition:transform .2s ease-out}
 </style></head><body data-step="0"><main id="stage"><section class="card">
-<div class="eyebrow">chengfeng-VideoCut · REAL MEDIA</div><div class="title">口播剪辑<br><span class="accent">音画完整</span></div>
+<div class="eyebrow">chengfeng-videocut · REAL MEDIA</div><div class="title">口播剪辑<br><span class="accent">音画完整</span></div>
 </section></main><script>
 function setStep(step){document.body.dataset.step=String(Number(step)||0)}
 addEventListener("message",event=>{if(event.data?.type==="set-step")setStep(event.data.step)});window.setStep=setStep;
@@ -465,7 +465,7 @@ async function main(): Promise<void> {
   const stages: Array<{ label: string; status: string; stage: string | null; revision: string }> = [];
   const evidence: JsonObject = {
     schemaVersion: 1,
-    product: "chengfeng-VideoCut",
+    product: "chengfeng-videocut",
     runRoot: outputRoot,
     taskDir,
     readOnlyInputs: before,
@@ -502,7 +502,7 @@ async function main(): Promise<void> {
     await writeJson(join(taskDir, "project.json"), {
       schemaVersion: 1,
       jobId,
-      title: "chengfeng-VideoCut real-media E2E",
+      title: "chengfeng-videocut real-media E2E",
       status: "cut_review_ready",
       inputVideo: "input/source.mp4",
       config: { aspectRatio: "4:3" },

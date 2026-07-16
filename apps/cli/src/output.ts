@@ -1,10 +1,10 @@
 import type { DoctorCheck } from "@video-workbench/core/node";
 
 export const CLI_SCHEMA_VERSION = 1;
-export const PRODUCT_NAME = "chengfeng-VideoCut";
+export const PRODUCT_NAME = "chengfeng-videocut";
 export const BRAND_NAME = PRODUCT_NAME;
 export const PACKAGE_NAME = "chengfeng-videocut";
-export const PRODUCT_VERSION = "0.1.0";
+export const PRODUCT_VERSION = "0.1.1";
 
 export interface SuccessEnvelope {
   schemaVersion: number;
@@ -63,7 +63,7 @@ export function humanDoctor(data: { healthy: boolean; checks: DoctorCheck[] }): 
   return lines.join("\n");
 }
 
-export const HELP_TEXT = `chengfeng-VideoCut 0.1.0
+export const HELP_TEXT = `chengfeng-videocut 0.1.1
 
 Usage:
   chengfeng-videocut start [--host <host>] [--port <port>] [--projects-dir <dir>] [--data-dir <dir>] [--open] [--json]

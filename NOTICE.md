@@ -1,4 +1,4 @@
-# chengfeng-VideoCut Notice
+# chengfeng-videocut Notice
 
 Copyright 2026 成峰 / AI产品自由
 
@@ -15,4 +15,4 @@ The upstream copyright and license notices are retained in this distribution. Se
 
 The distributed package also includes GSAP 3.15.0 and MotionPathPlugin, which are separately governed by the GSAP Standard License at https://gsap.com/standard-license/. Copyright in GSAP is held by its respective GreenSock/Webflow rights holders.
 
-chengfeng-VideoCut is an independent project. It is not affiliated with or endorsed by HyperFrames, HeyGen, GSAP, GreenSock, or Webflow. All associated marks belong to their respective owners.
+chengfeng-videocut is an independent project. It is not affiliated with or endorsed by HyperFrames, HeyGen, GSAP, GreenSock, or Webflow. All associated marks belong to their respective owners.

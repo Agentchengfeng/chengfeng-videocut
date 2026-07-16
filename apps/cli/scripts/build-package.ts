@@ -51,7 +51,7 @@ const studioIndexPath = join(studioTarget, "index.html");
 const studioIndex = await readFile(studioIndexPath, "utf8");
 await writeFile(
   studioIndexPath,
-  studioIndex.replace(/<title>[^<]*<\/title>/i, "<title>chengfeng-VideoCut</title>"),
+  studioIndex.replace(/<title>[^<]*<\/title>/i, "<title>chengfeng-videocut</title>"),
 );
 
 const legalDir = join(distDir, "legal");

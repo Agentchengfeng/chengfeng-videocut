@@ -330,7 +330,7 @@ export async function startStudioServer(
         }
         return await staticResponse(request, url, staticDir);
       } catch (error) {
-        console.error("[chengfeng-VideoCut] request failed", error);
+        console.error("[chengfeng-videocut] request failed", error);
         return Response.json(
           { error: "internal_error", message: "Internal server error" },
           { status: 500 },

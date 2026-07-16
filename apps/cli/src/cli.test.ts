@@ -79,7 +79,7 @@ describe("chengfeng-videocut CLI", () => {
 
     expect(code).toBe(0);
     expect(payload).toMatchObject({
-      product: "chengfeng-VideoCut",
+      product: "chengfeng-videocut",
       command: "help",
       ok: true,
     });
@@ -101,7 +101,7 @@ describe("chengfeng-videocut CLI", () => {
     expect(code).toBe(0);
     expect(payload).toMatchObject({
       schemaVersion: 1,
-      product: "chengfeng-VideoCut",
+      product: "chengfeng-videocut",
       command: "inspect",
       ok: true,
       data: { projectId: "demo", status: "cut_review_ready" },
@@ -123,7 +123,7 @@ describe("chengfeng-videocut CLI", () => {
 
     expect(code).toBe(0);
     expect(payload).toMatchObject({
-      product: "chengfeng-VideoCut",
+      product: "chengfeng-videocut",
       command: "project.prepare",
       data: {
         projectId: "demo",
@@ -349,7 +349,7 @@ describe("chengfeng-videocut CLI", () => {
     expect(calls[0].directory).toEndWith("/demo");
     expect(payload).toMatchObject({
       schemaVersion: 1,
-      product: "chengfeng-VideoCut",
+      product: "chengfeng-videocut",
       command: "render.run",
       ok: true,
       data: {
@@ -395,7 +395,7 @@ describe("chengfeng-videocut CLI", () => {
       });
       expect(code).toBe(scenario.exitCode);
       expect(JSON.parse(capture.stdout[0])).toMatchObject({
-        product: "chengfeng-VideoCut",
+        product: "chengfeng-videocut",
         command: "render.run",
         ok: false,
         error: {
@@ -490,9 +490,9 @@ describe("chengfeng-videocut CLI", () => {
     expect(opened).toEqual([]);
     expect(started[0]).toMatchObject({ port: 0, installSignalHandlers: true });
     expect(JSON.parse(capture.stdout[0])).toMatchObject({
-      product: "chengfeng-VideoCut",
+      product: "chengfeng-videocut",
       command: "start",
-      data: { brand: "chengfeng-VideoCut", port: 43123 },
+      data: { brand: "chengfeng-videocut", port: 43123 },
     });
 
     expect(
