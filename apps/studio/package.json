@@ -1,0 +1,71 @@
+{
+  "name": "@video-workbench/studio",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Browser Studio for chengfeng-VideoCut, powered by HyperFrames",
+  "license": "Apache-2.0",
+  "author": "成峰 / AI产品自由",
+  "files": [
+    "src",
+    "dist"
+  ],
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./tailwind-preset": "./src/styles/tailwind-preset.ts",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build && tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@video-workbench/core": "workspace:*",
+    "@codemirror/autocomplete": "^6.20.1",
+    "@codemirror/commands": "^6.10.3",
+    "@codemirror/lang-css": "^6.3.1",
+    "@codemirror/lang-html": "^6.4.9",
+    "@codemirror/lang-javascript": "^6.2.2",
+    "@codemirror/lang-markdown": "^6.3.4",
+    "@codemirror/language": "^6.12.2",
+    "@codemirror/search": "^6.6.0",
+    "@codemirror/state": "^6.6.0",
+    "@codemirror/theme-one-dark": "^6.1.2",
+    "@codemirror/view": "6.40.0",
+    "@hyperframes/core": "0.7.54",
+    "@hyperframes/parsers": "0.7.54",
+    "@hyperframes/player": "0.7.54",
+    "@hyperframes/producer": "0.7.54",
+    "@hyperframes/sdk": "0.7.54",
+    "@hyperframes/studio-server": "0.7.54",
+    "@phosphor-icons/react": "^2.1.10",
+    "bpm-detective": "^2.0.5",
+    "dompurify": "^3.2.4",
+    "gsap": "^3.13.0",
+    "marked": "^14.1.4",
+    "mediabunny": "^1.45.3",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "zustand": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "19",
+    "@types/react-dom": "19",
+    "@vitejs/plugin-react": "^4.0.0",
+    "autoprefixer": "^10.4.0",
+    "happy-dom": "^20.10.6",
+    "jsdom": "^29.1.1",
+    "postcss": "^8.4.0",
+    "puppeteer-core": "^25.2.1",
+    "tailwindcss": "^3.4.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.0.0",
+    "vite": "^6.4.2",
+    "vitest": "^3.2.4"
+  }
+}

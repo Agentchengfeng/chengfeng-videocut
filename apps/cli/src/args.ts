@@ -1,0 +1,374 @@
+import { isAbsolute } from "node:path";
+import { VideocutError } from "@video-workbench/core";
+
+export type CliCommand =
+  | "help"
+  | "version"
+  | "start"
+  | "doctor"
+  | "inspect"
+  | "open"
+  | "project.prepare"
+  | "artifact.put"
+  | "cuts.set"
+  | "cuts.apply"
+  | "workflow.get"
+  | "workflow.transition"
+  | "render.run";
+
+export interface ParsedArgs {
+  command: CliCommand;
+  project?: string;
+  file?: string;
+  json: boolean;
+  dryRun: boolean;
+  origin?: string;
+  expectedRevision?: string;
+  projectsDir?: string;
+  outputDir?: string;
+  dataDir?: string;
+  host?: string;
+  port?: number;
+  openBrowser: boolean;
+  apiBase?: string;
+  video?: string;
+  transcript?: string;
+  duration?: number;
+  confirmed: boolean;
+  forceIndex: boolean;
+  refreshTranscript: boolean;
+  artifactType?: string;
+  expectedProjectRevision?: string;
+  expectedArtifactRevision?: string;
+  action?: string;
+  renderer?: string;
+}
+
+const VALUE_OPTIONS = new Set([
+  "--file",
+  "--origin",
+  "--expected-revision",
+  "--projects-dir",
+  "--output-dir",
+  "--data-dir",
+  "--host",
+  "--port",
+  "--api-base",
+  "--video",
+  "--transcript",
+  "--duration",
+  "--type",
+  "--expected-project-revision",
+  "--expected-artifact-revision",
+  "--action",
+  "--renderer",
+]);
+
+const BOOLEAN_OPTIONS = new Set([
+  "--confirmed",
+  "--force-index",
+  "--refresh-transcript",
+]);
+
+function usageError(message: string): never {
+  throw new VideocutError("invalid_argument", message);
+}
+
+export function parseArgs(argv: readonly string[]): ParsedArgs {
+  const positionals: string[] = [];
+  const values = new Map<string, string>();
+  let json = false;
+  let dryRun = false;
+  let help = false;
+  let version = false;
+  let openBrowser = false;
+  const booleanValues = new Set<string>();
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index];
+    if (!token.startsWith("--")) {
+      positionals.push(token);
+      continue;
+    }
+    const equalsIndex = token.indexOf("=");
+    const name = equalsIndex >= 0 ? token.slice(0, equalsIndex) : token;
+    const inlineValue = equalsIndex >= 0 ? token.slice(equalsIndex + 1) : undefined;
+    if (name === "--json") {
+      if (inlineValue !== undefined) usageError("--json does not accept a value");
+      json = true;
+      continue;
+    }
+    if (name === "--dry-run") {
+      if (inlineValue !== undefined) usageError("--dry-run does not accept a value");
+      dryRun = true;
+      continue;
+    }
+    if (name === "--help") {
+      if (inlineValue !== undefined) usageError("--help does not accept a value");
+      help = true;
+      continue;
+    }
+    if (name === "--version") {
+      if (inlineValue !== undefined) usageError("--version does not accept a value");
+      version = true;
+      continue;
+    }
+    if (name === "--open") {
+      if (inlineValue !== undefined) usageError("--open does not accept a value");
+      openBrowser = true;
+      continue;
+    }
+    if (BOOLEAN_OPTIONS.has(name)) {
+      if (inlineValue !== undefined) usageError(`${name} does not accept a value`);
+      if (booleanValues.has(name)) usageError(`${name} may only be provided once`);
+      booleanValues.add(name);
+      continue;
+    }
+    if (!VALUE_OPTIONS.has(name)) usageError(`Unknown option: ${name}`);
+    const value = inlineValue ?? argv[index + 1];
+    if (!value || (inlineValue === undefined && value.startsWith("--"))) {
+      usageError(`${name} requires a value`);
+    }
+    if (values.has(name)) usageError(`${name} may only be provided once`);
+    values.set(name, value);
+    if (inlineValue === undefined) index += 1;
+  }
+
+  const durationValue = values.get("--duration");
+  let duration: number | undefined;
+  if (durationValue !== undefined) {
+    duration = Number(durationValue);
+    if (!Number.isFinite(duration) || duration <= 0) {
+      usageError("--duration must be a positive number of seconds");
+    }
+  }
+
+  const portValue = values.get("--port");
+  let port: number | undefined;
+  if (portValue !== undefined) {
+    if (!/^\d+$/.test(portValue)) usageError("--port must be an integer from 0 to 65535");
+    port = Number(portValue);
+    if (!Number.isSafeInteger(port) || port > 65_535) {
+      usageError("--port must be an integer from 0 to 65535");
+    }
+  }
+
+  const common = {
+    json,
+    dryRun,
+    origin: values.get("--origin"),
+    expectedRevision: values.get("--expected-revision"),
+    projectsDir: values.get("--projects-dir"),
+    outputDir: values.get("--output-dir"),
+    dataDir: values.get("--data-dir"),
+    host: values.get("--host"),
+    port,
+    openBrowser,
+    apiBase: values.get("--api-base"),
+    video: values.get("--video"),
+    transcript: values.get("--transcript"),
+    duration,
+    confirmed: booleanValues.has("--confirmed"),
+    forceIndex: booleanValues.has("--force-index"),
+    refreshTranscript: booleanValues.has("--refresh-transcript"),
+    artifactType: values.get("--type"),
+    expectedProjectRevision: values.get("--expected-project-revision"),
+    expectedArtifactRevision: values.get("--expected-artifact-revision"),
+    action: values.get("--action"),
+    renderer: values.get("--renderer"),
+  };
+  if (version) return { command: "version", ...common };
+  if (help || positionals.length === 0) return { command: "help", ...common };
+
+  const assertOptions = (
+    allowed: readonly string[],
+    allowedBoolean: readonly string[] = [],
+    allowDryRun = false,
+  ): void => {
+    for (const name of values.keys()) {
+      if (!allowed.includes(name)) usageError(`${name} is not valid for this command`);
+    }
+    for (const name of booleanValues) {
+      if (!allowedBoolean.includes(name)) usageError(`${name} is not valid for this command`);
+    }
+    if (dryRun && !allowDryRun) usageError("--dry-run is only valid for cuts set");
+    if (openBrowser && positionals[0] !== "start") {
+      usageError("--open is only valid for start");
+    }
+  };
+
+  if (positionals[0] === "start") {
+    if (positionals.length !== 1) {
+      usageError("Usage: chengfeng-videocut start [--host <host>] [--port <port>]");
+    }
+    assertOptions(["--host", "--port", "--projects-dir", "--data-dir"]);
+    return { command: "start", ...common };
+  }
+
+  if (positionals[0] === "doctor") {
+    if (positionals.length !== 1) usageError("Usage: chengfeng-videocut doctor [--json]");
+    assertOptions(["--projects-dir"]);
+    return { command: "doctor", ...common };
+  }
+  if (positionals[0] === "inspect") {
+    if (positionals.length !== 2) {
+      usageError("Usage: chengfeng-videocut inspect <project> [--json]");
+    }
+    assertOptions(["--projects-dir", "--output-dir"]);
+    return { command: "inspect", project: positionals[1], ...common };
+  }
+  if (positionals[0] === "open") {
+    if (positionals.length !== 2) {
+      usageError("Usage: chengfeng-videocut open <project> [--origin <url>] [--json]");
+    }
+    assertOptions(["--origin", "--projects-dir", "--output-dir"]);
+    return { command: "open", project: positionals[1], ...common };
+  }
+  if (positionals[0] === "project" && positionals[1] === "prepare") {
+    if (positionals.length !== 3) {
+      usageError("Usage: chengfeng-videocut project prepare <job-dir>");
+    }
+    assertOptions(
+      ["--video", "--transcript", "--duration", "--origin", "--projects-dir"],
+      ["--force-index", "--refresh-transcript"],
+    );
+    return { command: "project.prepare", project: positionals[2], ...common };
+  }
+  if (positionals[0] === "artifact" && positionals[1] === "put") {
+    if (positionals.length !== 3) {
+      usageError("Usage: chengfeng-videocut artifact put <project> --type <type> --file <file>");
+    }
+    const artifactType = values.get("--type");
+    if (!artifactType || ![
+      "subtitles", "visual-plan", "animation-manifest", "timeline",
+    ].includes(artifactType)) {
+      usageError("artifact put --type must be subtitles, visual-plan, animation-manifest, or timeline");
+    }
+    const file = values.get("--file");
+    if (!file) usageError("artifact put requires --file <file>");
+    const expectedProjectRevision = values.get("--expected-project-revision");
+    const expectedArtifactRevision = values.get("--expected-artifact-revision");
+    for (const [name, value] of [
+      ["--expected-project-revision", expectedProjectRevision],
+      ["--expected-artifact-revision", expectedArtifactRevision],
+    ] as const) {
+      if (!value || !/^(?:none|[a-f0-9]{64})$/.test(value)) {
+        usageError(`${name} is required and must be 'none' or a SHA-256 revision`);
+      }
+    }
+    assertOptions([
+      "--type", "--file", "--expected-project-revision", "--expected-artifact-revision",
+      "--projects-dir", "--output-dir",
+    ]);
+    return { command: "artifact.put", project: positionals[2], file, ...common };
+  }
+  if (positionals[0] === "workflow" && positionals[1] === "get") {
+    if (positionals.length !== 3) {
+      usageError("Usage: chengfeng-videocut workflow get <project>");
+    }
+    assertOptions(["--projects-dir", "--output-dir", "--api-base"]);
+    return { command: "workflow.get", project: positionals[2], ...common };
+  }
+  if (positionals[0] === "workflow" && positionals[1] === "transition") {
+    if (positionals.length !== 3) {
+      usageError("Usage: chengfeng-videocut workflow transition <project> --action <action>");
+    }
+    const action = values.get("--action");
+    if (!action || ![
+      "start-final", "confirm-storyboard", "confirm-animation", "confirm-timeline",
+    ].includes(action)) {
+      usageError("workflow transition --action is invalid");
+    }
+    const expectedRevision = values.get("--expected-revision");
+    if (!expectedRevision || !/^[a-f0-9]{64}$/.test(expectedRevision)) {
+      usageError("workflow transition requires --expected-revision <sha256>");
+    }
+    if (!booleanValues.has("--confirmed")) {
+      usageError("workflow transition requires --confirmed after explicit user confirmation");
+    }
+    assertOptions(
+      ["--action", "--expected-revision", "--file", "--projects-dir", "--output-dir", "--api-base"],
+      ["--confirmed"],
+    );
+    return {
+      command: "workflow.transition",
+      project: positionals[2],
+      file: values.get("--file"),
+      ...common,
+    };
+  }
+  if (positionals[0] === "render" && positionals[1] === "run") {
+    if (positionals.length !== 3) {
+      usageError(
+        "Usage: chengfeng-videocut render run <project> --expected-revision <sha256> --confirmed",
+      );
+    }
+    const expectedRevision = values.get("--expected-revision");
+    if (!expectedRevision || !/^[a-f0-9]{64}$/.test(expectedRevision)) {
+      usageError("render run requires --expected-revision <sha256>");
+    }
+    if (!booleanValues.has("--confirmed")) {
+      usageError("render run requires --confirmed after explicit user confirmation");
+    }
+    const renderer = values.get("--renderer");
+    if (renderer && !isAbsolute(renderer)) {
+      usageError("render run --renderer must be an absolute file path");
+    }
+    assertOptions(
+      ["--expected-revision", "--renderer", "--projects-dir", "--output-dir"],
+      ["--confirmed"],
+    );
+    return { command: "render.run", project: positionals[2], ...common };
+  }
+  if (positionals[0] === "cuts" && positionals[1] === "apply") {
+    if (positionals.length !== 3) {
+      usageError("Usage: chengfeng-videocut cuts apply <project> --expected-revision <sha256> --confirmed");
+    }
+    const expectedRevision = values.get("--expected-revision");
+    if (!expectedRevision || !/^[a-f0-9]{64}$/.test(expectedRevision)) {
+      usageError("cuts apply requires --expected-revision <sha256>");
+    }
+    if (!booleanValues.has("--confirmed")) {
+      usageError("cuts apply requires --confirmed after explicit user confirmation");
+    }
+    assertOptions(
+      ["--expected-revision", "--projects-dir", "--output-dir", "--api-base"],
+      ["--confirmed"],
+    );
+    return { command: "cuts.apply", project: positionals[2], ...common };
+  }
+  if (positionals[0] === "cuts" && positionals[1] === "set") {
+    if (positionals.length !== 3) {
+      usageError(
+        "Usage: chengfeng-videocut cuts set <project> --file <cut-selection.json>",
+      );
+    }
+    const file = values.get("--file");
+    if (!file) usageError("cuts set requires --file <cut-selection.json>");
+    const expectedRevision = values.get("--expected-revision");
+    if (!dryRun && !expectedRevision) {
+      usageError("cuts set requires --expected-revision <revision> unless --dry-run is used");
+    }
+    if (expectedRevision && !/^(?:none|[a-f0-9]{64})$/.test(expectedRevision)) {
+      usageError("--expected-revision must be 'none' or a SHA-256 revision");
+    }
+    assertOptions(
+      [
+        "--file",
+        "--expected-revision",
+        "--projects-dir",
+        "--output-dir",
+        "--api-base",
+      ],
+      [],
+      true,
+    );
+    return {
+      command: "cuts.set",
+      project: positionals[2],
+      file,
+      ...common,
+    };
+  }
+  usageError(`Unknown command: ${positionals.join(" ")}`);
+}

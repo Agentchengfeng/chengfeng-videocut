@@ -1,0 +1,15 @@
+{
+  "name": "@video-workbench/contracts",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "author": "成峰 / AI产品自由",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "bun test"
+  }
+}

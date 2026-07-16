@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "If you use chengfeng-VideoCut, please cite this software."
+title: "chengfeng-VideoCut"
+type: software
+version: 0.1.0
+date-released: 2026-07-16
+authors:
+  - name: "成峰 / AI产品自由"
+repository-code: "https://github.com/Agentchengfeng/chengfeng-VideoCut"
+url: "https://github.com/Agentchengfeng/chengfeng-VideoCut"
+license: Apache-2.0
+keywords:
+  - video-editing
+  - talking-head
+  - local-first
+  - cli
+  - skills
+abstract: >-
+  A local-first talking-head video editing Studio and CLI, designed as a
+  stable product boundary for Skills, scripts, and agents.

@@ -1,0 +1,55 @@
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join, resolve } from "node:path";
+
+const root = resolve(import.meta.dir, "..");
+const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
+  version: string;
+};
+const releaseDir = join(root, "release");
+const folderName = `chengfeng-VideoCut-${pkg.version}`;
+const archive = join(releaseDir, `${folderName}-source.tar.gz`);
+
+await import("./release-check");
+mkdirSync(releaseDir, { recursive: true });
+const stageRoot = mkdtempSync(join(tmpdir(), "video-workbench-release-"));
+const stageDir = join(stageRoot, folderName);
+mkdirSync(stageDir, { recursive: true });
+
+const excludedNames = new Set([
+  ".git",
+  ".workbench",
+  "node_modules",
+  "dist",
+  "release",
+  "logs",
+  ".thumbnails",
+  ".DS_Store",
+]);
+
+cpSync(root, stageDir, {
+  recursive: true,
+  filter(source) {
+    const name = basename(source);
+    if (source !== root && excludedNames.has(name)) return false;
+    const relativePath = source.slice(root.length + 1);
+    if (/^docs\/[^/]+-architecture\.html$/.test(relativePath)) return false;
+    if (relativePath.startsWith("apps/studio/data/projects/")) {
+      return relativePath === "apps/studio/data/projects/.gitkeep";
+    }
+    if (relativePath.startsWith("apps/studio/data/renders")) return false;
+    if (relativePath.startsWith("apps/studio/data/sessions")) return false;
+    if (name.startsWith(".env")) return false;
+    return true;
+  },
+});
+
+if (existsSync(archive)) rmSync(archive);
+const result = Bun.spawnSync(["tar", "-czf", archive, "-C", stageRoot, folderName], {
+  stdout: "inherit",
+  stderr: "inherit",
+});
+rmSync(stageRoot, { recursive: true, force: true });
+if (result.exitCode !== 0) throw new Error("Failed to create source archive");
+
+console.log(`Created ${archive}`);

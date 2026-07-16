@@ -1,0 +1,30 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.DS_Store
+.env
+.env.*
+
+# Runtime data is local infrastructure state, never repository content.
+apps/studio/data/projects/*
+!apps/studio/data/projects/.gitkeep
+apps/studio/data/renders/
+apps/studio/data/sessions/
+
+# Local adapter registries and generated files.
+.workbench/
+logs/
+release/
+
+# Generated/private working material is not part of the public product source.
+.thumbnails/
+docs/*-architecture.html
+
+# Runtime outputs and local databases must never enter a release.
+/output/
+/tmp/
+/.cache/
+*.log
+*.jsonl
+*.sqlite
+*.sqlite-*

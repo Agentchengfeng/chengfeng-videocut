@@ -1,0 +1,45 @@
+{
+  "name": "chengfeng-videocut",
+  "version": "0.1.0",
+  "description": "CLI and local Studio server for chengfeng-VideoCut",
+  "type": "module",
+  "bin": {
+    "chengfeng-videocut": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "start": "bun src/cli.ts",
+    "build": "bun run --cwd ../studio build && bun scripts/build-package.ts",
+    "build:package": "bun scripts/build-package.ts",
+    "package:check": "bun scripts/check-package.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "bun test"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@hyperframes/core": "0.7.54",
+    "@hyperframes/studio-server": "0.7.54",
+    "@video-workbench/core": "workspace:*",
+    "@video-workbench/koubo-adapter": "workspace:*",
+    "gsap": "^3.13.0"
+  },
+  "engines": {
+    "bun": ">=1.2.0"
+  },
+  "license": "Apache-2.0",
+  "author": "成峰 / AI产品自由",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Agentchengfeng/chengfeng-VideoCut.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Agentchengfeng/chengfeng-VideoCut/issues"
+  },
+  "homepage": "https://github.com/Agentchengfeng/chengfeng-VideoCut#readme",
+  "publishConfig": {
+    "access": "public"
+  }
+}
