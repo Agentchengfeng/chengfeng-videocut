@@ -53,6 +53,13 @@ export function isWorkflowActionAvailable(
   return ACTION_ALLOWED_STATUS[action] === status;
 }
 
+export function isWorkflowActionBlocked(
+  workflow: WorkbenchWorkflowResource,
+  action: WorkbenchWorkflowAction,
+): boolean {
+  return action === "start-final" && workflow.artifact.state !== "current";
+}
+
 export function resolveWorkflowHeaderAction(
   status: string | null | undefined,
   tab: WorkbenchTaskTab,
@@ -135,6 +142,13 @@ export function resolveWorkflowNotice(
       tone: "progress",
       title: "正在执行剪辑",
       detail: "正在生成剪后视频，请勿重复提交。",
+    };
+  }
+  if (workflow.artifact.state !== "current") {
+    return {
+      tone: "error",
+      title: "成片需重新生成",
+      detail: "当前剪后视频未生成、来自旧版或已与最新编辑不一致；不可开始画面成片。请先在“剪口播”执行剪辑。",
     };
   }
   if (status === "codex_continue_required") {

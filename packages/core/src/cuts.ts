@@ -4,6 +4,7 @@ export interface TimedWord {
   id: string;
   start: number;
   end: number;
+  isGap?: boolean;
 }
 
 export interface CutTimeRange {
@@ -86,7 +87,7 @@ export function parseTranscriptWords(payload: unknown): TimedWord[] {
         );
       }
       seenIds.add(id);
-      words.push({ id, start, end });
+      words.push({ id, start, end, isGap: word.isGap === true });
     });
   });
 
@@ -94,6 +95,44 @@ export function parseTranscriptWords(payload: unknown): TimedWord[] {
     throw new VideocutError("invalid_transcript", "transcript.json has no words");
   }
   return words;
+}
+
+/**
+ * ASR word boundaries can label the beginning of a spoken word as a tiny gap.
+ * Keeping that gap as its own magnetic A-roll segment makes deleted syllables
+ * flash through playback. When a contiguous gap run is enclosed by deleted
+ * spoken words, the gap belongs to the same semantic deletion and must be cut.
+ *
+ * Deliberately key this rule off `isGap` rather than duration: a short real word
+ * between two deletions still remains a separate retained segment.
+ */
+export function expandCutWordIdsAcrossEnclosedGaps(
+  words: readonly TimedWord[],
+  cutWordIds: ReadonlySet<string>,
+): Set<string> {
+  const expanded = new Set(cutWordIds);
+  let index = 0;
+
+  while (index < words.length) {
+    if (words[index]?.isGap !== true) {
+      index += 1;
+      continue;
+    }
+
+    const gapStart = index;
+    while (index < words.length && words[index]?.isGap === true) index += 1;
+    const leftWord = words[gapStart - 1];
+    const rightWord = words[index];
+    if (!leftWord || !rightWord) continue;
+    if (!expanded.has(leftWord.id) || !expanded.has(rightWord.id)) continue;
+
+    for (let gapIndex = gapStart; gapIndex < index; gapIndex += 1) {
+      const gapWord = words[gapIndex];
+      if (gapWord) expanded.add(gapWord.id);
+    }
+  }
+
+  return expanded;
 }
 
 export function buildCutTimeRanges(

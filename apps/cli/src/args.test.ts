@@ -38,11 +38,42 @@ describe("start argument parser", () => {
       "--port must be an integer",
     );
     expect(() => parseArgs(["doctor", "--open"])).toThrow(
-      "--open is only valid for start",
+      "--open is only valid for start or service ensure",
     );
   });
 
+  it("parses the complete managed service lifecycle", () => {
+    for (const action of ["install", "start", "stop", "restart", "status", "ensure"]) {
+      expect(parseArgs(["service", action, "--json"])).toMatchObject({
+        command: `service.${action}`,
+        json: true,
+      });
+    }
+    expect(parseArgs(["service", "logs", "--lines", "75"])).toMatchObject({
+      command: "service.logs",
+      logLines: 75,
+    });
+    expect(parseArgs(["service", "ensure", "--open"])).toMatchObject({
+      command: "service.ensure",
+      openBrowser: true,
+    });
+    expect(() => parseArgs(["service", "logs", "--lines", "1001"]))
+      .toThrow("--lines must be an integer from 1 to 1000");
+    expect(() => parseArgs(["service", "start", "--open"]))
+      .toThrow("--open is only valid for start or service ensure");
+    expect(() => parseArgs(["service", "unknown"]))
+      .toThrow("service <install|start|stop|restart|status|logs|ensure>");
+  });
+
   it("requires optimistic concurrency for cuts writes", () => {
+    expect(parseArgs([
+      "cuts", "get", "demo", "--api-base", "http://127.0.0.1:5190", "--json",
+    ])).toMatchObject({
+      command: "cuts.get",
+      project: "demo",
+      apiBase: "http://127.0.0.1:5190",
+      json: true,
+    });
     expect(() => parseArgs(["cuts", "set", "demo", "--file", "cuts.json"])).toThrow(
       "requires --expected-revision",
     );
@@ -52,6 +83,34 @@ describe("start argument parser", () => {
   });
 
   it("parses task-local project preparation flags", () => {
+    expect(parseArgs([
+      "project", "create", "/tmp/job",
+      "--video", "uploads/talk.mp4",
+      "--transcript", "cloud/words.json",
+      "--aspect-ratio", "4:3",
+      "--projects-dir", "/tmp/projects",
+      "--json",
+    ])).toMatchObject({
+      command: "project.create",
+      project: "/tmp/job",
+      video: "uploads/talk.mp4",
+      transcript: "cloud/words.json",
+      aspectRatio: "4:3",
+      projectsDir: "/tmp/projects",
+      json: true,
+    });
+    expect(() => parseArgs([
+      "project", "create", "/tmp/job",
+      "--video", "input/source.mp4",
+      "--transcript", "words.json",
+    ])).toThrow("--aspect-ratio must be");
+    expect(() => parseArgs([
+      "project", "create", "/tmp/job",
+      "--video", "input/source.mp4",
+      "--transcript", "words.json",
+      "--aspect-ratio", "9:16",
+    ])).toThrow("must be 3:4, 4:3, or 16:9");
+
     expect(parseArgs([
       "project", "prepare", "/tmp/job",
       "--video", "input/source.mp4",
@@ -70,6 +129,29 @@ describe("start argument parser", () => {
     });
     expect(() => parseArgs(["project", "prepare", "/tmp/job", "--duration", "0"]))
       .toThrow("--duration must be a positive number");
+  });
+
+  it("parses task-local cloud transcription without creating a project", () => {
+    expect(parseArgs([
+      "transcribe", "/tmp/job",
+      "--video", "uploads/talk.mp4",
+      "--output", "cloud/transcript.json",
+      "--language", "zh-CN",
+      "--json",
+    ])).toMatchObject({
+      command: "transcribe",
+      project: "/tmp/job",
+      video: "uploads/talk.mp4",
+      output: "cloud/transcript.json",
+      language: "zh-CN",
+      json: true,
+    });
+    expect(() => parseArgs(["transcribe", "/tmp/job", "--video", "uploads/talk.mp4"]))
+      .toThrow("transcribe requires --output");
+    expect(() => parseArgs([
+      "transcribe", "/tmp/job", "--video", "uploads/talk.mp4",
+      "--output", "cloud/transcript.json", "--aspect-ratio", "4:3",
+    ])).toThrow("--aspect-ratio is not valid for this command");
   });
 
   it("requires both project and artifact revisions for controlled artifacts", () => {
@@ -93,11 +175,31 @@ describe("start argument parser", () => {
 
   it("requires explicit confirmation and CAS for physical cuts and transitions", () => {
     const revision = "b".repeat(64);
+    const editListRevision = "e".repeat(64);
     expect(parseArgs([
-      "cuts", "apply", "demo", "--expected-revision", revision, "--confirmed",
-    ])).toMatchObject({ command: "cuts.apply", confirmed: true, expectedRevision: revision });
+      "cuts", "apply", "demo",
+      "--expected-revision", revision,
+      "--expected-edit-list-revision", editListRevision,
+      "--confirmed",
+    ])).toMatchObject({
+      command: "cuts.apply",
+      confirmed: true,
+      expectedRevision: revision,
+      expectedEditListRevision: editListRevision,
+    });
     expect(() => parseArgs([
-      "cuts", "apply", "demo", "--expected-revision", revision,
+      "cuts", "apply", "demo",
+      "--expected-revision", revision,
+      "--expected-edit-list-revision", "none",
+      "--confirmed",
+    ])).toThrow("requires a prepared edit-list.json revision");
+    expect(() => parseArgs([
+      "cuts", "apply", "demo", "--expected-revision", revision, "--confirmed",
+    ])).toThrow("requires --expected-edit-list-revision");
+    expect(() => parseArgs([
+      "cuts", "apply", "demo",
+      "--expected-revision", revision,
+      "--expected-edit-list-revision", editListRevision,
     ])).toThrow("cuts apply requires --confirmed");
     expect(parseArgs([
       "workflow", "transition", "demo",

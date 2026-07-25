@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { buildNaturalPausePlan } from "./naturalPause";
 
-describe("natural-pause-v2", () => {
-  test("merges adjacent ASR gap tokens before compressing a long pause", () => {
+describe("natural-pause-v4-delete-all-gaps", () => {
+  test("merges adjacent ASR gap tokens before deleting a long pause in full", () => {
     const plan = buildNaturalPausePlan(
       [
         { start: 0, end: 0.2 },
@@ -14,16 +14,18 @@ describe("natural-pause-v2", () => {
       { timelineEnd: 1.5 },
     );
 
-    expect(plan.deleteSegments).toEqual([{ start: 0.2, end: 0.92 }]);
-    expect(plan.summary.pausesCompressed).toBe(1);
-    expect(plan.actions.find((action) => action.type === "pause-compress")).toMatchObject({
+    expect(plan.deleteSegments).toEqual([{ start: 0.2, end: 1.2 }]);
+    expect(plan.summary.pausesDeleted).toBe(1);
+    expect(plan.actions.find((action) => action.type === "pause-delete")).toMatchObject({
       indices: [1, 2],
       originalDuration: 1,
-      targetDuration: 0.28,
+      deleteStart: 0.2,
+      deleteEnd: 1.2,
+      targetDuration: 0,
     });
   });
 
-  test("keeps short natural pauses and deletes untranscribed head and tail", () => {
+  test("deletes short natural pauses as well as untranscribed head and tail", () => {
     const plan = buildNaturalPausePlan(
       [
         { start: 0, end: 0.5, isGap: true },
@@ -38,10 +40,21 @@ describe("natural-pause-v2", () => {
 
     expect(plan.deleteSegments).toEqual([
       { start: 0, end: 0.5 },
+      { start: 0.8, end: 1.1 },
       { start: 1.4, end: 2 },
     ]);
-    expect(plan.summary.pausesKept).toBe(1);
+    expect(plan.summary.pausesDeleted).toBe(1);
     expect(plan.summary.headTailDeleted).toBe(2);
+    expect(plan.actions.map((action) => action.type)).toEqual([
+      "head-tail-delete",
+      "pause-delete",
+      "head-tail-delete",
+    ]);
+    expect(plan.actions.find((action) => action.type === "pause-delete")).toMatchObject({
+      start: 0.8,
+      end: 1.1,
+      targetDuration: 0,
+    });
   });
 
   test("semantic deletion keeps a small breathing boundary", () => {

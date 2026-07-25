@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   APPLY_CUT_CONFIRMATION_MESSAGE,
   confirmWorkflowAction,
+  isWorkflowActionBlocked,
   normalizeWorkbenchFinalConfig,
   isWorkflowActionAvailable,
   resolveWorkflowHeaderAction,
@@ -19,6 +20,12 @@ function workflow(
     schemaVersion: 1,
     projectId: "demo",
     revision: "a".repeat(64),
+    editListRevision: "e".repeat(64),
+    artifact: {
+      state: "current",
+      editListRevision: "e".repeat(64),
+      path: "剪口播/3_审核/source_cut.mp4",
+    },
     project: {
       status,
       config: null,
@@ -78,6 +85,27 @@ describe("workbench workflow UI contract", () => {
       animationStyle: "custom",
       requirements: "保留录屏",
     });
+  });
+
+  it("blocks visual production and explains every non-current cut artifact", () => {
+    for (const state of ["missing", "legacy", "stale"] as const) {
+      const resource = workflow("final_config_ready");
+      resource.artifact = state === "missing"
+        ? { state, editListRevision: null, path: null }
+        : state === "legacy"
+          ? { state, editListRevision: null, path: "剪口播/3_审核/source_cut.mp4" }
+          : { state, editListRevision: "d".repeat(64), path: "剪口播/3_审核/source_cut.mp4" };
+
+      expect(isWorkflowActionBlocked(resource, "start-final")).toBe(true);
+      expect(resolveWorkflowNotice(resource, "visual")).toEqual({
+        tone: "error",
+        title: "成片需重新生成",
+        detail: "当前剪后视频未生成、来自旧版或已与最新编辑不一致；不可开始画面成片。请先在“剪口播”执行剪辑。",
+      });
+    }
+
+    const current = workflow("final_config_ready");
+    expect(isWorkflowActionBlocked(current, "start-final")).toBe(false);
   });
 
   it("shows the real Agent continuation instead of inventing an artifact", () => {

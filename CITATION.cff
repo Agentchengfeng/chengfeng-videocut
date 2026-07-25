@@ -2,8 +2,8 @@ cff-version: 1.2.0
 message: "If you use chengfeng-videocut, please cite this software."
 title: "chengfeng-videocut"
 type: software
-version: 0.1.1
-date-released: 2026-07-16
+version: 0.2.0
+date-released: 2026-07-19
 authors:
   - name: "成峰 / AI产品自由"
 repository-code: "https://github.com/Agentchengfeng/chengfeng-videocut"

@@ -4,12 +4,9 @@ import { useMountEffect } from "../../hooks/useMountEffect";
 import { trackEvent } from "../../telemetry/client";
 import type { CaptionStyle } from "../types";
 
-export interface CaptionOverrideEntry {
+interface CaptionOverrideEntry {
   wordId?: string;
   wordIndex: number;
-  text: string;
-  start: number;
-  end: number;
   x?: number;
   y?: number;
   scale?: number;
@@ -22,16 +19,10 @@ export interface CaptionOverrideEntry {
   fontFamily?: string;
 }
 
-export function buildCaptionOverrides(model: {
+function buildOverrides(model: {
   groupOrder: string[];
   groups: Map<string, { segmentIds: string[] }>;
-  segments: Map<string, {
-    wordId?: string;
-    text: string;
-    start: number;
-    end: number;
-    style: Partial<CaptionStyle>;
-  }>;
+  segments: Map<string, { wordId?: string; style: Partial<CaptionStyle> }>;
 }): CaptionOverrideEntry[] {
   const entries: CaptionOverrideEntry[] = [];
   let globalWordIndex = 0;
@@ -41,13 +32,8 @@ export function buildCaptionOverrides(model: {
     if (!group) continue;
     for (const segId of group.segmentIds) {
       const seg = model.segments.get(segId);
-      if (seg) {
-        const entry: CaptionOverrideEntry = {
-          wordIndex: globalWordIndex,
-          text: seg.text,
-          start: seg.start,
-          end: seg.end,
-        };
+      if (seg && Object.keys(seg.style).length > 0) {
+        const entry: CaptionOverrideEntry = { wordIndex: globalWordIndex };
         if (seg.wordId) entry.wordId = seg.wordId;
         const s = seg.style;
         if (s.x !== undefined) entry.x = s.x;
@@ -69,61 +55,6 @@ export function buildCaptionOverrides(model: {
   return entries;
 }
 
-export function applyCaptionOverrides<T extends {
-  wordId?: string;
-  text: string;
-  start: number;
-  end: number;
-  style: Partial<CaptionStyle>;
-}>(model: {
-  groupOrder: string[];
-  groups: Map<string, { segmentIds: string[] }>;
-  segments: Map<string, T>;
-}, overrides: CaptionOverrideEntry[]): Map<string, T> {
-  const allSegIds: string[] = [];
-  const segIdByWordId = new Map<string, string>();
-  for (const groupId of model.groupOrder) {
-    const group = model.groups.get(groupId);
-    if (!group) continue;
-    for (const segId of group.segmentIds) {
-      allSegIds.push(segId);
-      const seg = model.segments.get(segId);
-      if (seg?.wordId) segIdByWordId.set(seg.wordId, segId);
-    }
-  }
-
-  const newSegments = new Map(model.segments);
-  for (const override of overrides) {
-    const segId =
-      (override.wordId ? segIdByWordId.get(override.wordId) : undefined) ??
-      allSegIds[override.wordIndex];
-    if (!segId) continue;
-    const seg = newSegments.get(segId);
-    if (!seg) continue;
-
-    const style: Partial<CaptionStyle> = { ...seg.style };
-    if (override.x !== undefined) style.x = override.x;
-    if (override.y !== undefined) style.y = override.y;
-    if (override.scale !== undefined) {
-      style.scaleX = override.scale;
-      style.scaleY = override.scale;
-    }
-    if (override.rotation !== undefined) style.rotation = override.rotation;
-    if (override.activeColor !== undefined) style.activeColor = override.activeColor;
-    if (override.dimColor !== undefined) style.dimColor = override.dimColor;
-    if (override.opacity !== undefined) style.opacity = override.opacity;
-    if (override.fontSize !== undefined) style.fontSize = override.fontSize;
-    if (override.fontWeight !== undefined) style.fontWeight = override.fontWeight;
-    if (override.fontFamily !== undefined) style.fontFamily = override.fontFamily;
-
-    const text = typeof override.text === "string" ? override.text : seg.text;
-    const start = Number.isFinite(override.start) ? override.start : seg.start;
-    const end = Number.isFinite(override.end) && override.end >= start ? override.end : seg.end;
-    newSegments.set(segId, { ...seg, text, start, end, style });
-  }
-  return newSegments;
-}
-
 /**
  * Auto-saves caption overrides to caption-overrides.json on every model change.
  * Also provides loadOverrides for reading existing overrides on edit mode entry.
@@ -142,7 +73,7 @@ export function useCaptionSync(projectId: string | null) {
     const pid = projectIdRef.current;
     if (!pid) return;
 
-    const overrides = buildCaptionOverrides(state.model);
+    const overrides = buildOverrides(state.model);
 
     fetch(`/api/projects/${pid}/files/${encodeURIComponent("caption-overrides.json")}`, {
       method: "PUT",
@@ -184,8 +115,6 @@ export function useCaptionSync(projectId: string | null) {
     if (!state.model || !state.sourceFilePath) return;
     const pid = projectIdRef.current;
     if (!pid) return;
-    const expectedModel = state.model;
-    const expectedSourceFilePath = state.sourceFilePath;
 
     try {
       const res = await fetch(
@@ -195,18 +124,48 @@ export function useCaptionSync(projectId: string | null) {
       const data = await res.json();
       if (!data.content) return;
 
-      const currentState = useCaptionStore.getState();
-      if (
-        projectIdRef.current !== pid ||
-        currentState.model !== expectedModel ||
-        currentState.sourceFilePath !== expectedSourceFilePath
-      ) return;
-
       const overrides: CaptionOverrideEntry[] = JSON.parse(data.content);
       if (!Array.isArray(overrides)) return;
 
       const model = state.model;
-      const newSegments = applyCaptionOverrides(model, overrides);
+      const allSegIds: string[] = [];
+      const segIdByWordId = new Map<string, string>();
+      for (const groupId of model.groupOrder) {
+        const group = model.groups.get(groupId);
+        if (!group) continue;
+        for (const segId of group.segmentIds) {
+          allSegIds.push(segId);
+          const seg = model.segments.get(segId);
+          if (seg?.wordId) segIdByWordId.set(seg.wordId, segId);
+        }
+      }
+
+      const newSegments = new Map(model.segments);
+      for (const override of overrides) {
+        const segId =
+          (override.wordId ? segIdByWordId.get(override.wordId) : undefined) ??
+          allSegIds[override.wordIndex];
+        if (!segId) continue;
+        const seg = newSegments.get(segId);
+        if (!seg) continue;
+
+        const style: Partial<CaptionStyle> = { ...seg.style };
+        if (override.x !== undefined) style.x = override.x;
+        if (override.y !== undefined) style.y = override.y;
+        if (override.scale !== undefined) {
+          style.scaleX = override.scale;
+          style.scaleY = override.scale;
+        }
+        if (override.rotation !== undefined) style.rotation = override.rotation;
+        if (override.activeColor !== undefined) style.activeColor = override.activeColor;
+        if (override.dimColor !== undefined) style.dimColor = override.dimColor;
+        if (override.opacity !== undefined) style.opacity = override.opacity;
+        if (override.fontSize !== undefined) style.fontSize = override.fontSize;
+        if (override.fontWeight !== undefined) style.fontWeight = override.fontWeight;
+        if (override.fontFamily !== undefined) style.fontFamily = override.fontFamily;
+
+        newSegments.set(segId, { ...seg, style });
+      }
 
       suppressSaveRef.current = true;
       useCaptionStore.getState().setModel({ ...model, segments: newSegments });

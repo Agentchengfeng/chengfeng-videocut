@@ -24,6 +24,9 @@ function workflowErrorMessage(error: unknown): string {
   if (error.code === "revision_conflict") {
     return "任务状态已更新，请按最新状态重试。";
   }
+  if (error.code === "revision_required") {
+    return "缺少用户确认时的时间线版本，请重新确认后再执行剪辑。";
+  }
   if (error.code === "missing_artifact") {
     return "所需产物尚未准备好，请先让 Agent 完成当前步骤。";
   }
@@ -50,6 +53,7 @@ export interface ProjectWorkflowState {
   runAction: (
     action: WorkbenchWorkflowAction,
     config?: WorkbenchFinalConfig,
+    expectedEditListRevision?: string,
   ) => Promise<boolean>;
 }
 
@@ -156,6 +160,7 @@ export function useProjectWorkflow(projectId: string): ProjectWorkflowState {
   const runAction = useCallback(async (
     action: WorkbenchWorkflowAction,
     config?: WorkbenchFinalConfig,
+    expectedEditListRevision?: string,
   ): Promise<boolean> => {
     const current = workflowRef.current;
     if (
@@ -172,6 +177,9 @@ export function useProjectWorkflow(projectId: string): ProjectWorkflowState {
         projectId,
         action,
         expectedRevision: current.revision,
+        expectedEditListRevision: action === "apply-cut"
+          ? expectedEditListRevision
+          : undefined,
         config,
       });
       if (projectEpochRef.current !== epoch) return false;

@@ -11,14 +11,16 @@
  */
 
 import type { TimelineElement } from "../store/playerStore";
-import type { IframeWindow, PlaybackAdapter } from "./playbackTypes";
+import type { IframeWindow } from "./playbackTypes";
 import {
   getTimelineElementSelector,
   getTimelineElementSourceFile,
   getTimelineElementSelectorIndex,
   getTimelineElementDisplayLabel,
   buildTimelineElementIdentity,
+  readTimelineElementZIndex,
 } from "./timelineElementHelpers";
+import { postRuntimeControlMessage } from "./runtimeProtocol";
 
 // ---------------------------------------------------------------------------
 // Viewport / DOM normalisation
@@ -79,24 +81,7 @@ export function autoHealMissingCompositionIds(doc: Document): void {
 type PreviewPlayerHost = HTMLElement & {
   muted?: boolean;
   playbackRate?: number;
-  currentTime?: number;
-  duration?: number;
-  paused?: boolean;
-  ready?: boolean;
-  play?: () => void;
-  pause?: () => void;
-  seek?: (time: number) => void;
 };
-
-type PreviewPlayerAdapterCacheEntry = {
-  fallback: PlaybackAdapter | null;
-  adapter: PlaybackAdapter;
-};
-
-const previewPlayerAdapterCache = new WeakMap<
-  PreviewPlayerHost,
-  PreviewPlayerAdapterCacheEntry
->();
 
 function isPreviewPlayerHost(value: unknown): value is PreviewPlayerHost {
   return value instanceof HTMLElement;
@@ -114,124 +99,16 @@ function resolvePreviewPlayerHost(iframe: HTMLIFrameElement): PreviewPlayerHost 
   return null;
 }
 
-/**
- * Route Studio transport through the owning `<hyperframes-player>` whenever
- * the iframe is hosted by one. The web component owns the parent-frame media
- * proxy used after an iframe reports `media-autoplay-blocked`; bypassing its
- * play/pause/seek methods leaves that proxy paused even while the inner
- * timeline is running.
- *
- * The fallback keeps standalone iframe previews working and supplies current
- * duration while the host is still hydrating. Entries are cached per host so
- * static-seek adapter selection remains stable across animation frames.
- */
-export function resolvePreviewPlayerPlaybackAdapter(
-  iframe: HTMLIFrameElement,
-  fallback: PlaybackAdapter | null,
-): PlaybackAdapter | null {
-  const host = resolvePreviewPlayerHost(iframe);
-  if (
-    !host ||
-    typeof host.play !== "function" ||
-    typeof host.pause !== "function" ||
-    typeof host.seek !== "function"
-  ) {
-    return null;
-  }
-
-  const cached = previewPlayerAdapterCache.get(host);
-  if (cached) {
-    cached.fallback = fallback;
-    return cached.adapter;
-  }
-
-  const entry = {
-    fallback,
-    adapter: null as unknown as PlaybackAdapter,
-  } satisfies PreviewPlayerAdapterCacheEntry;
-
-  const fallbackTime = () => {
-    try {
-      return Number(entry.fallback?.getTime() ?? 0);
-    } catch {
-      return 0;
-    }
-  };
-  const fallbackDuration = () => {
-    try {
-      const duration = Number(entry.fallback?.getDuration() ?? 0);
-      return Number.isFinite(duration) && duration > 0 ? duration : 0;
-    } catch {
-      return 0;
-    }
-  };
-  const fallbackIsPlaying = () => {
-    try {
-      return entry.fallback?.isPlaying() ?? false;
-    } catch {
-      return false;
-    }
-  };
-
-  entry.adapter = {
-    play: () => {
-      try {
-        host.play?.();
-      } catch {
-        entry.fallback?.play();
-      }
-    },
-    pause: () => {
-      try {
-        host.pause?.();
-      } catch {
-        entry.fallback?.pause();
-      }
-    },
-    seek: (time, options) => {
-      const wasPlaying =
-        typeof host.paused === "boolean" ? !host.paused : fallbackIsPlaying();
-      try {
-        host.seek?.(time);
-        if (options?.keepPlaying && wasPlaying) host.play?.();
-      } catch {
-        entry.fallback?.seek(time, options);
-      }
-    },
-    getTime: () => {
-      const hostTime = Number(host.currentTime);
-      if (host.ready !== false && Number.isFinite(hostTime) && hostTime >= 0) return hostTime;
-      return fallbackTime();
-    },
-    getDuration: () => {
-      // The iframe adapter is tied to the currently loaded document, while a
-      // host can briefly retain the previous duration during src refreshes.
-      const currentDuration = fallbackDuration();
-      if (currentDuration > 0) return currentDuration;
-      const hostDuration = Number(host.duration);
-      return Number.isFinite(hostDuration) && hostDuration > 0 ? hostDuration : 0;
-    },
-    isPlaying: () =>
-      typeof host.paused === "boolean" ? !host.paused : fallbackIsPlaying(),
-  };
-
-  previewPlayerAdapterCache.set(host, entry);
-  return entry.adapter;
-}
-
 function postPreviewControl(
   iframe: HTMLIFrameElement,
   action: string,
   payload: Record<string, unknown>,
 ): void {
-  iframe.contentWindow?.postMessage(
-    { source: "hf-parent", type: "control", action, ...payload },
-    "*",
-  );
+  postRuntimeControlMessage(iframe.contentWindow, action, payload);
 }
 
-export function shouldMutePreviewAudio(audioMuted: boolean, playbackRate: number): boolean {
-  return audioMuted || playbackRate > 1;
+export function shouldMutePreviewAudio(audioMuted: boolean, _playbackRate: number): boolean {
+  return audioMuted;
 }
 
 export function setPreviewMediaMuted(iframe: HTMLIFrameElement | null, muted: boolean): void {
@@ -253,6 +130,11 @@ export function setPreviewPlaybackRate(
   if (!iframe) return;
   const rate = Number.isFinite(playbackRate) && playbackRate > 0 ? playbackRate : 1;
   try {
+    const win = iframe.contentWindow as IframeWindow | null;
+    const extensionAdapter = win?.__studioPlaybackAdapter as
+      | { setPlaybackRate?: (rate: number) => void }
+      | undefined;
+    extensionAdapter?.setPlaybackRate?.(rate);
     const host = resolvePreviewPlayerHost(iframe);
     if (host && typeof host.playbackRate === "number") {
       host.playbackRate = rate;
@@ -260,6 +142,214 @@ export function setPreviewPlaybackRate(
     }
     postPreviewControl(iframe, "set-playback-rate", { playbackRate: rate });
   } catch {}
+}
+
+/**
+ * Start a product EDL's parent-owned audio output from Studio's synchronous
+ * user gesture. Calling play() in this parent realm is what avoids iframe
+ * autoplay rejection; ordinary HyperFrames compositions simply return null.
+ */
+export function playPreviewEdlAudio(
+  iframe: HTMLIFrameElement | null,
+): Promise<void> | null {
+  if (!iframe) return null;
+  const audioId = iframe.getAttribute("data-videocut-edl-audio-id");
+  const candidate = audioId ? iframe.ownerDocument.getElementById(audioId) : null;
+  const audio = candidate as HTMLAudioElement | null;
+  if (
+    !audio ||
+    audio.ownerDocument !== iframe.ownerDocument ||
+    typeof audio.play !== "function"
+  ) {
+    iframe.setAttribute("data-videocut-edl-audio-play", "missing");
+    return null;
+  }
+  const errorName = (error: unknown): string =>
+    error && typeof error === "object" && "name" in error && typeof error.name === "string"
+      ? error.name
+      : "UnknownError";
+  const requestedMuted = audio.muted;
+  const markError = (error: unknown) => {
+    iframe.setAttribute("data-videocut-edl-audio-play", `error:${errorName(error)}`);
+  };
+  const retryMuted = (error: unknown): Promise<void> => {
+    if (errorName(error) === "NotAllowedError" && requestedMuted) {
+      // Muted preview does not need a running audio clock. Let the visual EDL
+      // continue instead of failing the whole transport on an inaudible node.
+      iframe.setAttribute("data-videocut-edl-audio-play", "muted-skip");
+      return Promise.resolve();
+    }
+    if (errorName(error) !== "NotAllowedError") {
+      markError(error);
+      return Promise.reject(error);
+    }
+    // Muted media is autoplay-safe even when the host forwards a synthetic or
+    // delayed transport command without transient user activation. Restore the
+    // requested audible state immediately after playback has started.
+    audio.muted = true;
+    iframe.setAttribute("data-videocut-edl-audio-play", "retry-muted");
+    return Promise.resolve(audio.play()).then(
+      () => {
+        audio.muted = requestedMuted;
+        iframe.setAttribute("data-videocut-edl-audio-play", "playing:muted-bootstrap");
+      },
+      (retryError: unknown) => {
+        audio.muted = requestedMuted;
+        markError(retryError);
+        throw retryError;
+      },
+    );
+  };
+  try {
+    const activation = iframe.ownerDocument.defaultView?.navigator.userActivation;
+    iframe.setAttribute(
+      "data-videocut-edl-user-activation",
+      activation ? (activation.isActive ? "active" : "inactive") : "unknown",
+    );
+    iframe.setAttribute("data-videocut-edl-audio-play", "requested");
+    return Promise.resolve(audio.play()).then(
+      () => {
+        iframe.setAttribute("data-videocut-edl-audio-play", "playing");
+      },
+      retryMuted,
+    );
+  } catch (error) {
+    return retryMuted(error);
+  }
+}
+
+const VIDEOCUT_EDL_AUDIO_ID_ATTRIBUTE = "data-videocut-edl-audio-id";
+const VIDEOCUT_EDL_AUDIO_STATE_ATTRIBUTES = [
+  "data-videocut-edl-audio-play",
+  "data-videocut-edl-user-activation",
+] as const;
+
+function releasePreviewEdlAudioById(doc: Document, audioId: string | null): boolean {
+  if (!audioId) return false;
+  const candidate = doc.getElementById(audioId);
+  if (!candidate || candidate.tagName.toLowerCase() !== "audio") return false;
+  const audio = candidate as HTMLAudioElement;
+  if (audio.ownerDocument !== doc) return false;
+
+  // pause + clear the source + load is the browser-supported way to release
+  // the media resource and its decoder. Removing only the DOM node can leave
+  // the decoder alive until the detached element is garbage-collected.
+  try {
+    audio.pause();
+  } catch {}
+  try {
+    if ("srcObject" in audio) audio.srcObject = null;
+  } catch {}
+  try {
+    audio.removeAttribute("src");
+    audio.load();
+  } catch {}
+  audio.remove();
+  return true;
+}
+
+/**
+ * Release the parent-owned audio associated with an EDL preview iframe.
+ *
+ * This is intentionally idempotent: the iframe runtime normally releases the
+ * node on pagehide, while Studio calls the same cleanup when the Player is
+ * removed. Whichever side wins also clears the cross-realm association.
+ */
+export function disposePreviewEdlAudio(iframe: HTMLIFrameElement | null): boolean {
+  if (!iframe) return false;
+  const audioId = iframe.getAttribute(VIDEOCUT_EDL_AUDIO_ID_ATTRIBUTE);
+  const released = releasePreviewEdlAudioById(iframe.ownerDocument, audioId);
+  iframe.removeAttribute(VIDEOCUT_EDL_AUDIO_ID_ATTRIBUTE);
+  for (const attribute of VIDEOCUT_EDL_AUDIO_STATE_ATTRIBUTES) {
+    iframe.removeAttribute(attribute);
+  }
+  return released;
+}
+
+/**
+ * Keep the parent-owned EDL audio lifetime bounded by the preview Player.
+ *
+ * Child `pagehide` is not guaranteed when a custom element or its iframe is
+ * removed directly. Observe the iframe association plus the current ancestor
+ * chain so an abnormal detach releases the media decoder from the parent
+ * realm. Audio-id replacement also releases the previous node, covering an
+ * iframe reload whose old document never completed its pagehide cleanup.
+ */
+export function installPreviewEdlAudioCleanup(
+  iframe: HTMLIFrameElement,
+  playerHost: Element | null = null,
+): () => void {
+  const doc = iframe.ownerDocument;
+  const win = doc.defaultView;
+  let activeAudioId = iframe.getAttribute(VIDEOCUT_EDL_AUDIO_ID_ATTRIBUTE);
+  let disposed = false;
+  let observer: MutationObserver | null = null;
+
+  const releaseSupersededAudio = (records: MutationRecord[]): void => {
+    const currentAudioId = iframe.getAttribute(VIDEOCUT_EDL_AUDIO_ID_ATTRIBUTE);
+    const staleAudioIds = new Set<string>();
+    if (activeAudioId && activeAudioId !== currentAudioId) staleAudioIds.add(activeAudioId);
+    for (const record of records) {
+      if (
+        record.type === "attributes" &&
+        record.target === iframe &&
+        record.attributeName === VIDEOCUT_EDL_AUDIO_ID_ATTRIBUTE &&
+        record.oldValue &&
+        record.oldValue !== currentAudioId
+      ) {
+        staleAudioIds.add(record.oldValue);
+      }
+    }
+    for (const staleAudioId of staleAudioIds) {
+      releasePreviewEdlAudioById(doc, staleAudioId);
+    }
+    activeAudioId = currentAudioId;
+  };
+
+  const dispose = (): void => {
+    if (disposed) return;
+    disposed = true;
+    const pendingRecords = observer?.takeRecords() ?? [];
+    observer?.disconnect();
+    observer = null;
+    win?.removeEventListener("pagehide", dispose);
+    releaseSupersededAudio(pendingRecords);
+    disposePreviewEdlAudio(iframe);
+    activeAudioId = null;
+  };
+
+  const MutationObserverCtor = win?.MutationObserver;
+  if (MutationObserverCtor) {
+    observer = new MutationObserverCtor((records) => {
+      releaseSupersededAudio(records);
+      if (!iframe.isConnected || (playerHost !== null && !playerHost.isConnected)) {
+        dispose();
+      }
+    });
+    observer.observe(iframe, {
+      attributes: true,
+      attributeFilter: [VIDEOCUT_EDL_AUDIO_ID_ATTRIBUTE],
+      attributeOldValue: true,
+    });
+
+    // Observe only each current ancestor's direct child list instead of the
+    // whole document subtree. Removing any ancestor from its parent triggers
+    // one of these observations and makes `isConnected` false.
+    let ancestor: Node | null = playerHost ?? iframe;
+    const observedAncestors = new Set<Node>();
+    while (ancestor?.parentNode) {
+      ancestor = ancestor.parentNode;
+      if (observedAncestors.has(ancestor)) continue;
+      observedAncestors.add(ancestor);
+      observer.observe(ancestor, { childList: true });
+    }
+    if (playerHost?.shadowRoot) {
+      observer.observe(playerHost.shadowRoot, { childList: true, subtree: true });
+    }
+  }
+
+  win?.addEventListener("pagehide", dispose, { once: true });
+  return dispose;
 }
 
 /**
@@ -499,6 +589,7 @@ export function buildMissingCompositionElements(
       selector,
       selectorIndex,
       sourceFile,
+      zIndex: readTimelineElementZIndex(el),
     };
     if (compSrc) {
       entry.compositionSrc = compSrc;

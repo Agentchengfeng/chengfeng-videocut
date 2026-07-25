@@ -1,8 +1,18 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { serializeProjectOperation } from "@video-workbench/core/node";
 import { runCli, type CliIo } from "./run";
 import { startStudioServer } from "./server/start";
 
@@ -77,7 +87,7 @@ describe("chengfeng-videocut CLI", () => {
     const code = await runCli(["--help", "--json"], { io: capture.io });
     const payload = JSON.parse(capture.stdout[0]);
 
-    expect(code).toBe(0);
+    expect(code, `${capture.stderr.join(" | ")} ${capture.stdout.join(" | ")}`).toBe(0);
     expect(payload).toMatchObject({
       product: "chengfeng-videocut",
       command: "help",
@@ -86,10 +96,88 @@ describe("chengfeng-videocut CLI", () => {
     expect(payload.data.text).toContain(
       "chengfeng-videocut render run <project> --expected-revision <sha256> --confirmed",
     );
+    expect(payload.data.text).toContain(
+      "chengfeng-videocut project create <job-dir> --video <task-local-path> --transcript <task-local-path> --aspect-ratio <3:4|4:3|16:9>",
+    );
+    expect(payload.data.text).toContain(
+      "cuts apply <project> --expected-revision <sha256> --expected-edit-list-revision <sha256> --confirmed",
+    );
+    expect(payload.data.text).toContain("chengfeng-videocut cuts get <project>");
     expect(payload.data.text).toContain("CHENGFENG_VIDEOCUT_RENDERER_PATH");
     expect(payload.data.text).toContain(
       "Render exit codes: 7 missing renderer, 8 renderer failed, 9 verification failed.",
     );
+  });
+
+  it("dispatches task-local Volcengine transcription without creating a project", async () => {
+    const capture = captureIo();
+    const calls: Array<{ jobDir: string; options: { video: string; output: string; language?: string } }> = [];
+    const code = await runCli([
+      "transcribe", "/tmp/task-01",
+      "--video", "uploads/talk.mp4",
+      "--output", "cloud/words.json",
+      "--language", "zh-CN",
+      "--json",
+    ], {
+      io: capture.io,
+      runTranscription: async (jobDir, options) => {
+        calls.push({ jobDir, options });
+        return {
+          provider: "volcengine",
+          source: "/tmp/task-01/uploads/talk.mp4",
+          output: "/tmp/task-01/cloud/words.json",
+          cueCount: 1,
+          wordCount: 2,
+          duration: 3.2,
+        };
+      },
+    });
+
+    expect(code, capture.stderr.join(" | ")).toBe(0);
+    expect(calls).toEqual([{
+      jobDir: "/tmp/task-01",
+      options: { video: "uploads/talk.mp4", output: "cloud/words.json", language: "zh-CN" },
+    }]);
+    expect(JSON.parse(capture.stdout[0])).toMatchObject({
+      command: "transcribe",
+      ok: true,
+      data: { provider: "volcengine", cueCount: 1, wordCount: 2, duration: 3.2 },
+    });
+  });
+
+  it("returns revision_required for the legacy cuts apply syntax instead of filling latest EDL", async () => {
+    const capture = captureIo();
+    const code = await runCli([
+      "cuts", "apply", "demo",
+      "--expected-revision", "a".repeat(64),
+      "--confirmed",
+      "--json",
+    ], { io: capture.io });
+
+    expect(code).toBe(2);
+    expect(JSON.parse(capture.stdout[0])).toMatchObject({
+      command: "cuts.apply",
+      ok: false,
+      error: {
+        code: "revision_required",
+        details: { reason: "missing_confirmed_edit_list_revision" },
+      },
+    });
+
+    const noneCapture = captureIo();
+    const noneCode = await runCli([
+      "cuts", "apply", "demo",
+      "--expected-revision", "a".repeat(64),
+      "--expected-edit-list-revision", "none",
+      "--confirmed",
+      "--json",
+    ], { io: noneCapture.io });
+    expect(noneCode).toBe(2);
+    expect(JSON.parse(noneCapture.stdout[0])).toMatchObject({
+      command: "cuts.apply",
+      ok: false,
+      error: { code: "revision_required", details: { reason: "edit_list_required" } },
+    });
   });
 
   it("returns a stable inspect JSON envelope", async () => {
@@ -108,8 +196,103 @@ describe("chengfeng-videocut CLI", () => {
     });
   });
 
+  it("creates, canonicalizes, prepares, and registers a real task in one command", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chengfeng-videocut-cli-create-"));
+    cleanupPaths.push(root);
+    const projectDir = join(root, "real-cloud-task");
+    const projectsDir = join(root, "registry");
+    await mkdir(join(projectDir, "incoming"), { recursive: true });
+    await mkdir(join(projectDir, "cloud"), { recursive: true });
+    await writeFile(join(projectDir, "incoming/talk.mp4"), "actual-video-bytes");
+    await writeFile(join(projectDir, "cloud/words.json"), JSON.stringify({
+      schemaVersion: 1,
+      cues: [{
+        id: "c-1",
+        words: [{ id: "w-real", text: "真实", start: 0, end: 2 }],
+      }],
+    }));
+    const capture = captureIo();
+
+    const code = await runCli([
+      "project", "create", projectDir,
+      "--video", "incoming/talk.mp4",
+      "--transcript", "cloud/words.json",
+      "--aspect-ratio", "16:9",
+      "--projects-dir", projectsDir,
+      "--json",
+    ], { io: capture.io });
+    const payload = JSON.parse(capture.stdout[0]);
+
+    expect(code, `${capture.stderr.join(" | ")} ${capture.stdout.join(" | ")}`).toBe(0);
+    expect(payload).toMatchObject({
+      command: "project.create",
+      ok: true,
+      data: {
+        projectId: "real-cloud-task",
+        registered: true,
+        canonicalVideo: "input/source.mp4",
+        canonicalTranscript: "剪口播/1_转录/subtitles_words.json",
+        metadata: { aspectRatio: "16:9", videoSource: "input/source.mp4" },
+      },
+    });
+    expect(await realpath(join(projectsDir, "real-cloud-task"))).toBe(await realpath(projectDir));
+    expect(await readFile(join(projectDir, "input/source.mp4"), "utf8"))
+      .toBe("actual-video-bytes");
+    expect(JSON.parse(await readFile(join(projectDir, "project.json"), "utf8")))
+      .toMatchObject({
+        jobId: "real-cloud-task",
+        status: "cut_review_ready",
+        config: { aspectRatio: "16:9" },
+      });
+  });
+
+  it("fails closed and rolls project creation back when the id is already registered", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chengfeng-videocut-cli-create-conflict-"));
+    cleanupPaths.push(root);
+    const requested = join(root, "requested", "same-id");
+    const existing = join(root, "existing", "same-id");
+    const projectsDir = join(root, "registry");
+    await mkdir(join(requested, "incoming"), { recursive: true });
+    await mkdir(join(requested, "cloud"), { recursive: true });
+    await mkdir(existing, { recursive: true });
+    await mkdir(projectsDir, { recursive: true });
+    await writeFile(join(requested, "incoming/talk.mp4"), "actual-video-bytes");
+    await writeFile(join(requested, "cloud/words.json"), JSON.stringify({
+      cues: [{ words: [{ id: "w-real", text: "真实", start: 0, end: 2 }] }],
+    }));
+    await writeFile(join(existing, "project.json"), JSON.stringify({
+      jobId: "same-id",
+      status: "cut_review_ready",
+    }));
+    await symlink(existing, join(projectsDir, "same-id"), "dir");
+    const capture = captureIo();
+
+    const code = await runCli([
+      "project", "create", requested,
+      "--video", "incoming/talk.mp4",
+      "--transcript", "cloud/words.json",
+      "--aspect-ratio", "4:3",
+      "--projects-dir", projectsDir,
+      "--json",
+    ], { io: capture.io });
+
+    expect(code).toBe(5);
+    expect(JSON.parse(capture.stdout[0])).toMatchObject({
+      command: "project.create",
+      ok: false,
+      error: { code: "project_id_conflict" },
+    });
+    expect(await realpath(join(projectsDir, "same-id"))).toBe(await realpath(existing));
+    for (const path of ["project.json", "input/source.mp4", "index.html", "edit-list.json"]) {
+      await expect(readFile(join(requested, path), "utf8")).rejects.toThrow();
+    }
+    expect(await readFile(join(requested, "incoming/talk.mp4"), "utf8"))
+      .toBe("actual-video-bytes");
+  });
+
   it("prepares and registers a real task without demo media", async () => {
     const { projectDir, projectsDir } = await fixture();
+    await rm(join(projectDir, "index.html"));
     const capture = captureIo();
     const code = await runCli([
       "project", "prepare", projectDir,
@@ -121,7 +304,7 @@ describe("chengfeng-videocut CLI", () => {
     const payload = JSON.parse(capture.stdout[0]);
     const index = await readFile(join(projectDir, "index.html"), "utf8");
 
-    expect(code).toBe(0);
+    expect(code, `${capture.stderr.join(" | ")} ${capture.stdout.join(" | ")}`).toBe(0);
     expect(payload).toMatchObject({
       product: "chengfeng-videocut",
       command: "project.prepare",
@@ -133,12 +316,52 @@ describe("chengfeng-videocut CLI", () => {
       },
     });
     expect(index).toContain("generated-by: chengfeng-videocut");
-    expect(index).toContain("A-roll 口播原片（音画一体）");
+    expect(index).toContain("A-roll 口播（音画一体）");
+    expect(index).toContain("data-edl-segment-id=");
     expect(index).toContain("<video");
     expect(index).not.toContain("<audio");
     expect(index).not.toContain("playsinline muted");
     expect(index).not.toContain("data-timeline-role=\"caption\"");
     expect(await readdir(projectsDir)).toEqual(["demo"]);
+  });
+
+  it("waits for the shared project mutation lock before preparing", async () => {
+    const { projectDir, projectsDir } = await fixture();
+    await rm(join(projectDir, "index.html"));
+    let releaseHolder = (): void => undefined;
+    let markHolderStarted = (): void => undefined;
+    const holderStarted = new Promise<void>((resolveStarted) => {
+      markHolderStarted = resolveStarted;
+    });
+    const holder = serializeProjectOperation(projectDir, async () => {
+      markHolderStarted();
+      await new Promise<void>((resolveHeld) => {
+        releaseHolder = resolveHeld;
+      });
+    });
+    await holderStarted;
+
+    const capture = captureIo();
+    let settled = false;
+    const preparing = runCli([
+      "project", "prepare", projectDir,
+      "--duration", "3.5",
+      "--force-index",
+      "--projects-dir", projectsDir,
+      "--json",
+    ], { io: capture.io }).then((code) => {
+      settled = true;
+      return code;
+    });
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+    expect(settled).toBe(false);
+
+    releaseHolder();
+    await holder;
+    expect(
+      await preparing,
+      `${capture.stderr.join(" | ")} ${capture.stdout.join(" | ")}`,
+    ).toBe(0);
   });
 
   it("opens by registering product metadata without changing project files", async () => {
@@ -194,6 +417,19 @@ describe("chengfeng-videocut CLI", () => {
   it("writes cuts through the Core and returns the new revision", async () => {
     const { root, projectDir, projectsDir } = await fixture();
     await registerFixture(projectDir, projectsDir);
+    await rm(join(projectDir, "index.html"));
+    const prepareCapture = captureIo();
+    expect(await runCli([
+      "project", "prepare", projectDir,
+      "--duration", "3.5",
+      "--projects-dir", projectsDir,
+      "--json",
+    ], { io: prepareCapture.io }), prepareCapture.stdout.join(" | ")).toBe(0);
+    const initialCutsRaw = await readFile(join(projectDir, "cut-selection.json"), "utf8");
+    const initialCutsRevision = createHash("sha256").update(initialCutsRaw).digest("hex");
+    const initialCuts = JSON.parse(initialCutsRaw);
+    const baselineCutWordIds = initialCuts.initialization.baselineCutWordIds as string[];
+    const expectedCutWordCount = new Set([...baselineCutWordIds, "w-1"]).size;
     const staticDir = join(root, "static");
     await mkdir(join(staticDir, "assets"), { recursive: true });
     await writeFile(join(staticDir, "index.html"), "<!doctype html><title>test</title>");
@@ -204,7 +440,7 @@ describe("chengfeng-videocut CLI", () => {
       staticDir,
     });
     const proposal = join(root, "proposal.json");
-    await writeFile(proposal, JSON.stringify({ cutWordIds: ["w-1", "w-2"] }));
+    await writeFile(proposal, JSON.stringify({ cutWordIds: ["w-1"] }));
     const capture = captureIo();
     const code = await runCli([
       "cuts",
@@ -213,35 +449,99 @@ describe("chengfeng-videocut CLI", () => {
       "--file",
       proposal,
       "--expected-revision",
-      "none",
+      initialCutsRevision,
       "--projects-dir",
       projectsDir,
       "--api-base",
       server.url,
       "--json",
     ], { io: capture.io });
-    await server.stop();
     const payload = JSON.parse(capture.stdout[0]);
+    expect(code, `${capture.stderr.join(" | ")} ${capture.stdout.join(" | ")}`).toBe(0);
     const written = JSON.parse(await readFile(join(projectDir, "cut-selection.json"), "utf8"));
 
-    expect(code).toBe(0);
-    expect(payload.data).toMatchObject({ cutWordCount: 2, cutRangeCount: 1, changed: true });
+    expect(payload.data).toMatchObject({
+      cutWordCount: expectedCutWordCount,
+      cutRangeCount: 1,
+      changed: true,
+    });
     expect(payload.data.revision).toMatch(/^[a-f0-9]{64}$/);
-    expect(written.cutRanges).toEqual([{ start: 0, end: 2 }]);
+    expect(written.cutWordIds).toEqual(expect.arrayContaining(["w-1", ...baselineCutWordIds]));
+    expect(written.initialization.baselineCutWordIds).toEqual(baselineCutWordIds);
+
+    const readCapture = captureIo();
+    const readCode = await runCli([
+      "cuts", "get", projectDir,
+      "--projects-dir", projectsDir,
+      "--api-base", server.url,
+      "--json",
+    ], { io: readCapture.io });
+    await server.stop();
+    const readPayload = JSON.parse(readCapture.stdout[0]);
+    expect(readCode, `${readCapture.stderr.join(" | ")} ${readCapture.stdout.join(" | ")}`).toBe(0);
+    expect(readPayload).toMatchObject({
+      schemaVersion: 1,
+      product: "chengfeng-videocut",
+      command: "cuts.get",
+      ok: true,
+      data: {
+        projectId: "demo",
+        exists: true,
+        revision: payload.data.revision,
+        cutWordCount: expectedCutWordCount,
+        cutRangeCount: 1,
+        document: {
+          schemaVersion: 3,
+          cutWordIds: written.cutWordIds,
+          cutRanges: written.cutRanges,
+        },
+      },
+    });
   });
 
   it("reads and transitions workflow through the running product API", async () => {
     const { root, projectDir, projectsDir } = await fixture();
     await registerFixture(projectDir, projectsDir);
+    const prepareCapture = captureIo();
+    expect(await runCli([
+      "project", "prepare", projectDir,
+      "--duration", "3.5",
+      "--projects-dir", projectsDir,
+      "--json",
+    ], { io: prepareCapture.io }), prepareCapture.stdout.join(" | ")).toBe(0);
+
+    const editListRaw = await readFile(join(projectDir, "edit-list.json"), "utf8");
+    const editListRevision = createHash("sha256").update(editListRaw).digest("hex");
+    const cutVideo = "cut-video";
     await mkdir(join(projectDir, "剪口播/3_审核"), { recursive: true });
-    await writeFile(join(projectDir, "剪口播/3_审核/source_cut.mp4"), "cut-video");
+    await writeFile(join(projectDir, "剪口播/3_审核/source_cut.mp4"), cutVideo);
     await writeFile(join(projectDir, "subtitles.srt"), "1\n00:00:00,000 --> 00:00:01,000\n字幕\n");
     const project = JSON.parse(await readFile(join(projectDir, "project.json"), "utf8"));
+    await writeFile(join(projectDir, "剪口播/3_审核/cut_done.json"), `${JSON.stringify({
+      schemaVersion: 1,
+      success: true,
+      source: "chengfeng-videocut",
+      artifactRevision: editListRevision,
+      confirmedEditListRevision: editListRevision,
+      editListRevision,
+      sourceSha256: project.source.sha256,
+      outputRelative: "剪口播/3_审核/source_cut.mp4",
+      outputSha256: createHash("sha256").update(cutVideo).digest("hex"),
+      newDuration: 3.5,
+      expectedDuration: 3.5,
+      durationDeltaSeconds: 0,
+      durationToleranceSeconds: 0.15,
+      hasAudio: true,
+      width: 1440,
+      height: 1080,
+    }, null, 2)}\n`);
     await writeFile(join(projectDir, "project.json"), `${JSON.stringify({
       ...project,
       status: "final_config_ready",
       artifacts: {
+        ...project.artifacts,
         sourceCut: "剪口播/3_审核/source_cut.mp4",
+        cutDone: "剪口播/3_审核/cut_done.json",
         subtitles: "subtitles.srt",
       },
     }, null, 2)}\n`);
@@ -262,6 +562,8 @@ describe("chengfeng-videocut CLI", () => {
       "--json",
     ], { io: getCapture.io })).toBe(0);
     const workflow = JSON.parse(getCapture.stdout[0]);
+    expect(workflow.data.editListRevision).toBe(editListRevision);
+    expect(workflow.data.revision).not.toBe(editListRevision);
     const config = join(root, "final-config.json");
     await writeFile(config, JSON.stringify({
       aspectRatio: "4:3",
@@ -292,6 +594,60 @@ describe("chengfeng-videocut CLI", () => {
         project: { status: "codex_continue_required", codexContinue: { stage: "storyboard" } },
       },
     });
+  });
+
+  it("passes the confirmed EDL revision unchanged instead of substituting the latest value", async () => {
+    const { root, projectDir, projectsDir } = await fixture();
+    await registerFixture(projectDir, projectsDir);
+    const prepareCapture = captureIo();
+    expect(await runCli([
+      "project", "prepare", projectDir,
+      "--duration", "3.5",
+      "--projects-dir", projectsDir,
+      "--json",
+    ], { io: prepareCapture.io }), prepareCapture.stdout.join(" | ")).toBe(0);
+    const staticDir = join(root, "static-confirmed-edl");
+    await mkdir(staticDir, { recursive: true });
+    await writeFile(join(staticDir, "index.html"), "<!doctype html><title>test</title>");
+    const server = await startStudioServer({
+      port: 0,
+      projectsDir,
+      dataDir: join(root, "data-confirmed-edl"),
+      staticDir,
+    });
+    const projectRaw = await readFile(join(projectDir, "project.json"), "utf8");
+    const projectRevision = createHash("sha256").update(projectRaw).digest("hex");
+    const editListRaw = await readFile(join(projectDir, "edit-list.json"), "utf8");
+    const currentEditListRevision = createHash("sha256").update(editListRaw).digest("hex");
+    const confirmedEditListRevision = "f".repeat(64);
+    const capture = captureIo();
+
+    const code = await runCli([
+      "cuts", "apply", projectDir,
+      "--expected-revision", projectRevision,
+      "--expected-edit-list-revision", confirmedEditListRevision,
+      "--confirmed",
+      "--projects-dir", projectsDir,
+      "--api-base", server.url,
+      "--json",
+    ], { io: capture.io });
+    await server.stop();
+
+    expect(code, `${capture.stderr.join(" | ")} ${capture.stdout.join(" | ")}`).toBe(5);
+    expect(JSON.parse(capture.stdout[0])).toMatchObject({
+      command: "cuts.apply",
+      ok: false,
+      error: {
+        code: "revision_conflict",
+        details: {
+          reason: "edit_list_changed_after_confirmation",
+          expectedEditListRevision: confirmedEditListRevision,
+          currentEditListRevision,
+        },
+      },
+    });
+    expect(JSON.parse(await readFile(join(projectDir, "project.json"), "utf8")))
+      .toMatchObject({ status: "cut_review_ready" });
   });
 
   it("runs the verified renderer directly for a registered project id", async () => {
@@ -505,6 +861,68 @@ describe("chengfeng-videocut CLI", () => {
     expect(opened).toEqual([fakeServer.url]);
   });
 
+  it("routes service ensure through the managed lifecycle and opens only after ready", async () => {
+    const capture = captureIo();
+    const calls: Array<{ action: string; lines?: number }> = [];
+    const opened: string[] = [];
+    const code = await runCli(["service", "ensure", "--open", "--json"], {
+      io: capture.io,
+      runServiceCommand: async (action, options) => {
+        calls.push({ action, lines: options?.lines });
+        return {
+          action,
+          changed: false,
+          serviceApiVersion: 1,
+          label: "com.chengfeng.videocut.studio",
+          state: "running",
+          installed: true,
+          configured: true,
+          loaded: true,
+          ready: true,
+          healthy: true,
+          pid: 4321,
+          runtimeMode: "launchd",
+          productVersion: "0.2.0",
+          studioBuildId: "test-build",
+          url: "http://127.0.0.1:5190",
+          identity: {
+            product: "chengfeng-videocut",
+            productVersion: "0.2.0",
+            pid: 4321,
+            runtimeMode: "launchd",
+            studioBuildId: "test-build",
+          },
+          paths: {
+            homeDir: "/tmp/home",
+            dataDir: "/tmp/home/.chengfeng-videocut",
+            launcherPath: "/tmp/home/.chengfeng-videocut/bin/chengfeng-videocut",
+            plistPath: "/tmp/home/Library/LaunchAgents/com.chengfeng.videocut.studio.plist",
+            stdoutLogPath: "/tmp/home/.chengfeng-videocut/logs/studio.stdout.log",
+            stderrLogPath: "/tmp/home/.chengfeng-videocut/logs/studio.stderr.log",
+            operationLockPath: "/tmp/home/.chengfeng-videocut/service-operation.lock",
+          },
+        };
+      },
+      openBrowser: async (url) => {
+        opened.push(url);
+      },
+    });
+    expect(code).toBe(0);
+    expect(calls).toEqual([{ action: "ensure", lines: undefined }]);
+    expect(opened).toEqual(["http://127.0.0.1:5190"]);
+    expect(JSON.parse(capture.stdout[0])).toMatchObject({
+      command: "service.ensure",
+      ok: true,
+      data: {
+        ready: true,
+        healthy: true,
+        pid: 4321,
+        runtimeMode: "launchd",
+        productVersion: "0.2.0",
+      },
+    });
+  });
+
   it("reports a stable service_unavailable error instead of writing locally", async () => {
     const { root, projectDir, projectsDir } = await fixture();
     await registerFixture(projectDir, projectsDir);
@@ -528,6 +946,21 @@ describe("chengfeng-videocut CLI", () => {
 
     expect(code).toBe(6);
     expect(JSON.parse(capture.stdout[0]).error.code).toBe("service_unavailable");
+    await expect(readFile(join(projectDir, "cut-selection.json"), "utf8")).rejects.toThrow();
+
+    const readCapture = captureIo();
+    const readCode = await runCli([
+      "cuts", "get", projectDir,
+      "--projects-dir", projectsDir,
+      "--api-base", "http://127.0.0.1:1",
+      "--json",
+    ], { io: readCapture.io });
+    expect(readCode).toBe(6);
+    expect(JSON.parse(readCapture.stdout[0])).toMatchObject({
+      command: "cuts.get",
+      ok: false,
+      error: { code: "service_unavailable" },
+    });
     await expect(readFile(join(projectDir, "cut-selection.json"), "utf8")).rejects.toThrow();
   });
 });

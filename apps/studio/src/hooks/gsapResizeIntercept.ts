@@ -24,10 +24,11 @@ import type { GsapDragCommitCallbacks } from "./gsapDragCommit";
 import { pickClosestToPlayhead, readGsapPositionFromIframe } from "./gsapPositionDetection";
 import { commitWholePropertyOffset } from "./gsapWholePropertyOffsetCommit";
 import { resolveTweenStart, resolveTweenDuration } from "../utils/globalTimeCompiler";
-import { selectorFromSelection } from "./gsapShared";
+import { isInstantHold, selectorFromSelection } from "./gsapShared";
 import { roundTo3 } from "../utils/rounding";
 import { resolveGroupTween, POSITION_CHANNELS } from "./gsapRuntimeBridge";
 import { hasNonHoldTweenForElement } from "./gsapRuntimeKeyframes";
+import { logResize } from "../utils/resizeDebug";
 
 const IDENTITY_ONE_PROPS = new Set(["opacity", "autoAlpha", "scale", "scaleX", "scaleY"]);
 
@@ -68,19 +69,27 @@ export async function tryGsapResizeIntercept(
   );
 
   let anim = resolved?.anim ?? null;
-  if (!anim || anim.method === "set") {
+  logResize("intercept-enter", {
+    hasScaleGroup,
+    resizeGroup,
+    animMethod: anim?.method ?? null,
+    animId: anim?.id ?? null,
+    size,
+  });
+  if (!anim || isInstantHold(anim)) {
     const sel = selectorFromSelection(selection);
     if (!sel) return false;
-    const sizeSet = anim?.method === "set" ? anim : findSizeSetAnimation(animations, sel);
+    const sizeSet = anim ?? findSizeSetAnimation(animations, sel);
 
     // If the element is animated (has a real tween, not just a static size
     // hold), keyframe the size at the playhead so other keyframes keep theirs —
     // instead of a global set that resizes every frame.
     if (resizeGroup === "size") {
       const animatedTween = pickClosestToPlayhead(
-        animations.filter((a) => a.method !== "set" && resolveTweenDuration(a) > 0),
+        animations.filter((a) => !isInstantHold(a) && resolveTweenDuration(a) > 0),
       );
       if (animatedTween) {
+        logResize("intercept-route", { route: "keyframed-size", tweenId: animatedTween.id });
         const handled = await commitKeyframedSizeFromResize(
           selection,
           size,
@@ -93,6 +102,7 @@ export async function tryGsapResizeIntercept(
       }
     }
 
+    logResize("intercept-route", { route: "static-size-set", hadSizeSet: !!sizeSet, resizeGroup });
     await commitStaticGsapSize(selection, size, sel, sizeSet, {
       commitMutation,
       fetchAnimations: fetchFallbackAnimations,
@@ -100,11 +110,12 @@ export async function tryGsapResizeIntercept(
     return true;
   }
 
+  const tweenDuration = resolveTweenDuration(anim);
+  if (tweenDuration <= 0) return false;
+
   const { activeKeyframePct, setActiveKeyframePct } = usePlayerStore.getState();
   const pct = activeKeyframePct ?? computeCurrentPercentage(selection, anim);
   if (activeKeyframePct != null) setActiveKeyframePct(null);
-  const coalesceKey = `gsap:resize:${anim.id}`;
-
   const selector = selectorFromSelection(selection);
   // Scope every capture to the resize group — same contract as the rotation
   // intercept. Unfiltered, an opacity-touching intro tween on the element
@@ -144,6 +155,16 @@ export async function tryGsapResizeIntercept(
     // shorthand when the two agree (aspect-true drags, shift-drags).
     nonUniformScale = Math.abs(newScaleX - newScaleY) > 0.01;
     resizeProps = nonUniformScale ? { scaleX: newScaleX, scaleY: newScaleY } : { scale: newScaleX };
+    logResize("intercept-route", {
+      route: "scale-tween",
+      cssW,
+      cssH,
+      liveScaleX,
+      liveScaleY,
+      newScaleX,
+      newScaleY,
+      nonUniformScale,
+    });
     scaleDraftEl = el;
     // Where the user DROPPED the box: the draft (anchor-pinned to the
     // gesture-start top-left) is still applied here, so this rect is exactly
@@ -184,6 +205,7 @@ export async function tryGsapResizeIntercept(
       POSITION_CHANNELS,
     );
     if (hasLivePositionTween) {
+      logResize("scale-finalize", { skipped: "live-position-tween" });
       return;
     }
     // The scale commit has rendered (instant patch or soft-reload seek) and the
@@ -200,6 +222,13 @@ export async function tryGsapResizeIntercept(
       x: Math.round(gsapPos.x + residual.x),
       y: Math.round(gsapPos.y + residual.y),
     };
+    logResize("scale-finalize", {
+      dropPoint: scaleDraftDropPoint,
+      post: { x: post.x, y: post.y },
+      residual,
+      gsapPos,
+      corrected,
+    });
     // Correct the LIVE runtime NOW, synchronously: the soft reload above just
     // rendered the committed scale around the element center — NOT at the drop
     // point — and everything up to here runs in the same microtask chain as
@@ -249,7 +278,7 @@ export async function tryGsapResizeIntercept(
 
   const ct = usePlayerStore.getState().currentTime;
   const ts = resolveTweenStart(anim);
-  const td = resolveTweenDuration(anim);
+  const td = tweenDuration;
   const outsideRange = ts !== null && td > 0 && (ct < ts - 0.01 || ct > ts + td + 0.01); // Convert flat tweens to keyframes only for in-range resizes.
   // Outside-range uses the extend path which handles everything atomically.
   if (!outsideRange) {
@@ -264,7 +293,7 @@ export async function tryGsapResizeIntercept(
       await commitMutation(
         selection,
         { type: "convert-to-keyframes", animationId: anim.id, resolvedFromValues },
-        { label: "Convert to keyframes for resize", skipReload: true, coalesceKey },
+        { label: "Convert to keyframes for resize" },
       );
       if (fetchFallbackAnimations) {
         const fresh = await fetchFallbackAnimations();
@@ -353,7 +382,6 @@ export async function tryGsapResizeIntercept(
           ? `Resize (extended to ${ct.toFixed(2)}s)`
           : `Resize (keyframe ${Math.round(((ct - newStart) / newDuration) * 1000) / 10}%)`,
         softReload: true,
-        coalesceKey,
       },
     );
     await finalizeScaleResizeCommit();
@@ -376,7 +404,7 @@ export async function tryGsapResizeIntercept(
       properties: resizeProps,
       backfillDefaults,
     },
-    { label: `Resize (keyframe ${pct}%)`, softReload: true, coalesceKey },
+    { label: `Resize (keyframe ${pct}%)`, softReload: true },
   );
   await finalizeScaleResizeCommit();
   return true;

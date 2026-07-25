@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { extname, relative, resolve } from "node:path";
+import { extname, join, resolve } from "node:path";
+import { createServer as createNetServer, type AddressInfo } from "node:net";
 import { fileURLToPath } from "node:url";
 import hyperframesRuntimeSource from "@hyperframes/core/runtime" with { type: "text" };
 import { createStudioApi } from "@hyperframes/studio-server";
@@ -10,14 +11,28 @@ import customEaseSource from "gsap/dist/CustomEase.min.js" with { type: "text" }
 import motionPathPluginSource from "gsap/dist/MotionPathPlugin.min.js" with { type: "text" };
 import gsapSource from "gsap/dist/gsap.min.js" with { type: "text" };
 import { createVideocutCutsHandler } from "../../../studio/src/server/videocutCutsApi";
+import { createVideocutEditListHandler } from "../../../studio/src/server/videocutEditListApi";
+import { createVideocutReviewPassesHandler } from "../../../studio/src/server/videocutReviewPassesApi";
+import { createVideocutTimelineMediaHandler } from "../../../studio/src/server/videocutTimelineMediaApi";
+import { materializeKouboEditListIndex } from "@video-workbench/koubo-adapter";
+import { serializeProjectOperation } from "@video-workbench/core/node";
 import { StudioEventHub } from "./events";
 import { createProjectMediaHandler } from "./project-media";
 import { watchRegisteredProjects } from "./project-watcher";
 import { createProductionStudioAdapter } from "./studio-adapter";
+import {
+  EditPreviewArtifactManager,
+  createEditPreviewArtifactHandler,
+} from "./edit-preview-artifact";
+import { fetchGuardedStudioApi } from "./studio-mutation-guard";
 import { createVideocutWorkflowHandler } from "./workflow-api";
+import { PRODUCT_VERSION } from "../output";
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 5190;
+const STUDIO_SERVER_IDLE_TIMEOUT_SECONDS = 60;
+
+type StudioRuntimeMode = "launchd" | "foreground";
 
 export interface StudioServerApiContext {
   projectsDir: string;
@@ -53,11 +68,6 @@ export interface RunningStudioServer {
   stop: () => Promise<void>;
 }
 
-function isWithin(parent: string, child: string): boolean {
-  const path = relative(resolve(parent), resolve(child));
-  return path === "" || (!path.startsWith("..") && !path.startsWith("/"));
-}
-
 function mimeType(path: string): string {
   switch (extname(path).toLowerCase()) {
     case ".html":
@@ -85,6 +95,72 @@ function mimeType(path: string): string {
     default:
       return "application/octet-stream";
   }
+}
+
+interface StudioStaticAsset {
+  body: Blob;
+  byteLength: number;
+  contentType: string;
+}
+
+interface StudioStaticSnapshot {
+  buildId: string;
+  files: ReadonlyMap<string, StudioStaticAsset>;
+}
+
+function isPublishedStudioStaticFile(relativePath: string): boolean {
+  // TypeScript incremental metadata is emitted beside the browser bundle by
+  // typecheck. It has no browser URL and is not part of a releasable Studio
+  // snapshot, so including it would make health identity drift without any
+  // change to the assets users can receive.
+  return !relativePath.endsWith(".tsbuildinfo");
+}
+
+async function loadStudioStaticSnapshot(staticDir: string): Promise<StudioStaticSnapshot> {
+  const files = new Map<string, StudioStaticAsset>();
+  const digest = createHash("sha256");
+
+  const walk = async (directory: string, prefix = ""): Promise<void> => {
+    const entries = await readdir(directory, { withFileTypes: true });
+    entries.sort((left, right) => left.name.localeCompare(right.name));
+    for (const entry of entries) {
+      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const absolutePath = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await walk(absolutePath, relativePath);
+        continue;
+      }
+      if (!entry.isFile() || !isPublishedStudioStaticFile(relativePath)) continue;
+      const body = await readFile(absolutePath);
+      const key = `/${relativePath}`;
+      files.set(key, {
+        body: new Blob([body]),
+        byteLength: body.byteLength,
+        contentType: mimeType(absolutePath),
+      });
+      digest.update(key);
+      digest.update(body);
+    }
+  };
+
+  await walk(staticDir);
+  const index = files.get("/index.html");
+  if (!index) throw new Error(`Studio static snapshot is missing index.html: ${staticDir}`);
+
+  const indexHtml = await index.body.text();
+  for (const match of indexHtml.matchAll(/(?:src|href)=["'](\/[^"'#?]+)[^"']*["']/g)) {
+    const referencedPath = match[1];
+    if (!files.has(referencedPath)) {
+      throw new Error(
+        `Studio static snapshot is incomplete: index.html references missing ${referencedPath}`,
+      );
+    }
+  }
+
+  return {
+    buildId: digest.digest("hex").slice(0, 16),
+    files,
+  };
 }
 
 function packagedStaticCandidates(): string[] {
@@ -201,10 +277,34 @@ function hostForUrl(host: string): string {
   return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
 }
 
+async function resolveListenPort(host: string, requestedPort: number): Promise<number> {
+  if (requestedPort !== 0) return requestedPort;
+  // Bun 1.3 on macOS rejects port 0 instead of asking the kernel for an
+  // ephemeral port. Probe with node:net so the public `--port 0` contract and
+  // isolated server tests continue to work.
+  return await new Promise<number>((resolvePort, reject) => {
+    const probe = createNetServer();
+    probe.unref();
+    probe.once("error", reject);
+    probe.listen({ host, port: 0 }, () => {
+      const address = probe.address() as AddressInfo | null;
+      if (!address) {
+        probe.close();
+        reject(new Error("Failed to allocate an ephemeral Studio port"));
+        return;
+      }
+      probe.close((error) => {
+        if (error) reject(error);
+        else resolvePort(address.port);
+      });
+    });
+  });
+}
+
 async function staticResponse(
   request: Request,
   url: URL,
-  staticDir: string,
+  snapshot: StudioStaticSnapshot,
 ): Promise<Response> {
   if (request.method !== "GET" && request.method !== "HEAD") {
     return new Response("Method Not Allowed", { status: 405, headers: { Allow: "GET, HEAD" } });
@@ -219,25 +319,60 @@ async function staticResponse(
   if (pathname.includes("\0")) return new Response("Bad Request", { status: 400 });
 
   const requested = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
-  let filePath = resolve(staticDir, requested);
-  if (!isWithin(staticDir, filePath)) return new Response("Not Found", { status: 404 });
-
-  let file = Bun.file(filePath);
-  if (!(await file.exists())) {
-    if (extname(requested)) return new Response("Not Found", { status: 404 });
-    filePath = resolve(staticDir, "index.html");
-    file = Bun.file(filePath);
+  if (requested.split("/").some((segment) => segment === "..")) {
+    return new Response("Not Found", { status: 404 });
   }
+  const requestedPath = `/${requested}`;
+  let responsePath = requestedPath;
+  let asset = snapshot.files.get(requestedPath);
+  if (!asset) {
+    if (extname(requested)) return new Response("Not Found", { status: 404 });
+    responsePath = "/index.html";
+    asset = snapshot.files.get(responsePath);
+  }
+  if (!asset) return new Response("Not Found", { status: 404 });
 
   const headers = new Headers({
-    "Content-Type": mimeType(filePath),
-    "Cache-Control": pathname.startsWith("/assets/")
+    "Content-Length": String(asset.byteLength),
+    "Content-Type": asset.contentType,
+    "Cache-Control": responsePath === "/chengfeng-videocut-capabilities.json"
+      ? "no-store"
+      : responsePath.startsWith("/assets/")
       ? "public, max-age=31536000, immutable"
-      : filePath.endsWith("index.html")
+      : responsePath === "/index.html"
         ? "no-store"
         : "public, max-age=3600",
   });
-  return new Response(request.method === "HEAD" ? null : file, { headers });
+  return new Response(request.method === "HEAD" ? null : asset.body, { headers });
+}
+
+function healthResponse(
+  request: Request,
+  buildId: string,
+  runtimeMode: StudioRuntimeMode,
+): Response {
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    return new Response("Method Not Allowed", {
+      status: 405,
+      headers: { Allow: "GET, HEAD", "Cache-Control": "no-store" },
+    });
+  }
+  const body = JSON.stringify({
+    schemaVersion: 1,
+    ok: true,
+    product: "chengfeng-videocut",
+    productVersion: PRODUCT_VERSION,
+    pid: process.pid,
+    runtimeMode,
+    studioBuildId: buildId,
+  });
+  return new Response(request.method === "HEAD" ? null : body, {
+    headers: {
+      "Cache-Control": "no-store",
+      "Content-Length": String(Buffer.byteLength(body)),
+      "Content-Type": "application/json; charset=utf-8",
+    },
+  });
 }
 
 export async function startStudioServer(
@@ -263,6 +398,17 @@ export async function startStudioServer(
   );
   const rendersDir = resolve(dataDir, "renders");
   const staticDir = resolveStaticDir(options.staticDir);
+  // Snapshot the complete Studio bundle once. A production server must keep
+  // serving one coherent build even when a developer rebuilds dist in place;
+  // otherwise index.html and hashed chunks can come from different builds and
+  // strand already-open tabs on a blank page.
+  const staticSnapshot = await loadStudioStaticSnapshot(staticDir);
+  // The service owner supplies this marker in the LaunchAgent environment.
+  // Capture it once at startup so health describes this process rather than a
+  // later mutation of process.env by embedding code or tests.
+  const runtimeMode: StudioRuntimeMode =
+    process.env.CHENGFENG_VIDEOCUT_SERVICE === "launchd" ? "launchd" : "foreground";
+  const listenPort = await resolveListenPort(host, requestedPort);
   await Promise.all([
     mkdir(dataDir, { recursive: true }),
     mkdir(projectsDir, { recursive: true }),
@@ -270,12 +416,40 @@ export async function startStudioServer(
   ]);
 
   const events = new StudioEventHub();
+  const editPreviewArtifacts = new EditPreviewArtifactManager(projectsDir);
+  const editPreviewArtifactApi = createEditPreviewArtifactHandler(editPreviewArtifacts);
   const context: StudioServerApiContext = { projectsDir, dataDir, events };
   const productApi = options.apiHandler ?? options.extraApiHandler;
+  const materializeEditListIndex = async (
+    change: { projectId: string; revision: string },
+  ): Promise<void> => {
+    const projectDirectory = resolve(projectsDir, change.projectId);
+    const result = await serializeProjectOperation(projectDirectory, () =>
+      materializeKouboEditListIndex(
+        projectDirectory,
+        { expectedRevision: change.revision },
+      ));
+    if (result.materialized) {
+      events.publish("file-change", {
+        projectId: change.projectId,
+        path: result.indexPath,
+      });
+    }
+  };
   const cutsApi = createVideocutCutsHandler({
     projectsDir,
+    materializeIndex: materializeEditListIndex,
     onDocumentChanged(change) {
       events.publish("file-change", change);
+    },
+  });
+  const reviewPassesApi = createVideocutReviewPassesHandler({ projectsDir });
+  const editListApi = createVideocutEditListHandler({
+    projectsDir,
+    materializeIndex: materializeEditListIndex,
+    onDocumentChanged(change) {
+      events.publish("file-change", change);
+      editPreviewArtifacts.schedule(change.projectId);
     },
   });
   const workflowApi = createVideocutWorkflowHandler({
@@ -284,14 +458,20 @@ export async function startStudioServer(
       events.publish("file-change", change);
     },
   });
+  const timelineMediaApi = createVideocutTimelineMediaHandler({
+    projectsDir,
+    cacheDir: resolve(dataDir, "cache", "timeline-media"),
+  });
   const projectMedia = createProjectMediaHandler({ projectsDir });
-  const studioApi = createStudioApi(
-    createProductionStudioAdapter({ projectsDir, rendersDir }),
-  );
+  const studioAdapter = createProductionStudioAdapter({ projectsDir, rendersDir });
+  const studioApi = createStudioApi(studioAdapter);
 
   const server = Bun.serve({
     hostname: host,
-    port: requestedPort,
+    port: listenPort,
+    // Long video range requests and the Studio event stream must survive the
+    // framework's 10-second default idle window.
+    idleTimeout: STUDIO_SERVER_IDLE_TIMEOUT_SECONDS,
     async fetch(request): Promise<Response> {
       const url = new URL(request.url);
       try {
@@ -299,8 +479,15 @@ export async function startStudioServer(
         // pluggable or generic API handler can claim the same /api paths.
         const vendorAsset = VENDOR_ASSETS.get(url.pathname);
         if (vendorAsset) return vendorAssetResponse(request, vendorAsset);
+        if (url.pathname === "/api/health") {
+          return healthResponse(request, staticSnapshot.buildId, runtimeMode);
+        }
         const mediaResponse = await projectMedia(request);
         if (mediaResponse) return mediaResponse;
+        const timelineMediaResponse = await timelineMediaApi(request);
+        if (timelineMediaResponse) return timelineMediaResponse;
+        const editPreviewArtifactResponse = await editPreviewArtifactApi(request);
+        if (editPreviewArtifactResponse) return editPreviewArtifactResponse;
         if (url.pathname.startsWith("/api/") && productApi) {
           const response = await productApi(request, context);
           if (response) return response;
@@ -310,7 +497,15 @@ export async function startStudioServer(
           if (response) return response;
         }
         if (url.pathname.startsWith("/api/")) {
+          const response = await editListApi(request);
+          if (response) return response;
+        }
+        if (url.pathname.startsWith("/api/")) {
           const response = await cutsApi(request);
+          if (response) return response;
+        }
+        if (url.pathname.startsWith("/api/")) {
+          const response = await reviewPassesApi(request);
           if (response) return response;
         }
         if (url.pathname === "/api/runtime.js") {
@@ -326,9 +521,12 @@ export async function startStudioServer(
           const apiUrl = new URL(request.url);
           apiUrl.pathname = apiUrl.pathname.slice(4);
           const apiRequest = new Request(apiUrl, request);
-          return await localizeStudioResponse(await studioApi.fetch(apiRequest));
+          return await localizeStudioResponse(await fetchGuardedStudioApi(apiRequest, {
+            adapter: studioAdapter,
+            fetch: (guardedRequest) => studioApi.fetch(guardedRequest),
+          }));
         }
-        return await staticResponse(request, url, staticDir);
+        return await staticResponse(request, url, staticSnapshot);
       } catch (error) {
         console.error("[chengfeng-videocut] request failed", error);
         return Response.json(

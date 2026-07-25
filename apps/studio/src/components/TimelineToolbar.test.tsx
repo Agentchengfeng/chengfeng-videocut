@@ -2,7 +2,7 @@
 
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { usePlayerStore } from "../player/store/playerStore";
 import { TimelineToolbar } from "./TimelineToolbar";
 
@@ -18,7 +18,7 @@ function renderToolbar() {
   document.body.append(host);
   const root = createRoot(host);
   act(() => {
-    root.render(<TimelineToolbar toggleTimelineVisibility={vi.fn()} />);
+    root.render(<TimelineToolbar />);
   });
   return { host, root };
 }
@@ -31,7 +31,7 @@ describe("TimelineToolbar — auto-keyframe toggle (#1808)", () => {
   it("renders enabled (pressed) by default with no selection", () => {
     const { host, root } = renderToolbar();
     const btn = host.querySelector<HTMLButtonElement>(
-      'button[aria-label="自动记录关键帧"]',
+      'button[aria-label="Auto-record manual edits as keyframes"]',
     );
     expect(btn).not.toBeNull();
     expect(btn?.getAttribute("aria-pressed")).toBe("true");
@@ -41,7 +41,7 @@ describe("TimelineToolbar — auto-keyframe toggle (#1808)", () => {
   it("flips autoKeyframeEnabled in the store when clicked", () => {
     const { host, root } = renderToolbar();
     const btn = host.querySelector<HTMLButtonElement>(
-      'button[aria-label="自动记录关键帧"]',
+      'button[aria-label="Auto-record manual edits as keyframes"]',
     );
     if (!btn) throw new Error("auto-keyframe toggle not rendered");
 

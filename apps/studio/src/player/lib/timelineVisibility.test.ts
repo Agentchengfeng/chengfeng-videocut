@@ -9,11 +9,15 @@ import {
 function fakeElement(options: {
   companion?: boolean;
   runtimeIgnored?: boolean;
+  studioHidden?: boolean;
 } = {}): Element {
   const element = {
     closest(selector: string) {
       if (selector === "[data-workbench-companion-audio]") {
         return options.companion ? element : null;
+      }
+      if (selector === "[data-studio-timeline-hidden]") {
+        return options.studioHidden ? element : null;
       }
       return options.runtimeIgnored ? element : null;
     },
@@ -59,5 +63,11 @@ describe("Studio timeline visibility", () => {
         clip("a-roll-audio"),
       ]).map((item) => item.id),
     ).toEqual(["a-roll-video"]);
+  });
+
+  it("hides an EDL backing video from Studio without hiding it from runtime", () => {
+    const backing = fakeElement({ studioHidden: true });
+    expect(isStudioTimelineHiddenElement(backing)).toBe(true);
+    expect(isTimelineIgnoredElement(backing)).toBe(false);
   });
 });

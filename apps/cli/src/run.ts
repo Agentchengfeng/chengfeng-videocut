@@ -3,11 +3,14 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { VideocutError, asVideocutError } from "@video-workbench/core";
 import {
+  createKouboProject,
   prepareKouboProject,
   putKouboArtifact,
   runKouboRender,
+  transcribeKouboVideo,
   type KouboArtifactType,
   type RunKouboRenderOptions,
+  type TranscribeKouboVideoResult,
 } from "@video-workbench/koubo-adapter";
 import {
   doctor,
@@ -30,8 +33,14 @@ import {
   PRODUCT_VERSION,
   errorEnvelope,
   humanDoctor,
+  humanService,
   successEnvelope,
 } from "./output";
+import {
+  runStudioServiceCommand as defaultRunStudioServiceCommand,
+  type StudioServiceAction,
+  type StudioServiceCommandResult,
+} from "./service";
 
 export interface CliIo {
   stdout: (value: string) => void;
@@ -44,6 +53,14 @@ export interface RunCliOptions {
   startServer?: (options: StartStudioServerOptions) => Promise<RunningStudioServer>;
   openBrowser?: (url: string) => Promise<void>;
   runRender?: CliRenderRunner;
+  runServiceCommand?: (
+    action: StudioServiceAction,
+    options?: { lines?: number },
+  ) => Promise<StudioServiceCommandResult>;
+  runTranscription?: (
+    jobDir: string,
+    options: { video: string; output: string; language?: string },
+  ) => Promise<TranscribeKouboVideoResult>;
 }
 
 interface CliRenderResult {
@@ -105,6 +122,9 @@ function exitCodeFor(error: CliFailure): number {
     case "invalid_cut_selection":
     case "invalid_config":
     case "studio_origin_required":
+    case "media_has_no_audio":
+    case "missing_cloud_transcription_adapter":
+    case "cloud_transcription_failed":
       return 4;
     case "revision_conflict":
     case "project_id_conflict":
@@ -112,6 +132,11 @@ function exitCodeFor(error: CliFailure): number {
     case "missing_artifact":
       return 5;
     case "service_unavailable":
+    case "service_unsupported":
+    case "service_not_installed":
+    case "service_launcher_missing":
+    case "service_port_conflict":
+    case "service_busy":
       return 6;
     case "missing_renderer":
       return 7;
@@ -191,6 +216,13 @@ interface CutsApiResult {
   };
 }
 
+interface CutsReadApiResult {
+  projectId: string;
+  exists: boolean;
+  revision: string;
+  document: Record<string, unknown> | null;
+}
+
 function apiEndpoint(apiBase: string, projectId: string): string {
   let base: URL;
   try {
@@ -236,6 +268,74 @@ function objectRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+async function readCutsThroughApi(options: {
+  apiBase: string;
+  projectId: string;
+}): Promise<CutsReadApiResult> {
+  const endpoint = apiEndpoint(options.apiBase, options.projectId);
+  let response: Response;
+  try {
+    response = await fetch(endpoint, { signal: AbortSignal.timeout(15_000) });
+  } catch (error) {
+    throw new CliRequestError(
+      "service_unavailable",
+      `Cannot reach chengfeng-videocut at ${options.apiBase}`,
+      { endpoint, cause: error instanceof Error ? error.message : String(error) },
+    );
+  }
+
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new CliRequestError(
+      "service_unavailable",
+      `chengfeng-videocut returned an invalid response (${response.status})`,
+      { endpoint, status: response.status },
+    );
+  }
+  const record = objectRecord(payload);
+  if (!response.ok) {
+    const errorRecord = objectRecord(record?.error);
+    throw new CliRequestError(
+      typeof errorRecord?.code === "string" ? errorRecord.code : "service_unavailable",
+      typeof errorRecord?.message === "string"
+        ? errorRecord.message
+        : `chengfeng-videocut request failed (${response.status})`,
+      objectRecord(errorRecord?.details) ?? { endpoint, status: response.status },
+    );
+  }
+
+  const revision = record?.revision;
+  const exists = record?.exists;
+  const document = objectRecord(record?.document);
+  const validDocument = exists === false
+    ? record?.document === null
+    : exists === true && document !== null &&
+      Array.isArray(document.cutWordIds) && Array.isArray(document.cutRanges);
+  if (
+    !record ||
+    record.schemaVersion !== 1 ||
+    record.projectId !== options.projectId ||
+    typeof exists !== "boolean" ||
+    typeof revision !== "string" ||
+    !/^(?:none|[a-f0-9]{64})$/.test(revision) ||
+    !validDocument
+  ) {
+    throw new CliRequestError(
+      "service_unavailable",
+      "chengfeng-videocut returned an incompatible cuts response",
+      { endpoint, status: response.status },
+    );
+  }
+  return {
+    projectId: options.projectId,
+    exists,
+    revision,
+    document: exists ? document : null,
+  };
+}
+
 async function updateCutsThroughApi(options: {
   apiBase: string;
   projectId: string;
@@ -251,6 +351,7 @@ async function updateCutsThroughApi(options: {
       body: JSON.stringify({
         expectedRevision: options.expectedRevision,
         cutWordIds: options.cutWordIds,
+        mode: "semantic-overlay",
       }),
       signal: AbortSignal.timeout(15_000),
     });
@@ -322,8 +423,25 @@ async function requestWorkflowApi(options: {
   projectId: string;
   action?: string;
   expectedRevision?: string;
+  expectedEditListRevision?: string;
   config?: unknown;
 }): Promise<Record<string, unknown>> {
+  if (options.action === "apply-cut") {
+    if (options.expectedEditListRevision === undefined) {
+      throw new CliRequestError(
+        "revision_required",
+        "apply-cut requires the edit-list revision captured at confirmation",
+        { reason: "missing_confirmed_edit_list_revision" },
+      );
+    }
+    if (!/^[a-f0-9]{64}$/.test(options.expectedEditListRevision)) {
+      throw new CliRequestError(
+        "revision_required",
+        "apply-cut requires a prepared edit-list.json revision",
+        { reason: "edit_list_required" },
+      );
+    }
+  }
   const endpoint = projectApiEndpoint(
     options.apiBase,
     options.projectId,
@@ -338,6 +456,9 @@ async function requestWorkflowApi(options: {
         action: options.action,
         confirmed: true,
         expectedRevision: options.expectedRevision,
+        ...(options.expectedEditListRevision !== undefined
+          ? { expectedEditListRevision: options.expectedEditListRevision }
+          : {}),
         ...(options.config !== undefined ? { config: options.config } : {}),
       }),
       signal: AbortSignal.timeout(20_000),
@@ -374,6 +495,8 @@ async function requestWorkflowApi(options: {
   }
   if (!record || record.schemaVersion !== 1 || record.projectId !== options.projectId ||
       typeof record.revision !== "string" || !/^[a-f0-9]{64}$/.test(record.revision) ||
+      typeof record.editListRevision !== "string" ||
+      !/^(?:none|[a-f0-9]{64})$/.test(record.editListRevision) ||
       !objectRecord(record.project)) {
     throw new CliRequestError(
       "service_unavailable",
@@ -416,7 +539,13 @@ export async function runCli(
   const io = options.io ?? defaultIo;
   const cwd = resolve(options.cwd ?? process.cwd());
   const wantsJson = argv.includes("--json") || argv.some((arg) => arg.startsWith("--json="));
-  let command = argv[0] ?? "help";
+  let command = argv[0] === "cuts" && argv[1]
+    ? `cuts.${argv[1]}`
+    : argv[0] === "service" && argv[1]
+      ? `service.${argv[1]}`
+    : argv[0] === "project" && argv[1]
+      ? `project.${argv[1]}`
+      : argv[0] ?? "help";
 
   try {
     const parsed = parseArgs(argv);
@@ -433,6 +562,18 @@ export async function runCli(
       } else {
         io.stdout(PRODUCT_VERSION);
       }
+      return 0;
+    }
+    if (parsed.command.startsWith("service.")) {
+      const action = parsed.command.slice("service.".length) as StudioServiceAction;
+      const data = await (options.runServiceCommand ?? defaultRunStudioServiceCommand)(action, {
+        lines: parsed.logLines,
+      });
+      if (parsed.openBrowser) {
+        await (options.openBrowser ?? defaultOpenBrowser)(data.url);
+      }
+      if (parsed.json) io.stdout(JSON.stringify(successEnvelope(parsed.command, data)));
+      else io.stdout(humanService(data));
       return 0;
     }
     if (parsed.command === "doctor") {
@@ -472,15 +613,86 @@ export async function runCli(
       return 0;
     }
 
+    if (parsed.command === "transcribe") {
+      const result = await (options.runTranscription ?? transcribeKouboVideo)(
+        resolve(cwd, projectInput(parsed.command, parsed.project)),
+        {
+          video: parsed.video as string,
+          output: parsed.output as string,
+          language: parsed.language,
+        },
+      );
+      const data = {
+        provider: result.provider,
+        source: result.source,
+        output: result.output,
+        cueCount: result.cueCount,
+        wordCount: result.wordCount,
+        duration: result.duration,
+      };
+      if (parsed.json) io.stdout(JSON.stringify(successEnvelope(parsed.command, data)));
+      else io.stdout(`Transcribed ${data.wordCount} words to ${data.output}`);
+      return 0;
+    }
+
+    if (parsed.command === "project.create") {
+      let url: string | undefined;
+      let registered: boolean | undefined;
+      const created = await createKouboProject(
+        resolve(cwd, projectInput(parsed.command, parsed.project)),
+        {
+          video: parsed.video as string,
+          transcript: parsed.transcript as string,
+          aspectRatio: parsed.aspectRatio as "3:4" | "4:3" | "16:9",
+          finalize: async (prepared) => {
+            const project = await resolveProject(prepared.directory, { cwd, projectsDir });
+            url = projectUrl(project);
+            const registration = await registerProject(project, projectsDir);
+            if (!registration.registered) {
+              throw new VideocutError(
+                "project_id_conflict",
+                `project create refuses to reuse an existing registration: ${project.projectId}`,
+                { projectId: project.projectId, linkPath: registration.linkPath },
+              );
+            }
+            registered = true;
+          },
+        },
+      );
+      if (url === undefined || registered === undefined) {
+        throw new VideocutError(
+          "io_error",
+          "project create completed without registration metadata",
+        );
+      }
+      const data = {
+        projectId: created.projectId,
+        directory: created.directory,
+        url,
+        registered,
+        canonicalVideo: created.canonicalVideo,
+        canonicalTranscript: created.canonicalTranscript,
+        indexWritten: created.indexWritten,
+        transcriptCueCount: created.transcript.cues.length,
+        cutWordCount: created.cutWordIds.length,
+        metadata: created.metadata,
+      };
+      if (parsed.json) io.stdout(JSON.stringify(successEnvelope(parsed.command, data)));
+      else io.stdout(`${data.url}\nCreated ${data.directory}`);
+      return 0;
+    }
+
     if (parsed.command === "project.prepare") {
-      const directory = resolve(cwd, projectInput(parsed.command, parsed.project));
-      const prepared = await prepareKouboProject(directory, {
-        video: parsed.video,
-        transcript: parsed.transcript,
-        duration: parsed.duration,
-        forceIndex: parsed.forceIndex,
-        refreshTranscript: parsed.refreshTranscript,
-      });
+      const prepared = await prepareKouboProject(
+        resolve(cwd, projectInput(parsed.command, parsed.project)),
+        {
+          video: parsed.video,
+          transcript: parsed.transcript,
+          duration: parsed.duration,
+          forceIndex: parsed.forceIndex,
+          refreshTranscript: parsed.refreshTranscript,
+        },
+      );
       const project = await resolveProject(prepared.directory, { cwd, projectsDir });
       const url = projectUrl(project, parsed.origin);
       const registration = await registerProject(project, projectsDir);
@@ -584,6 +796,29 @@ export async function runCli(
       else io.stdout(`Published ${result.type}: ${result.target}\nStatus: ${result.status}`);
       return 0;
     }
+    if (parsed.command === "cuts.get") {
+      await assertRegisteredProject({ project, cwd, projectsDir, outputDir: parsed.outputDir });
+      const result = await readCutsThroughApi({
+        apiBase: parsed.apiBase ?? "http://127.0.0.1:5190",
+        projectId: project.projectId,
+      });
+      const data = {
+        projectId: result.projectId,
+        path: join(project.directory, "cut-selection.json"),
+        exists: result.exists,
+        revision: result.revision,
+        cutWordCount: Array.isArray(result.document?.cutWordIds)
+          ? result.document.cutWordIds.length
+          : 0,
+        cutRangeCount: Array.isArray(result.document?.cutRanges)
+          ? result.document.cutRanges.length
+          : 0,
+        document: result.document,
+      };
+      if (parsed.json) io.stdout(JSON.stringify(successEnvelope(parsed.command, data)));
+      else io.stdout(JSON.stringify(data, null, 2));
+      return 0;
+    }
     if (parsed.command === "workflow.get" || parsed.command === "workflow.transition" ||
         parsed.command === "cuts.apply") {
       await assertRegisteredProject({ project, cwd, projectsDir, outputDir: parsed.outputDir });
@@ -594,11 +829,15 @@ export async function runCli(
       const action = parsed.command === "cuts.apply" ? "apply-cut"
         : parsed.command === "workflow.transition" ? parsed.action
           : undefined;
+      const apiBase = parsed.apiBase ?? "http://127.0.0.1:5190";
       const data = await requestWorkflowApi({
-        apiBase: parsed.apiBase ?? "http://127.0.0.1:5190",
+        apiBase,
         projectId: project.projectId,
         action,
         expectedRevision: parsed.expectedRevision,
+        expectedEditListRevision: parsed.command === "cuts.apply"
+          ? parsed.expectedEditListRevision
+          : undefined,
         config,
       });
       if (parsed.json) io.stdout(JSON.stringify(successEnvelope(parsed.command, data)));
@@ -625,6 +864,7 @@ export async function runCli(
         ? await writeCutSelection(project, { cutWordIds }, {
             expectedRevision: parsed.expectedRevision,
             dryRun: true,
+            mode: "semantic-overlay",
           })
         : await updateCutsThroughApi({
             apiBase: parsed.apiBase ?? "http://127.0.0.1:5190",

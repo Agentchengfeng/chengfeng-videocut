@@ -24,5 +24,11 @@
     "ignoreDeprecations": "5.0"
   },
   "include": ["src"],
-  "exclude": ["dist", "node_modules", "src/**/*.test.ts"]
+  "exclude": [
+    "dist",
+    "node_modules",
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx",
+    "src/cut/timeline/hf-upstream-0.7.60"
+  ]
 }

@@ -1,7 +1,9 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
+import { checkVersionContract } from "./version-contract";
 
 const root = resolve(import.meta.dir, "..");
+await checkVersionContract(root);
 const required = [
   "README.md",
   "LICENSE",
@@ -74,11 +76,13 @@ if (violations.length > 0) {
 }
 
 const projectsDir = join(root, "apps/studio/data/projects");
-for (const entry of readdirSync(projectsDir)) {
-  if (entry === ".gitkeep") continue;
-  const path = join(projectsDir, entry);
-  if (!statSync(path, { throwIfNoEntry: false })) continue;
-  console.warn(`Local project will be excluded from release: ${entry}`);
+if (existsSync(projectsDir)) {
+  for (const entry of readdirSync(projectsDir)) {
+    if (entry === ".gitkeep") continue;
+    const path = join(projectsDir, entry);
+    if (!statSync(path, { throwIfNoEntry: false })) continue;
+    console.warn(`Local project will be excluded from release: ${entry}`);
+  }
 }
 
 console.log("Release check passed");

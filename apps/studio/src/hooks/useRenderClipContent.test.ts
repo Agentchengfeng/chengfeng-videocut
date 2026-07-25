@@ -105,6 +105,21 @@ describe("useRenderClipContent", () => {
     if (isValidElement(content)) expect(content.type).toBe(AudioWaveform);
   });
 
+  it("does not request a composition thumbnail for an EDL timeline segment", () => {
+    const content = renderClipContent({
+      id: "a-roll-0001",
+      tag: "div",
+      start: 0,
+      duration: 4,
+      track: 1,
+      edlSegmentId: "a-roll-0001",
+      edlSourceStart: 12,
+      edlSourceEnd: 16,
+    });
+
+    expect(content).toBeNull();
+  });
+
   it("passes empty labels to thumbnail content so TimelineClip owns clip names", () => {
     const cases: Array<{ content: ReactNode; type: unknown }> = [
       {

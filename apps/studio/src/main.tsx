@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { StudioApp } from "./App";
+import { ProductStudio } from "./ProductStudio";
+import { StandaloneCutApp } from "./cut/StandaloneCutApp";
 import { StudioErrorBoundary } from "./components/StudioErrorBoundary";
 import { trackStudioEvent } from "./utils/studioTelemetry";
 import "./styles/studio.css";
@@ -94,7 +95,9 @@ window.addEventListener("unhandledrejection", (event) => {
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <StudioErrorBoundary>
-      <StudioApp />
+      {new URL(window.location.href).searchParams.get("view") === "koubo"
+        ? <StandaloneCutApp />
+        : <ProductStudio />}
     </StudioErrorBoundary>
   </StrictMode>,
 );

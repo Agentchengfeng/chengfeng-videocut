@@ -24,17 +24,25 @@ curl -fsSL https://raw.githubusercontent.com/Agentchengfeng/chengfeng-videocut/m
 
 ```bash
 chengfeng-videocut doctor
-chengfeng-videocut start --open
+chengfeng-videocut service ensure --open
+chengfeng-videocut service status
+chengfeng-videocut service logs
 ```
+
+`service ensure` 是正式用户入口：首次使用时注册并启动 macOS 用户级服务，后续调用会复用健康进程。安装器本身只安装 Runtime，不会在安装时偷偷注册后台服务。
+
+本版常驻服务只支持 macOS。其他平台调用 `service` 会明确返回 `service_unsupported`，仍可使用 foreground `start` 进行开发诊断。
 
 若终端暂时找不到命令，请按照安装器最后输出的提示，将 `~/.chengfeng-videocut/bin` 加入 `PATH`。
 
 ### 手动安装
 
-1. 从 [最新 Release](https://github.com/Agentchengfeng/chengfeng-videocut/releases/latest) 下载稳定资产 `chengfeng-videocut-portable.tar.gz` 和 `SHA256SUMS.txt`。
+1. 从 [最新 Release](https://github.com/Agentchengfeng/chengfeng-videocut/releases/latest) 下载同一版本的 `install.sh`、`chengfeng-videocut-portable.tar.gz` 和 `SHA256SUMS.txt` 到同一目录。
 2. 对照 `SHA256SUMS.txt` 校验下载文件。
-3. 解压后，在目录中运行 `./chengfeng-videocut doctor`。
-4. 运行 `./chengfeng-videocut start --open` 启动工作台。
+3. 在该目录运行 `CHENGFENG_VIDEOCUT_DOWNLOAD_BASE="file://$PWD" sh ./install.sh`，把 Runtime 落到稳定的 `~/.chengfeng-videocut/bin` 与 `app/current` 布局。
+4. 运行 `~/.chengfeng-videocut/bin/chengfeng-videocut service ensure --open` 启动工作台。
+
+裸解压的便携目录可用于 `./chengfeng-videocut doctor` 或 foreground 诊断，但不会被 LaunchAgent 绑定为永久路径；请勿移动临时目录后继续依赖其中的服务入口。
 
 版本化资产用于固定版本和回滚；不带版本号的 `chengfeng-videocut-portable.tar.gz` 始终指向该次 Release 的便携包。
 
@@ -43,8 +51,15 @@ chengfeng-videocut start --open
 默认服务只监听 `http://127.0.0.1:5190`，不会向局域网或公网开放。运行数据默认保存在 `~/.chengfeng-videocut`。
 
 ```bash
-# 启动并打开浏览器
-chengfeng-videocut start --open
+# 从任务目录内的真实视频和云端逐词转录创建、准备并注册新项目
+chengfeng-videocut project create /absolute/job-dir \
+  --video incoming/talk.mp4 \
+  --transcript cloud/subtitles_words.json \
+  --aspect-ratio 4:3 \
+  --json
+
+# 确保常驻服务健康并打开浏览器
+chengfeng-videocut service ensure --open
 
 # 检查项目及当前修订
 chengfeng-videocut inspect /absolute/project --json
@@ -67,7 +82,13 @@ chengfeng-videocut render run /absolute/project \
   --json
 ```
 
-`cuts set` 以 `cutWordIds` 作为语义真相，并从 `transcript.json` 推导 `cutRanges`。写入必须携带 `inspect` 返回的修订值，避免两个写入者互相覆盖。
+正式流程使用 `service ensure/status/logs`。`chengfeng-videocut start` 会把 Server 运行在当前终端中，只用于本地开发和故障诊断；终端退出时它也会退出。
+
+新任务必须走 `project create`，Skill 不预写 `project.json`。视频与转录路径必须位于任务目录内；产品负责规范化输入、prepare 和注册，并在失败时回滚本次创建。`project prepare` 只刷新已有规范项目，二者都不会使用 demo 媒体。
+
+`cuts set` 的 `cutWordIds` 只表示 Skill 判断出的语义删词。CLI 通过 Cuts API 使用 `semantic-overlay` 意图；产品在项目锁内把它与 `natural-pause-v2` 的合法初始化基线合并，再从 `transcript.json` 推导 `cutRanges`。Skill 不读取、复制或手工合并 `baselineCutWordIds`。写入必须携带当前修订值，避免两个写入者互相覆盖。
+
+Studio 逐词编辑使用另一种明确意图 `full-selection`，提交当前完整的“删除/未删除”状态，因此用户可以恢复初始化选中的静音。Cuts API 不接受缺失或未知意图。M1 不把“恢复静音”另存为跨语义重跑的永久偏好：之后再次执行 `semantic-overlay` 会按产品当前的 natural-pause 基线重新计算；永久覆盖需要未来独立的用户 override 字段。
 
 `render run` 只在显式传入 `--confirmed` 后运行。渲染器需要通过 `--renderer` 或 `CHENGFENG_VIDEOCUT_RENDERER_PATH` 指定；产品不会猜测某个 Skill 的安装目录。最终视频只有通过媒体、音频、时长、尺寸、帧率和关键帧证据检查后，项目状态才会进入 `done`。
 
@@ -81,7 +102,7 @@ chengfeng-videocut 负责确定性的产品能力：
 - 已确认任务的渲染调用与结果验证
 - 面向自动化的本地 CLI/API
 
-Skills 负责判断与编排，例如转录、口误识别、自然气口判断、让用户审核和决定是否执行剪切。公开 Skills 位于 [Agentchengfeng/chengfeng-videocut-skills](https://github.com/Agentchengfeng/chengfeng-videocut-skills)。
+Skills 负责判断与编排，例如转录、口误/重复等语义识别、让用户审核和决定是否执行剪切。普通静音由产品的 `natural-pause-v2` 确定性策略负责。公开 Skills 位于 [Agentchengfeng/chengfeng-videocut-skills](https://github.com/Agentchengfeng/chengfeng-videocut-skills)。
 
 ## 本地与网络说明
 

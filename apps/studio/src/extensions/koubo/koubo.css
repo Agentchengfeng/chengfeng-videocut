@@ -1,0 +1,240 @@
+.cf-koubo-panel {
+  position: relative;
+  width: clamp(340px, 40vw, 520px);
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex: 0 0 auto;
+  overflow: hidden;
+  border-left: 1px solid #2d2d31;
+  background: #111113;
+  color: #dedee2;
+}
+
+.cf-koubo-editor {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.cf-koubo-notice {
+  flex: 0 0 auto;
+  margin: 9px 14px 0;
+  padding: 8px 9px;
+  border: 1px solid #34343a;
+  border-radius: 6px;
+  color: #a1a1aa;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.cf-koubo-notice.is-warning {
+  border-color: rgb(251 191 36 / 32%);
+  color: #fcd34d;
+}
+
+.cf-koubo-notice.is-error {
+  border-color: rgb(248 113 113 / 32%);
+  color: #fca5a5;
+}
+
+.cf-koubo-transcript {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 14px 36px;
+  scrollbar-color: #3f3f46 transparent;
+  scrollbar-width: thin;
+}
+
+.cf-koubo-cue {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  margin: 0;
+  padding: 9px 0;
+  border-bottom: 1px solid rgb(255 255 255 / 4.5%);
+}
+
+.cf-koubo-cue.is-active {
+  background: rgb(255 255 255 / 1.8%);
+}
+
+.cf-koubo-cue-time {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 1px 0;
+  border: 0;
+  background: transparent;
+  color: #52525b;
+  cursor: pointer;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-align: left;
+}
+
+.cf-koubo-cue-time span {
+  font-size: 8px;
+  font-weight: 400;
+}
+
+.cf-koubo-cue-time strong {
+  color: #71717a;
+  font-size: 9px;
+  font-weight: 400;
+}
+
+.cf-koubo-cue-time:hover strong {
+  color: #d4d4d8;
+}
+
+.cf-koubo-cue-words {
+  margin: 0;
+  color: #dedee2;
+  font-size: 13px;
+  line-height: 2;
+  user-select: none;
+}
+
+.cf-koubo-word {
+  display: inline;
+  margin: 0;
+  padding: 1px 2px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: #dedee2;
+  cursor: text;
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.cf-koubo-word:hover {
+  background: rgb(255 255 255 / 7%);
+}
+
+.cf-koubo-word.is-current {
+  background: #d9fff1;
+  color: #0a1a14;
+}
+
+.cf-koubo-word.is-cut {
+  color: #71717a;
+  opacity: 0.62;
+  text-decoration: line-through;
+  text-decoration-color: #777780;
+  text-decoration-thickness: 1px;
+}
+
+.cf-koubo-word.is-gap {
+  margin: 0 2px;
+  padding: 1px 3px;
+  border-radius: 3px;
+  background: rgb(255 255 255 / 3.5%);
+  color: #6f6f78;
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.cf-koubo-word.is-gap.is-cut {
+  background: transparent;
+  color: #686870;
+}
+
+.cf-koubo-word.is-pending {
+  background: rgb(52 211 153 / 24%);
+  color: #eafff6;
+  opacity: 1;
+}
+
+.cf-koubo-word:focus-visible,
+.cf-koubo-cue-time:focus-visible,
+.cf-koubo-popover button:focus-visible {
+  outline: 2px solid #34d399;
+  outline-offset: 2px;
+}
+
+.cf-koubo-empty {
+  margin: 24px 0;
+  color: #71717a;
+  font-size: 11px;
+  text-align: center;
+}
+
+.cf-koubo-save-state {
+  position: absolute;
+  right: 10px;
+  bottom: 8px;
+  padding: 3px 6px;
+  border: 1px solid rgb(255 255 255 / 7%);
+  border-radius: 5px;
+  background: rgb(17 17 19 / 86%);
+  color: #71717a;
+  font-size: 9px;
+  pointer-events: none;
+}
+
+.cf-koubo-popover {
+  position: fixed;
+  z-index: 120;
+  display: flex;
+  min-width: 68px;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  padding: 3px;
+  border: 1px solid #3f3f46;
+  border-radius: 7px;
+  background: #202024;
+  box-shadow: 0 10px 30px rgb(0 0 0 / 42%);
+  user-select: none;
+}
+
+.cf-koubo-popover button {
+  width: 100%;
+  height: 26px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #f4f4f5;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.cf-koubo-popover button:disabled {
+  color: #71717a;
+  cursor: not-allowed;
+}
+
+.cf-koubo-popover button.is-delete:not(:disabled):hover {
+  background: rgb(248 113 113 / 16%);
+  color: #fca5a5;
+}
+
+.cf-koubo-popover button.is-restore:not(:disabled):hover {
+  background: rgb(52 211 153 / 14%);
+  color: #a7f3d0;
+}
+
+@media (max-width: 640px) {
+  .cf-koubo-panel {
+    width: min(86vw, 460px);
+  }
+
+  .cf-koubo-transcript {
+    padding-right: 11px;
+    padding-left: 11px;
+  }
+
+  .cf-koubo-cue {
+    grid-template-columns: 44px minmax(0, 1fr);
+    gap: 5px;
+  }
+}

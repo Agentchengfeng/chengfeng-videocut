@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { EDIT_LIST_MIN_SEGMENT_SECONDS } from "@video-workbench/core";
 
 export interface MediaCutRange {
   start: number;
@@ -17,6 +18,7 @@ export interface MediaProbe {
   pixelFormat: string;
   width: number;
   height: number;
+  frameRate?: number;
 }
 
 export interface MediaCutResult {
@@ -74,11 +76,18 @@ function finite(value: unknown, fallback = 0): number {
   return Number.isFinite(number) ? number : fallback;
 }
 
+function rational(value: unknown): number {
+  const text = String(value ?? "");
+  const [numerator, denominator] = text.split("/").map(Number);
+  if (Number.isFinite(numerator) && Number.isFinite(denominator) && denominator !== 0) return numerator / denominator;
+  return finite(text, 0);
+}
+
 export async function probeMedia(path: string): Promise<MediaProbe> {
   const { stdout } = await runCommand("ffprobe", [
     "-v", "error",
     "-show_entries",
-    "format=duration:stream=codec_type,bit_rate,profile,pix_fmt,width,height",
+    "format=duration:stream=codec_type,bit_rate,profile,pix_fmt,width,height,r_frame_rate,avg_frame_rate",
     "-of", "json",
     `file:${path}`,
   ]);
@@ -98,6 +107,7 @@ export async function probeMedia(path: string): Promise<MediaProbe> {
     pixelFormat: String(video?.pix_fmt ?? "yuv420p"),
     width: Math.max(0, finite(video?.width)),
     height: Math.max(0, finite(video?.height)),
+    frameRate: Math.max(0, rational(video?.avg_frame_rate) || rational(video?.r_frame_rate)),
   };
 }
 
@@ -138,97 +148,169 @@ export function keepSegmentsForCuts(
   return keep.filter((segment) => segment.end - segment.start >= 0.01);
 }
 
+/**
+ * Validates source ranges without sorting them. Their input order is the
+ * authored edit-list order and therefore part of the exported video meaning.
+ */
+export function normalizeOrderedMediaSegments(
+  segments: readonly MediaCutRange[],
+  duration: number,
+): MediaCutRange[] {
+  if (!(duration > 0)) throw new Error("Source duration must be positive");
+  if (segments.length === 0) throw new Error("Edit list must retain at least one segment");
+  return segments.map((segment, index) => {
+    const start = finite(segment.start, -1);
+    const end = finite(segment.end, -1);
+    if (
+      start < 0 ||
+      end > duration + 0.001 ||
+      end - start < EDIT_LIST_MIN_SEGMENT_SECONDS - 0.001
+    ) {
+      throw new Error(`Invalid edit-list segment #${index}`);
+    }
+    return {
+      start: Math.min(duration, start),
+      end: Math.min(duration, end),
+    };
+  });
+}
+
 function x264Profile(value: string): string {
   if (value.includes("baseline")) return "baseline";
   if (value.includes("main")) return "main";
   return "high";
 }
 
-async function mapConcurrent<T>(
-  values: readonly T[],
-  concurrency: number,
-  task: (value: T, index: number) => Promise<void>,
-): Promise<void> {
-  let nextIndex = 0;
-  const workers = Array.from(
-    { length: Math.max(1, Math.min(concurrency, values.length)) },
-    async () => {
-      while (nextIndex < values.length) {
-        const index = nextIndex++;
-        await task(values[index], index);
-      }
-    },
-  );
-  await Promise.all(workers);
+function filterTime(value: number): string {
+  return value.toFixed(6);
 }
 
-function concatPath(path: string): string {
-  return path.replaceAll("'", "'\\''");
+function concatFilePath(path: string): string {
+  return resolve(path).replaceAll("\\", "\\\\").replaceAll("'", "'\\''");
 }
 
-export async function cutVideoByRanges(input: {
+function orderedSegmentManifest(
+  source: string,
+  segments: readonly MediaCutRange[],
+): string {
+  const escapedSource = concatFilePath(source);
+  const entries = segments.map((segment) => [
+    `file '${escapedSource}'`,
+    `inpoint ${filterTime(segment.start)}`,
+    `outpoint ${filterTime(segment.end)}`,
+  ].join("\n"));
+  return `ffconcat version 1.0\n${entries.join("\n")}\n`;
+}
+
+/**
+ * Video order comes from the concat demuxer and concatdec_select excludes frames
+ * outside each declared inpoint/outpoint window, without buffering one decoded
+ * video copy per EDL segment. Audio remains decoded PCM inside this graph and
+ * reaches exactly one output AAC encoder, so encoder priming/padding cannot
+ * accumulate once per retained segment.
+ *
+ * Video and audio are assembled independently. This prevents video-frame
+ * boundary rounding from inserting silence between sample-accurate audio trims.
+ */
+function orderedSegmentFilter(
+  segments: readonly MediaCutRange[],
+  hasAudio: boolean,
+): string {
+  const filters = [
+    "[0:v:0]select=concatdec_select,setpts=PTS-STARTPTS[outv]",
+  ];
+  if (!hasAudio) return `${filters.join(";\n")}\n`;
+
+  if (segments.length === 1) {
+    const segment = segments[0];
+    filters.push(
+      `[1:a:0]asetpts=PTS-STARTPTS,` +
+        `atrim=start=${filterTime(segment.start)}:end=${filterTime(segment.end)},` +
+        "asetpts=PTS-STARTPTS[outa]",
+    );
+  } else {
+    filters.push(
+      `[1:a:0]asetpts=PTS-STARTPTS,asplit=${segments.length}` +
+        segments.map((_, index) => `[asrc${index}]`).join(""),
+    );
+    segments.forEach((segment, index) => {
+      filters.push(
+        `[asrc${index}]atrim=start=${filterTime(segment.start)}:end=${filterTime(segment.end)},` +
+          `asetpts=PTS-STARTPTS[a${index}]`,
+      );
+    });
+    filters.push(
+      `${segments.map((_, index) => `[a${index}]`).join("")}` +
+        `concat=n=${segments.length}:v=0:a=1[outa]`,
+    );
+  }
+  return `${filters.join(";\n")}\n`;
+}
+
+async function renderVideoSegments(input: {
   input: string;
   output: string;
-  ranges: readonly MediaCutRange[];
+  sourceProbe: MediaProbe;
+  cutRanges: readonly MediaCutRange[];
+  keepSegments: readonly MediaCutRange[];
   concurrency?: number;
 }): Promise<MediaCutResult> {
-  const sourceProbe = await probeMedia(input.input);
-  if (!sourceProbe.hasVideo || !(sourceProbe.duration > 0)) {
-    throw new Error(`Input is not a readable video: ${input.input}`);
-  }
-  const cutRanges = mergeCutRanges(input.ranges, sourceProbe.duration);
-  const keepSegments = keepSegmentsForCuts(cutRanges, sourceProbe.duration);
-  if (keepSegments.length === 0) throw new Error("Cut selection would remove the entire video");
+  const { sourceProbe } = input;
+  const cutRanges = input.cutRanges.map((range) => ({ ...range }));
+  const keepSegments = input.keepSegments.map((segment) => ({ ...segment }));
   await mkdir(dirname(input.output), { recursive: true });
   const temporaryOutput = `${input.output}.tmp-${process.pid}-${Date.now()}.mp4`;
   const workDir = await mkdtemp(join(tmpdir(), "chengfeng-videocut-cut-"));
   try {
-    if (cutRanges.length === 0) {
+    const isWholeSource = keepSegments.length === 1 &&
+      keepSegments[0].start <= 0.001 &&
+      keepSegments[0].end >= sourceProbe.duration - 0.001;
+    if (isWholeSource) {
       await runCommand("ffmpeg", [
         "-y", "-v", "error", "-i", `file:${input.input}`, "-map", "0", "-c", "copy",
         "-movflags", "+faststart", `file:${temporaryOutput}`,
       ]);
     } else {
-      const segmentPaths = keepSegments.map((_, index) =>
-        join(workDir, `segment-${String(index).padStart(5, "0")}.mp4`));
       const bitrateK = sourceProbe.videoBitrate > 0
         ? Math.max(200, Math.round(sourceProbe.videoBitrate / 1000))
         : 0;
-      await mapConcurrent(
-        keepSegments,
-        input.concurrency ?? 4,
-        async (segment, index) => {
-          const videoArgs = bitrateK > 0
-            ? [
-                "-b:v", `${bitrateK}k`,
-                "-maxrate", `${Math.round(bitrateK * 1.3)}k`,
-                "-bufsize", `${bitrateK * 2}k`,
-              ]
-            : ["-crf", "18"];
-          await runCommand("ffmpeg", [
-            "-y", "-v", "error",
-            "-ss", segment.start.toFixed(3),
-            "-to", segment.end.toFixed(3),
-            "-accurate_seek", "-i", `file:${input.input}`,
-            "-map", "0:v:0", "-map", "0:a?",
-            "-c:v", "libx264", "-profile:v", x264Profile(sourceProbe.videoProfile),
-            ...videoArgs,
-            "-pix_fmt", sourceProbe.pixelFormat,
-            "-c:a", "aac", "-b:a", "128k",
-            "-avoid_negative_ts", "make_zero",
-            `file:${segmentPaths[index]}`,
-          ]);
-        },
-      );
-      const concatFile = join(workDir, "concat.txt");
+      const videoArgs = bitrateK > 0
+        ? [
+            "-b:v", `${bitrateK}k`,
+            "-maxrate", `${Math.round(bitrateK * 1.3)}k`,
+            "-bufsize", `${bitrateK * 2}k`,
+          ]
+        : ["-crf", "18"];
+      const filterPath = join(workDir, "ordered-edl-filter.txt");
+      const concatPath = join(workDir, "ordered-edl.ffconcat");
       await writeFile(
-        concatFile,
-        `${segmentPaths.map((path) => `file '${concatPath(path)}'`).join("\n")}\n`,
+        concatPath,
+        orderedSegmentManifest(input.input, keepSegments),
         "utf8",
       );
+      await writeFile(
+        filterPath,
+        orderedSegmentFilter(keepSegments, sourceProbe.hasAudio),
+        "utf8",
+      );
+      const expectedDuration = keepSegments.reduce(
+        (total, segment) => total + segment.end - segment.start,
+        0,
+      );
       await runCommand("ffmpeg", [
-        "-y", "-v", "error", "-f", "concat", "-safe", "0",
-        "-i", concatFile, "-c", "copy", "-movflags", "+faststart",
+        "-y", "-v", "error",
+        "-copyts", "-segment_time_metadata", "1",
+        "-f", "concat", "-safe", "0", "-i", concatPath,
+        ...(sourceProbe.hasAudio ? ["-i", `file:${input.input}`] : []),
+        "-filter_complex_script", filterPath,
+        "-map", "[outv]",
+        ...(sourceProbe.hasAudio ? ["-map", "[outa]"] : []),
+        "-c:v", "libx264", "-profile:v", x264Profile(sourceProbe.videoProfile),
+        ...videoArgs,
+        "-pix_fmt", sourceProbe.pixelFormat,
+        ...(sourceProbe.hasAudio ? ["-c:a", "aac", "-b:a", "128k"] : []),
+        "-t", filterTime(expectedDuration),
+        "-movflags", "+faststart",
         `file:${temporaryOutput}`,
       ]);
     }
@@ -258,6 +340,51 @@ export async function cutVideoByRanges(input: {
     await rm(workDir, { recursive: true, force: true });
     await rm(temporaryOutput, { force: true });
   }
+}
+
+export async function cutVideoByRanges(input: {
+  input: string;
+  output: string;
+  ranges: readonly MediaCutRange[];
+  concurrency?: number;
+}): Promise<MediaCutResult> {
+  const sourceProbe = await probeMedia(input.input);
+  if (!sourceProbe.hasVideo || !(sourceProbe.duration > 0)) {
+    throw new Error(`Input is not a readable video: ${input.input}`);
+  }
+  const cutRanges = mergeCutRanges(input.ranges, sourceProbe.duration);
+  const keepSegments = keepSegmentsForCuts(cutRanges, sourceProbe.duration);
+  if (keepSegments.length === 0) throw new Error("Cut selection would remove the entire video");
+  return renderVideoSegments({
+    ...input,
+    sourceProbe,
+    cutRanges,
+    keepSegments,
+  });
+}
+
+/** Exports the authored EDL order instead of re-deriving order from cut ranges. */
+export async function cutVideoBySegments(input: {
+  input: string;
+  output: string;
+  segments: readonly MediaCutRange[];
+  cutRanges?: readonly MediaCutRange[];
+  concurrency?: number;
+}): Promise<MediaCutResult> {
+  const sourceProbe = await probeMedia(input.input);
+  if (!sourceProbe.hasVideo || !(sourceProbe.duration > 0)) {
+    throw new Error(`Input is not a readable video: ${input.input}`);
+  }
+  return renderVideoSegments({
+    input: input.input,
+    output: input.output,
+    sourceProbe,
+    cutRanges: input.cutRanges
+      ? mergeCutRanges(input.cutRanges, sourceProbe.duration)
+      : [],
+    keepSegments: normalizeOrderedMediaSegments(input.segments, sourceProbe.duration),
+    concurrency: input.concurrency,
+  });
 }
 
 export async function readCutRanges(path: string): Promise<MediaCutRange[]> {

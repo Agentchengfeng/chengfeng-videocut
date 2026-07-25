@@ -41,7 +41,14 @@ await chmod(cliPath, 0o755);
 
 const studioTarget = join(distDir, "studio");
 await mkdir(studioTarget, { recursive: true });
-for (const entry of ["assets", "icons", "favicon.svg", "index.html"]) {
+for (const entry of [
+  "assets",
+  "icons",
+  "favicon.svg",
+  "studio-boot-guard.js",
+  "index.html",
+  "chengfeng-videocut-capabilities.json",
+]) {
   await cp(join(studioDist, entry), join(studioTarget, entry), {
     recursive: true,
     force: true,

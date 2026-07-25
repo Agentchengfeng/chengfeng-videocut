@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "product": "chengfeng-videocut",
+  "studioVersion": "0.2.0",
+  "features": {
+    "topLevelViews": [
+      "storyboard",
+      "preview",
+      "koubo"
+    ],
+    "legacyWorkbenchPanel": false,
+    "managedTimelineEditing": true,
+    "managedTimelineOperations": [
+      "move",
+      "trim",
+      "split",
+      "delete",
+      "restore",
+      "delete-range",
+      "restore-snapshot"
+    ]
+  }
+}

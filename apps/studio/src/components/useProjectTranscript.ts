@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useCaptionStore } from "../captions/store";
+import { subscribeProjectFileChanges } from "../product/projectEvents";
 import { readStudioFileChangePath } from "./editor/manualEdits";
 import {
   mergeCaptionModelIntoCues,
@@ -62,13 +63,7 @@ export function useProjectTranscript(projectId: string): {
     const handleChange = (payload: unknown) => {
       if (isTranscriptFileChange(payload)) void loadTranscript();
     };
-    if (import.meta.hot) {
-      import.meta.hot.on("hf:file-change", handleChange);
-      return () => import.meta.hot?.off?.("hf:file-change", handleChange);
-    }
-    const events = new EventSource("/api/events");
-    events.addEventListener("file-change", handleChange);
-    return () => events.close();
+    return subscribeProjectFileChanges(handleChange);
   }, [loadTranscript]);
 
   const cues = useMemo(

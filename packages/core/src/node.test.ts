@@ -1,14 +1,33 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import {
+  access,
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
+  doctor,
   inspectProject,
+  projectOperationLockPath,
   registerProject,
   resolveProject,
+  serializeProjectOperation,
   sha256,
+  patchEditList,
+  readEditList,
+  writeEditList,
   writeCutSelection,
+  writeCutSelectionWithEditList,
 } from "./node";
+import { buildEditListFromCuts } from "./editList";
 
 const cleanupPaths: string[] = [];
 
@@ -76,7 +95,63 @@ async function createFixture(): Promise<{
   return { root, projectDir, projectsDir };
 }
 
+async function waitForPaths(paths: readonly string[]): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const ready = await Promise.all(paths.map(async (path) => {
+      try {
+        await access(path);
+        return true;
+      } catch {
+        return false;
+      }
+    }));
+    if (ready.every(Boolean)) return;
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 5));
+  }
+  throw new Error(`Timed out waiting for: ${paths.join(", ")}`);
+}
+
+interface ConcurrentWriterResult {
+  contender: string;
+  status: "fulfilled" | "rejected";
+  code?: string | null;
+  revision?: string;
+  sourceStart: number;
+}
+
+async function collectWriter(
+  processHandle: Bun.ReadableSubprocess,
+): Promise<ConcurrentWriterResult> {
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(processHandle.stdout).text(),
+    new Response(processHandle.stderr).text(),
+    processHandle.exited,
+  ]);
+  if (exitCode !== 0) {
+    throw new Error(`Concurrent EDL writer exited ${exitCode}: ${stderr || stdout}`);
+  }
+  const line = stdout.trim().split("\n").at(-1);
+  if (!line) throw new Error(`Concurrent EDL writer returned no result: ${stderr}`);
+  return JSON.parse(line) as ConcurrentWriterResult;
+}
+
 describe("project store", () => {
+  it("advertises the managed Studio service contract to fail-closed Skills", async () => {
+    const root = await mkdtemp(join(tmpdir(), "videocut-doctor-contract-"));
+    cleanupPaths.push(root);
+    const result = await doctor({ projectsDir: join(root, "projects") });
+    expect(result.capabilities).toMatchObject({
+      runtimeApiVersion: 1,
+      serviceApiVersion: 1,
+      serviceOperations: ["install", "start", "stop", "restart", "status", "logs", "ensure"],
+      managedStudioService: true,
+      serviceParentProcessIndependent: true,
+      serviceCrashRestart: true,
+      cloudTranscriptionProvider: "volcengine",
+      cloudTranscriptionTaskLocalOnly: true,
+    });
+  });
   it("resolves and inspects a legacy project without changing it", async () => {
     const { projectDir } = await createFixture();
     const before = await readFile(join(projectDir, "project.json"), "utf8");
@@ -159,6 +234,155 @@ describe("project store", () => {
     expect(await readdir(projectDir)).not.toContainEqual(expect.stringContaining(".tmp"));
   });
 
+  it("keeps the Product pause baseline for semantic overlays but lets full selections restore it", async () => {
+    const { projectDir } = await createFixture();
+    const project = await resolveProject(projectDir);
+    const cutsPath = join(projectDir, "cut-selection.json");
+    await writeFile(cutsPath, JSON.stringify({
+      schemaVersion: 3,
+      cutWordIds: ["w-1"],
+      cutRanges: [{ start: 0, end: 1 }],
+      initialization: {
+        mode: "delete-or-keep-v2",
+        naturalPausePolicy: "natural-pause-v2",
+        baselineCutWordIds: ["w-1", "missing", "w-1", 42],
+      },
+      updatedAt: "2026-07-16T00:00:00.000Z",
+    }, null, 2));
+    const initialCutsRaw = await readFile(cutsPath, "utf8");
+    const transcriptRaw = await readFile(join(projectDir, "transcript.json"), "utf8");
+    await writeEditList(project, buildEditListFromCuts({
+      projectId: "demo",
+      source: "input/source.mp4",
+      sourceDuration: 3,
+      cutsRevision: sha256(initialCutsRaw),
+      transcriptRevision: sha256(transcriptRaw),
+      cutRanges: [{ start: 0, end: 1 }],
+    }), { expectedRevision: "none" });
+
+    const overlay = await writeCutSelectionWithEditList(
+      project,
+      { cutWordIds: ["w-2"] },
+      {
+        expectedRevision: sha256(initialCutsRaw),
+        mode: "semantic-overlay",
+        now: "2026-07-16T01:00:00.000Z",
+      },
+    );
+    expect(overlay.cuts.document.cutWordIds).toEqual(["w-1", "w-2"]);
+    expect(overlay.cuts.document.cutRanges).toEqual([{ start: 0, end: 2 }]);
+    expect(overlay.editList?.document).toMatchObject({
+      duration: 1,
+      segments: [{ sourceStart: 2, sourceEnd: 3, timelineStart: 0 }],
+    });
+
+    const repeated = await writeCutSelectionWithEditList(
+      project,
+      { cutWordIds: ["w-2"] },
+      { expectedRevision: overlay.cuts.revision, mode: "semantic-overlay" },
+    );
+    expect(repeated.cuts.changed).toBe(false);
+    expect(repeated.cuts.revision).toBe(overlay.cuts.revision);
+    expect(repeated.editList).toBeNull();
+    await expect(writeCutSelectionWithEditList(
+      project,
+      { cutWordIds: [] },
+      { expectedRevision: sha256(initialCutsRaw), mode: "semantic-overlay" },
+    )).rejects.toMatchObject({ code: "revision_conflict" });
+
+    const fullSelection = await writeCutSelectionWithEditList(
+      project,
+      { cutWordIds: ["w-2"] },
+      { expectedRevision: overlay.cuts.revision, mode: "full-selection" },
+    );
+    expect(fullSelection.cuts.document.cutWordIds).toEqual(["w-2"]);
+    expect(fullSelection.cuts.document.initialization).toMatchObject({
+      naturalPausePolicy: "natural-pause-v2",
+      baselineCutWordIds: ["w-1", "missing", "w-1", 42],
+    });
+    expect(fullSelection.editList?.document.segments).toMatchObject([
+      { sourceStart: 0, sourceEnd: 1, timelineStart: 0 },
+      { sourceStart: 2, sourceEnd: 3, timelineStart: 1 },
+    ]);
+
+  });
+
+  it("absorbs enclosed ASR gaps for semantic overlays but preserves exact full selections", async () => {
+    const { projectDir } = await createFixture();
+    const project = await resolveProject(projectDir);
+    const transcriptPath = join(projectDir, "transcript.json");
+    const cutsPath = join(projectDir, "cut-selection.json");
+    await writeFile(transcriptPath, JSON.stringify({
+      schemaVersion: 1,
+      cues: [
+        {
+          id: "cue-1",
+          words: [
+            { id: "w-1", text: "删", start: 0, end: 1, isGap: false },
+            { id: "w-2", text: "", start: 1, end: 1.12, isGap: true },
+            { id: "w-3", text: "掉", start: 1.12, end: 2, isGap: false },
+            { id: "w-4", text: "保留", start: 2, end: 3, isGap: false },
+          ],
+        },
+      ],
+    }, null, 2));
+    await writeFile(cutsPath, JSON.stringify({
+      schemaVersion: 3,
+      cutWordIds: [],
+      cutRanges: [],
+      initialization: {
+        mode: "delete-or-keep-v2",
+        naturalPausePolicy: "natural-pause-v2",
+        baselineCutWordIds: [],
+      },
+      updatedAt: "2026-07-20T00:00:00.000Z",
+    }, null, 2));
+    const initialCutsRaw = await readFile(cutsPath, "utf8");
+    const transcriptRaw = await readFile(transcriptPath, "utf8");
+    await writeEditList(project, buildEditListFromCuts({
+      projectId: "demo",
+      source: "input/source.mp4",
+      sourceDuration: 3,
+      cutsRevision: sha256(initialCutsRaw),
+      transcriptRevision: sha256(transcriptRaw),
+      cutRanges: [],
+    }), { expectedRevision: "none" });
+
+    const overlay = await writeCutSelectionWithEditList(
+      project,
+      { cutWordIds: ["w-1", "w-3"] },
+      {
+        expectedRevision: sha256(initialCutsRaw),
+        mode: "semantic-overlay",
+        now: "2026-07-20T01:00:00.000Z",
+      },
+    );
+    expect(overlay.cuts.document.cutWordIds).toEqual(["w-1", "w-2", "w-3"]);
+    expect(overlay.cuts.document.cutRanges).toEqual([{ start: 0, end: 2 }]);
+    expect(overlay.editList?.document.segments).toMatchObject([
+      { sourceStart: 2, sourceEnd: 3, timelineStart: 0 },
+    ]);
+
+    const fullSelection = await writeCutSelectionWithEditList(
+      project,
+      { cutWordIds: ["w-1", "w-3"] },
+      {
+        expectedRevision: overlay.cuts.revision,
+        mode: "full-selection",
+        now: "2026-07-20T02:00:00.000Z",
+      },
+    );
+    expect(fullSelection.cuts.document.cutWordIds).toEqual(["w-1", "w-3"]);
+    expect(fullSelection.cuts.document.cutRanges).toEqual([
+      { start: 0, end: 1 },
+      { start: 1.12, end: 2 },
+    ]);
+    expect(fullSelection.editList?.document.segments).toMatchObject([
+      { sourceStart: 1, sourceEnd: 1.12, timelineStart: 0 },
+      { sourceStart: 2, sourceEnd: 3, timelineStart: 0.12 },
+    ]);
+  });
+
   it("rejects stale revisions and invalid ids without modifying the file", async () => {
     const { projectDir } = await createFixture();
     const project = await resolveProject(projectDir);
@@ -221,5 +445,213 @@ describe("project store", () => {
     expect(result.dryRun).toBe(true);
     expect(result.changed).toBe(true);
     expect(await readFile(path, "utf8")).toBe(before);
+  });
+
+  it("CAS-patches the edit list and serializes concurrent timeline edits", async () => {
+    const { projectDir } = await createFixture();
+    const project = await resolveProject(projectDir);
+    const transcriptRaw = await readFile(join(projectDir, "transcript.json"), "utf8");
+    const cutsRaw = await readFile(join(projectDir, "cut-selection.json"), "utf8");
+    const created = await writeEditList(project, buildEditListFromCuts({
+      projectId: "demo",
+      source: "input/source.mp4",
+      sourceDuration: 3,
+      cutsRevision: sha256(cutsRaw),
+      transcriptRevision: sha256(transcriptRaw),
+      cutRanges: [{ start: 0, end: 1 }],
+    }), { expectedRevision: "none" });
+    expect(created.document.segments).toHaveLength(1);
+
+    const results = await Promise.allSettled([
+      patchEditList(project, {
+        type: "trim",
+        clipId: "a-roll-0001",
+        sourceStart: 1.25,
+        sourceEnd: 3,
+      }, { expectedRevision: created.revision }),
+      patchEditList(project, {
+        type: "trim",
+        clipId: "a-roll-0001",
+        sourceStart: 1.5,
+        sourceEnd: 3,
+      }, { expectedRevision: created.revision }),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const current = await readEditList(project);
+    expect(current).not.toBeNull();
+    expect(current?.value.mode).toBe("manual");
+    expect([1.25, 1.5]).toContain(current!.value.segments[0]!.sourceStart);
+    expect(await readdir(projectDir)).not.toContainEqual(expect.stringContaining(".tmp"));
+  });
+
+  it("CAS-restores only the exact delete-range inverse without changing a stale file", async () => {
+    const { projectDir } = await createFixture();
+    const project = await resolveProject(projectDir);
+    const transcriptRaw = await readFile(join(projectDir, "transcript.json"), "utf8");
+    const cutsRaw = await readFile(join(projectDir, "cut-selection.json"), "utf8");
+    const created = await writeEditList(project, buildEditListFromCuts({
+      projectId: "demo",
+      source: "input/source.mp4",
+      sourceDuration: 3,
+      cutsRevision: sha256(cutsRaw),
+      transcriptRevision: sha256(transcriptRaw),
+      cutRanges: [{ start: 0, end: 1 }],
+    }), { expectedRevision: "none" });
+    const inverse = {
+      type: "delete-range" as const,
+      source: "input/source.mp4",
+      sourceStart: 1.5,
+      sourceEnd: 2,
+    };
+    const deleted = await patchEditList(project, inverse, {
+      expectedRevision: created.revision,
+    });
+    const beforeStaleUndo = await readFile(join(projectDir, "edit-list.json"), "utf8");
+    await expect(patchEditList(project, {
+      type: "restore-snapshot",
+      expectedSegments: deleted.document.segments,
+      beforeSegments: created.document.segments,
+      beforeMode: created.document.mode,
+      inverse,
+    }, { expectedRevision: created.revision })).rejects.toMatchObject({
+      code: "revision_conflict",
+    });
+    expect(await readFile(join(projectDir, "edit-list.json"), "utf8")).toBe(beforeStaleUndo);
+
+    const restored = await patchEditList(project, {
+      type: "restore-snapshot",
+      expectedSegments: deleted.document.segments,
+      beforeSegments: created.document.segments,
+      beforeMode: created.document.mode,
+      inverse,
+    }, { expectedRevision: deleted.revision });
+    expect(restored.document).toEqual(created.document);
+  });
+
+  it("CAS-patches an edit list exactly once across two independent Bun processes", async () => {
+    const { root, projectDir } = await createFixture();
+    const project = await resolveProject(projectDir);
+    const transcriptRaw = await readFile(join(projectDir, "transcript.json"), "utf8");
+    const cutsRaw = await readFile(join(projectDir, "cut-selection.json"), "utf8");
+    const created = await writeEditList(project, buildEditListFromCuts({
+      projectId: "demo",
+      source: "input/source.mp4",
+      sourceDuration: 3,
+      cutsRevision: sha256(cutsRaw),
+      transcriptRevision: sha256(transcriptRaw),
+      cutRanges: [{ start: 0, end: 1 }],
+    }), { expectedRevision: "none" });
+    const barrierDirectory = join(root, "barrier");
+    await mkdir(barrierDirectory);
+    const workerPath = fileURLToPath(
+      new URL("./test-fixtures/concurrent-edl-writer.ts", import.meta.url),
+    );
+    const startWriter = (contender: string, sourceStart: number) => Bun.spawn({
+      cmd: [
+        process.execPath,
+        workerPath,
+        projectDir,
+        barrierDirectory,
+        contender,
+        created.revision,
+        String(sourceStart),
+      ],
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const writers = [startWriter("left", 1.25), startWriter("right", 1.5)];
+
+    await waitForPaths([
+      join(barrierDirectory, "left.ready"),
+      join(barrierDirectory, "right.ready"),
+    ]);
+    await writeFile(join(barrierDirectory, "go"), "go");
+    const results = await Promise.all(writers.map(collectWriter));
+
+    const fulfilled = results.filter((result) => result.status === "fulfilled");
+    const rejected = results.filter((result) => result.status === "rejected");
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]?.code).toBe("revision_conflict");
+
+    const current = await readEditList(project);
+    expect(current?.value.segments[0]?.sourceStart).toBe(fulfilled[0]?.sourceStart);
+    expect(current?.revision).toBe(fulfilled[0]?.revision);
+    expect((await readdir(projectDir)).filter((name) =>
+      name.includes("chengfeng-videocut.write.lock"))).toEqual([]);
+  });
+
+  it("times out on a live lock and recovers a stale lock without remnants", async () => {
+    const { projectDir } = await createFixture();
+    const lockPath = projectOperationLockPath(projectDir);
+    await mkdir(lockPath);
+
+    await expect(serializeProjectOperation(
+      projectDir,
+      async () => "unreachable",
+      { timeoutMs: 30, staleMs: 10_000, pollIntervalMs: 5 },
+    )).rejects.toMatchObject({
+      code: "io_error",
+      details: { reason: "project_lock_timeout" },
+    });
+
+    const old = new Date(Date.now() - 2_000);
+    await utimes(lockPath, old, old);
+    const result = await serializeProjectOperation(
+      projectDir,
+      async () => "recovered",
+      { timeoutMs: 500, staleMs: 20, pollIntervalMs: 5, heartbeatIntervalMs: 10 },
+    );
+    expect(result).toBe("recovered");
+    expect((await readdir(projectDir)).filter((name) =>
+      name.includes("chengfeng-videocut.write.lock"))).toEqual([]);
+  });
+
+  it("rejects an all-deleted derived update before either Cuts or EDL is committed", async () => {
+    const { projectDir } = await createFixture();
+    const project = await resolveProject(projectDir);
+    const transcriptRaw = await readFile(join(projectDir, "transcript.json"), "utf8");
+    const cutsPath = join(projectDir, "cut-selection.json");
+    const editListPath = join(projectDir, "edit-list.json");
+    const cutsRaw = await readFile(cutsPath, "utf8");
+    await writeEditList(project, buildEditListFromCuts({
+      projectId: "demo",
+      source: "input/source.mp4",
+      sourceDuration: 3,
+      cutsRevision: sha256(cutsRaw),
+      transcriptRevision: sha256(transcriptRaw),
+      cutRanges: [{ start: 0, end: 1 }],
+    }), { expectedRevision: "none" });
+    const editListRaw = await readFile(editListPath, "utf8");
+
+    await expect(writeCutSelectionWithEditList(
+      project,
+      { cutWordIds: ["w-1", "w-2", "w-3"] },
+      { expectedRevision: sha256(cutsRaw) },
+    )).rejects.toMatchObject({ code: "invalid_edit_list" });
+
+    expect(await readFile(cutsPath, "utf8")).toBe(cutsRaw);
+    expect(await readFile(editListPath, "utf8")).toBe(editListRaw);
+  });
+
+  it("rejects a Cuts transaction before the project has an EDL", async () => {
+    const { projectDir } = await createFixture();
+    const project = await resolveProject(projectDir);
+    const cutsPath = join(projectDir, "cut-selection.json");
+    const cutsRaw = await readFile(cutsPath, "utf8");
+
+    await expect(writeCutSelectionWithEditList(
+      project,
+      { cutWordIds: ["w-2"] },
+      { expectedRevision: sha256(cutsRaw) },
+    )).rejects.toMatchObject({
+      code: "invalid_edit_list",
+      details: { reason: "project_not_prepared", projectId: "demo" },
+    });
+
+    expect(await readFile(cutsPath, "utf8")).toBe(cutsRaw);
+    await expect(readFile(join(projectDir, "edit-list.json"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
   });
 });

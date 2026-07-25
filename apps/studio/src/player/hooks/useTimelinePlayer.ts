@@ -3,6 +3,7 @@ import { usePlayerStore, liveTime, type TimelineElement } from "../store/playerS
 import { useMountEffect } from "../../hooks/useMountEffect";
 import { usePlaybackKeyboard } from "./usePlaybackKeyboard";
 import { useTimelineSyncCallbacks } from "./useTimelineSyncCallbacks";
+import { useTimelinePlayerLoop } from "./useTimelinePlayerLoop";
 
 export type { ClipManifestClip } from "../lib/playbackTypes";
 export { createStaticSeekPlaybackAdapter } from "../lib/playbackAdapter";
@@ -15,7 +16,6 @@ export {
   parseTimelineFromDOM,
   readTimelineDurationFromDocument,
   resolveStandaloneRootCompositionSrc,
-  resolveIframe,
 } from "../lib/timelineDOM";
 export {
   shouldIgnorePlaybackShortcutEvent,
@@ -36,16 +36,18 @@ import {
   mergeTimelineElementsPreservingDowngrades,
   parseTimelineFromDOM,
 } from "../lib/timelineDOM";
+import { normalizeToZones } from "../components/timelineZones";
 import {
-  resolvePreviewPlayerPlaybackAdapter,
   setPreviewMediaMuted,
   setPreviewPlaybackRate,
+  playPreviewEdlAudio,
   shouldMutePreviewAudio,
 } from "../lib/timelineIframeHelpers";
 import { scrubMusicAtSeek, stopScrubPreviewAudio } from "../lib/playbackScrub";
 import { applyCachedSourceDurations, probeMissingSourceDurations } from "../lib/mediaProbe";
 import { shouldResumeForwardPlaybackAfterSeek, shouldStopAfterSeek } from "../lib/playbackSeek";
 import { applyPreviewVariablesToUrl } from "../../hooks/previewVariablesStore";
+import { acceptStudioRuntimeMessage } from "../lib/runtimeProtocol";
 
 /**
  * Whether the derived elements differ from the current ones in any field that
@@ -73,6 +75,7 @@ export function useTimelinePlayer() {
   const probeIntervalRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
   const pendingSeekRef = useRef<number | null>(null);
   const isRefreshingRef = useRef(false);
+  const resumeAfterRefreshRef = useRef(false);
   const reverseRafRef = useRef<number>(0);
   const shuttleDirectionRef = useRef<"forward" | "backward" | null>(null);
   const shuttleSpeedIndexRef = useRef(0);
@@ -80,6 +83,7 @@ export function useTimelinePlayer() {
   const lastTimelineMessageRef = useRef<number>(0);
   const staticSeekAdapterRef = useRef<StaticSeekCacheEntry | null>(null);
   const staticSeekWarnedRef = useRef(false);
+  const edlAudioPlayGenerationRef = useRef(0);
 
   const { setIsPlaying, setCurrentTime, setDuration, setTimelineReady, setElements } =
     usePlayerStore.getState();
@@ -91,12 +95,17 @@ export function useTimelinePlayer() {
       // applyCachedSourceDurations re-applies the cached probe duration: re-derived
       // elements (e.g. after a clip move) can arrive without sourceDuration, which
       // otherwise makes trimmed waveforms lose their window.
-      const mergedElements = applyCachedSourceDurations(
-        mergeTimelineElementsPreservingDowngrades(
-          state.elements,
-          elements,
-          state.duration,
-          resolvedDuration,
+      // Enforced CapCut zoning (overlay → main → audio): normalize track indices
+      // on every discovery. Idempotent — already-zoned input is returned as-is, so
+      // drops persist zoned indices and reloads re-zone to the same (no drift).
+      const mergedElements = normalizeToZones(
+        applyCachedSourceDurations(
+          mergeTimelineElementsPreservingDowngrades(
+            state.elements,
+            elements,
+            state.duration,
+            resolvedDuration,
+          ),
         ),
       );
 
@@ -137,22 +146,36 @@ export function useTimelinePlayer() {
       const win = iframe?.contentWindow as IframeWindow | null;
       if (!iframe || !win) return null;
 
-      const playerAdapter =
-        win.__player && typeof win.__player.play === "function" ? win.__player : null;
+      // A product extension may wrap the framework clock for preview-specific
+      // source mapping (for example, one backing video driven by an EDL). Keep
+      // the framework's window.__player untouched so its runtime bridge and
+      // deterministic render contract remain authoritative outside Studio.
+      const extensionAdapter =
+        win.__studioPlaybackAdapter &&
+        typeof win.__studioPlaybackAdapter.play === "function"
+          ? win.__studioPlaybackAdapter
+          : null;
+      // An extension adapter is an explicit product-level transport contract,
+      // not a generic runtime candidate. Its duration may intentionally differ
+      // from the source-media document duration (for example, an EDL preview),
+      // so accept it before the generic document-duration reconciliation.
+      if (extensionAdapter && getAdapterDuration(extensionAdapter) > 0) {
+        releaseStaticSeekCache(staticSeekAdapterRef, staticSeekWarnedRef);
+        return extensionAdapter;
+      }
+      const playerAdapter = extensionAdapter ??
+        (win.__player && typeof win.__player.play === "function" ? win.__player : null);
       const docDuration = readTimelineDurationFromDocument(iframe.contentDocument);
-      const withPreviewHost = (adapter: PlaybackAdapter | null): PlaybackAdapter | null =>
-        resolvePreviewPlayerPlaybackAdapter(iframe, adapter) ?? adapter;
-      const hostedPlayerAdapter = withPreviewHost(playerAdapter);
-      const adapterDur = getAdapterDuration(hostedPlayerAdapter);
+      const adapterDur = getAdapterDuration(playerAdapter);
 
       if (adapterDur > 0 && docDuration <= adapterDur) {
         releaseStaticSeekCache(staticSeekAdapterRef, staticSeekWarnedRef);
-        return hostedPlayerAdapter;
+        return playerAdapter;
       }
 
       let timelineAdapter: PlaybackAdapter | null = null;
       if (win.__timeline) {
-        const adapter = withPreviewHost(wrapTimeline(win.__timeline));
+        const adapter = wrapTimeline(win.__timeline);
         const dur = getAdapterDuration(adapter);
         if (dur > 0 && docDuration <= dur) {
           releaseStaticSeekCache(staticSeekAdapterRef, staticSeekWarnedRef);
@@ -170,7 +193,7 @@ export function useTimelinePlayer() {
             ?.querySelector("[data-composition-id]")
             ?.getAttribute("data-composition-id");
           const key = rootId && rootId in win.__timelines ? rootId : keys[keys.length - 1];
-          const adapter = withPreviewHost(wrapTimeline(win.__timelines[key]));
+          const adapter = wrapTimeline(win.__timelines[key]);
           const dur = getAdapterDuration(adapter);
           if (dur > 0 && docDuration <= dur) {
             releaseStaticSeekCache(staticSeekAdapterRef, staticSeekWarnedRef);
@@ -183,7 +206,7 @@ export function useTimelinePlayer() {
       // The document timeline extends past every native adapter's duration.
       // Wrap the best available adapter with the effective duration so the
       // seek slider, seek clamping, and duration display cover the full range.
-      const bestAdapter = hostedPlayerAdapter ?? timelineAdapter;
+      const bestAdapter = playerAdapter ?? timelineAdapter;
       const effectiveDuration = Math.max(
         usePlayerStore.getState().duration,
         docDuration,
@@ -211,49 +234,14 @@ export function useTimelinePlayer() {
     }
   }, []);
 
-  const stopReverseLoop = useCallback(() => {
-    cancelAnimationFrame(reverseRafRef.current);
-  }, []);
+  const { startRAFLoop, stopRAFLoop, stopReverseLoop } = useTimelinePlayerLoop({
+    rafRef,
+    reverseRafRef,
+    getAdapter,
+    setCurrentTime,
+    setIsPlaying,
+  });
 
-  const startRAFLoop = useCallback(() => {
-    // fallow-ignore-next-line complexity
-    const tick = () => {
-      const adapter = getAdapter();
-      if (adapter) {
-        const rawTime = adapter.getTime();
-        const dur = adapter.getDuration();
-        const time = dur > 0 ? Math.min(rawTime, dur) : rawTime;
-        liveTime.notify(time); // direct DOM updates, no React re-render
-        const { inPoint, outPoint } = usePlayerStore.getState();
-        const rawLoopEnd = outPoint !== null ? Math.min(outPoint, dur) : dur;
-        const rawLoopStart = inPoint !== null ? inPoint : 0;
-        const loopEnd = rawLoopStart < rawLoopEnd ? rawLoopEnd : dur;
-        const loopStart = rawLoopStart < rawLoopEnd ? rawLoopStart : 0;
-        if (time >= loopEnd) {
-          if (usePlayerStore.getState().loopEnabled && dur > 0) {
-            // keepPlaying skips the adapter's implicit pause; play() below is then a no-op.
-            adapter.seek(loopStart, { keepPlaying: true });
-            liveTime.notify(loopStart);
-            adapter.play();
-            setIsPlaying(true);
-            rafRef.current = requestAnimationFrame(tick);
-            return;
-          }
-          if (adapter.isPlaying()) adapter.pause();
-          setCurrentTime(time); // sync Zustand once at end
-          setIsPlaying(false);
-          cancelAnimationFrame(rafRef.current);
-          return;
-        }
-      }
-      rafRef.current = requestAnimationFrame(tick);
-    };
-    rafRef.current = requestAnimationFrame(tick);
-  }, [getAdapter, setCurrentTime, setIsPlaying]);
-
-  const stopRAFLoop = useCallback(() => {
-    cancelAnimationFrame(rafRef.current);
-  }, []);
   const applyPlaybackRate = useCallback((rate: number) => {
     const iframe = iframeRef.current;
     if (!iframe) return;
@@ -282,6 +270,7 @@ export function useTimelinePlayer() {
     );
   }, []);
   const play = useCallback(() => {
+    if (isRefreshingRef.current) resumeAfterRefreshRef.current = true;
     stopRAFLoop();
     stopReverseLoop();
     stopScrubPreviewAudio();
@@ -292,12 +281,28 @@ export function useTimelinePlayer() {
     }
     applyPlaybackRate(usePlayerStore.getState().playbackRate);
     applyPreviewAudioState();
+    const audioPlayGeneration = ++edlAudioPlayGenerationRef.current;
+    const parentAudioPlay = playPreviewEdlAudio(iframeRef.current);
     adapter.play();
     shuttleDirectionRef.current = "forward";
     setIsPlaying(true);
     startRAFLoop();
+    void parentAudioPlay?.catch(() => {
+      if (audioPlayGeneration !== edlAudioPlayGenerationRef.current) return;
+      const activeAdapter = getAdapter();
+      activeAdapter?.pause();
+      const stoppedAt = activeAdapter?.getTime();
+      if (typeof stoppedAt === "number" && Number.isFinite(stoppedAt)) {
+        liveTime.notify(stoppedAt);
+        setCurrentTime(stoppedAt);
+      }
+      setIsPlaying(false);
+      stopRAFLoop();
+      stopReverseLoop();
+    });
   }, [
     getAdapter,
+    setCurrentTime,
     setIsPlaying,
     startRAFLoop,
     applyPlaybackRate,
@@ -365,6 +370,8 @@ export function useTimelinePlayer() {
     ],
   );
   const pause = useCallback(() => {
+    resumeAfterRefreshRef.current = false;
+    edlAudioPlayGenerationRef.current += 1;
     stopReverseLoop();
     const adapter = getAdapter();
     if (!adapter) return;
@@ -379,6 +386,10 @@ export function useTimelinePlayer() {
     (time: number, options?: { keepPlaying?: boolean }) => {
       const wasReverseShuttle = shuttleDirectionRef.current === "backward";
       stopReverseLoop();
+      if (isRefreshingRef.current) {
+        pendingSeekRef.current = Math.max(0, time);
+        return true;
+      }
       const adapter = getAdapter();
       if (!adapter) {
         pendingSeekRef.current = Math.max(0, time);
@@ -425,6 +436,8 @@ export function useTimelinePlayer() {
       stopReverseLoop,
       applyPlaybackRate,
       applyPreviewAudioState,
+      isRefreshingRef,
+      resumeAfterRefreshRef,
       shuttleDirectionRef,
       shuttleSpeedIndexRef,
     ],
@@ -432,10 +445,12 @@ export function useTimelinePlayer() {
 
   useEffect(() => {
     return usePlayerStore.subscribe((state, prev) => {
-      if (state.requestedSeekTime !== null && state.requestedSeekTime !== prev.requestedSeekTime) {
-        seek(state.requestedSeekTime, {
-          keepPlaying: state.requestedSeekKeepPlaying,
-        });
+      if (
+        state.requestedSeekTime !== null &&
+        (state.requestedSeekTime !== prev.requestedSeekTime ||
+          state.requestedSeekOptions !== prev.requestedSeekOptions)
+      ) {
+        seek(state.requestedSeekTime, state.requestedSeekOptions ?? undefined);
         usePlayerStore.getState().clearSeekRequest();
       }
     });
@@ -453,12 +468,18 @@ export function useTimelinePlayer() {
       seek,
     });
 
-  const { processTimelineMessageRef, enrichMissingCompositionsRef, onIframeLoad } =
+  const {
+    processTimelineMessageRef,
+    enrichMissingCompositionsRef,
+    onIframeLoad,
+    resetIframeSync,
+  } =
     useTimelineSyncCallbacks({
       iframeRef,
       probeIntervalRef,
       pendingSeekRef,
       isRefreshingRef,
+      resumeAfterRefreshRef,
       getAdapter,
       syncTimelineElements,
       setDuration,
@@ -467,12 +488,36 @@ export function useTimelinePlayer() {
       setIsPlaying,
       attachIframeShortcutListeners,
       applyPreviewAudioState,
+      resumePlayback: play,
     });
   const saveSeekPosition = useCallback(() => {
+    // Never DEGRADE the saved position. Overlapping reloads (e.g. an external
+    // file drop = upload reload + insert reload back-to-back) call this while
+    // the iframe from the FIRST reload is mid-teardown: getAdapter() can still
+    // return that dying document's adapter, whose getTime() reads 0 — and the
+    // store's currentTime can lag the visual playhead. Overwriting the
+    // still-unconsumed pendingSeek with either value is exactly how the
+    // playhead used to end up at 0 after a Finder drop (verified live via a
+    // currentTime write-trace). So: while a refresh is already in flight and a
+    // save exists, keep it; otherwise trust the live adapter, then the store.
+    const refreshInFlight = isRefreshingRef.current && pendingSeekRef.current != null;
     const adapter = getAdapter();
-    pendingSeekRef.current = adapter
-      ? adapter.getTime()
-      : (usePlayerStore.getState().currentTime ?? 0);
+    const playbackWasActive = usePlayerStore.getState().isPlaying || adapter?.isPlaying() === true;
+    if (!isRefreshingRef.current) {
+      resumeAfterRefreshRef.current = playbackWasActive;
+    } else if (playbackWasActive) {
+      // A second index/file event can arrive while the first iframe is already
+      // tearing down. Never let that transient paused store overwrite the
+      // original user's intent to keep playing.
+      resumeAfterRefreshRef.current = true;
+    }
+    if (!refreshInFlight) {
+      if (adapter) {
+        pendingSeekRef.current = adapter.getTime();
+      } else if (pendingSeekRef.current == null) {
+        pendingSeekRef.current = usePlayerStore.getState().currentTime ?? 0;
+      }
+    }
     isRefreshingRef.current = true;
     stopRAFLoop();
     stopReverseLoop();
@@ -482,6 +527,16 @@ export function useTimelinePlayer() {
     const iframe = iframeRef.current;
     if (!iframe) return;
     saveSeekPosition();
+    // Hide the iframe across the full reload so the user never sees the reloading
+    // document's RAW DOM (every clip stacked and visible) in the window between the
+    // new document parsing and the runtime initializing + seeking. initializeAdapter
+    // reveals it again right after its restore seek renders the correct frame.
+    // Tradeoff: this shows the parent stage background (a brief "freeze"/blank, on
+    // the order of the reload time ~100-300ms) INSTEAD of the all-clips flash. A
+    // blank is far less jarring than a burst of every asset appearing at once.
+    // Only the FULL-reload edits (drops/inserts) hit this — timing edits now take
+    // the soft-reload path and never touch refreshPlayer.
+    iframe.style.visibility = "hidden";
     const src = iframe.src;
     const url = new URL(src, window.location.origin);
     url.searchParams.set("_t", String(Date.now()));
@@ -501,6 +556,29 @@ export function useTimelinePlayer() {
       const data = e.data;
       const ourIframe = iframeRef.current;
       if (e.source && ourIframe && e.source !== ourIframe.contentWindow) {
+        return;
+      }
+      if (data?.source === "hf-preview") {
+        if (!acceptStudioRuntimeMessage(data)) return;
+      }
+      if (
+        data?.source === "chengfeng-videocut" &&
+        (data?.type === "videocut-audio-gesture-required" ||
+          data?.type === "videocut-media-play-error")
+      ) {
+        // The product EDL adapter fails closed when its only audible output
+        // cannot start. Mirror that stop into Studio immediately so the
+        // transport returns to Play instead of displaying a stale Pause state.
+        const adapter = getAdapterRef.current?.();
+        adapter?.pause();
+        const stoppedAt = adapter?.getTime();
+        if (typeof stoppedAt === "number" && Number.isFinite(stoppedAt)) {
+          liveTime.notify(stoppedAt);
+          setCurrentTime(stoppedAt);
+        }
+        setIsPlaying(false);
+        stopRAFLoop();
+        stopReverseLoop();
         return;
       }
       if (data?.source === "hf-preview" && data?.type === "state") {
@@ -538,7 +616,13 @@ export function useTimelinePlayer() {
     };
 
     const handleVisibilityChange = () => {
-      if (document.hidden && usePlayerStore.getState().isPlaying) {
+      if (
+        document.hidden &&
+        (usePlayerStore.getState().isPlaying ||
+          isRefreshingRef.current ||
+          resumeAfterRefreshRef.current)
+      ) {
+        resumeAfterRefreshRef.current = false;
         const adapter = getAdapterRef.current?.();
         if (adapter) {
           adapter.pause();
@@ -571,8 +655,12 @@ export function useTimelinePlayer() {
     stopRAFLoop();
     stopReverseLoop();
     if (probeIntervalRef.current) clearInterval(probeIntervalRef.current);
+    pendingSeekRef.current = null;
+    isRefreshingRef.current = false;
+    resumeAfterRefreshRef.current = false;
+    resetIframeSync();
     usePlayerStore.getState().reset();
-  }, [stopRAFLoop, stopReverseLoop]);
+  }, [resetIframeSync, stopRAFLoop, stopReverseLoop]);
 
   useEffect(() => {
     return usePlayerStore.subscribe((state, prev) => {

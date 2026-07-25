@@ -56,6 +56,8 @@ export interface ClipManifest {
 }
 
 export type IframeWindow = Window & {
+  /** Product/extension-owned preview transport; preferred by Studio only. */
+  __studioPlaybackAdapter?: RuntimePlaybackAdapter;
   __player?: RuntimePlaybackAdapter;
   __timeline?: TimelineLike;
   __timelines?: Record<string, TimelineLike>;

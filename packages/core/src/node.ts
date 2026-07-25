@@ -16,20 +16,38 @@ import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  buildCutSelectionDocument,
   buildCutSelectionFromProposal,
   buildCutTimeRanges,
+  expandCutWordIdsAcrossEnclosedGaps,
   hasSameCutSelectionMeaning,
   parseTranscriptWords,
   totalCutDuration,
   type CutSelectionDocument,
   type JsonObject,
 } from "./cuts";
+import {
+  applyEditListOperation,
+  buildEditListFromCuts,
+  hasSameEditListMeaning,
+  parseEditListDocument,
+  type EditListDocument,
+  type EditListOperation,
+} from "./editList";
 import { VideocutError } from "./errors";
+import { serializeProjectOperation } from "./projectLock";
+export {
+  PROJECT_OPERATION_LOCK_NAME,
+  projectOperationLockPath,
+  serializeProjectOperation,
+  type ProjectOperationLockOptions,
+} from "./projectLock";
 
 export const PROJECT_DOCUMENT_NAMES = [
   "project.json",
   "transcript.json",
   "cut-selection.json",
+  "edit-list.json",
   "visual-plan.json",
   "workbench.json",
 ] as const;
@@ -53,27 +71,6 @@ export interface JsonDocument<T = unknown> {
   value: T;
   revision: string;
   raw: string;
-}
-
-const projectWriteQueues = new Map<string, Promise<void>>();
-
-async function serializeProjectWrite<T>(
-  projectDirectory: string,
-  operation: () => Promise<T>,
-): Promise<T> {
-  const previous = projectWriteQueues.get(projectDirectory) ?? Promise.resolve();
-  const result = previous.catch(() => undefined).then(operation);
-  const tail = result.then(
-    () => undefined,
-    () => undefined,
-  );
-  projectWriteQueues.set(projectDirectory, tail);
-  void tail.then(() => {
-    if (projectWriteQueues.get(projectDirectory) === tail) {
-      projectWriteQueues.delete(projectDirectory);
-    }
-  });
-  return result;
 }
 
 function isObject(value: unknown): value is JsonObject {
@@ -265,9 +262,10 @@ function documentSummary(document: JsonDocument | null): {
 }
 
 export async function inspectProject(project: ResolvedProject): Promise<JsonObject> {
-  const [transcript, cuts, visualPlan, workbench] = await Promise.all([
+  const [transcript, cuts, editList, visualPlan, workbench] = await Promise.all([
     readOptionalProjectDocument(project, "transcript.json"),
     readOptionalProjectDocument(project, "cut-selection.json"),
+    readOptionalProjectDocument(project, "edit-list.json"),
     readOptionalProjectDocument(project, "visual-plan.json"),
     readOptionalProjectDocument(project, "workbench.json"),
   ]);
@@ -357,6 +355,14 @@ export async function inspectProject(project: ResolvedProject): Promise<JsonObje
         cutDuration: totalCutDuration(derivedRanges),
         rangesMatchTranscript,
       },
+      editList: editList
+        ? {
+            ...documentSummary(editList),
+            duration: parseEditListDocument(editList.value).duration,
+            segmentCount: parseEditListDocument(editList.value).segments.length,
+            mode: parseEditListDocument(editList.value).mode,
+          }
+        : documentSummary(null),
       visualPlan: documentSummary(visualPlan),
       workbench: documentSummary(workbench),
     },
@@ -484,7 +490,19 @@ export interface WriteCutSelectionOptions {
   expectedRevision?: string;
   dryRun?: boolean;
   now?: string;
+  /**
+   * `full-selection` is the authoritative Studio checkbox state. It may keep a
+   * pause that natural-pause-v2 initially selected for deletion.
+   *
+   * `semantic-overlay` is the Skill/CLI contract: the submitted ids describe
+   * semantic spoken-word deletions only. Product-owned natural-pause-v2 ids
+   * are merged from the stored initialization baseline while the project lock
+   * is held, so a Skill never has to copy or union that baseline itself.
+   */
+  mode?: CutSelectionWriteMode;
 }
+
+export type CutSelectionWriteMode = "full-selection" | "semantic-overlay";
 
 export interface WriteCutSelectionResult {
   projectId: string;
@@ -494,6 +512,55 @@ export interface WriteCutSelectionResult {
   changed: boolean;
   dryRun: boolean;
   document: CutSelectionDocument;
+}
+
+function naturalPauseBaselineWordIds(
+  words: readonly ReturnType<typeof parseTranscriptWords>[number][],
+  previous: unknown,
+): string[] {
+  if (!isObject(previous)) return [];
+  const initialization = previous.initialization;
+  if (
+    !isObject(initialization) ||
+    initialization.naturalPausePolicy !== "natural-pause-v2" ||
+    !Array.isArray(initialization.baselineCutWordIds)
+  ) {
+    return [];
+  }
+
+  // The baseline is persisted Product metadata, but old or partially migrated
+  // projects can contain stale ids. Only transcript-backed ids are legal for
+  // the current write; preserve transcript order and de-duplicate them.
+  const requested = new Set(
+    initialization.baselineCutWordIds
+      .filter((value): value is string => typeof value === "string")
+      .map((value) => value.trim())
+      .filter(Boolean),
+  );
+  return words.filter((word) => requested.has(word.id)).map((word) => word.id);
+}
+
+function buildProductCutSelectionFromProposal(
+  words: readonly ReturnType<typeof parseTranscriptWords>[number][],
+  proposal: unknown,
+  previous: unknown,
+  updatedAt: string,
+  mode: CutSelectionWriteMode,
+): CutSelectionDocument {
+  const submitted = buildCutSelectionFromProposal(words, proposal, previous, updatedAt);
+  if (mode === "full-selection") return submitted;
+
+  const semanticCutWordIds = expandCutWordIdsAcrossEnclosedGaps(
+    words,
+    new Set(submitted.cutWordIds),
+  );
+  const baseline = naturalPauseBaselineWordIds(words, previous);
+  return buildCutSelectionDocument({
+    words,
+    cutWordIds: new Set([...baseline, ...semanticCutWordIds]),
+    previous,
+    updatedAt,
+  });
 }
 
 async function writeCutSelectionSnapshot(
@@ -518,11 +585,12 @@ async function writeCutSelectionSnapshot(
     }
   }
 
-  const document = buildCutSelectionFromProposal(
+  const document = buildProductCutSelectionFromProposal(
     words,
     proposal,
     previous?.value,
     options.now ?? new Date().toISOString(),
+    options.mode ?? "full-selection",
   );
   if (previous && hasSameCutSelectionMeaning(previous.value, document)) {
     return {
@@ -553,10 +621,10 @@ async function writeCutSelectionSnapshot(
 /**
  * Writes a cut selection using an optimistic revision check.
  *
- * Mutating writes are serialized per project inside this process so two callers
- * cannot both commit from the same expected revision. A dry run deliberately
- * skips that queue: it is an advisory snapshot and does not reserve the returned
- * revision for a later write.
+ * Mutating writes are serialized per project across CLI/Studio processes so
+ * two callers cannot both commit from the same expected revision. A dry run
+ * deliberately skips that lock: it is an advisory snapshot and does not
+ * reserve the returned revision for a later write.
  */
 export async function writeCutSelection(
   project: ResolvedProject,
@@ -565,7 +633,275 @@ export async function writeCutSelection(
 ): Promise<WriteCutSelectionResult> {
   const operation = () => writeCutSelectionSnapshot(project, proposal, options);
   if (options.dryRun) return operation();
-  return serializeProjectWrite(project.directory, operation);
+  return serializeProjectOperation(project.directory, operation);
+}
+
+export interface WriteCutsAndDerivedEditListResult {
+  cuts: WriteCutSelectionResult;
+  editList: WriteEditListResult | null;
+}
+
+/**
+ * Product transaction used by the Cuts API. A derived edit list follows Cuts;
+ * a manual edit list rejects semantic Cuts changes until the user explicitly rebases.
+ */
+export async function writeCutSelectionWithEditList(
+  project: ResolvedProject,
+  proposal: unknown,
+  options: WriteCutSelectionOptions = {},
+): Promise<WriteCutsAndDerivedEditListResult> {
+  const operation = async (): Promise<WriteCutsAndDerivedEditListResult> => {
+    const [previousCuts, transcript, previousEditList] = await Promise.all([
+      readOptionalJsonAt(documentPath(project, "cut-selection.json")),
+      readProjectDocument(project, "transcript.json"),
+      readOptionalJsonAt(documentPath(project, "edit-list.json")),
+    ]);
+    const currentCutsRevision = previousCuts?.revision ?? null;
+    if (options.expectedRevision !== undefined) {
+      const expectedCurrent = currentCutsRevision ?? "none";
+      if (options.expectedRevision !== expectedCurrent) {
+        throw new VideocutError(
+          "revision_conflict",
+          "cut-selection.json changed after it was inspected",
+          { expectedRevision: options.expectedRevision, currentRevision: currentCutsRevision },
+        );
+      }
+    }
+    const words = parseTranscriptWords(transcript.value);
+    const candidate = buildProductCutSelectionFromProposal(
+      words,
+      proposal,
+      previousCuts?.value,
+      options.now ?? new Date().toISOString(),
+      options.mode ?? "full-selection",
+    );
+    const cutsChange = !previousCuts || !hasSameCutSelectionMeaning(previousCuts.value, candidate);
+    const currentEditList = previousEditList
+      ? parseEditListDocument(previousEditList.value)
+      : null;
+    if (!currentEditList) {
+      throw new VideocutError(
+        "invalid_edit_list",
+        "edit-list.json does not exist; prepare the project before changing Cuts",
+        {
+          reason: "project_not_prepared",
+          projectId: project.projectId,
+        },
+      );
+    }
+    if (cutsChange && currentEditList?.mode === "manual") {
+      throw new VideocutError(
+        "revision_conflict",
+        "Cuts cannot change while edit-list.json contains manual timeline edits",
+        {
+          reason: "manual_edit_list_requires_rebase",
+          editListRevision: previousEditList?.revision,
+          cutsRevision: previousCuts?.revision ?? null,
+        },
+      );
+    }
+
+    const cutsPath = documentPath(project, "cut-selection.json");
+    const cutsContent = cutsChange ? serializeJson(candidate) : previousCuts?.raw ?? "";
+    const cutsRevision = cutsChange ? sha256(cutsContent) : currentCutsRevision as string;
+    const cuts: WriteCutSelectionResult = {
+      projectId: project.projectId,
+      path: cutsPath,
+      previousRevision: currentCutsRevision,
+      revision: cutsRevision,
+      changed: cutsChange,
+      dryRun: Boolean(options.dryRun),
+      document: cutsChange
+        ? candidate
+        : previousCuts?.value as CutSelectionDocument,
+    };
+
+    // Build and serialize every dependent document before the first rename.
+    // In particular, a selection that removes the whole source must reject
+    // without leaving cut-selection.json ahead of edit-list.json.
+    let nextEditList: EditListDocument | null = null;
+    let editListContent: string | null = null;
+    let editListRevision: string | null = null;
+    if (cutsChange && currentEditList.mode === "cuts-derived") {
+      nextEditList = buildEditListFromCuts({
+        projectId: project.projectId,
+        source: currentEditList.segments[0]?.source ?? "",
+        sourceDuration: currentEditList.sourceDuration,
+        cutsRevision,
+        transcriptRevision: transcript.revision,
+        cutRanges: candidate.cutRanges,
+      });
+      editListContent = serializeJson(nextEditList);
+      editListRevision = sha256(editListContent);
+    }
+
+    const editList: WriteEditListResult | null = nextEditList && editListContent && editListRevision
+      ? {
+          projectId: project.projectId,
+          path: documentPath(project, "edit-list.json"),
+          previousRevision: previousEditList?.revision ?? null,
+          revision: editListRevision,
+          changed: !previousEditList || previousEditList.revision !== editListRevision,
+          dryRun: Boolean(options.dryRun),
+          document: nextEditList,
+        }
+      : null;
+    if (options.dryRun || !cutsChange) return { cuts, editList };
+
+    await atomicWriteText(cutsPath, cutsContent);
+    if (editList?.changed && editListContent) {
+      try {
+        await atomicWriteText(editList.path, editListContent);
+      } catch (error) {
+        try {
+          if (previousCuts) await atomicWriteText(cutsPath, previousCuts.raw);
+          else await rm(cutsPath, { force: true });
+        } catch (rollbackError) {
+          throw new VideocutError(
+            "io_error",
+            "Failed to save edit-list.json and failed to roll back cut-selection.json",
+            {
+              cause: error instanceof Error ? error.message : String(error),
+              rollbackCause: rollbackError instanceof Error
+                ? rollbackError.message
+                : String(rollbackError),
+            },
+          );
+        }
+        throw error;
+      }
+    }
+    return { cuts, editList };
+  };
+  if (options.dryRun) return operation();
+  return serializeProjectOperation(project.directory, operation);
+}
+
+export interface WriteEditListOptions {
+  expectedRevision?: string;
+  dryRun?: boolean;
+}
+
+export interface WriteEditListResult {
+  projectId: string;
+  path: string;
+  previousRevision: string | null;
+  revision: string;
+  changed: boolean;
+  dryRun: boolean;
+  document: EditListDocument;
+}
+
+async function commitEditListSnapshot(
+  project: ResolvedProject,
+  previous: JsonDocument | null,
+  document: EditListDocument,
+  options: WriteEditListOptions,
+): Promise<WriteEditListResult> {
+  const targetPath = documentPath(project, "edit-list.json");
+  const currentRevision = previous?.revision ?? null;
+  if (options.expectedRevision !== undefined) {
+    const expectedCurrent = currentRevision ?? "none";
+    if (options.expectedRevision !== expectedCurrent) {
+      throw new VideocutError(
+        "revision_conflict",
+        "edit-list.json changed after it was inspected",
+        { expectedRevision: options.expectedRevision, currentRevision },
+      );
+    }
+  }
+  if (document.projectId !== project.projectId) {
+    throw new VideocutError(
+      "invalid_edit_list",
+      "edit-list.json projectId does not match the registered project",
+      { documentProjectId: document.projectId, projectId: project.projectId },
+    );
+  }
+  if (previous && hasSameEditListMeaning(previous.value, document)) {
+    return {
+      projectId: project.projectId,
+      path: targetPath,
+      previousRevision: currentRevision,
+      revision: currentRevision as string,
+      changed: false,
+      dryRun: Boolean(options.dryRun),
+      document: parseEditListDocument(previous.value),
+    };
+  }
+  const content = serializeJson(document);
+  const nextRevision = sha256(content);
+  if (!options.dryRun) await atomicWriteText(targetPath, content);
+  return {
+    projectId: project.projectId,
+    path: targetPath,
+    previousRevision: currentRevision,
+    revision: nextRevision,
+    changed: true,
+    dryRun: Boolean(options.dryRun),
+    document,
+  };
+}
+
+async function writeEditListSnapshot(
+  project: ResolvedProject,
+  proposal: unknown,
+  options: WriteEditListOptions,
+): Promise<WriteEditListResult> {
+  const previous = await readOptionalJsonAt(documentPath(project, "edit-list.json"));
+  const document = parseEditListDocument(proposal);
+  return commitEditListSnapshot(project, previous, document, options);
+}
+
+export async function readEditList(
+  project: ResolvedProject,
+): Promise<JsonDocument<EditListDocument> | null> {
+  const snapshot = await readOptionalProjectDocument(project, "edit-list.json");
+  if (!snapshot) return null;
+  return { ...snapshot, value: parseEditListDocument(snapshot.value) };
+}
+
+export async function writeEditList(
+  project: ResolvedProject,
+  proposal: unknown,
+  options: WriteEditListOptions = {},
+): Promise<WriteEditListResult> {
+  const operation = () => writeEditListSnapshot(project, proposal, options);
+  if (options.dryRun) return operation();
+  return serializeProjectOperation(project.directory, operation);
+}
+
+export async function patchEditList(
+  project: ResolvedProject,
+  operation: EditListOperation | unknown,
+  options: WriteEditListOptions,
+): Promise<WriteEditListResult> {
+  const apply = async () => {
+    const previous = await readOptionalJsonAt(documentPath(project, "edit-list.json"));
+    if (!previous) {
+      throw new VideocutError(
+        "invalid_edit_list",
+        "edit-list.json does not exist; prepare the project before editing its timeline",
+      );
+    }
+    // Reject a stale command before validating or applying its payload. A
+    // restore range may legitimately overlap the *new* document, but that
+    // must surface as CAS conflict rather than a misleading payload error.
+    if (
+      options.expectedRevision !== undefined &&
+      options.expectedRevision !== previous.revision
+    ) {
+      throw new VideocutError(
+        "revision_conflict",
+        "edit-list.json changed after it was inspected",
+        { expectedRevision: options.expectedRevision, currentRevision: previous.revision },
+      );
+    }
+    const current = parseEditListDocument(previous.value);
+    const next = applyEditListOperation(current, operation);
+    return commitEditListSnapshot(project, previous, next, options);
+  };
+  if (options.dryRun) return apply();
+  return serializeProjectOperation(project.directory, apply);
 }
 
 export interface DoctorCheck {
@@ -573,6 +909,21 @@ export interface DoctorCheck {
   ok: boolean;
   required: boolean;
   detail: string;
+}
+
+export interface DoctorCapabilities {
+  runtimeApiVersion: 1;
+  serviceApiVersion: 1;
+  serviceOperations: readonly ["install", "start", "stop", "restart", "status", "logs", "ensure"];
+  managedStudioService: true;
+  serviceParentProcessIndependent: true;
+  serviceCrashRestart: true;
+  editListSchemaVersion: 1;
+  editListOperations: readonly ["move", "trim", "split", "delete", "restore", "delete-range", "restore-snapshot"];
+  managedArollProjection: true;
+  expectedEditListRevision: true;
+  cloudTranscriptionProvider: "volcengine";
+  cloudTranscriptionTaskLocalOnly: true;
 }
 
 async function findExecutable(name: string): Promise<string | null> {
@@ -591,7 +942,7 @@ async function findExecutable(name: string): Promise<string | null> {
 
 export async function doctor(
   options: Pick<ProjectResolutionOptions, "projectsDir"> = {},
-): Promise<{ healthy: boolean; checks: DoctorCheck[] }> {
+): Promise<{ healthy: boolean; capabilities: DoctorCapabilities; checks: DoctorCheck[] }> {
   const projectsDir = resolve(options.projectsDir ?? defaultProjectsDir());
   const productRoot = resolve(fileURLToPath(new URL("../../../", import.meta.url)));
   const packagedStudioIndex = fileURLToPath(new URL("./studio/index.html", import.meta.url));
@@ -645,6 +996,20 @@ export async function doctor(
   ];
   return {
     healthy: checks.every((check) => !check.required || check.ok),
+    capabilities: {
+      runtimeApiVersion: 1,
+      serviceApiVersion: 1,
+      serviceOperations: ["install", "start", "stop", "restart", "status", "logs", "ensure"],
+      managedStudioService: true,
+      serviceParentProcessIndependent: true,
+      serviceCrashRestart: true,
+      editListSchemaVersion: 1,
+      editListOperations: ["move", "trim", "split", "delete", "restore", "delete-range", "restore-snapshot"],
+      managedArollProjection: true,
+      expectedEditListRevision: true,
+      cloudTranscriptionProvider: "volcengine",
+      cloudTranscriptionTaskLocalOnly: true,
+    },
     checks,
   };
 }

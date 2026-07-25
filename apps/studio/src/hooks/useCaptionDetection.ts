@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { useCaptionStore } from "../captions/store";
+import { acceptStudioRuntimeMessage } from "../player/lib/runtimeProtocol";
 import { useCaptionSync } from "../captions/hooks/useCaptionSync";
 import { parseCaptionComposition } from "../captions/parser";
 
@@ -29,7 +30,6 @@ export function useCaptionDetection({
     if (!projectId) return;
 
     let activating = false;
-    let cancelled = false;
 
     const tryActivateCaptions = () => {
       if (useCaptionStore.getState().isEditMode || activating) {
@@ -90,13 +90,7 @@ export function useCaptionDetection({
       fetch(`/api/projects/${projectId}/files/${encodeURIComponent(srcPath)}`)
         .then((r) => r.json())
         .then((data: { content?: string }) => {
-          if (
-            cancelled ||
-            !data.content ||
-            !doc ||
-            !win ||
-            useCaptionStore.getState().isEditMode
-          ) return;
+          if (!data.content || !doc || !win || useCaptionStore.getState().isEditMode) return;
           const root = doc.querySelector("[data-composition-id]");
           const w = parseInt(root?.getAttribute("data-width") ?? "1920", 10);
           const h = parseInt(root?.getAttribute("data-height") ?? "1080", 10);
@@ -118,6 +112,7 @@ export function useCaptionDetection({
     const handleMessage = (e: MessageEvent) => {
       const data = e.data;
       if (data?.source === "hf-preview" && (data?.type === "state" || data?.type === "timeline")) {
+        if (!acceptStudioRuntimeMessage(data)) return;
         tryActivateCaptions();
       }
     };
@@ -126,7 +121,6 @@ export function useCaptionDetection({
     tryActivateCaptions();
 
     return () => {
-      cancelled = true;
       window.removeEventListener("message", handleMessage);
     };
   }, [activeCompPath, projectId, compIdToSrc, captionSync, previewIframeRef]);

@@ -5,9 +5,14 @@ export type VideocutErrorCode =
   | "invalid_json"
   | "invalid_transcript"
   | "invalid_cut_selection"
+  | "invalid_edit_list"
+  | "revision_required"
   | "revision_conflict"
   | "project_id_conflict"
   | "studio_origin_required"
+  | "media_has_no_audio"
+  | "missing_cloud_transcription_adapter"
+  | "cloud_transcription_failed"
   | "io_error";
 
 export class VideocutError extends Error {

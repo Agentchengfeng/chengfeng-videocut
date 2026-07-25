@@ -22,7 +22,7 @@ export interface LeftSidebarHandle {
   getTab: () => SidebarTab;
 }
 
-const STORAGE_KEY = "cf-studio-sidebar-tab-v1";
+const STORAGE_KEY = "hf-studio-sidebar-tab";
 
 function getPersistedTab(): SidebarTab {
   const stored = localStorage.getItem(STORAGE_KEY);
@@ -60,6 +60,7 @@ interface LeftSidebarProps {
   onAddBlock?: (blockName: string) => void;
   onPreviewBlock?: (preview: BlockPreviewInfo | null) => void;
   takeoverContent?: ReactNode;
+  onAddAssetToTimeline?: (path: string) => void;
 }
 
 export const LeftSidebar = memo(
@@ -92,6 +93,7 @@ export const LeftSidebar = memo(
       onAddBlock,
       onPreviewBlock,
       takeoverContent,
+      onAddAssetToTimeline,
     },
     ref,
   ) {
@@ -107,30 +109,90 @@ export const LeftSidebar = memo(
 
     const getTab = useCallback(() => tabRef.current, []);
 
-    useImperativeHandle(ref, () => ({ selectTab, getTab }), [
-      selectTab,
-      getTab,
-    ]);
+    useImperativeHandle(ref, () => ({ selectTab, getTab }), [selectTab, getTab]);
 
     return (
       <div
-        className="cf-left-sidebar flex flex-col h-full bg-neutral-950 border-r border-neutral-800/50"
+        className="flex flex-col h-full overflow-hidden rounded-lg border border-neutral-800/50 bg-neutral-950"
         style={{ width }}
       >
         {takeoverContent ? (
           <div className="flex min-h-0 flex-1">{takeoverContent}</div>
         ) : (
           <>
-            <div className="cf-sidebar-head border-b border-neutral-800/50 px-3 py-3 flex-shrink-0">
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <span className="cf-panel-kicker">动画资产</span>
+            {/* Tabs — Code first */}
+            <div className="border-b border-neutral-800/50 px-3 py-3 flex-shrink-0">
+              <div className="flex items-center gap-2">
+                <div
+                  className="grid min-w-0 flex-1 gap-0.5 rounded-[18px] bg-neutral-900 p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]"
+                  style={{
+                    gridTemplateColumns: STUDIO_BLOCKS_PANEL_ENABLED
+                      ? "1fr 1fr 1fr 1fr"
+                      : "1fr 1fr 1fr",
+                  }}
+                >
+                  <Tooltip label="Source code editor" side="bottom">
+                    <button
+                      type="button"
+                      onClick={() => selectTab("code")}
+                      className={`rounded-[14px] px-1.5 py-2 text-[10px] font-semibold truncate transition-all ${
+                        tab === "code"
+                          ? "bg-neutral-800 text-white"
+                          : "text-neutral-500 hover:text-neutral-200"
+                      }`}
+                    >
+                      Code
+                    </button>
+                  </Tooltip>
+                  <Tooltip label="Compositions and sub-compositions" side="bottom">
+                    <button
+                      type="button"
+                      onClick={() => selectTab("compositions")}
+                      className={`rounded-[14px] px-1.5 py-2 text-[10px] font-semibold truncate transition-all ${
+                        tab === "compositions"
+                          ? "bg-neutral-800 text-white"
+                          : "text-neutral-500 hover:text-neutral-200"
+                      }`}
+                    >
+                      Comps
+                    </button>
+                  </Tooltip>
+                  <Tooltip label="Videos, images, audio, fonts" side="bottom">
+                    <button
+                      type="button"
+                      onClick={() => selectTab("assets")}
+                      className={`rounded-[14px] px-1.5 py-2 text-[10px] font-semibold truncate transition-all ${
+                        tab === "assets"
+                          ? "bg-neutral-800 text-white"
+                          : "text-neutral-500 hover:text-neutral-200"
+                      }`}
+                    >
+                      Assets
+                    </button>
+                  </Tooltip>
+                  {STUDIO_BLOCKS_PANEL_ENABLED && (
+                    <Tooltip label="Browse blocks and components" side="bottom">
+                      <button
+                        type="button"
+                        onClick={() => selectTab("blocks")}
+                        className={`rounded-[14px] px-1.5 py-2 text-[10px] font-semibold truncate transition-all ${
+                          tab === "blocks"
+                            ? "bg-neutral-800 text-white"
+                            : "text-neutral-500 hover:text-neutral-200"
+                        }`}
+                      >
+                        Catalog
+                      </button>
+                    </Tooltip>
+                  )}
+                </div>
                 {onToggleCollapse && (
                   <button
                     type="button"
                     onClick={onToggleCollapse}
-                    className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md border border-transparent text-neutral-500 transition-colors hover:border-neutral-800 hover:bg-neutral-900 hover:text-neutral-300"
-                    title="收起动画段面板"
-                    aria-label="收起动画段面板"
+                    className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md border border-transparent text-neutral-500 transition-colors hover:border-neutral-800 hover:bg-neutral-900 hover:text-neutral-300"
+                    title="Hide sidebar"
+                    aria-label="Hide sidebar"
                   >
                     <svg
                       width="14"
@@ -148,57 +210,6 @@ export const LeftSidebar = memo(
                     </svg>
                   </button>
                 )}
-              </div>
-              <div className="flex items-center gap-2">
-                <div
-                  className="cf-sidebar-tabs grid min-w-0 flex-1 gap-1 rounded-md bg-neutral-900 p-1"
-                  style={{
-                    gridTemplateColumns: STUDIO_BLOCKS_PANEL_ENABLED
-                      ? "1fr 1fr 1fr 1fr"
-                      : "1fr 1fr 1fr",
-                  }}
-                >
-                  <Tooltip label="动画段与子动画" side="bottom">
-                    <button
-                      type="button"
-                      onClick={() => selectTab("compositions")}
-                      className={`cf-sidebar-tab truncate rounded-md px-1.5 py-2 text-[11px] font-semibold transition-colors ${
-                        tab === "compositions" ? "is-active" : ""
-                      }`}
-                    >
-                      动画段
-                    </button>
-                  </Tooltip>
-                  <Tooltip label="视频、图片、音频与字体" side="bottom">
-                    <button
-                      type="button"
-                      onClick={() => selectTab("assets")}
-                      className={`cf-sidebar-tab truncate rounded-md px-1.5 py-2 text-[11px] font-semibold transition-colors ${tab === "assets" ? "is-active" : ""}`}
-                    >
-                      素材
-                    </button>
-                  </Tooltip>
-                  {STUDIO_BLOCKS_PANEL_ENABLED && (
-                    <Tooltip label="动画模板与组件" side="bottom">
-                      <button
-                        type="button"
-                        onClick={() => selectTab("blocks")}
-                        className={`cf-sidebar-tab truncate rounded-md px-1.5 py-2 text-[11px] font-semibold transition-colors ${tab === "blocks" ? "is-active" : ""}`}
-                      >
-                        模板
-                      </button>
-                    </Tooltip>
-                  )}
-                  <Tooltip label="源码与文件" side="bottom">
-                    <button
-                      type="button"
-                      onClick={() => selectTab("code")}
-                      className={`cf-sidebar-tab truncate rounded-md px-1.5 py-2 text-[11px] font-semibold transition-colors ${tab === "code" ? "is-active" : ""}`}
-                    >
-                      源码
-                    </button>
-                  </Tooltip>
-                </div>
               </div>
             </div>
 
@@ -221,6 +232,7 @@ export const LeftSidebar = memo(
                 onImport={onImportFiles}
                 onDelete={onDeleteFile}
                 onRename={onRenameFile}
+                onAddAssetToTimeline={onAddAssetToTimeline}
               />
             )}
             {tab === "code" && (
@@ -245,7 +257,7 @@ export const LeftSidebar = memo(
                 <div className="flex-1 overflow-hidden min-w-0">
                   {codeChildren ?? (
                     <div className="flex items-center justify-center h-full text-neutral-600 text-sm">
-                      选择文件后编辑
+                      Select a file to edit
                     </div>
                   )}
                 </div>
@@ -253,10 +265,7 @@ export const LeftSidebar = memo(
             )}
 
             {STUDIO_BLOCKS_PANEL_ENABLED && tab === "blocks" && (
-              <BlocksTab
-                onAddBlock={onAddBlock}
-                onPreviewBlock={onPreviewBlock}
-              />
+              <BlocksTab onAddBlock={onAddBlock} onPreviewBlock={onPreviewBlock} />
             )}
 
             {/* Lint button pinned at the bottom */}
@@ -278,14 +287,12 @@ export const LeftSidebar = memo(
                     <path d="M9 11l3 3L22 4" />
                     <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" />
                   </svg>
-                  {linting ? "检查中…" : "规范检查"}
-                  {!linting &&
-                    lintFindingCount != null &&
-                    lintFindingCount > 0 && (
-                      <span className="ml-1 min-w-[16px] rounded-full bg-amber-500/20 px-1 text-[9px] font-bold text-amber-400">
-                        {lintFindingCount}
-                      </span>
-                    )}
+                  {linting ? "Linting…" : "Lint"}
+                  {!linting && lintFindingCount != null && lintFindingCount > 0 && (
+                    <span className="ml-1 min-w-[16px] rounded-full bg-amber-500/20 px-1 text-[9px] font-bold text-amber-400">
+                      {lintFindingCount}
+                    </span>
+                  )}
                 </button>
               </div>
             )}

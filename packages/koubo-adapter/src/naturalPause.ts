@@ -6,10 +6,6 @@ export interface NaturalPauseWord {
 
 export interface NaturalPausePolicy {
   version: string;
-  shortPauseMax: number;
-  mediumPauseMax: number;
-  mediumPauseTarget: number;
-  longPauseTarget: number;
   keepAfterPreviousWord: number;
   keepBeforeNextWord: number;
 }
@@ -23,8 +19,7 @@ export interface NaturalPauseAction extends Record<string, unknown> {
   type:
     | "semantic-delete"
     | "explicit-gap-delete"
-    | "pause-keep"
-    | "pause-compress"
+    | "pause-delete"
     | "head-tail-delete";
   start: number;
   end: number;
@@ -39,8 +34,7 @@ export interface NaturalPausePlan {
     selectedCount: number;
     semanticSelectedWords: number;
     semanticGroups: number;
-    pausesKept: number;
-    pausesCompressed: number;
+    pausesDeleted: number;
     explicitGapsDeleted: number;
     headTailDeleted: number;
     deleteSegments: number;
@@ -51,11 +45,7 @@ export interface NaturalPausePlan {
 }
 
 export const DEFAULT_NATURAL_PAUSE_POLICY: Readonly<NaturalPausePolicy> = Object.freeze({
-  version: "natural-pause-v2",
-  shortPauseMax: 0.35,
-  mediumPauseMax: 0.65,
-  mediumPauseTarget: 0.22,
-  longPauseTarget: 0.28,
+  version: "natural-pause-v4-delete-all-gaps",
   keepAfterPreviousWord: 0.08,
   keepBeforeNextWord: 0.16,
 });
@@ -68,22 +58,6 @@ function finiteNumber(value: unknown, fallback: number): number {
 function normalizePolicy(policy: Partial<NaturalPausePolicy> = {}): NaturalPausePolicy {
   return {
     version: policy.version || DEFAULT_NATURAL_PAUSE_POLICY.version,
-    shortPauseMax: finiteNumber(
-      policy.shortPauseMax,
-      DEFAULT_NATURAL_PAUSE_POLICY.shortPauseMax,
-    ),
-    mediumPauseMax: finiteNumber(
-      policy.mediumPauseMax,
-      DEFAULT_NATURAL_PAUSE_POLICY.mediumPauseMax,
-    ),
-    mediumPauseTarget: finiteNumber(
-      policy.mediumPauseTarget,
-      DEFAULT_NATURAL_PAUSE_POLICY.mediumPauseTarget,
-    ),
-    longPauseTarget: finiteNumber(
-      policy.longPauseTarget,
-      DEFAULT_NATURAL_PAUSE_POLICY.longPauseTarget,
-    ),
     keepAfterPreviousWord: finiteNumber(
       policy.keepAfterPreviousWord,
       DEFAULT_NATURAL_PAUSE_POLICY.keepAfterPreviousWord,
@@ -97,17 +71,6 @@ function normalizePolicy(policy: Partial<NaturalPausePolicy> = {}): NaturalPause
 
 function roundTime(value: number): number {
   return Number(value.toFixed(3));
-}
-
-function targetForPause(
-  duration: number,
-  policy: NaturalPausePolicy,
-): { action: "keep" | "compress"; targetDuration: number } {
-  if (duration <= policy.shortPauseMax) return { action: "keep", targetDuration: duration };
-  if (duration <= policy.mediumPauseMax) {
-    return { action: "compress", targetDuration: policy.mediumPauseTarget };
-  }
-  return { action: "compress", targetDuration: policy.longPauseTarget };
 }
 
 export function buildNaturalPausePlan(
@@ -294,31 +257,16 @@ export function buildNaturalPausePlan(
       index = endIndex + 1;
       continue;
     }
-    const decision = targetForPause(duration, policy);
-    if (decision.action === "keep") {
-      actions.push({
-        type: "pause-keep",
-        indices,
-        start: roundTime(start),
-        end: roundTime(end),
-        originalDuration: roundTime(duration),
-        targetDuration: roundTime(duration),
-      });
-      index = endIndex + 1;
-      continue;
-    }
-    const targetDuration = Math.min(duration, decision.targetDuration);
-    const deleteEnd = end - targetDuration;
-    addSegment(start, deleteEnd, "pause-compress");
+    addSegment(start, end, "pause-delete");
     actions.push({
-      type: "pause-compress",
+      type: "pause-delete",
       indices,
       start: roundTime(start),
       end: roundTime(end),
       deleteStart: roundTime(start),
-      deleteEnd: roundTime(deleteEnd),
+      deleteEnd: roundTime(end),
       originalDuration: roundTime(duration),
-      targetDuration: roundTime(targetDuration),
+      targetDuration: 0,
     });
     index = endIndex + 1;
   }
@@ -348,8 +296,7 @@ export function buildNaturalPausePlan(
       selectedCount: selected.size,
       semanticSelectedWords: [...selected].filter((index) => !isGap(index)).length,
       semanticGroups: semanticGroups.length,
-      pausesKept: actions.filter((action) => action.type === "pause-keep").length,
-      pausesCompressed: actions.filter((action) => action.type === "pause-compress").length,
+      pausesDeleted: actions.filter((action) => action.type === "pause-delete").length,
       explicitGapsDeleted: actions.filter((action) => action.type === "explicit-gap-delete").length,
       headTailDeleted: actions.filter((action) => action.type === "head-tail-delete").length,
       deleteSegments: deleteSegments.length,

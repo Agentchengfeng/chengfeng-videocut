@@ -20,6 +20,14 @@ export interface WorkbenchCodexContinue extends Record<string, unknown> {
   reason?: string;
 }
 
+export type WorkbenchCutArtifactState = "missing" | "legacy" | "stale" | "current";
+
+export interface WorkbenchCutArtifactStatus {
+  state: WorkbenchCutArtifactState;
+  editListRevision: string | null;
+  path: string | null;
+}
+
 export interface WorkbenchWorkflowProject {
   status: string;
   config: Record<string, unknown> | null;
@@ -31,6 +39,8 @@ export interface WorkbenchWorkflowResource {
   schemaVersion: 1;
   projectId: string;
   revision: string;
+  editListRevision: string;
+  artifact: WorkbenchCutArtifactStatus;
   project: WorkbenchWorkflowProject;
 }
 
@@ -67,6 +77,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+function isCutArtifactStatus(
+  value: unknown,
+  currentEditListRevision: unknown,
+): value is WorkbenchCutArtifactStatus {
+  if (!isRecord(value) ||
+      (value.state !== "missing" && value.state !== "legacy" &&
+        value.state !== "stale" && value.state !== "current")) {
+    return false;
+  }
+  const revision = value.editListRevision;
+  const path = value.path;
+  if (value.state === "missing") return revision === null && path === null;
+  if (typeof path !== "string" || !path.trim()) return false;
+  if (value.state === "legacy") return revision === null;
+  if (typeof revision !== "string" || !/^[a-f0-9]{64}$/.test(revision)) return false;
+  return value.state !== "current" || revision === currentEditListRevision;
+}
+
 async function readJson(response: Response): Promise<unknown> {
   try {
     return await response.json();
@@ -91,6 +119,9 @@ function parseWorkflowResource(
     typeof payload.projectId !== "string" ||
     typeof payload.revision !== "string" ||
     !/^[a-f0-9]{64}$/.test(payload.revision) ||
+    typeof payload.editListRevision !== "string" ||
+    !/^(?:none|[a-f0-9]{64})$/.test(payload.editListRevision) ||
+    !isCutArtifactStatus(payload.artifact, payload.editListRevision) ||
     !project ||
     typeof project.status !== "string" ||
     !project.status.trim() ||
@@ -169,18 +200,45 @@ export async function postProjectWorkflowAction(input: {
   projectId: string;
   action: WorkbenchWorkflowAction;
   expectedRevision: string;
+  expectedEditListRevision?: string;
   config?: WorkbenchFinalConfig;
 }): Promise<void> {
+  if (input.action === "apply-cut") {
+    if (input.expectedEditListRevision === undefined) {
+      throw new WorkflowApiError(
+        "apply-cut requires the edit-list revision captured at user confirmation",
+        {
+          status: 400,
+          code: "revision_required",
+          details: { reason: "missing_confirmed_edit_list_revision" },
+        },
+      );
+    }
+    if (!/^[a-f0-9]{64}$/.test(input.expectedEditListRevision)) {
+      throw new WorkflowApiError(
+        "apply-cut requires a prepared edit-list.json revision",
+        {
+          status: 400,
+          code: "revision_required",
+          details: { reason: "edit_list_required" },
+        },
+      );
+    }
+  }
   const body: {
     action: WorkbenchWorkflowAction;
     confirmed: true;
     expectedRevision: string;
+    expectedEditListRevision?: string;
     config?: WorkbenchFinalConfig;
   } = {
     action: input.action,
     confirmed: true,
     expectedRevision: input.expectedRevision,
   };
+  if (input.action === "apply-cut" && input.expectedEditListRevision !== undefined) {
+    body.expectedEditListRevision = input.expectedEditListRevision;
+  }
   if (input.config) body.config = input.config;
 
   const response = await fetchResponse(actionsUrl(input.projectId), {

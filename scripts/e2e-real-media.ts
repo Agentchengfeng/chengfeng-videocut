@@ -536,6 +536,7 @@ async function main(): Promise<void> {
     const cut = await applyKouboCut(taskDir, {
       confirmed: true,
       expectedRevision: preparedSnapshot.revision,
+      expectedEditListRevision: sha256(await readFile(join(taskDir, "edit-list.json"))),
       rootSourceCut: "symlink",
     });
     checkpoint(stages, "physical-cut", cut, "codex_continue_required", "subtitle_rebuild");

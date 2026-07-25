@@ -4,6 +4,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { buildEditListFromCuts } from "@video-workbench/core";
+import { sha256 } from "@video-workbench/core/node";
 import {
   createVideocutCutsHandler,
   isVideocutCutsRequest,
@@ -22,8 +24,9 @@ const storedSelection = {
   cutWordIds: ["w-1"],
   cutRanges: [{ start: 0, end: 1 }],
   initialization: {
-    mode: "delete-or-keep-v1",
+    mode: "delete-or-keep-v2",
     naturalPausePolicy: "natural-pause-v2",
+    baselineCutWordIds: ["w-1"],
   },
   productMetadata: { owner: "studio" },
   updatedAt: "2026-07-16T00:00:00.000Z",
@@ -64,14 +67,38 @@ async function createFixture(): Promise<{
   return { projectsDir, projectDir, cutsPath };
 }
 
+async function addEditListFixture(
+  projectDir: string,
+  mode: "cuts-derived" | "manual" = "cuts-derived",
+  sourceDuration = 2,
+): Promise<string> {
+  const cutsRaw = await readFile(join(projectDir, "cut-selection.json"), "utf8");
+  const transcriptRaw = await readFile(join(projectDir, "transcript.json"), "utf8");
+  const editList = buildEditListFromCuts({
+    projectId: "demo",
+    source: "input/source.mp4",
+    sourceDuration,
+    cutsRevision: sha256(cutsRaw),
+    transcriptRevision: sha256(transcriptRaw),
+    cutRanges: [{ start: 0, end: 1 }],
+  });
+  editList.mode = mode;
+  const raw = `${JSON.stringify(editList, null, 2)}\n`;
+  await writeFile(join(projectDir, "edit-list.json"), raw);
+  return raw;
+}
+
 function cutsRequest(
   method: "GET" | "PUT",
   body?: Record<string, unknown>,
 ): Request {
+  const requestBody = method === "PUT" && body
+    ? { mode: "full-selection", ...body }
+    : body;
   return new Request("http://localhost/api/v1/projects/demo/cuts", {
     method,
-    headers: body ? { "Content-Type": "application/json" } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
+    headers: requestBody ? { "Content-Type": "application/json" } : undefined,
+    body: requestBody ? JSON.stringify(requestBody) : undefined,
   });
 }
 
@@ -109,8 +136,9 @@ describe("videocut cuts API", () => {
     });
   });
 
-  it("rejects metadata injection and preserves stored metadata on valid writes", async () => {
-    const { projectsDir, cutsPath } = await createFixture();
+  it("rejects metadata injection while a Studio full selection can restore a baseline pause", async () => {
+    const { projectsDir, projectDir, cutsPath } = await createFixture();
+    await addEditListFixture(projectDir);
     const handle = createVideocutCutsHandler({ projectsDir });
     const getResponse = await requiredResponse(handle(cutsRequest("GET")));
     const revision = (await getResponse.json()).revision as string;
@@ -163,6 +191,104 @@ describe("videocut cuts API", () => {
     expect(validBody.revision).toMatch(/^[a-f0-9]{64}$/);
     expect(written.initialization).toEqual(storedSelection.initialization);
     expect(written.productMetadata).toEqual(storedSelection.productMetadata);
+    expect(written.cutWordIds).not.toContain("w-1");
+  });
+
+  it("merges a semantic overlay with the natural-pause baseline under CAS and refreshes EDL", async () => {
+    const { projectsDir, projectDir, cutsPath } = await createFixture();
+    await writeFile(
+      join(projectDir, "transcript.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        cues: [{
+          id: "cue-1",
+          words: [
+            { id: "w-1", start: 0, end: 1 },
+            { id: "w-2", start: 1, end: 2 },
+            { id: "w-3", start: 2, end: 3 },
+          ],
+        }],
+      }),
+    );
+    await addEditListFixture(projectDir, "cuts-derived", 3);
+    const handle = createVideocutCutsHandler({ projectsDir });
+    const initialRevision = sha256(await readFile(cutsPath, "utf8"));
+
+    const response = await requiredResponse(handle(cutsRequest("PUT", {
+      expectedRevision: initialRevision,
+      cutWordIds: ["w-2"],
+      mode: "semantic-overlay",
+    })));
+    const body = await response.json();
+    const written = JSON.parse(await readFile(cutsPath, "utf8"));
+    const editList = JSON.parse(await readFile(join(projectDir, "edit-list.json"), "utf8"));
+
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({
+      changed: true,
+      document: {
+        cutWordIds: ["w-1", "w-2"],
+        cutRanges: [{ start: 0, end: 2 }],
+      },
+    });
+    expect(written.initialization.baselineCutWordIds).toEqual(["w-1"]);
+    expect(editList).toMatchObject({
+      mode: "cuts-derived",
+      baseCutsRevision: body.revision,
+      duration: 1,
+      segments: [{ sourceStart: 2, sourceEnd: 3, timelineStart: 0 }],
+    });
+
+    const repeated = await requiredResponse(handle(cutsRequest("PUT", {
+      expectedRevision: body.revision,
+      cutWordIds: ["w-2"],
+      mode: "semantic-overlay",
+    })));
+    expect(await repeated.json()).toMatchObject({
+      changed: false,
+      revision: body.revision,
+      document: { cutWordIds: ["w-1", "w-2"] },
+    });
+
+    const stale = await requiredResponse(handle(cutsRequest("PUT", {
+      expectedRevision: initialRevision,
+      cutWordIds: [],
+      mode: "semantic-overlay",
+    })));
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toMatchObject({ error: { code: "revision_conflict" } });
+  });
+
+  it("fails closed for a missing or unknown Cuts write mode", async () => {
+    const { projectsDir, projectDir, cutsPath } = await createFixture();
+    await addEditListFixture(projectDir);
+    const handle = createVideocutCutsHandler({ projectsDir });
+    const beforeCuts = await readFile(cutsPath, "utf8");
+    const beforeEditList = await readFile(join(projectDir, "edit-list.json"), "utf8");
+    const expectedRevision = sha256(beforeCuts);
+
+    for (const body of [
+      { expectedRevision, cutWordIds: ["w-2"] },
+      { expectedRevision, cutWordIds: ["w-2"], mode: "replace" },
+    ]) {
+      const response = await requiredResponse(handle(new Request(
+        "http://localhost/api/v1/projects/demo/cuts",
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        },
+      )));
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({
+        error: {
+          code: "invalid_argument",
+          details: { supportedModes: ["semantic-overlay", "full-selection"] },
+        },
+      });
+      expect(await readFile(cutsPath, "utf8")).toBe(beforeCuts);
+      expect(await readFile(join(projectDir, "edit-list.json"), "utf8")).toBe(beforeEditList);
+    }
   });
 
   it("blocks the generic file PUT for cut-selection.json", async () => {
@@ -194,7 +320,8 @@ describe("videocut cuts API", () => {
   });
 
   it("allows exactly one writer for two concurrent requests with one revision", async () => {
-    const { projectsDir, cutsPath } = await createFixture();
+    const { projectsDir, projectDir, cutsPath } = await createFixture();
+    await addEditListFixture(projectDir);
     const handle = createVideocutCutsHandler({ projectsDir });
     const emptySelection = {
       ...storedSelection,
@@ -229,5 +356,75 @@ describe("videocut cuts API", () => {
       const finalDocument = JSON.parse(await readFile(cutsPath, "utf8"));
       expect([["w-1"], ["w-2"]]).toContainEqual(finalDocument.cutWordIds);
     }
+  });
+
+  it("refreshes a Cuts-derived EDL and materializes its new revision", async () => {
+    const { projectsDir, projectDir } = await createFixture();
+    await addEditListFixture(projectDir);
+    const projections: Array<{ projectId: string; revision: string }> = [];
+    const handle = createVideocutCutsHandler({
+      projectsDir,
+      materializeIndex(change) {
+        projections.push({ projectId: change.projectId, revision: change.revision });
+      },
+    });
+    const current = await requiredResponse(handle(cutsRequest("GET")));
+    const currentRevision = (await current.json()).revision as string;
+
+    const response = await requiredResponse(handle(cutsRequest("PUT", {
+      expectedRevision: currentRevision,
+      cutWordIds: ["w-2"],
+    })));
+    const body = await response.json();
+    const editListRaw = await readFile(join(projectDir, "edit-list.json"), "utf8");
+    const editList = JSON.parse(editListRaw);
+    expect(response.status).toBe(200);
+    expect(body.editListRevision).toBe(sha256(editListRaw));
+    expect(editList).toMatchObject({
+      mode: "cuts-derived",
+      baseCutsRevision: body.revision,
+      segments: [{ sourceStart: 0, sourceEnd: 1, timelineStart: 0 }],
+    });
+    expect(projections).toEqual([{ projectId: "demo", revision: body.editListRevision }]);
+  });
+
+  it("rejects a Cuts write when the project has not been prepared", async () => {
+    const { projectsDir, cutsPath } = await createFixture();
+    const before = await readFile(cutsPath, "utf8");
+    const handle = createVideocutCutsHandler({ projectsDir });
+    const response = await requiredResponse(handle(cutsRequest("PUT", {
+      expectedRevision: sha256(before),
+      cutWordIds: ["w-2"],
+    })));
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      error: {
+        code: "invalid_edit_list",
+        details: { reason: "project_not_prepared", projectId: "demo" },
+      },
+    });
+    expect(await readFile(cutsPath, "utf8")).toBe(before);
+  });
+
+  it("rejects Cuts changes over a manual EDL without changing either document", async () => {
+    const { projectsDir, projectDir, cutsPath } = await createFixture();
+    const editListBefore = await addEditListFixture(projectDir, "manual");
+    const cutsBefore = await readFile(cutsPath, "utf8");
+    const handle = createVideocutCutsHandler({ projectsDir });
+    const response = await requiredResponse(handle(cutsRequest("PUT", {
+      expectedRevision: sha256(cutsBefore),
+      cutWordIds: ["w-2"],
+    })));
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      error: {
+        code: "revision_conflict",
+        details: { reason: "manual_edit_list_requires_rebase" },
+      },
+    });
+    expect(await readFile(cutsPath, "utf8")).toBe(cutsBefore);
+    expect(await readFile(join(projectDir, "edit-list.json"), "utf8")).toBe(editListBefore);
   });
 });

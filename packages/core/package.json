@@ -1,6 +1,6 @@
 {
   "name": "@video-workbench/core",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "license": "Apache-2.0",
   "author": "成峰 / AI产品自由",
   "private": true,
@@ -8,6 +8,9 @@
   "exports": {
     ".": "./src/index.ts",
     "./node": "./src/node.ts"
+  },
+  "dependencies": {
+    "@video-workbench/contracts": "workspace:*"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",

@@ -84,11 +84,23 @@ function isVideocutCutsMiddlewareRequest(method: string, pathname: string): bool
   }
 }
 
+function isVideocutTimelineMediaMiddlewareRequest(pathname: string): boolean {
+  return /^\/api\/v1\/projects\/[^/]+\/media\/(?:frame|waveform)$/.test(pathname);
+}
+
 // ── Vite plugin ──────────────────────────────────────────────────────────────
 
 function devProjectApi(): Plugin {
   const dataDir = resolve(
     process.env.VIDEO_WORKBENCH_PROJECTS_DIR ?? resolve(__dirname, "data/projects"),
+  );
+  // Preview frames are derived, disposable runtime data. Keep them explicit
+  // and outside every registered project so Studio never turns thumbnails into
+  // project truth.
+  const timelineMediaCacheDir = resolve(
+    process.env.CHENGFENG_VIDEOCUT_TIMELINE_MEDIA_CACHE_DIR ??
+      process.env.CHENGFENG_VIDEOCUT_FRAME_CACHE_DIR ??
+      resolve(__dirname, ".cache/timeline-media"),
   );
 
   return {
@@ -96,6 +108,19 @@ function devProjectApi(): Plugin {
     configureServer(server): void {
       let _api: { fetch: (req: Request) => Promise<Response> } | null = null;
       let _cutsApi: ((request: Request) => Promise<Response | null>) | null = null;
+      let _timelineMediaApi: ((request: Request) => Promise<Response | null>) | null = null;
+      const getTimelineMediaApi = async () => {
+        if (!_timelineMediaApi) {
+          const mod = await server.ssrLoadModule(
+            "./src/server/videocutTimelineMediaApi.ts",
+          );
+          _timelineMediaApi = mod.createVideocutTimelineMediaHandler({
+            projectsDir: dataDir,
+            cacheDir: timelineMediaCacheDir,
+          });
+        }
+        return _timelineMediaApi;
+      };
       const getCutsApi = async () => {
         if (!_cutsApi) {
           const mod = await server.ssrLoadModule("./src/server/videocutCutsApi.ts");
@@ -144,6 +169,36 @@ function devProjectApi(): Plugin {
             res.end("failed to serve runtime");
           }
         });
+      });
+
+      // Product-owned read-only Timeline media. It must run before the generic
+      // HyperFrames API, which does not own this versioned frame route.
+      server.middlewares.use(async (req, res, next) => {
+        const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+        if (!isVideocutTimelineMediaMiddlewareRequest(url.pathname)) return next();
+        try {
+          const headers: Record<string, string> = {};
+          for (const [key, value] of Object.entries(req.headers)) {
+            if (value != null) headers[key] = Array.isArray(value) ? value.join(", ") : value;
+          }
+          const timelineMediaApi = await getTimelineMediaApi();
+          const response = await timelineMediaApi(new Request(url.toString(), {
+            method: req.method,
+            headers,
+          }));
+          if (!response) return next();
+          await bridgeHonoResponse(response, res);
+        } catch (err) {
+          console.error("[Studio Timeline media API] Error:", err);
+          if (!res.headersSent) {
+            res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
+            res.end(JSON.stringify({
+              schemaVersion: 1,
+              ok: false,
+              error: { code: "internal_error", message: "Internal server error" },
+            }));
+          }
+        }
       });
 
       // Product-owned cut selection API. This sits before the generic Studio

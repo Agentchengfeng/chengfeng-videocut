@@ -1,4 +1,5 @@
 const encoder = new TextEncoder();
+const KEEP_ALIVE_INTERVAL_MS = 5_000;
 
 function encodeEvent(event: string | undefined, data: unknown): Uint8Array {
   const payload = typeof data === "string" ? data : JSON.stringify(data);
@@ -13,7 +14,13 @@ export class StudioEventHub {
   #closed = false;
 
   constructor() {
-    this.#keepAlive = setInterval(() => this.#broadcast(encoder.encode(": keepalive\n\n")), 15_000);
+    // Bun's default HTTP idle timeout is 10 seconds. Keep the Studio event
+    // stream active before that deadline so the client does not reconnect in a
+    // loop while a long video is being reviewed.
+    this.#keepAlive = setInterval(
+      () => this.#broadcast(encoder.encode(": keepalive\n\n")),
+      KEEP_ALIVE_INTERVAL_MS,
+    );
     this.#keepAlive.unref?.();
   }
 

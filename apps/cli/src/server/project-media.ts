@@ -41,14 +41,16 @@ function isWithin(parent: string, child: string): boolean {
   return path === "" || (!path.startsWith("..") && !isAbsolute(path));
 }
 
-function isSafeProjectId(projectId: string): boolean {
+export function isSafeProjectId(projectId: string): boolean {
   return (
     projectId.length > 0 &&
     projectId !== "." &&
     projectId !== ".." &&
     !projectId.includes("/") &&
     !projectId.includes("\\") &&
-    !projectId.includes("\0")
+    !projectId.includes("\0") &&
+    // A second decode must not be able to introduce a path separator.
+    !/%(?:2f|5c)/i.test(projectId)
   );
 }
 

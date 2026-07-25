@@ -1,0 +1,1937 @@
+:root {
+  color-scheme: dark;
+  color: #e5e5e5;
+  background: #0a0a0a;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-synthesis: none;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  height: 100dvh;
+  margin: 0;
+  overflow: hidden;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button {
+  color: inherit;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+[role="button"]:focus-visible,
+[role="option"]:focus-visible {
+  outline: 2px solid #3ce6ac;
+  outline-offset: 2px;
+}
+
+.cf-cut-app {
+  --workspace: #18181b;
+  --panel: #0c0c0e;
+  --panel-inset: #121214;
+  --panel-input: #161618;
+  --panel-surface: #18181b;
+  --panel-hover: #27272a;
+  --line: #1e1e1e;
+  --hairline: #1a1a1c;
+  --text-0: #fafafa;
+  --text-1: #e4e4e7;
+  --text-2: #a1a1aa;
+  --text-3: #71717a;
+  --text-4: #52525b;
+  --text-5: #3f3f46;
+  --mint: #3ce6ac;
+  --danger: #ef4444;
+  display: grid;
+  grid-template-rows: 40px minmax(0, 1fr);
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  background: var(--workspace);
+}
+
+/* Header ---------------------------------------------------------- */
+
+.cf-cut-header {
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  height: 40px;
+  padding: 0 12px;
+  border-bottom: 1px solid #27272a;
+  background: #18181b;
+}
+
+.cf-cut-brand {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 10px;
+}
+
+.cf-cut-brand strong {
+  color: var(--text-0);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+}
+
+.cf-cut-brand-mark {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+}
+
+.cf-cut-brand-mark rect {
+  fill: #101014;
+  stroke: #3f3f46;
+}
+
+.cf-cut-brand-mark path {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.cf-cut-brand-mark .is-mint {
+  stroke: var(--mint);
+  stroke-width: 2;
+}
+
+.cf-cut-brand-mark .is-light {
+  stroke: #fafafa;
+  stroke-width: 2;
+}
+
+.cf-cut-brand-mark .is-cut {
+  stroke: var(--text-4);
+  stroke-width: 1;
+}
+
+.cf-cut-brand > span {
+  width: 1px;
+  height: 16px;
+  flex: 0 0 auto;
+  background: #3f3f46;
+}
+
+.cf-cut-brand p {
+  overflow: hidden;
+  margin: 0;
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Shell ----------------------------------------------------------- */
+
+.cf-cut-workspace {
+  display: grid;
+  grid-template-columns:
+    var(--cf-cut-transcript-width, 320px)
+    3px
+    minmax(480px, 1fr);
+  /* HyperFrames' two-lane canvas is 242px plus a 33px toolbar. Keep the pane
+     at or above that source geometry instead of clipping its bottom breathing
+     area and making both tracks look pinned to the bottom edge. */
+  grid-template-rows: minmax(0, 1fr) clamp(276px, 30vh, 340px);
+  column-gap: 0;
+  row-gap: 3px;
+  min-width: 0;
+  min-height: 0;
+  padding: 1px;
+  overflow: hidden;
+  background: var(--workspace);
+}
+
+.cf-cut-workspace > .cf-cut-feature-panel {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.cf-cut-workspace > .cf-cut-player {
+  grid-column: 3;
+  grid-row: 1;
+}
+
+.cf-cut-transcript-resizer {
+  position: relative;
+  z-index: 8;
+  grid-column: 2;
+  grid-row: 1;
+  width: 8px;
+  min-height: 0;
+  margin-left: -2.5px;
+  outline: none;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.cf-cut-transcript-resizer::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2.5px;
+  width: 3px;
+  content: "";
+  background: rgb(255 255 255 / 7%);
+  transition: background-color 120ms ease;
+}
+
+.cf-cut-transcript-resizer:hover::before,
+.cf-cut-transcript-resizer:focus-visible::before,
+.cf-cut-workspace[data-transcript-resizing="true"] .cf-cut-transcript-resizer::before {
+  background: rgb(60 230 172 / 72%);
+}
+
+.cf-cut-transcript-resizer:focus-visible {
+  box-shadow: 0 0 0 2px rgb(60 230 172 / 34%);
+}
+
+.cf-cut-workspace[data-transcript-resizing="true"],
+.cf-cut-workspace[data-transcript-resizing="true"] * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+.cf-cut-workspace > .cf-cut-timeline {
+  grid-column: 1 / -1;
+  grid-row: 2;
+}
+
+.cf-cut-player,
+.cf-cut-feature-panel,
+.cf-cut-timeline {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid rgb(255 255 255 / 5%);
+  border-radius: 8px;
+  background: #0a0a0b;
+}
+
+/* Left feature area ---------------------------------------------- */
+
+.cf-cut-feature-panel {
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+}
+
+.cf-cut-feature-tabs {
+  display: flex;
+  align-items: end;
+  min-height: 38px;
+  flex: 0 0 38px;
+  gap: 2px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--hairline);
+  background: #0a0a0b;
+}
+
+.cf-cut-feature-tab {
+  position: relative;
+  min-width: 52px;
+  height: 38px;
+  padding: 0 10px;
+  border: 0;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 550;
+}
+
+.cf-cut-feature-tab::after {
+  position: absolute;
+  right: 10px;
+  bottom: -1px;
+  left: 10px;
+  height: 2px;
+  border-radius: 999px;
+  background: transparent;
+  content: "";
+}
+
+.cf-cut-feature-tab[aria-selected="true"] {
+  color: var(--text-0);
+}
+
+.cf-cut-feature-tab[aria-selected="true"]::after {
+  background: var(--mint);
+}
+
+.cf-cut-feature-content,
+.cf-cut-feature-tabpanel {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.cf-cut-feature-panel .cut-transcript-pane {
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  border: 0;
+  border-radius: 0;
+}
+
+/* Player ---------------------------------------------------------- */
+
+.cf-cut-player {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.cf-cut-player:fullscreen {
+  width: 100vw;
+  height: 100vh;
+  border: 0;
+  border-radius: 0;
+  background: #050505;
+}
+
+.cf-cut-player-stage {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  padding: 8px;
+  background: #050505;
+}
+
+.cf-cut-player-stage video {
+  display: block;
+  width: min(100%, calc((100vh - 230px) * 4 / 3));
+  max-width: 100%;
+  height: 100%;
+  max-height: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: contain;
+  outline: none;
+}
+
+.cf-cut-player-empty {
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.cf-cut-player-state {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  padding: 4px 7px;
+  border-radius: 5px;
+  background: rgb(0 0 0 / 62%);
+  color: var(--text-2);
+  font-size: 10px;
+  pointer-events: none;
+}
+
+.cf-cut-player-state.is-error {
+  color: #fca5a5;
+}
+
+.cf-cut-player-state.has-action {
+  pointer-events: auto;
+}
+
+.cf-cut-preview-retry {
+  margin-left: 8px;
+  border: 1px solid rgb(252 165 165 / 36%);
+  border-radius: 5px;
+  padding: 2px 7px;
+  background: rgb(252 165 165 / 12%);
+  color: #fecaca;
+  cursor: pointer;
+}
+
+.cf-cut-preview-retry:hover {
+  background: rgb(252 165 165 / 20%);
+  color: #fff1f2;
+}
+
+.cf-cut-player-controls {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 6px;
+  min-height: 48px;
+  padding: 8px 12px calc(8px + env(safe-area-inset-bottom));
+  background: #0a0a0b;
+}
+
+.cf-cut-player-controls button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  height: 32px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: color 150ms ease, background-color 150ms ease, transform 120ms ease;
+}
+
+.cf-cut-player-controls button:hover:not(:disabled) {
+  background: rgb(255 255 255 / 6%);
+  color: var(--text-0);
+}
+
+.cf-cut-player-controls button:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.cf-cut-player-controls button:disabled {
+  color: var(--text-5);
+  cursor: default;
+  opacity: 0.55;
+}
+
+.cf-cut-play-button {
+  width: 32px;
+  border-radius: 8px !important;
+  background: rgb(255 255 255 / 6%) !important;
+}
+
+.cf-cut-play-button svg,
+.cf-cut-player-icon-button svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentcolor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+}
+
+.cf-cut-play-button svg {
+  fill: currentcolor;
+  stroke: none;
+}
+
+.cf-cut-player-controls .cf-cut-time-readout {
+  justify-content: flex-start;
+  width: 94px;
+  flex: 0 0 94px;
+  padding: 0 2px;
+  background: transparent;
+  color: var(--text-2);
+  font: 11px ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.cf-cut-time-readout .is-separator {
+  margin: 0 2px;
+  color: var(--text-5);
+}
+
+.cf-cut-time-readout .is-duration {
+  color: var(--text-4);
+}
+
+.cf-cut-player-seek {
+  --cf-cut-seek-progress: 0%;
+  min-width: 60px;
+  height: 24px;
+  flex: 1 1 60px;
+  margin: 0;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.cf-cut-player-seek:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.cf-cut-player-seek::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    var(--mint) 0,
+    #2bbfa0 var(--cf-cut-seek-progress),
+    rgb(255 255 255 / 15%) var(--cf-cut-seek-progress),
+    rgb(255 255 255 / 15%) 100%
+  );
+}
+
+.cf-cut-player-seek::-webkit-slider-thumb {
+  width: 12px;
+  height: 12px;
+  margin-top: -4.5px;
+  border: 0;
+  border-radius: 999px;
+  appearance: none;
+  background: var(--mint);
+  box-shadow: 0 0 6px rgb(60 230 172 / 40%), 0 1px 4px rgb(0 0 0 / 40%);
+  cursor: grab;
+  transition: transform 120ms ease-out;
+}
+
+.cf-cut-player-seek:hover::-webkit-slider-thumb,
+.cf-cut-player-seek:focus-visible::-webkit-slider-thumb {
+  transform: scale(1.2);
+}
+
+.cf-cut-player-seek:active::-webkit-slider-thumb {
+  cursor: grabbing;
+}
+
+.cf-cut-player-icon-button {
+  width: 28px;
+  flex: 0 0 28px;
+  border: 1px solid #3f3f46 !important;
+  border-radius: 6px !important;
+}
+
+.cf-cut-player-icon-button.is-active {
+  border-color: rgb(60 230 172 / 30%) !important;
+  background: rgb(60 230 172 / 10%) !important;
+  color: var(--mint) !important;
+}
+
+.cf-cut-volume-control {
+  --cf-cut-volume: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 76px;
+  height: 32px;
+  flex: 0 0 76px;
+  padding: 0 7px;
+  border: 1px solid #3f3f46;
+  border-radius: 6px;
+  background: rgb(255 255 255 / 3%);
+}
+
+.cf-cut-volume-control:focus-within {
+  border-color: rgb(60 230 172 / 42%);
+  box-shadow: 0 0 0 1px rgb(60 230 172 / 18%);
+}
+
+.cf-cut-volume-control input {
+  width: 100%;
+  height: 24px;
+  margin: 0;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.cf-cut-volume-control input:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.cf-cut-volume-control input::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    var(--mint) 0,
+    #2bbfa0 var(--cf-cut-volume),
+    rgb(255 255 255 / 16%) var(--cf-cut-volume),
+    rgb(255 255 255 / 16%) 100%
+  );
+}
+
+.cf-cut-volume-control input::-webkit-slider-thumb {
+  width: 11px;
+  height: 11px;
+  margin-top: -4px;
+  border: 0;
+  border-radius: 999px;
+  appearance: none;
+  background: #f4f4f5;
+  box-shadow: 0 0 0 2px #0a0a0b, 0 1px 3px rgb(0 0 0 / 48%);
+  cursor: grab;
+}
+
+.cf-cut-speed-control {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.cf-cut-player-controls .cf-cut-speed-button {
+  width: 36px;
+  padding: 0 6px;
+  background: rgb(255 255 255 / 4%);
+  color: var(--text-3);
+  font: 10px ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.cf-cut-speed-menu {
+  position: absolute;
+  z-index: 50;
+  right: 0;
+  bottom: calc(100% + 6px);
+  min-width: 56px;
+  overflow: hidden;
+  border: 1px solid rgb(255 255 255 / 8%);
+  border-radius: 8px;
+  background: var(--panel-input);
+  box-shadow: 0 12px 30px rgb(0 0 0 / 48%);
+}
+
+.cf-cut-player-controls .cf-cut-speed-menu button {
+  display: block;
+  width: 100%;
+  height: 28px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-3);
+  font: 11px ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-align: left;
+}
+
+.cf-cut-player-controls .cf-cut-speed-menu button:hover,
+.cf-cut-player-controls .cf-cut-speed-menu button[aria-checked="true"] {
+  background: rgb(255 255 255 / 6%);
+  color: var(--text-0);
+}
+
+.cf-cut-fullscreen-button {
+  margin-left: 0;
+}
+
+.cf-cut-tools-control {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.cf-cut-player-controls .cf-cut-tools-button {
+  width: 54px;
+  flex: 0 0 54px;
+  gap: 4px;
+  color: var(--text-3);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.cf-cut-player-controls .cf-cut-tools-button svg {
+  width: 13px;
+  height: 13px;
+}
+
+.cf-cut-tools-panel {
+  position: absolute;
+  z-index: 55;
+  right: 0;
+  bottom: calc(100% + 6px);
+  width: 286px;
+  overflow: hidden;
+  border: 1px solid rgb(255 255 255 / 9%);
+  border-radius: 10px;
+  background: #18181b;
+  box-shadow: 0 16px 42px rgb(0 0 0 / 58%);
+  color: var(--text-2);
+}
+
+.cf-cut-tools-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 36px;
+  padding: 0 12px;
+  border-bottom: 1px solid rgb(255 255 255 / 7%);
+}
+
+.cf-cut-tools-heading strong {
+  color: var(--text-0);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.cf-cut-tools-heading span {
+  color: var(--text-4);
+  font: 10px ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.cf-cut-jump-frame {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgb(255 255 255 / 7%);
+}
+
+.cf-cut-jump-frame label {
+  color: var(--text-3);
+  font-size: 10px;
+}
+
+.cf-cut-jump-frame input {
+  width: 100%;
+  height: 28px;
+  min-width: 0;
+  padding: 0 8px;
+  border: 1px solid rgb(255 255 255 / 10%);
+  border-radius: 6px;
+  outline: none;
+  background: #0f0f11;
+  color: var(--text-0);
+  font: 11px ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.cf-cut-jump-frame input:focus {
+  border-color: rgb(60 230 172 / 55%);
+  box-shadow: 0 0 0 2px rgb(60 230 172 / 10%);
+}
+
+.cf-cut-player-controls .cf-cut-jump-frame button {
+  height: 28px;
+  padding: 0 9px;
+  border: 1px solid rgb(60 230 172 / 22%);
+  border-radius: 6px;
+  background: rgb(60 230 172 / 10%);
+  color: var(--mint);
+  font-size: 10px;
+}
+
+.cf-cut-shortcut-list {
+  display: grid;
+  gap: 1px;
+  padding: 7px 8px 9px;
+}
+
+.cf-cut-shortcut-list > span {
+  display: flex;
+  align-items: center;
+  min-height: 27px;
+  gap: 5px;
+  padding: 0 4px;
+  border-radius: 5px;
+}
+
+.cf-cut-shortcut-list > span:hover {
+  background: rgb(255 255 255 / 4%);
+}
+
+.cf-cut-shortcut-list kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 20px;
+  padding: 0 5px;
+  border: 1px solid rgb(255 255 255 / 12%);
+  border-bottom-color: rgb(255 255 255 / 18%);
+  border-radius: 4px;
+  background: #232326;
+  color: var(--text-2);
+  font: 9px ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: nowrap;
+}
+
+.cf-cut-shortcut-list em {
+  margin-left: auto;
+  color: var(--text-4);
+  font-size: 10px;
+  font-style: normal;
+}
+
+/* Transcript ledger ---------------------------------------------- */
+
+.cut-transcript-pane {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+}
+
+.cut-transcript-pane__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 40px;
+  flex: 0 0 40px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.cut-transcript-pane__header > div {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+  gap: 9px;
+}
+
+.cut-transcript-pane__header strong {
+  color: var(--text-0);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.cut-transcript-pane__header span,
+.cut-transcript-pane__meta,
+.cut-transcript-pane__save {
+  overflow: hidden;
+  color: var(--text-4);
+  font: 10px ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cut-transcript-pane__save {
+  color: var(--text-2) !important;
+}
+
+.cut-transcript-pane__body {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0 16px 56px;
+  outline: none;
+  background: var(--panel);
+  user-select: none;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+  touch-action: pan-y;
+}
+
+.cut-transcript-cue {
+  position: relative;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  column-gap: 4px;
+  margin: 0 -16px;
+  padding: 6px 16px 6px 8px;
+  transition: background-color 150ms ease;
+}
+
+.cut-transcript-cue.is-active {
+  box-shadow: inset 2px 0 rgb(60 230 172 / 70%);
+  background: rgb(60 230 172 / 5%);
+}
+
+.cut-transcript-cue__index {
+  padding-top: 7px;
+  color: var(--text-4);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  line-height: 12px;
+  text-align: right;
+  user-select: none;
+}
+
+.cut-transcript-cue__words {
+  margin: 0;
+  color: var(--text-1);
+  font-size: 13px;
+  line-height: 26px;
+}
+
+.cut-transcript-word {
+  display: inline;
+  padding: 1px;
+  border-radius: 3px;
+  cursor: text;
+  outline: none;
+  touch-action: pan-y;
+}
+
+.cut-transcript-word:hover {
+  background: rgb(255 255 255 / 6%);
+}
+
+.cut-transcript-word:focus-visible {
+  outline: 2px solid var(--mint);
+  outline-offset: 1px;
+}
+
+.cut-transcript-word.is-current {
+  box-shadow: inset 0 -1px rgb(60 230 172 / 80%);
+  background: #d9fff1;
+  color: #0a1a14;
+}
+
+.cut-transcript-word.is-pending {
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 16%);
+  background: rgb(255 255 255 / 10%);
+  color: var(--text-0);
+}
+
+.cut-transcript-word.is-cut {
+  color: var(--text-4);
+  text-decoration: line-through;
+  text-decoration-color: var(--text-3);
+  text-decoration-thickness: 1px;
+}
+
+.cut-transcript-word.is-gap {
+  display: inline-block;
+  margin: 0 2px;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 3px;
+  background: rgb(255 255 255 / 3.5%);
+  color: var(--text-4);
+  font: 9px/16px ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-decoration: none;
+  vertical-align: 1px;
+}
+
+.cut-transcript-word.is-gap.is-cut {
+  color: var(--text-5);
+  text-decoration: line-through;
+  text-decoration-color: var(--text-4);
+}
+
+.cut-transcript-selection {
+  position: fixed;
+  z-index: 12;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100% - 24px);
+  padding: 8px 10px;
+  border: 1px solid #27272a;
+  border-radius: 7px;
+  background: rgb(24 24 27 / 98%);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 45%);
+  color: var(--text-2);
+  font-size: 11px;
+}
+
+.cut-transcript-selection span {
+  white-space: nowrap;
+}
+
+.cut-transcript-selection button {
+  min-width: 54px;
+  min-height: 32px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 6px;
+  background: rgb(255 255 255 / 7%);
+  color: var(--text-1);
+  cursor: pointer;
+}
+
+.cut-transcript-selection__hint,
+.cut-transcript-selection__error {
+  max-width: 220px;
+  white-space: normal !important;
+  line-height: 16px;
+}
+
+.cut-transcript-selection__error {
+  color: #fca5a5;
+}
+
+.cut-transcript-selection button:hover:not(:disabled) {
+  background: rgb(255 255 255 / 12%);
+}
+
+.cut-transcript-selection button.is-delete {
+  color: #fca5a5;
+}
+
+.cut-transcript-selection button.is-restore {
+  color: var(--mint);
+}
+
+.cut-transcript-selection button:disabled {
+  color: var(--text-5);
+  cursor: default;
+}
+
+.cut-transcript-toast {
+  position: absolute;
+  z-index: 14;
+  right: 12px;
+  bottom: 12px;
+  max-width: calc(100% - 24px);
+  padding: 8px 10px;
+  border: 1px solid rgb(255 255 255 / 10%);
+  border-radius: 7px;
+  background: rgb(24 24 27 / 98%);
+  box-shadow: 0 10px 30px rgb(0 0 0 / 45%);
+  color: var(--text-1);
+  font-size: 11px;
+  line-height: 16px;
+  pointer-events: none;
+}
+
+.cut-transcript-notice {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0 16px;
+  border: 0;
+  border-bottom: 1px solid var(--hairline);
+  border-radius: 0;
+  background: var(--panel-inset);
+  color: var(--text-2);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.cut-transcript-notice.is-error {
+  background: rgb(127 29 29 / 18%);
+  color: #fca5a5;
+}
+
+.cut-transcript-empty {
+  margin: 32px 0;
+  color: var(--text-3);
+  font-size: 12px;
+  text-align: center;
+}
+
+/* Inspector ------------------------------------------------------- */
+
+.cf-cut-inspector {
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+}
+
+.cf-cut-inspector__header {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  flex: 0 0 40px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.cf-cut-inspector__header h2 {
+  margin: 0;
+  color: var(--text-0);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.cf-cut-inspector__body {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 4px 14px 20px;
+  scrollbar-gutter: stable;
+}
+
+.cf-cut-inspector__section,
+.cf-cut-inspector fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 14px 0;
+  border: 0;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.cf-cut-inspector__section:last-child,
+.cf-cut-inspector fieldset:last-child {
+  border-bottom: 0;
+}
+
+.cf-cut-inspector__section > h2,
+.cf-cut-inspector__section > h3,
+.cf-cut-inspector legend {
+  width: 100%;
+  margin: 0 0 10px;
+  padding: 0;
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+}
+
+.cf-cut-inspector__help,
+.cf-cut-inspector__status {
+  margin: -4px 0 10px;
+  color: var(--text-4);
+  font-size: 10px;
+  line-height: 15px;
+}
+
+.cf-cut-inspector__status {
+  margin: 0;
+}
+
+.cf-cut-inspector__control {
+  display: grid;
+  grid-template-columns: minmax(72px, 0.8fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+  color: var(--text-2);
+  font-size: 11px;
+}
+
+.cf-cut-inspector__control > span:first-child,
+.cf-cut-inspector__control > label:first-child {
+  color: var(--text-3);
+}
+
+.cf-cut-inspector__control {
+  min-width: 0;
+}
+
+.cf-cut-inspector button,
+.cf-cut-inspector select {
+  min-height: 28px;
+  border: 1px solid #303036;
+  border-radius: 6px;
+  background: var(--panel-input);
+  color: var(--text-1);
+  font-size: 11px;
+}
+
+.cf-cut-inspector button {
+  padding: 0 9px;
+  cursor: pointer;
+}
+
+.cf-cut-inspector__mute[aria-pressed="true"] {
+  border-color: rgb(60 230 172 / 30%);
+  background: rgb(60 230 172 / 10%);
+  color: var(--mint);
+}
+
+.cf-cut-inspector button:hover:not(:disabled),
+.cf-cut-inspector select:hover:not(:disabled) {
+  border-color: #52525b;
+  background: var(--panel-hover);
+}
+
+.cf-cut-inspector button:disabled,
+.cf-cut-inspector select:disabled,
+.cf-cut-inspector input:disabled {
+  color: var(--text-5);
+  cursor: default;
+  opacity: 0.6;
+}
+
+.cf-cut-inspector input[type="range"] {
+  width: 100%;
+  min-width: 0;
+  height: 24px;
+  margin: 0;
+  accent-color: var(--mint);
+}
+
+.cf-cut-inspector select {
+  width: 100%;
+  min-width: 0;
+  padding: 0 7px;
+}
+
+.cf-cut-inspector__range {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 38px;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.cf-cut-inspector__range output {
+  color: var(--text-2);
+  font: 10px ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.cf-cut-inspector__facts {
+  display: grid;
+  grid-template-columns: minmax(72px, 0.8fr) minmax(0, 1fr);
+  gap: 8px 10px;
+  min-width: 0;
+  margin: 0;
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.cf-cut-inspector__facts > div {
+  display: contents;
+}
+
+.cf-cut-inspector dt,
+.cf-cut-inspector dd {
+  min-width: 0;
+  margin: 0;
+}
+
+.cf-cut-inspector dt {
+  color: var(--text-4);
+}
+
+.cf-cut-inspector dd {
+  overflow-wrap: anywhere;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.cf-cut-inspector [role="alert"] {
+  margin: 8px 0 0;
+  color: #fca5a5;
+  font-size: 10px;
+  line-height: 15px;
+}
+
+/* Timeline -------------------------------------------------------- */
+
+.cf-cut-timeline {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  background: #0a0a0b;
+}
+
+.cf-cut-timeline.is-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.cf-cut-timeline-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  min-height: 32px;
+  padding: 0 8px;
+  border-bottom: 1px solid rgb(255 255 255 / 6%);
+}
+
+.cf-cut-timeline-edit-actions,
+.cf-cut-timeline-actions {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 2px;
+}
+
+.cf-cut-timeline-edit-actions > span:not(.cf-cut-toolbar-divider) {
+  overflow: hidden;
+  margin-left: 6px;
+  color: var(--text-4);
+  font: 10px ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cf-cut-timeline-edit-actions > span.is-error,
+.cf-cut-timeline-edit-actions > span.is-conflict {
+  color: #fca5a5;
+}
+
+.cf-cut-toolbar-divider {
+  width: 1px;
+  height: 16px;
+  margin: 0 4px;
+  background: rgb(255 255 255 / 8%);
+}
+
+.cf-cut-timeline-edit-actions button,
+.cf-cut-timeline-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: color 150ms ease, background-color 150ms ease, transform 120ms ease;
+}
+
+.cf-cut-timeline-edit-actions button:hover:not(:disabled),
+.cf-cut-timeline-actions button:hover:not(:disabled) {
+  background: rgb(255 255 255 / 6%);
+  color: var(--text-0);
+}
+
+.cf-cut-timeline-edit-actions button.is-active-tool,
+.cf-cut-timeline-edit-actions button[aria-pressed="true"] {
+  background: rgb(255 255 255 / 8%);
+  color: rgb(255 255 255 / 92%);
+}
+
+.cf-cut-timeline-edit-actions button:active:not(:disabled),
+.cf-cut-timeline-actions button:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.cf-cut-timeline-edit-actions button:disabled,
+.cf-cut-timeline-actions button:disabled {
+  color: var(--text-5);
+  cursor: default;
+}
+
+.cf-cut-timeline-edit-actions svg,
+.cf-cut-timeline-actions svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentcolor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.4;
+}
+
+.cf-cut-timeline-actions .cf-cut-fit-button {
+  width: auto;
+  padding: 0 8px;
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.cf-cut-timeline-actions .cf-cut-fit-button.is-active {
+  background: rgb(60 230 172 / 10%);
+  color: var(--mint);
+}
+
+.cf-cut-timeline-actions input {
+  width: 96px;
+  height: 18px;
+  margin: 0 4px;
+  appearance: none;
+  background: transparent;
+}
+
+.cf-cut-timeline-actions input::-webkit-slider-runnable-track {
+  height: 2px;
+  border-radius: 999px;
+  background: #3f3f46;
+}
+
+.cf-cut-timeline-actions input::-webkit-slider-thumb {
+  width: 10px;
+  height: 10px;
+  margin-top: -4px;
+  border: 0;
+  border-radius: 999px;
+  appearance: none;
+  background: #fff;
+  box-shadow: 0 0 0 2px #0a0a0b, 0 1px 3px rgb(0 0 0 / 50%);
+}
+
+.cf-cut-zoom-readout {
+  width: 38px;
+  margin-left: 4px;
+  color: var(--text-4);
+  font: 11px ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.cf-cut-timeline-error {
+  position: absolute;
+  z-index: 10;
+  top: 36px;
+  right: 12px;
+  max-width: min(420px, calc(100% - 24px));
+  padding: 7px 9px;
+  border: 1px solid rgb(239 68 68 / 35%);
+  border-radius: 6px;
+  background: rgb(41 24 23 / 96%);
+  color: #fca5a5;
+  font-size: 10px;
+}
+
+.cf-cut-timeline-save-status {
+  position: absolute;
+  z-index: 12;
+  top: 10px;
+  left: 126px;
+  overflow: hidden;
+  max-width: 260px;
+  color: var(--text-4);
+  font: 10px ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.cf-cut-timeline-save-status.is-error,
+.cf-cut-timeline-save-status.is-conflict {
+  color: #fca5a5;
+}
+
+.cf-cut-timeline-scroll {
+  position: relative;
+  z-index: 0;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  background: #0a0a0b;
+  user-select: none;
+}
+
+.cf-cut-timeline-canvas {
+  position: relative;
+  min-width: 100%;
+  height: 100%;
+  padding-top: 24px;
+}
+
+.cf-cut-ruler {
+  position: absolute;
+  top: 0;
+  left: calc(var(--cf-cut-track-gutter, 32px) + var(--cf-cut-track-left-pad, 48px));
+  height: 24px;
+  background: #0a0a0b;
+}
+
+.cf-cut-ruler-tick {
+  position: absolute;
+  bottom: 0;
+  width: 1px;
+  transform: translateX(-0.5px);
+  background: rgb(255 255 255 / 6%);
+}
+
+.cf-cut-ruler-tick.is-minor {
+  height: 8px;
+}
+
+.cf-cut-ruler-tick.is-major {
+  top: 0;
+  height: 24px;
+  background: rgb(255 255 255 / 10%);
+  color: rgb(255 255 255 / 34%);
+  font: 10px ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  text-indent: 5px;
+  white-space: nowrap;
+}
+
+.cf-cut-lanes-row {
+  display: flex;
+  width: 100%;
+  height: 96px;
+}
+
+.cf-cut-lane-labels {
+  position: sticky;
+  z-index: 24;
+  left: 0;
+  display: grid;
+  grid-template-rows: 48px 48px;
+  width: var(--cf-cut-track-gutter, 32px);
+  height: 96px;
+  flex: 0 0 var(--cf-cut-track-gutter, 32px);
+  background: #0e0f12;
+  box-shadow: 6px 0 12px rgb(0 0 0 / 24%);
+}
+
+.cf-cut-lane-labels span {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-right: 1px solid rgb(255 255 255 / 10%);
+  border-bottom: 1px solid rgb(255 255 255 / 6%);
+  color: rgb(255 255 255 / 35%);
+}
+
+.cf-cut-lane-labels svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentcolor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.25;
+}
+
+.cf-cut-track-left-pad {
+  width: var(--cf-cut-track-left-pad, 48px);
+  height: 96px;
+  flex: 0 0 var(--cf-cut-track-left-pad, 48px);
+  border-bottom: 1px solid rgb(255 255 255 / 6%);
+  background: linear-gradient(
+    to bottom,
+    #101014 0,
+    #101014 47px,
+    rgb(255 255 255 / 6%) 47px,
+    rgb(255 255 255 / 6%) 48px,
+    #101014 48px,
+    #101014 95px,
+    rgb(255 255 255 / 6%) 95px
+  );
+}
+
+.cf-cut-track {
+  position: relative;
+  height: 48px;
+  flex: 0 0 auto;
+}
+
+.cf-cut-linked-clip {
+  user-select: none;
+}
+
+.cf-cut-linked-clip .timeline-clip {
+  min-width: 4px;
+}
+
+.timeline-clip > .cf-cut-trim-handle {
+  top: 0;
+  bottom: 0;
+  height: auto;
+}
+
+.cf-cut-segment {
+  --cf-cut-segment-background: rgb(255 255 255 / 5.5%);
+  --cf-cut-segment-stroke: rgb(255 255 255 / 9%);
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  bottom: 0;
+  min-width: 0;
+  overflow: visible;
+  border: 0;
+  background: transparent;
+  color: rgb(255 255 255 / 50%);
+  cursor: default;
+  user-select: none;
+}
+
+.cf-cut-segment:hover,
+.cf-cut-segment.is-hovered {
+  --cf-cut-segment-background: rgb(255 255 255 / 9%);
+  --cf-cut-segment-stroke: rgb(255 255 255 / 18%);
+  z-index: 5;
+}
+
+.cf-cut-segment.is-active {
+  --cf-cut-segment-background: rgb(60 230 172 / 20%);
+  --cf-cut-segment-stroke: rgb(60 230 172 / 55%);
+}
+
+.cf-cut-segment.is-selected {
+  z-index: 10;
+}
+
+.cf-cut-segment.is-dragging {
+  --cf-cut-segment-background: rgb(38 42 52 / 96%);
+  z-index: 20;
+  transform: translateY(-1px);
+}
+
+.cf-cut-segment.is-trimming {
+  z-index: 20;
+}
+
+.cf-cut-segment-video,
+.cf-cut-segment-audio {
+  position: absolute;
+  right: 0;
+  left: 0;
+  overflow: hidden;
+  border: 1px solid var(--cf-cut-segment-stroke);
+  border-radius: 8px;
+  background: var(--cf-cut-segment-background);
+  transition: background-color 200ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 200ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 200ms cubic-bezier(0.22, 1, 0.36, 1);
+  pointer-events: none;
+}
+
+.cf-cut-segment-video {
+  top: 3px;
+  height: 42px;
+}
+
+.cf-cut-segment-audio {
+  top: 51px;
+  height: 42px;
+  background-color: color-mix(in srgb, var(--cf-cut-segment-background), #8b5cf6 15%);
+}
+
+.cf-cut-segment.is-selected .cf-cut-segment-video,
+.cf-cut-segment.is-selected .cf-cut-segment-audio {
+  box-shadow: 0 0 0 1.5px rgb(255 255 255 / 85%);
+}
+
+.cf-cut-segment.is-dragging .cf-cut-segment-video,
+.cf-cut-segment.is-dragging .cf-cut-segment-audio {
+  box-shadow: 0 8px 24px rgb(0 0 0 / 40%), 0 0 0 1.5px rgb(255 255 255 / 85%);
+}
+
+.cf-cut-segment-label {
+  position: absolute;
+  z-index: 2;
+  top: 6px;
+  right: 12px;
+  left: 12px;
+  overflow: hidden;
+  color: rgb(255 255 255 / 82%);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1;
+  text-overflow: ellipsis;
+  text-shadow: 0 1px 2px rgb(0 0 0 / 85%);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.cf-cut-segment-timecode,
+.cf-cut-segment-audio-label {
+  position: absolute;
+  z-index: 2;
+  right: 12px;
+  bottom: 6px;
+  left: 12px;
+  overflow: hidden;
+  color: rgb(255 255 255 / 34%);
+  font: 9px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.cf-cut-segment.is-active .cf-cut-segment-label,
+.cf-cut-segment.is-active .cf-cut-segment-timecode,
+.cf-cut-segment.is-active .cf-cut-segment-audio-label {
+  color: rgb(232 255 247 / 95%);
+}
+
+.cf-cut-video-filmstrip,
+.cf-cut-audio-waveform {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.cf-cut-video-filmstrip__frames {
+  display: flex;
+  width: 100%;
+  height: 100%;
+}
+
+.cf-cut-video-filmstrip img {
+  min-width: 0;
+  height: 100%;
+  flex: 1 1 0;
+  object-fit: cover;
+  opacity: 0.72;
+}
+
+.cf-cut-video-filmstrip__placeholder,
+.cf-cut-audio-waveform__placeholder {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, rgb(255 255 255 / 2%), rgb(255 255 255 / 5%), rgb(255 255 255 / 2%));
+}
+
+.cf-cut-video-filmstrip__error,
+.cf-cut-audio-waveform__error {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
+  color: var(--text-4);
+  font-size: 8px;
+  white-space: nowrap;
+}
+
+.cf-cut-audio-waveform svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* Product media adapter content, inside the untouched HyperFrames clip shell.
+   Match the upstream AudioWaveform's blue bar family instead of introducing a
+   second teal selection color. */
+.cf-cut-linked-clip--audio .cf-cut-audio-waveform {
+  background: transparent !important;
+  color: rgb(75 163 210 / 82%) !important;
+}
+
+.cf-cut-trim-handle {
+  position: absolute;
+  z-index: 4;
+  top: 3px;
+  height: 42px;
+  width: 14px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: col-resize;
+}
+
+.cf-cut-trim-handle.is-start {
+  left: 0;
+}
+
+.cf-cut-trim-handle.is-end {
+  right: 0;
+}
+
+.cf-cut-trim-handle > span {
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: 1px;
+  background: rgb(255 255 255 / 55%);
+  opacity: 0.46;
+}
+
+.cf-cut-trim-handle.is-start > span {
+  left: 4px;
+}
+
+.cf-cut-trim-handle.is-end > span {
+  right: 4px;
+}
+
+.cf-cut-segment.is-hovered .cf-cut-trim-handle > span {
+  opacity: 0.76;
+}
+
+.cf-cut-segment.is-selected .cf-cut-trim-handle > span {
+  opacity: 0.82;
+}
+
+.cf-cut-segment.is-trimming .cf-cut-trim-handle > span {
+  background: var(--mint);
+  opacity: 0.95;
+}
+
+.cf-cut-trim-handle:disabled {
+  cursor: default;
+}
+
+.cf-cut-trim-handle:disabled > span {
+  opacity: 0.28;
+}
+
+.cf-cut-playhead {
+  position: absolute;
+  z-index: 30;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  pointer-events: none;
+}
+
+.cf-cut-playhead::before {
+  position: absolute;
+  z-index: 2;
+  top: 1px;
+  left: -4px;
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid var(--mint);
+  border-radius: 2px;
+  background: #0a0a0b;
+  transform: rotate(45deg);
+  content: "";
+}
+
+.cf-cut-playhead::after {
+  position: absolute;
+  top: 10px;
+  bottom: 0;
+  left: 0;
+  width: 1px;
+  background: var(--mint);
+  box-shadow: 0 0 6px rgb(60 230 172 / 50%);
+  content: "";
+}
+
+/* Errors / responsive -------------------------------------------- */
+
+.cf-cut-route-error {
+  align-self: center;
+  justify-self: center;
+  max-width: 460px;
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  text-align: center;
+}
+
+.cf-cut-route-error strong {
+  color: var(--text-0);
+  font-size: 15px;
+}
+
+.cf-cut-route-error p {
+  margin: 8px 0 0;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+@media (width < 960px) {
+  .cf-cut-workspace {
+    grid-template-columns: clamp(260px, 34vw, 300px) minmax(0, 1fr);
+    grid-template-rows: minmax(240px, 1fr) 160px clamp(276px, 32vh, 320px);
+  }
+
+  .cf-cut-workspace > .cf-cut-feature-panel {
+    grid-column: 1;
+    grid-row: 1 / 3;
+  }
+
+  .cf-cut-workspace > .cf-cut-player {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .cf-cut-transcript-resizer {
+    display: none;
+  }
+
+  .cf-cut-workspace > .cf-cut-inspector {
+    grid-column: 2;
+    grid-row: 2;
+  }
+
+  .cf-cut-workspace > .cf-cut-timeline {
+    grid-column: 1 / -1;
+    grid-row: 3;
+  }
+
+  .cf-cut-brand p,
+  .cf-cut-brand > span {
+    display: none;
+  }
+
+  .cf-cut-player-controls .cf-cut-time-readout {
+    margin-right: 0;
+  }
+}
+
+@media (width < 720px) {
+  .cf-cut-app {
+    grid-template-rows: 40px minmax(0, 1fr);
+  }
+
+  .cf-cut-workspace {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows:
+      minmax(260px, 52vh)
+      minmax(300px, 62vh)
+      minmax(276px, 34vh);
+    align-content: start;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+    scrollbar-gutter: stable;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .cf-cut-workspace > .cf-cut-feature-panel {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .cf-cut-workspace > .cf-cut-player {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .cf-cut-transcript-resizer {
+    display: none;
+  }
+
+  .cf-cut-workspace > .cf-cut-timeline {
+    grid-column: 1;
+    grid-row: 3;
+  }
+
+  .cf-cut-timeline-actions input {
+    width: 64px;
+  }
+
+  .cf-cut-player-controls {
+    flex-wrap: wrap;
+    align-content: center;
+  }
+
+  .cf-cut-volume-control {
+    width: 88px;
+    flex: 0 1 88px;
+  }
+
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .cf-cut-segment {
+    transition: background-color 200ms cubic-bezier(0.22, 1, 0.36, 1),
+      border-color 200ms cubic-bezier(0.22, 1, 0.36, 1),
+      box-shadow 200ms cubic-bezier(0.22, 1, 0.36, 1),
+      color 200ms cubic-bezier(0.22, 1, 0.36, 1),
+      opacity 200ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .cf-cut-trim-handle > span {
+    transition: opacity 120ms ease-out, background-color 120ms ease-out;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

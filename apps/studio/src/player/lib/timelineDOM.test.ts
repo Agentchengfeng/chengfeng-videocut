@@ -4,8 +4,13 @@ import {
   createTimelineElementFromManifestClip,
   parseTimelineFromDOM,
   createImplicitTimelineLayersFromDOM,
-  buildStandaloneRootTimelineElement,
+  mergeTimelineElementsPreservingDowngrades,
 } from "./timelineDOM";
+import type { TimelineElement } from "../store/playerStore";
+
+function el(id: string, extra: Partial<TimelineElement> = {}): TimelineElement {
+  return { id, tag: "img", start: 0, duration: 5, track: 0, ...extra };
+}
 
 function makeDoc(html: string): Document {
   const d = document.implementation.createHTMLDocument();
@@ -13,74 +18,7 @@ function makeDoc(html: string): Document {
   return d;
 }
 
-function makeLiveDoc(html: string): Document {
-  document.head.innerHTML = "";
-  document.body.innerHTML = html;
-  return document;
-}
-
-function mockComputedZIndex(doc: Document, zIndexById: ReadonlyMap<string, string>): void {
-  const win = doc.defaultView;
-  if (!win) throw new Error("Expected document window");
-  const original = win.getComputedStyle.bind(win);
-  Object.defineProperty(win, "getComputedStyle", {
-    configurable: true,
-    value: (element: Element, pseudoElt?: string | null) => {
-      const style = original(element, pseudoElt);
-      const zIndex = zIndexById.get(element.id);
-      if (zIndex != null) {
-        Object.defineProperty(style, "zIndex", { configurable: true, value: zIndex });
-      }
-      return style;
-    },
-  });
-}
-
 describe("parseTimelineFromDOM — hfId from data-hf-id", () => {
-  it("does not synthesize a captions track when the project only authors A-roll", () => {
-    const doc = makeDoc(`
-      <main data-composition-id="main" data-duration="10">
-        <video
-          id="a-roll-main"
-          data-start="0"
-          data-duration="10"
-          data-track-index="1"
-          data-timeline-role="a-roll"
-        ></video>
-      </main>
-    `);
-
-    const elements = parseTimelineFromDOM(doc, 10);
-
-    expect(elements.map((element) => element.timelineRole)).toEqual(["a-roll"]);
-    expect(elements.some((element) => element.timelineRole === "captions")).toBe(false);
-  });
-
-  it("recognizes the actual plural captions role when a caption source is authored", () => {
-    const doc = makeDoc(`
-      <main data-composition-id="main" data-duration="10">
-        <video
-          id="a-roll-main"
-          data-start="0"
-          data-duration="10"
-          data-track-index="1"
-          data-timeline-role="a-roll"
-        ></video>
-        <div
-          id="captions-main"
-          data-start="0"
-          data-duration="10"
-          data-track-index="2"
-          data-timeline-role="captions"
-        ></div>
-      </main>
-    `);
-
-    const elements = parseTimelineFromDOM(doc, 10);
-
-    expect(elements.some((element) => element.timelineRole === "captions")).toBe(true);
-  });
-
   it("harvests hfId from a data-start element that has data-hf-id", () => {
     const doc = makeDoc(`
       <div data-composition-id="root">
@@ -93,6 +31,54 @@ describe("parseTimelineFromDOM — hfId from data-hf-id", () => {
 
     expect(hero).toBeDefined();
     expect(hero?.hfId).toBe("hf-abc123");
+  });
+
+  it("parses canonical EDL segment and source-range attributes", () => {
+    const doc = makeDoc(`
+      <div data-composition-id="root" data-duration="4">
+        <div
+          id="a-roll-segment"
+          data-start="0"
+          data-duration="4"
+          data-edl-segment-id="a-roll-0001"
+          data-source-start="12.5"
+          data-source-end="16.5"
+          data-playback-rate="1.25"
+        ></div>
+      </div>
+    `);
+
+    const [segment] = parseTimelineFromDOM(doc, 4);
+
+    expect(segment).toMatchObject({
+      edlSegmentId: "a-roll-0001",
+      edlSourceStart: 12.5,
+      edlSourceEnd: 16.5,
+      playbackRate: 1.25,
+    });
+  });
+
+  it("keeps reading legacy data-edl-source attributes during migration", () => {
+    const doc = makeDoc(`
+      <div data-composition-id="root" data-duration="3">
+        <div
+          id="legacy-segment"
+          data-start="0"
+          data-duration="3"
+          data-edl-segment-id="legacy-1"
+          data-edl-source-start="2"
+          data-edl-source-end="5"
+        ></div>
+      </div>
+    `);
+
+    const [segment] = parseTimelineFromDOM(doc, 3);
+
+    expect(segment).toMatchObject({
+      edlSegmentId: "legacy-1",
+      edlSourceStart: 2,
+      edlSourceEnd: 5,
+    });
   });
 
   it("leaves hfId undefined when element has no data-hf-id", () => {
@@ -126,6 +112,22 @@ describe("parseTimelineFromDOM — hfId from data-hf-id", () => {
     const elements = parseTimelineFromDOM(doc, 10);
 
     expect(elements.map((el) => el.tag)).toEqual(["img"]);
+  });
+
+  it("ignores a Studio-hidden EDL backing video even when Core autostamps timing", () => {
+    const doc = makeDoc(`
+      <div data-composition-id="root">
+        <video
+          id="a-roll-preview"
+          data-studio-timeline-hidden
+          data-start="0"
+          data-duration="242.94"
+        ></video>
+      </div>
+    `);
+
+    expect(parseTimelineFromDOM(doc, 242.94)).toEqual([]);
+    expect(createImplicitTimelineLayersFromDOM(doc, 242.94)).toEqual([]);
   });
 
   it("marks parsed timeline elements hidden when data-hidden is present", () => {
@@ -170,28 +172,31 @@ describe("parseTimelineFromDOM — hfId from data-hf-id", () => {
 
     expect(element.hidden).toBe(true);
   });
+});
 
-  it("captures the effective z-index from the live element, not the runtime inline-only value", () => {
-    // The runtime reports inline-only z-index (0 for CSS-rule authored z-index),
-    // which must NOT override the live element's effective z-index — otherwise
-    // the timeline collapses every CSS-styled clip to a z=0 tie and mis-orders.
+describe("createTimelineElementFromManifestClip — source-scoped selector identity", () => {
+  it("ignores an index.html duplicate when indexing a scene.html selector", () => {
     const doc = makeDoc(`
-      <div data-composition-id="root">
-        <div id="hero" class="clip" data-start="0" data-duration="5" style="z-index: 30"></div>
+      <div data-composition-id="root" data-composition-file="index.html">
+        <div class="sub"></div>
+        <div data-composition-id="scene" data-composition-file="scene.html">
+          <div class="sub"></div>
+          <div class="sub" data-target></div>
+        </div>
       </div>
     `);
-    const hostEl = doc.getElementById("hero");
+    const target = doc.querySelector("[data-target]");
+    if (!target) throw new Error("missing target");
 
     const element = createTimelineElementFromManifestClip({
       clip: {
-        id: "hero",
-        label: "Hero",
+        id: null,
+        label: "Sub",
         kind: "element",
         tagName: "div",
         start: 0,
         duration: 5,
         track: 0,
-        zIndex: 0,
         compositionId: null,
         parentCompositionId: null,
         compositionSrc: null,
@@ -199,32 +204,49 @@ describe("parseTimelineFromDOM — hfId from data-hf-id", () => {
       },
       fallbackIndex: 0,
       doc,
-      hostEl,
+      hostEl: target,
     });
 
-    expect(element.zIndex).toBe(30);
-    expect(element.hasExplicitZIndex).toBe(true);
-  });
-
-  it("marks parsed inline, CSS-rule, and auto z-index authorship accurately", () => {
-    const doc = makeLiveDoc(`
-      <div data-composition-id="root">
-        <div id="inline" class="clip" data-start="0" data-duration="2" style="z-index: 3"></div>
-        <div id="rule" class="clip" data-start="0" data-duration="2"></div>
-        <div id="auto" class="clip" data-start="0" data-duration="2"></div>
-      </div>
-    `);
-    mockComputedZIndex(doc, new Map([["rule", "12"]]));
-
-    const elements = parseTimelineFromDOM(doc, 10);
-
-    expect(elements.find((el) => el.id === "inline")?.hasExplicitZIndex).toBe(true);
-    expect(elements.find((el) => el.id === "rule")?.hasExplicitZIndex).toBe(true);
-    expect(elements.find((el) => el.id === "auto")?.hasExplicitZIndex).toBe(false);
+    expect(element.sourceFile).toBe("scene.html");
+    expect(element.selectorIndex).toBe(1);
+    expect(element.key).toBe("scene.html:.sub:1");
   });
 });
 
 describe("createImplicitTimelineLayersFromDOM — hfId from data-hf-id", () => {
+  it("uses the runtime root paint scope for implicit siblings of manifest clips", () => {
+    const doc = makeDoc(`
+      <div data-composition-id="root">
+        <div id="timed" data-start="0" data-duration="5"></div>
+        <div id="implicit"></div>
+      </div>
+    `);
+    const timedHost = doc.getElementById("timed");
+    const timed = createTimelineElementFromManifestClip({
+      clip: {
+        id: "timed",
+        label: "Timed",
+        start: 0,
+        duration: 5,
+        track: 0,
+        stackingContextId: "css:root",
+        kind: "element",
+        tagName: "div",
+        compositionId: null,
+        parentCompositionId: null,
+        compositionSrc: null,
+        assetUrl: null,
+      },
+      fallbackIndex: 0,
+      doc,
+      hostEl: timedHost,
+    });
+    const implicit = createImplicitTimelineLayersFromDOM(doc, 5, [timed])[0];
+
+    expect(implicit?.stackingContextId).toBe("css:root");
+    expect(implicit?.stackingContextId).toBe(timed.stackingContextId);
+  });
+
   it("harvests hfId from an implicit layer child that has data-hf-id", () => {
     const doc = makeDoc(`
       <div data-composition-id="root">
@@ -255,31 +277,28 @@ describe("createImplicitTimelineLayersFromDOM — hfId from data-hf-id", () => {
 
     expect(layers).toEqual([]);
   });
-
-  it("marks implicit layer CSS z-index authorship from computed style", () => {
-    const doc = makeLiveDoc(`
-      <div data-composition-id="root">
-        <div id="layer" class="clip"></div>
-      </div>
-    `);
-    mockComputedZIndex(doc, new Map([["layer", "8"]]));
-
-    const layers = createImplicitTimelineLayersFromDOM(doc, 10);
-
-    expect(layers[0]?.zIndex).toBe(8);
-    expect(layers[0]?.hasExplicitZIndex).toBe(true);
-  });
 });
 
-describe("buildStandaloneRootTimelineElement", () => {
-  it("marks the standalone root as auto z-index", () => {
-    const root = buildStandaloneRootTimelineElement({
-      compositionId: "root",
-      tagName: "div",
-      rootDuration: 10,
-      iframeSrc: "/preview/comp/index.html",
-    });
+describe("mergeTimelineElementsPreservingDowngrades — genuine removal vs transient downgrade", () => {
+  it("drops a removed TOP-LEVEL element (undo of a split) instead of ghosting it", () => {
+    const current = [el("a"), el("a-split")]; // post-split store: original + clone
+    const next = [el("a")]; // fresh scan of the reverted file: clone gone
+    const merged = mergeTimelineElementsPreservingDowngrades(current, next, 30, 30);
+    expect(merged.map((e) => e.id)).toEqual(["a"]);
+  });
 
-    expect(root?.hasExplicitZIndex).toBe(false);
+  it("still preserves an enriched sub-composition child a bare re-scan drops", () => {
+    const current = [el("a"), el("sub-child", { compositionSrc: "sub.html" })];
+    const next = [el("a")]; // bare DOM scan misses the enriched sub-comp child
+    const merged = mergeTimelineElementsPreservingDowngrades(current, next, 30, 30);
+    expect(merged.map((e) => e.id).sort()).toEqual(["a", "sub-child"]);
+  });
+
+  it("trusts the fresh scan fully when it is not shorter", () => {
+    const current = [el("a"), el("b", { compositionSrc: "sub.html" })];
+    const next = [el("a"), el("c")];
+    expect(
+      mergeTimelineElementsPreservingDowngrades(current, next, 30, 30).map((e) => e.id),
+    ).toEqual(["a", "c"]);
   });
 });

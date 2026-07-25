@@ -32,7 +32,7 @@ describe("cutSelectionApi", () => {
     );
   });
 
-  it("sends only the revision and semantic word ids", async () => {
+  it("sends the revision and authoritative Studio full selection", async () => {
     const fetchMock = vi.fn(async () =>
       Response.json({
         schemaVersion: 1,
@@ -49,7 +49,11 @@ describe("cutSelectionApi", () => {
       "/api/v1/projects/a%2Fb/cuts",
       expect.objectContaining({
         method: "PUT",
-        body: JSON.stringify({ expectedRevision: "before", cutWordIds: ["w-1"] }),
+        body: JSON.stringify({
+          expectedRevision: "before",
+          cutWordIds: ["w-1"],
+          mode: "full-selection",
+        }),
       }),
     );
   });

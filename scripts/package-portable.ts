@@ -44,6 +44,25 @@ async function run(command: string[], cwd: string): Promise<void> {
 const launcher = `#!/bin/sh
 set -eu
 
+# Preserve the stable entry point before resolving the app/current symlink.
+# The service installer must pin this path, not a version directory or cli.js.
+case "$0" in
+  /*) CHENGFENG_VIDEOCUT_EXECUTABLE=$0 ;;
+  */*) CHENGFENG_VIDEOCUT_EXECUTABLE=$(pwd)/$0 ;;
+  *) CHENGFENG_VIDEOCUT_EXECUTABLE=$(command -v "$0") ;;
+esac
+export CHENGFENG_VIDEOCUT_EXECUTABLE
+
+# An installed stable launcher lives at <data-root>/bin/chengfeng-videocut.
+# Make every CLI command use that same data root, not only service commands.
+if [ -z "\${CHENGFENG_VIDEOCUT_DATA_DIR:-}" ]; then
+  STABLE_BIN_DIR=$(CDPATH= cd -- "$(dirname -- "$CHENGFENG_VIDEOCUT_EXECUTABLE")" && pwd)
+  if [ "$(basename -- "$STABLE_BIN_DIR")" = "bin" ]; then
+    CHENGFENG_VIDEOCUT_DATA_DIR=$(CDPATH= cd -- "$STABLE_BIN_DIR/.." && pwd)
+    export CHENGFENG_VIDEOCUT_DATA_DIR
+  fi
+fi
+
 SELF=$0
 while [ -L "$SELF" ]; do
   LINK_DIR=$(CDPATH= cd -- "$(dirname -- "$SELF")" && pwd)
@@ -88,8 +107,13 @@ exec "$BUN_EXECUTABLE" "$SCRIPT_DIR/cli.js" "$@"
 const startCommand = `#!/bin/sh
 set -eu
 
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-exec "$SCRIPT_DIR/chengfeng-videocut" start --open "$@"
+INSTALL_ROOT=\${CHENGFENG_VIDEOCUT_HOME:-\${HOME:-}/.chengfeng-videocut}
+STABLE_LAUNCHER="$INSTALL_ROOT/bin/chengfeng-videocut"
+if [ ! -x "$STABLE_LAUNCHER" ]; then
+  printf '%s\\n' '请先使用同一 Release 的 install.sh 安装 chengfeng-videocut，再启动常驻工作台。' >&2
+  exit 1
+fi
+exec "$STABLE_LAUNCHER" service ensure --open "$@"
 `;
 
 await requirePath(join(cliDistDir, "cli.js"), "Bundled CLI");

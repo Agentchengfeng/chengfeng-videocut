@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import {
   buildCutSelectionFromProposal,
   buildCutTimeRanges,
+  expandCutWordIdsAcrossEnclosedGaps,
   parseTranscriptWords,
 } from "./cuts";
 
@@ -57,6 +58,83 @@ describe("cut selection contract", () => {
     expect(buildCutTimeRanges(words, new Set(["w-1", "w-3"]))).toEqual([
       { start: 0, end: 1 },
       { start: 2, end: 3 },
+    ]);
+  });
+
+  it("absorbs ASR gap fragments enclosed by deleted spoken words", () => {
+    const words = parseTranscriptWords({
+      cues: [
+        {
+          words: [
+            { id: "spoken-left", start: 47.8, end: 48.8 },
+            { id: "false-silence-1", start: 48.8, end: 48.92, isGap: true },
+            { id: "false-silence-2", start: 48.92, end: 49.12, isGap: true },
+            { id: "spoken-right", start: 49.12, end: 49.61 },
+          ],
+        },
+      ],
+    });
+
+    const semanticCutWordIds = expandCutWordIdsAcrossEnclosedGaps(
+      words,
+      new Set(["spoken-left", "spoken-right"]),
+    );
+    const document = buildCutSelectionFromProposal(
+      words,
+      { cutWordIds: [...semanticCutWordIds] },
+      undefined,
+      "2026-07-20T00:00:00.000Z",
+    );
+
+    expect(document.cutWordIds).toEqual([
+      "spoken-left",
+      "false-silence-1",
+      "false-silence-2",
+      "spoken-right",
+    ]);
+    expect(document.cutRanges).toEqual([{ start: 47.8, end: 49.61 }]);
+  });
+
+  it("keeps an enclosed gap when an exact full selection restores it", () => {
+    const words = parseTranscriptWords({
+      cues: [
+        {
+          words: [
+            { id: "cut-left", start: 0, end: 1 },
+            { id: "restored-gap", start: 1, end: 1.12, isGap: true },
+            { id: "cut-right", start: 1.12, end: 2 },
+          ],
+        },
+      ],
+    });
+
+    const document = buildCutSelectionFromProposal(words, {
+      cutWordIds: ["cut-left", "cut-right"],
+    });
+
+    expect(document.cutWordIds).toEqual(["cut-left", "cut-right"]);
+    expect(document.cutRanges).toEqual([
+      { start: 0, end: 1 },
+      { start: 1.12, end: 2 },
+    ]);
+  });
+
+  it("does not absorb a short retained spoken word between deletions", () => {
+    const words = parseTranscriptWords({
+      cues: [
+        {
+          words: [
+            { id: "cut-left", start: 0, end: 1 },
+            { id: "kept-spoken", start: 1, end: 1.08 },
+            { id: "cut-right", start: 1.08, end: 2 },
+          ],
+        },
+      ],
+    });
+
+    expect(buildCutTimeRanges(words, new Set(["cut-left", "cut-right"]))).toEqual([
+      { start: 0, end: 1 },
+      { start: 1.08, end: 2 },
     ]);
   });
 

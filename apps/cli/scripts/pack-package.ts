@@ -1,5 +1,6 @@
-import { copyFile, mkdir, readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { copyFile, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 const cliDir = resolve(import.meta.dir, "..");
 const rootDir = resolve(cliDir, "../..");
@@ -14,7 +15,15 @@ async function run(command: string[], cwd: string): Promise<void> {
 await run(["bun", "run", "build"], cliDir);
 await run(["bun", "run", "package:check"], cliDir);
 await mkdir(releaseDir, { recursive: true });
-await run(["npm", "pack", cliDir, "--pack-destination", releaseDir], rootDir);
+const npmCacheDir = await mkdtemp(join(tmpdir(), "chengfeng-videocut-npm-pack-"));
+try {
+  await run(
+    ["npm", "pack", cliDir, "--pack-destination", releaseDir, "--cache", npmCacheDir],
+    rootDir,
+  );
+} finally {
+  await rm(npmCacheDir, { recursive: true, force: true });
+}
 const packageJson = JSON.parse(await readFile(resolve(cliDir, "package.json"), "utf8")) as {
   name: string;
   version: string;

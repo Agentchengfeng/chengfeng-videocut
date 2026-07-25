@@ -1,6 +1,6 @@
 {
   "name": "chengfeng-videocut",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "CLI and local Studio server for chengfeng-videocut",
   "type": "module",
   "bin": {
@@ -20,8 +20,8 @@
   },
   "dependencies": {},
   "devDependencies": {
-    "@hyperframes/core": "0.7.54",
-    "@hyperframes/studio-server": "0.7.54",
+    "@hyperframes/core": "0.7.60",
+    "@hyperframes/studio-server": "0.7.60",
     "@video-workbench/core": "workspace:*",
     "@video-workbench/koubo-adapter": "workspace:*",
     "gsap": "^3.13.0"

@@ -1,12 +1,12 @@
 // @vitest-environment happy-dom
 
 import React, { act } from "react";
-import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GsapAnimation } from "@hyperframes/core/gsap-parser";
 import type { DomEditSelection } from "../components/editor/domEditingTypes";
 import { usePlayerStore } from "../player/store/playerStore";
 import { useAnimatedPropertyCommit } from "./useAnimatedPropertyCommit";
+import { mountReactHarness } from "./domSelectionTestHarness";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -58,13 +58,7 @@ function renderHookWith(
     onReady(commitAnimatedProperties);
     return null;
   }
-  const host = document.createElement("div");
-  document.body.append(host);
-  const root = createRoot(host);
-  act(() => {
-    root.render(<Harness />);
-  });
-  return root;
+  return mountReactHarness(<Harness />);
 }
 
 function renderCommitHook(
@@ -162,5 +156,39 @@ describe("commitStaticSet group routing", () => {
     expect(update).toBeDefined();
     expect(update!.mutation.animationId).toBe("#box-set-0-position");
     expect(update!.label).toBe("Move layer");
+  });
+
+  it("width edit updates its duration-zero size hold instead of appending a set", async () => {
+    const instantSizeHold = {
+      id: "#box-to-0-size",
+      targetSelector: "#box",
+      propertyGroup: "size",
+      method: "to",
+      properties: { width: 150, height: 150 },
+      resolvedStart: 0,
+      duration: 0,
+      extras: { immediateRender: "__raw:true" },
+    } as unknown as GsapAnimation;
+    const committed: Array<{ mutation: Record<string, unknown>; label: string }> = [];
+    let commit!: Commit;
+    renderHookWith(
+      [positionSet, instantSizeHold],
+      (mutation, label) => committed.push({ mutation, label }),
+      (c) => (commit = c),
+    );
+
+    await act(async () => {
+      await commit(selection, { width: 344 });
+    });
+
+    expect(committed).toHaveLength(1);
+    expect(committed[0]!.mutation).toEqual({
+      type: "update-properties",
+      animationId: instantSizeHold.id,
+      properties: { width: 344 },
+    });
+    expect(committed[0]!.label).toBe("Resize layer");
+    expect(committed.some(({ mutation }) => mutation.type === "add")).toBe(false);
+    expect(committed[0]!.mutation.animationId).not.toBe(positionSet.id);
   });
 });

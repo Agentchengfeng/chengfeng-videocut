@@ -2,10 +2,10 @@
 set -eu
 
 REPOSITORY="Agentchengfeng/chengfeng-videocut"
-VERSION="0.1.1"
+VERSION="0.2.0"
 ARCHIVE_NAME="chengfeng-videocut-portable.tar.gz"
 CHECKSUM_NAME="SHA256SUMS.txt"
-DOWNLOAD_BASE="${CHENGFENG_VIDEOCUT_DOWNLOAD_BASE:-https://github.com/$REPOSITORY/releases/latest/download}"
+DOWNLOAD_BASE="${CHENGFENG_VIDEOCUT_DOWNLOAD_BASE:-https://github.com/$REPOSITORY/releases/download/v$VERSION}"
 INSTALL_ROOT="${CHENGFENG_VIDEOCUT_HOME:-${HOME:-}/.chengfeng-videocut}"
 APP_ROOT="$INSTALL_ROOT/app"
 BIN_ROOT="$INSTALL_ROOT/bin"
@@ -125,8 +125,12 @@ ln -sfn "$VERSION" "$CURRENT_LINK"
 ln -sfn "../app/current/chengfeng-videocut" "$BIN_LINK"
 
 printf '\n%s\n' "chengfeng-videocut $VERSION 已安装完成。"
-printf '%s\n' "启动：$BIN_LINK start --open"
+printf '%s\n' "启动并打开：$BIN_LINK service ensure --open"
+printf '%s\n' "查看状态：$BIN_LINK service status"
+printf '%s\n' "查看日志：$BIN_LINK service logs"
 printf '%s\n' "检查：$BIN_LINK doctor"
+printf '%s\n' "前台诊断（不常驻）：$BIN_LINK start"
+printf '%s\n' "安装器不会自动注册后台服务；首次 service ensure 时才会安装并启动。"
 printf '%s\n' "如果希望直接输入 chengfeng-videocut，请把下面这一行加入 shell 配置："
 printf '%s\n' 'export PATH="$HOME/.chengfeng-videocut/bin:$PATH"'
 

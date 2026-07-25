@@ -1,19 +1,7 @@
-interface EventProperties {
-  [key: string]: string | number | boolean | null | undefined;
-}
+// 遥测已移除。原实现把事件发往第三方 PostHog（HyperFrames 的项目），
+// 本产品不采集也不外发任何使用数据。保留同名空实现，避免改动全部调用点。
+type EventProperties = Record<string, unknown>;
 
-/**
- * chengfeng-videocut is a local-first product. The upstream Studio event API
- * remains as a compatibility seam, but the public distribution never sends
- * usage, project, error, or device data to a remote analytics service.
- */
-export function trackStudioEvent(
-  _event: string,
-  _properties: EventProperties = {},
-): void {
-  // Intentionally local-only and side-effect free.
-}
+export function trackStudioEvent(_event: string, _properties: EventProperties = {}): void {}
 
-export function flushViaBeacon(): void {
-  // Intentionally local-only and side-effect free.
-}
+export function flushViaBeacon(): void {}

@@ -1,23 +1,13 @@
-const projectQueues = new Map<string, Promise<void>>();
+import { serializeProjectOperation } from "@video-workbench/core/node";
 
 /**
- * Serializes all mutating operations for one canonical project directory in
- * this process. Every Koubo module that writes project.json or task artifacts
- * must use this shared queue so their revision checks cannot race each other.
+ * Uses the core project lock shared by Cuts, EDL, Studio and Koubo workflow
+ * writes. Keeping this adapter name avoids churn for callers while ensuring
+ * separate processes cannot race the same revision check.
  */
 export async function serializeKouboProjectOperation<T>(
   directory: string,
   operation: () => Promise<T>,
 ): Promise<T> {
-  const previous = projectQueues.get(directory) ?? Promise.resolve();
-  const result = previous.catch(() => undefined).then(operation);
-  const tail = result.then(
-    () => undefined,
-    () => undefined,
-  );
-  projectQueues.set(directory, tail);
-  void tail.then(() => {
-    if (projectQueues.get(directory) === tail) projectQueues.delete(directory);
-  });
-  return result;
+  return serializeProjectOperation(directory, operation);
 }

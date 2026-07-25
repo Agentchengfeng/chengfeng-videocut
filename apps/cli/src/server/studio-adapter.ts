@@ -8,6 +8,12 @@ import { join, resolve } from "node:path";
 import { bundleToSingleHtml } from "@hyperframes/core/compiler";
 import { lintHyperframeHtml } from "@hyperframes/core/lint";
 import {
+  materializeKouboEditListIndex,
+  patchKouboProjectIndex,
+  resolveKouboPreviewProxySource,
+} from "@video-workbench/koubo-adapter";
+import { serializeProjectOperation } from "@video-workbench/core/node";
+import {
   createProjectSignature,
   type RenderJobState,
   type ResolvedProject,
@@ -36,6 +42,21 @@ function isSafeProjectId(id: string): boolean {
 export interface ProductionStudioAdapterOptions {
   projectsDir: string;
   rendersDir: string;
+}
+
+const GENERATED_MEDIA_TIMING_ATTRIBUTE =
+  /\s(?:data-start|data-hf-auto-start)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?/gi;
+
+/** Keep the single EDL backing video out of HyperFrames' native media clock. */
+export function prepareVideocutPreviewBundle(html: string): string {
+  const localized = html.replace(
+    'data-hyperframes-preview-runtime="1" src=""',
+    'data-hyperframes-preview-runtime="1" src="/api/runtime.js"',
+  );
+  return localized.replace(
+    /<video\b(?=[^>]*\bdata-videocut-edl-backing(?:\s*=|\s|>))[^>]*>/gi,
+    (tag) => tag.replace(GENERATED_MEDIA_TIMING_ATTRIBUTE, ""),
+  );
 }
 
 /** Filesystem adapter used by the packaged, non-Vite Studio server. */
@@ -74,22 +95,40 @@ export function createProductionStudioAdapter(
     resolveProject,
 
     async bundle(projectDir: string): Promise<string | null> {
-      try {
-        const html = await bundleToSingleHtml(projectDir, {
-          runtime: "placeholder",
-          inlineColorGradingLuts: false,
-        });
-        return html.replace(
-          'data-hyperframes-preview-runtime="1" src=""',
-          'data-hyperframes-preview-runtime="1" src="/api/runtime.js"',
-        );
-      } catch (error) {
-        console.warn(
-          `[chengfeng-videocut] Bundling ${projectDir} failed; serving source HTML instead.`,
-          error instanceof Error ? error.message : String(error),
-        );
-        return null;
-      }
+      return serializeProjectOperation(projectDir, async () => {
+        // index.html is a rebuildable projection of edit-list.json. A process
+        // can stop after the EDL commit but before projection materialization,
+        // so the Studio repairs and bundles one locked project snapshot.
+        // Keep this outside the bundle fallback: serving stale source HTML
+        // would silently show a different edit than the Product truth.
+        const projection = existsSync(join(projectDir, "edit-list.json"))
+          ? await materializeKouboEditListIndex(projectDir)
+          : null;
+        try {
+          const html = await bundleToSingleHtml(projectDir, {
+            runtime: "placeholder",
+            inlineColorGradingLuts: false,
+          });
+          const previewProxy = projection
+            ? await resolveKouboPreviewProxySource(projectDir)
+            : null;
+          const previewHtml = projection && previewProxy
+            ? patchKouboProjectIndex(
+                html,
+                projection.editList,
+                projection.revision,
+                previewProxy.browserSource,
+              )
+            : html;
+          return prepareVideocutPreviewBundle(previewHtml);
+        } catch (error) {
+          console.warn(
+            `[chengfeng-videocut] Bundling ${projectDir} failed; serving source HTML instead.`,
+            error instanceof Error ? error.message : String(error),
+          );
+          return null;
+        }
+      });
     },
 
     getProjectSignature(projectDir: string): string {

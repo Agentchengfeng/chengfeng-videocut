@@ -1,0 +1,74 @@
+import { afterEach, describe, expect, it } from "bun:test";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import {
+  requiredReleaseAssetNames,
+  writeReleaseChecksums,
+} from "../../../scripts/release-assets";
+import { checkVersionContract } from "../../../scripts/version-contract";
+import { PRODUCT_VERSION } from "./output";
+
+const cleanupPaths: string[] = [];
+const rootDir = resolve(import.meta.dir, "../../..");
+
+afterEach(async () => {
+  await Promise.all(
+    cleanupPaths.splice(0).map((path) => rm(path, { force: true, recursive: true })),
+  );
+});
+
+describe("release contract", () => {
+  it("keeps every product version surface aligned", async () => {
+    expect(await checkVersionContract(rootDir)).toBe(PRODUCT_VERSION);
+  });
+
+  it("keeps installed CLI commands on the stable install data root", async () => {
+    const portablePackager = await readFile(join(rootDir, "scripts/package-portable.ts"), "utf8");
+    expect(portablePackager).toContain("CHENGFENG_VIDEOCUT_EXECUTABLE");
+    expect(portablePackager).toContain("CHENGFENG_VIDEOCUT_DATA_DIR");
+    expect(portablePackager).toContain('basename -- "$STABLE_BIN_DIR"');
+  });
+
+  it("copies install.sh and checksums every required portable/tgz asset", async () => {
+    const fixtureRoot = await mkdtemp(join(tmpdir(), "videocut-release-contract-"));
+    cleanupPaths.push(fixtureRoot);
+    const releaseDir = join(fixtureRoot, "release");
+    await mkdir(releaseDir, { recursive: true });
+    await Bun.write(join(fixtureRoot, "install.sh"), "#!/bin/sh\nVERSION=fixture\n");
+
+    const assetNames = requiredReleaseAssetNames(PRODUCT_VERSION).filter(
+      (name) => name !== "install.sh",
+    );
+    for (const name of assetNames) {
+      await Bun.write(join(releaseDir, name), `fixture:${name}\n`);
+    }
+
+    const result = await writeReleaseChecksums({
+      rootDir: fixtureRoot,
+      releaseDir,
+      version: PRODUCT_VERSION,
+    });
+    const sums = await readFile(result.checksumPath, "utf8");
+    expect(result.lines).toHaveLength(5);
+    for (const name of requiredReleaseAssetNames(PRODUCT_VERSION)) {
+      expect(sums).toContain(`  ${name}\n`);
+    }
+    const installer = await readFile(join(releaseDir, "install.sh"), "utf8");
+    expect(installer).toBe("#!/bin/sh\nVERSION=fixture\n");
+    expect(sums).toContain(
+      `${createHash("sha256").update(installer).digest("hex")}  install.sh\n`,
+    );
+  });
+
+  it("fails closed when a required archive is missing", async () => {
+    const fixtureRoot = await mkdtemp(join(tmpdir(), "videocut-release-missing-"));
+    cleanupPaths.push(fixtureRoot);
+    const releaseDir = join(fixtureRoot, "release");
+    await writeFile(join(fixtureRoot, "install.sh"), "#!/bin/sh\n");
+    await expect(
+      writeReleaseChecksums({ rootDir: fixtureRoot, releaseDir, version: PRODUCT_VERSION }),
+    ).rejects.toThrow("Missing chengfeng-videocut");
+  });
+});

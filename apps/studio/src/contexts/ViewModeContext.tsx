@@ -16,24 +16,25 @@ import {
  * param so it survives reloads and — importantly — so an agent can deep-link the
  * user straight into the storyboard by navigating the tab to `?view=storyboard`.
  */
-export type StudioViewMode = "timeline" | "storyboard";
+export type BuiltinStudioViewMode = "timeline" | "storyboard";
+export type StudioViewMode = BuiltinStudioViewMode | (string & {});
 
 const VIEW_QUERY_PARAM = "view";
 
-function readViewModeFromUrl(): StudioViewMode {
+function readViewModeFromUrl(extensionModes: readonly string[] = []): StudioViewMode {
   if (typeof window === "undefined") return "timeline";
-  return new URLSearchParams(window.location.search).get(VIEW_QUERY_PARAM) === "storyboard"
-    ? "storyboard"
-    : "timeline";
+  const requested = new URLSearchParams(window.location.search).get(VIEW_QUERY_PARAM);
+  if (requested === "storyboard") return "storyboard";
+  return requested && extensionModes.includes(requested) ? requested : "timeline";
 }
 
 function writeViewModeToUrl(mode: StudioViewMode): void {
   if (typeof window === "undefined") return;
   const url = new URL(window.location.href);
-  if (mode === "storyboard") {
-    url.searchParams.set(VIEW_QUERY_PARAM, "storyboard");
-  } else {
+  if (mode === "timeline") {
     url.searchParams.delete(VIEW_QUERY_PARAM);
+  } else {
+    url.searchParams.set(VIEW_QUERY_PARAM, mode);
   }
   window.history.replaceState(window.history.state, "", url);
 }
@@ -47,8 +48,10 @@ export interface ViewModeValue {
  * Owns the view-mode state — initial read from `?view=`, toggling, popstate sync.
  * Storyboard mode is always available; no flag gating.
  */
-export function useViewModeState(): ViewModeValue {
-  const [viewMode, setMode] = useState<StudioViewMode>(() => readViewModeFromUrl());
+export function useViewModeState(extensionModes: readonly string[] = []): ViewModeValue {
+  const [viewMode, setMode] = useState<StudioViewMode>(() =>
+    readViewModeFromUrl(extensionModes),
+  );
 
   // Reflect genuine browser back/forward between history entries with a different
   // `?view=`. Note: our own writes use `replaceState` (below), which does NOT fire
@@ -57,10 +60,10 @@ export function useViewModeState(): ViewModeValue {
   // the mount-time read); a scripted `pushState`/`replaceState` to `?view=` would not be
   // reflected here, by design.
   useEffect(() => {
-    const onPopState = () => setMode(readViewModeFromUrl());
+    const onPopState = () => setMode(readViewModeFromUrl(extensionModes));
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
-  }, []);
+  }, [extensionModes]);
 
   const setViewMode = useCallback((mode: StudioViewMode) => {
     setMode(mode);

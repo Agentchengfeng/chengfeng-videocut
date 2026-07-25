@@ -14,6 +14,12 @@ function workflowPayload(projectId = "demo") {
     schemaVersion: 1,
     projectId,
     revision: "a".repeat(64),
+    editListRevision: "none",
+    artifact: {
+      state: "legacy",
+      editListRevision: null,
+      path: "剪口播/3_审核/source_cut.mp4",
+    },
     project: {
       status: "cut_review_ready",
       config: null,
@@ -32,6 +38,7 @@ describe("workflowApi", () => {
       schemaVersion: 1,
       projectId: "a/b",
       revision: "a".repeat(64),
+      artifact: { state: "legacy" },
       project: { status: "cut_review_ready" },
     });
     expect(fetchMock).toHaveBeenCalledWith(
@@ -48,6 +55,7 @@ describe("workflowApi", () => {
       projectId: "demo",
       action: "apply-cut",
       expectedRevision: "b".repeat(64),
+      expectedEditListRevision: "e".repeat(64),
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
@@ -58,9 +66,49 @@ describe("workflowApi", () => {
           action: "apply-cut",
           confirmed: true,
           expectedRevision: "b".repeat(64),
+          expectedEditListRevision: "e".repeat(64),
         }),
       }),
     );
+  });
+
+  it("fails closed before fetch when a cut confirmation omits the EDL revision", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const error = await postProjectWorkflowAction({
+      projectId: "demo",
+      action: "apply-cut",
+      expectedRevision: "b".repeat(64),
+    }).catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(WorkflowApiError);
+    expect(error).toMatchObject({
+      status: 400,
+      code: "revision_required",
+      details: { reason: "missing_confirmed_edit_list_revision" },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("fails closed before fetch when the inspected project reports no EDL", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const error = await postProjectWorkflowAction({
+      projectId: "demo",
+      action: "apply-cut",
+      expectedRevision: "b".repeat(64),
+      expectedEditListRevision: "none",
+    }).catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(WorkflowApiError);
+    expect(error).toMatchObject({
+      status: 400,
+      code: "revision_required",
+      details: { reason: "edit_list_required" },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("includes only the compact final-video config for start-final", async () => {
@@ -117,6 +165,27 @@ describe("workflowApi", () => {
     delete (malformed.project as { artifacts?: unknown }).artifacts;
     vi.stubGlobal("fetch", vi.fn(async () => Response.json(malformed)));
 
+    await expect(getProjectWorkflow("demo")).rejects.toMatchObject({
+      code: "invalid_service_response",
+    });
+  });
+
+  it("rejects missing or internally inconsistent physical artifact state", async () => {
+    const missing = workflowPayload();
+    delete (missing as { artifact?: unknown }).artifact;
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json(missing)));
+    await expect(getProjectWorkflow("demo")).rejects.toMatchObject({
+      code: "invalid_service_response",
+    });
+
+    const inconsistent = workflowPayload();
+    inconsistent.editListRevision = "c".repeat(64);
+    inconsistent.artifact = {
+      state: "current",
+      editListRevision: "d".repeat(64),
+      path: "剪口播/3_审核/source_cut.mp4",
+    };
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json(inconsistent)));
     await expect(getProjectWorkflow("demo")).rejects.toMatchObject({
       code: "invalid_service_response",
     });

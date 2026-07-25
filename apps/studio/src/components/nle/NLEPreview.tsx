@@ -1,11 +1,4 @@
-import {
-  memo,
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type RefObject,
-} from "react";
+import { memo, useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { Player } from "../../player";
 import {
   DEFAULT_PREVIEW_ZOOM,
@@ -18,10 +11,7 @@ import {
   toDomPrecision,
   type PreviewZoomState,
 } from "./previewZoom";
-import {
-  readStudioUiPreferences,
-  writeStudioUiPreferences,
-} from "../../utils/studioUiPreferences";
+import { readStudioUiPreferences, writeStudioUiPreferences } from "../../utils/studioUiPreferences";
 interface NLEPreviewProps {
   projectId: string;
   iframeRef: RefObject<HTMLIFrameElement | null>;
@@ -85,12 +75,7 @@ function readPreviewCompositionSize(
     if (!root) return null;
     const width = Number.parseInt(root.getAttribute("data-width") ?? "", 10);
     const height = Number.parseInt(root.getAttribute("data-height") ?? "", 10);
-    if (
-      !Number.isFinite(width) ||
-      width <= 0 ||
-      !Number.isFinite(height) ||
-      height <= 0
-    ) {
+    if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0) {
       return null;
     }
     return { width, height };
@@ -149,16 +134,11 @@ export const NLEPreview = memo(function NLEPreview({
   useEffect(() => {
     onStageRef?.(stageRef);
   }, [onStageRef]);
-  const [compositionSize, setCompositionSize] =
-    useState<PreviewCompositionSize | null>(null);
-  const [stageSize, setStageSize] = useState(() =>
-    resolvePreviewStageSize(0, 0, null, portrait),
-  );
+  const [compositionSize, setCompositionSize] = useState<PreviewCompositionSize | null>(null);
+  const [stageSize, setStageSize] = useState(() => resolvePreviewStageSize(0, 0, null, portrait));
 
   const zoomRef = useRef<PreviewZoomState>(loadInitialZoom());
-  const [settledZoom, setSettledZoom] = useState<PreviewZoomState>(
-    () => zoomRef.current,
-  );
+  const [settledZoom, setSettledZoom] = useState<PreviewZoomState>(() => zoomRef.current);
   const hudRef = useRef<HTMLDivElement>(null);
   const hudTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const settleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -184,14 +164,7 @@ export const NLEPreview = memo(function NLEPreview({
 
     const updateStageSize = () => {
       const rect = viewport.getBoundingClientRect();
-      setStageSize(
-        resolvePreviewStageSize(
-          rect.width,
-          rect.height,
-          compositionSize,
-          portrait,
-        ),
-      );
+      setStageSize(resolvePreviewStageSize(rect.width, rect.height, compositionSize, portrait));
     };
 
     updateStageSize();
@@ -208,9 +181,7 @@ export const NLEPreview = memo(function NLEPreview({
     // Pure updater — the parent notification happens in the effect below
     // (updaters may run more than once under Strict Mode / concurrent React).
     setCompositionSize((prev) =>
-      prev?.width === next?.width && prev?.height === next?.height
-        ? prev
-        : next,
+      prev?.width === next?.width && prev?.height === next?.height ? prev : next,
     );
   }, []);
 
@@ -256,9 +227,7 @@ export const NLEPreview = memo(function NLEPreview({
           }
           // Live per-frame readout — without this the HUD shows an empty pill
           // on the first-ever zoom and a stale percentage mid-gesture.
-          hud.textContent = isPreviewAtFit(clamped)
-            ? "Fit"
-            : `${Math.round(clamped.zoomPercent)}%`;
+          hud.textContent = isPreviewAtFit(clamped) ? "Fit" : `${Math.round(clamped.zoomPercent)}%`;
         }
       }
 
@@ -279,9 +248,7 @@ export const NLEPreview = memo(function NLEPreview({
         if (showHud) {
           const hud = hudRef.current;
           if (hud) {
-            hud.textContent = isPreviewAtFit(final)
-              ? "Fit"
-              : `${Math.round(final.zoomPercent)}%`;
+            hud.textContent = isPreviewAtFit(final) ? "Fit" : `${Math.round(final.zoomPercent)}%`;
             if (hudTimerRef.current) clearTimeout(hudTimerRef.current);
             hudTimerRef.current = setTimeout(() => {
               if (hudRef.current) hudRef.current.style.opacity = "0";
@@ -305,23 +272,13 @@ export const NLEPreview = memo(function NLEPreview({
 
   const applyInitialZoom = useCallback(() => {
     const z = zoomRef.current;
-    if (
-      Math.abs(z.zoomPercent - 100) > 0.5 ||
-      Math.abs(z.panX) > 0.1 ||
-      Math.abs(z.panY) > 0.1
-    ) {
+    if (Math.abs(z.zoomPercent - 100) > 0.5 || Math.abs(z.panX) > 0.1 || Math.abs(z.panY) > 0.1) {
       // A pan persisted on a large window can restore the composition mostly
       // off-screen in a smaller one; clamp against the current viewport first.
       const viewport = viewportRef.current;
       const rect = viewport?.getBoundingClientRect();
       const sz = stageSizeRef.current;
-      if (
-        rect &&
-        rect.width > 0 &&
-        rect.height > 0 &&
-        sz.width > 0 &&
-        sz.height > 0
-      ) {
+      if (rect && rect.width > 0 && rect.height > 0 && sz.width > 0 && sz.height > 0) {
         const pan = clampPreviewPan({
           panX: z.panX,
           panY: z.panY,
@@ -393,12 +350,8 @@ export const NLEPreview = memo(function NLEPreview({
       applyPan(next);
     };
 
-    document.addEventListener("wheel", handleWheel, {
-      passive: false,
-      capture: true,
-    });
-    return () =>
-      document.removeEventListener("wheel", handleWheel, { capture: true });
+    document.addEventListener("wheel", handleWheel, { passive: false, capture: true });
+    return () => document.removeEventListener("wheel", handleWheel, { capture: true });
   }, [applyZoom, applyPan]);
 
   useEffect(() => {
@@ -420,17 +373,11 @@ export const NLEPreview = memo(function NLEPreview({
     };
 
     document.addEventListener("dblclick", handleDblClick, { capture: true });
-    return () =>
-      document.removeEventListener("dblclick", handleDblClick, {
-        capture: true,
-      });
+    return () => document.removeEventListener("dblclick", handleDblClick, { capture: true });
   }, [applyZoom]);
 
   useEffect(() => {
-    const isInsideViewport = (
-      clientX: number,
-      clientY: number,
-    ): DOMRect | null => {
+    const isInsideViewport = (clientX: number, clientY: number): DOMRect | null => {
       const viewport = viewportRef.current;
       if (!viewport) return null;
       const rect = viewport.getBoundingClientRect();
@@ -492,29 +439,17 @@ export const NLEPreview = memo(function NLEPreview({
       event.preventDefault();
     };
 
-    document.addEventListener("pointerdown", handlePointerDown, {
-      capture: true,
-    });
-    document.addEventListener("pointermove", handlePointerMove, {
-      capture: true,
-    });
+    document.addEventListener("pointerdown", handlePointerDown, { capture: true });
+    document.addEventListener("pointermove", handlePointerMove, { capture: true });
     document.addEventListener("pointerup", finishDrag, { capture: true });
     document.addEventListener("pointercancel", finishDrag, { capture: true });
     document.addEventListener("auxclick", handleAuxClick, { capture: true });
     return () => {
-      document.removeEventListener("pointerdown", handlePointerDown, {
-        capture: true,
-      });
-      document.removeEventListener("pointermove", handlePointerMove, {
-        capture: true,
-      });
+      document.removeEventListener("pointerdown", handlePointerDown, { capture: true });
+      document.removeEventListener("pointermove", handlePointerMove, { capture: true });
       document.removeEventListener("pointerup", finishDrag, { capture: true });
-      document.removeEventListener("pointercancel", finishDrag, {
-        capture: true,
-      });
-      document.removeEventListener("auxclick", handleAuxClick, {
-        capture: true,
-      });
+      document.removeEventListener("pointercancel", finishDrag, { capture: true });
+      document.removeEventListener("auxclick", handleAuxClick, { capture: true });
     };
   }, [applyPan]);
 
@@ -524,7 +459,7 @@ export const NLEPreview = memo(function NLEPreview({
     <div className="flex flex-col h-full min-h-0">
       <div
         ref={viewportRef}
-        className="cf-preview-surface relative flex-1 flex items-center justify-center p-2 overflow-hidden min-h-0 outline-none focus:ring-1 focus:ring-studio-accent/40 bg-neutral-700"
+        className="relative flex-1 flex items-center justify-center p-2 overflow-hidden min-h-0 outline-none focus:ring-1 focus:ring-studio-accent/40 bg-neutral-950"
         tabIndex={0}
         aria-label="Composition preview"
       >
@@ -586,7 +521,7 @@ export const NLEPreview = memo(function NLEPreview({
             aria-label="Reset zoom to fit"
             data-testid="preview-reset-zoom"
           >
-            {Math.round(settledZoom.zoomPercent)}% · 重置
+            {Math.round(settledZoom.zoomPercent)}% — Reset
           </button>
         )}
       </div>

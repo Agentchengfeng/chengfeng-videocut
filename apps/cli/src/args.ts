@@ -5,11 +5,21 @@ export type CliCommand =
   | "help"
   | "version"
   | "start"
+  | "service.install"
+  | "service.start"
+  | "service.stop"
+  | "service.restart"
+  | "service.status"
+  | "service.logs"
+  | "service.ensure"
   | "doctor"
   | "inspect"
   | "open"
+  | "transcribe"
+  | "project.create"
   | "project.prepare"
   | "artifact.put"
+  | "cuts.get"
   | "cuts.set"
   | "cuts.apply"
   | "workflow.get"
@@ -24,6 +34,7 @@ export interface ParsedArgs {
   dryRun: boolean;
   origin?: string;
   expectedRevision?: string;
+  expectedEditListRevision?: string;
   projectsDir?: string;
   outputDir?: string;
   dataDir?: string;
@@ -33,6 +44,9 @@ export interface ParsedArgs {
   apiBase?: string;
   video?: string;
   transcript?: string;
+  output?: string;
+  language?: string;
+  aspectRatio?: "3:4" | "4:3" | "16:9";
   duration?: number;
   confirmed: boolean;
   forceIndex: boolean;
@@ -42,12 +56,14 @@ export interface ParsedArgs {
   expectedArtifactRevision?: string;
   action?: string;
   renderer?: string;
+  logLines?: number;
 }
 
 const VALUE_OPTIONS = new Set([
   "--file",
   "--origin",
   "--expected-revision",
+  "--expected-edit-list-revision",
   "--projects-dir",
   "--output-dir",
   "--data-dir",
@@ -56,12 +72,16 @@ const VALUE_OPTIONS = new Set([
   "--api-base",
   "--video",
   "--transcript",
+  "--output",
+  "--language",
+  "--aspect-ratio",
   "--duration",
   "--type",
   "--expected-project-revision",
   "--expected-artifact-revision",
   "--action",
   "--renderer",
+  "--lines",
 ]);
 
 const BOOLEAN_OPTIONS = new Set([
@@ -153,11 +173,22 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     }
   }
 
+  const linesValue = values.get("--lines");
+  let logLines: number | undefined;
+  if (linesValue !== undefined) {
+    if (!/^\d+$/.test(linesValue)) usageError("--lines must be an integer from 1 to 1000");
+    logLines = Number(linesValue);
+    if (!Number.isSafeInteger(logLines) || logLines < 1 || logLines > 1_000) {
+      usageError("--lines must be an integer from 1 to 1000");
+    }
+  }
+
   const common = {
     json,
     dryRun,
     origin: values.get("--origin"),
     expectedRevision: values.get("--expected-revision"),
+    expectedEditListRevision: values.get("--expected-edit-list-revision"),
     projectsDir: values.get("--projects-dir"),
     outputDir: values.get("--output-dir"),
     dataDir: values.get("--data-dir"),
@@ -167,6 +198,9 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     apiBase: values.get("--api-base"),
     video: values.get("--video"),
     transcript: values.get("--transcript"),
+    output: values.get("--output"),
+    language: values.get("--language"),
+    aspectRatio: values.get("--aspect-ratio") as ParsedArgs["aspectRatio"],
     duration,
     confirmed: booleanValues.has("--confirmed"),
     forceIndex: booleanValues.has("--force-index"),
@@ -176,6 +210,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     expectedArtifactRevision: values.get("--expected-artifact-revision"),
     action: values.get("--action"),
     renderer: values.get("--renderer"),
+    logLines,
   };
   if (version) return { command: "version", ...common };
   if (help || positionals.length === 0) return { command: "help", ...common };
@@ -192,8 +227,11 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
       if (!allowedBoolean.includes(name)) usageError(`${name} is not valid for this command`);
     }
     if (dryRun && !allowDryRun) usageError("--dry-run is only valid for cuts set");
-    if (openBrowser && positionals[0] !== "start") {
-      usageError("--open is only valid for start");
+    if (openBrowser && !(
+      positionals[0] === "start" ||
+      (positionals[0] === "service" && positionals[1] === "ensure")
+    )) {
+      usageError("--open is only valid for start or service ensure");
     }
   };
 
@@ -203,6 +241,20 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     }
     assertOptions(["--host", "--port", "--projects-dir", "--data-dir"]);
     return { command: "start", ...common };
+  }
+
+  if (positionals[0] === "service") {
+    const action = positionals[1];
+    if (positionals.length !== 2 || ![
+      "install", "start", "stop", "restart", "status", "logs", "ensure",
+    ].includes(action ?? "")) {
+      usageError(
+        "Usage: chengfeng-videocut service <install|start|stop|restart|status|logs|ensure>",
+      );
+    }
+    if (action === "logs") assertOptions(["--lines"]);
+    else assertOptions([]);
+    return { command: `service.${action}` as CliCommand, ...common };
   }
 
   if (positionals[0] === "doctor") {
@@ -223,6 +275,40 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     }
     assertOptions(["--origin", "--projects-dir", "--output-dir"]);
     return { command: "open", project: positionals[1], ...common };
+  }
+  if (positionals[0] === "transcribe") {
+    if (positionals.length !== 2) {
+      usageError(
+        "Usage: chengfeng-videocut transcribe <job-dir> --video <task-local-path> --output <task-local-path>",
+      );
+    }
+    const video = values.get("--video");
+    const output = values.get("--output");
+    if (!video) usageError("transcribe requires --video <task-local-path>");
+    if (!output) usageError("transcribe requires --output <task-local-path>");
+    assertOptions(["--video", "--output", "--language"]);
+    return { command: "transcribe", project: positionals[1], ...common };
+  }
+  if (positionals[0] === "project" && positionals[1] === "create") {
+    if (positionals.length !== 3) {
+      usageError(
+        "Usage: chengfeng-videocut project create <job-dir> --video <task-local-path> --transcript <task-local-path> --aspect-ratio <3:4|4:3|16:9>",
+      );
+    }
+    const video = values.get("--video");
+    const transcript = values.get("--transcript");
+    const aspectRatio = values.get("--aspect-ratio");
+    if (!video) usageError("project create requires --video <task-local-path>");
+    if (!transcript) usageError("project create requires --transcript <task-local-path>");
+    if (aspectRatio !== "3:4" && aspectRatio !== "4:3" && aspectRatio !== "16:9") {
+      usageError("project create --aspect-ratio must be 3:4, 4:3, or 16:9");
+    }
+    assertOptions(["--video", "--transcript", "--aspect-ratio", "--projects-dir"]);
+    return {
+      command: "project.create",
+      project: positionals[2],
+      ...common,
+    };
   }
   if (positionals[0] === "project" && positionals[1] === "prepare") {
     if (positionals.length !== 3) {
@@ -322,20 +408,51 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
   }
   if (positionals[0] === "cuts" && positionals[1] === "apply") {
     if (positionals.length !== 3) {
-      usageError("Usage: chengfeng-videocut cuts apply <project> --expected-revision <sha256> --confirmed");
+      usageError("Usage: chengfeng-videocut cuts apply <project> --expected-revision <sha256> --expected-edit-list-revision <sha256> --confirmed");
     }
     const expectedRevision = values.get("--expected-revision");
     if (!expectedRevision || !/^[a-f0-9]{64}$/.test(expectedRevision)) {
       usageError("cuts apply requires --expected-revision <sha256>");
     }
+    const expectedEditListRevision = values.get("--expected-edit-list-revision");
+    if (!expectedEditListRevision) {
+      throw new VideocutError(
+        "revision_required",
+        "cuts apply requires --expected-edit-list-revision <sha256> from explicit user confirmation",
+        { reason: "missing_confirmed_edit_list_revision" },
+      );
+    }
+    if (expectedEditListRevision === "none") {
+      throw new VideocutError(
+        "revision_required",
+        "cuts apply requires a prepared edit-list.json revision",
+        { reason: "edit_list_required" },
+      );
+    }
+    if (!/^[a-f0-9]{64}$/.test(expectedEditListRevision)) {
+      usageError("--expected-edit-list-revision must be a SHA-256 revision");
+    }
     if (!booleanValues.has("--confirmed")) {
       usageError("cuts apply requires --confirmed after explicit user confirmation");
     }
     assertOptions(
-      ["--expected-revision", "--projects-dir", "--output-dir", "--api-base"],
+      [
+        "--expected-revision",
+        "--expected-edit-list-revision",
+        "--projects-dir",
+        "--output-dir",
+        "--api-base",
+      ],
       ["--confirmed"],
     );
     return { command: "cuts.apply", project: positionals[2], ...common };
+  }
+  if (positionals[0] === "cuts" && positionals[1] === "get") {
+    if (positionals.length !== 3) {
+      usageError("Usage: chengfeng-videocut cuts get <project>");
+    }
+    assertOptions(["--projects-dir", "--output-dir", "--api-base"]);
+    return { command: "cuts.get", project: positionals[2], ...common };
   }
   if (positionals[0] === "cuts" && positionals[1] === "set") {
     if (positionals.length !== 3) {

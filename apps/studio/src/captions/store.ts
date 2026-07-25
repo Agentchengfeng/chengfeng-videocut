@@ -264,11 +264,9 @@ export const useCaptionStore = create<CaptionState>((set, get) => ({
     }),
 
   // Reset
-  reset: () => {
-    nextSplitId = 0;
+  reset: () =>
     set({
       ...initialState,
       selectedSegmentIds: new Set<string>(),
-    });
-  },
+    }),
 }));

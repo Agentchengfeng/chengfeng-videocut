@@ -1,5 +1,5 @@
 // NLE Layout
-export { NLELayout } from "./components/nle/NLELayout";
+export { EditorShell } from "./components/EditorShell";
 export { NLEPreview } from "./components/nle/NLEPreview";
 export { CompositionBreadcrumb } from "./components/nle/CompositionBreadcrumb";
 export type { CompositionLevel } from "./components/nle/CompositionBreadcrumb";
@@ -26,6 +26,17 @@ export { FileTree } from "./components/editor/FileTree";
 
 // App
 export { StudioApp } from "./App";
+export type {
+  StudioAppProps,
+  StudioViewExtension,
+  StudioViewPanelProps,
+} from "./App";
+export type {
+  StudioTimelineEditingAdapter,
+  StudioTimelineMoveUpdates,
+  StudioTimelineResizeUpdates,
+  UseStudioTimelineEditingAdapter,
+} from "./hooks/timelineEditingExtension";
 
 // Hooks
 export { useElementPicker } from "./hooks/useElementPicker";
@@ -35,3 +46,4 @@ export type { PickedElement } from "./hooks/useElementPicker";
 export { resolveSourceFile, applyPatch } from "./utils/sourcePatcher";
 export type { PatchOperation } from "./utils/sourcePatcher";
 export { parseStyleString, mergeStyleIntoTag, findElementBlock } from "./utils/htmlEditor";
+export { subscribeProjectFileChanges } from "./utils/projectEvents";

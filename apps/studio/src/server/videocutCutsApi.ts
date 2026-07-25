@@ -5,7 +5,8 @@ import { VideocutError, asVideocutError } from "@video-workbench/core";
 import {
   readOptionalProjectDocument,
   resolveProject,
-  writeCutSelection,
+  writeCutSelectionWithEditList,
+  type CutSelectionWriteMode,
 } from "@video-workbench/core/node";
 
 const API_SCHEMA_VERSION = 1 as const;
@@ -20,6 +21,7 @@ export interface VideocutCutsChange {
 
 export interface VideocutCutsHandlerOptions {
   projectsDir: string;
+  materializeIndex?: (change: VideocutCutsChange) => void | Promise<void>;
   onDocumentChanged?: (change: VideocutCutsChange) => void | Promise<void>;
 }
 
@@ -28,6 +30,7 @@ type VideocutCutsHandler = (request: Request) => Promise<Response | null>;
 interface CutsPutBody {
   expectedRevision: string;
   cutWordIds: unknown[];
+  mode: CutSelectionWriteMode;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -80,6 +83,7 @@ function errorStatus(error: VideocutError): number {
     case "invalid_json":
     case "invalid_transcript":
     case "invalid_cut_selection":
+    case "invalid_edit_list":
       return 400;
     default:
       return 500;
@@ -165,7 +169,7 @@ function parsePutBody(value: unknown): CutsPutBody {
   if (!isObject(value)) {
     throw new VideocutError("invalid_argument", "Cuts request body must be a JSON object");
   }
-  const allowedKeys = new Set(["expectedRevision", "cutWordIds"]);
+  const allowedKeys = new Set(["expectedRevision", "cutWordIds", "mode"]);
   const unexpectedKeys = Object.keys(value).filter((key) => !allowedKeys.has(key));
   if (unexpectedKeys.length > 0) {
     throw new VideocutError(
@@ -186,9 +190,17 @@ function parsePutBody(value: unknown): CutsPutBody {
   if (!Array.isArray(value.cutWordIds)) {
     throw new VideocutError("invalid_argument", "cutWordIds must be an array");
   }
+  if (value.mode !== "semantic-overlay" && value.mode !== "full-selection") {
+    throw new VideocutError(
+      "invalid_argument",
+      "mode is required and must be 'semantic-overlay' or 'full-selection'",
+      { supportedModes: ["semantic-overlay", "full-selection"] },
+    );
+  }
   return {
     expectedRevision: value.expectedRevision,
     cutWordIds: value.cutWordIds,
+    mode: value.mode,
   };
 }
 
@@ -291,15 +303,38 @@ export function createVideocutCutsHandler(
 
       const body = parsePutBody(await readJsonRequest(request));
       const lockKey = join(project.directory, CUT_SELECTION_FILE);
-      const result = await mutex.run(lockKey, () =>
-        writeCutSelection(
+      const transaction = await mutex.run(lockKey, () =>
+        writeCutSelectionWithEditList(
           project,
-          // The API intentionally forwards only cutWordIds. Metadata, ranges and
-          // timestamps supplied by a caller can never replace the stored values.
+          // The API intentionally forwards only the word ids plus an explicit
+          // write intent. Metadata, ranges and timestamps supplied by a caller
+          // can never replace the stored values.
           { cutWordIds: body.cutWordIds },
-          { expectedRevision: body.expectedRevision },
+          { expectedRevision: body.expectedRevision, mode: body.mode },
         ),
       );
+      const result = transaction.cuts;
+
+      if (transaction.editList?.changed && options.materializeIndex) {
+        try {
+          await options.materializeIndex({
+            projectId: project.projectId,
+            path: transaction.editList.path,
+            revision: transaction.editList.revision,
+          });
+        } catch (error) {
+          throw new VideocutError(
+            "io_error",
+            "Cuts and edit-list.json were saved, but index.html could not be regenerated",
+            {
+              committed: true,
+              cutsRevision: result.revision,
+              editListRevision: transaction.editList.revision,
+              cause: error instanceof Error ? error.message : String(error),
+            },
+          );
+        }
+      }
 
       if (result.changed && options.onDocumentChanged) {
         try {
@@ -313,6 +348,17 @@ export function createVideocutCutsHandler(
           // a committed write into an apparent request failure and invite retry.
         }
       }
+      if (transaction.editList?.changed && options.onDocumentChanged) {
+        try {
+          await options.onDocumentChanged({
+            projectId: project.projectId,
+            path: transaction.editList.path,
+            revision: transaction.editList.revision,
+          });
+        } catch {
+          // The Product documents and index are already current.
+        }
+      }
 
       return jsonResponse(
         {
@@ -322,6 +368,7 @@ export function createVideocutCutsHandler(
           changed: result.changed,
           previousRevision: result.previousRevision ?? "none",
           revision: result.revision,
+          editListRevision: transaction.editList?.revision ?? null,
           document: result.document,
         },
         200,

@@ -124,6 +124,13 @@ export function putProjectCutSelection(
       Accept: "application/json",
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ expectedRevision, cutWordIds }),
+    // Studio submits the complete visible delete/keep state. Unlike the Skill
+    // semantic overlay, this mode intentionally allows a user to restore a
+    // natural-pause baseline word.
+    body: JSON.stringify({
+      expectedRevision,
+      cutWordIds,
+      mode: "full-selection",
+    }),
   });
 }

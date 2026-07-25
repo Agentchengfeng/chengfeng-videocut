@@ -1,11 +1,13 @@
-import { resolveProject } from "@video-workbench/core/node";
+import { readEditList, resolveProject } from "@video-workbench/core/node";
 import {
   KouboWorkflowError,
   applyKouboCut,
+  readKouboCutArtifactStatus,
   readKouboWorkflow,
   transitionKouboWorkflow,
   type ApplyKouboCutOptions,
   type ApplyKouboCutResult,
+  type KouboCutArtifactStatus,
   type KouboWorkflowAction,
   type KouboWorkflowSnapshot,
   type TransitionKouboWorkflowOptions,
@@ -41,6 +43,7 @@ interface ActionBody {
   action: "apply-cut" | KouboWorkflowAction;
   confirmed: true;
   expectedRevision: string;
+  expectedEditListRevision?: string;
   config?: {
     aspectRatio?: "3:4" | "16:9" | "4:3";
     animationStyle?: string;
@@ -128,12 +131,16 @@ function publicSnapshot(
   projectId: string,
   snapshot: KouboWorkflowSnapshot,
   activeTask: boolean,
+  editListRevision: string,
+  artifact: KouboCutArtifactStatus,
 ): JsonObject {
   const project = snapshot.project;
   return {
     schemaVersion: SCHEMA_VERSION,
     projectId,
     revision: snapshot.revision,
+    editListRevision,
+    artifact,
     activeTask,
     project: {
       ...project,
@@ -152,7 +159,13 @@ async function readBody(request: Request): Promise<ActionBody> {
     throw new KouboWorkflowError("invalid_argument", "Action body is not valid JSON");
   }
   if (!isObject(value)) throw new KouboWorkflowError("invalid_argument", "Action body must be an object");
-  const allowedKeys = new Set(["action", "confirmed", "expectedRevision", "config"]);
+  const allowedKeys = new Set([
+    "action",
+    "confirmed",
+    "expectedRevision",
+    "expectedEditListRevision",
+    "config",
+  ]);
   const unsupported = Object.keys(value).filter((key) => !allowedKeys.has(key));
   if (unsupported.length > 0) {
     throw new KouboWorkflowError(
@@ -178,6 +191,21 @@ async function readBody(request: Request): Promise<ActionBody> {
     throw new KouboWorkflowError(
       "revision_required",
       "Action requires a lowercase SHA-256 expectedRevision",
+    );
+  }
+  if (
+    value.expectedEditListRevision !== undefined &&
+    (typeof value.expectedEditListRevision !== "string" ||
+      !REVISION.test(value.expectedEditListRevision))
+  ) {
+    throw new KouboWorkflowError(
+      "revision_required",
+      "expectedEditListRevision must be a lowercase SHA-256 revision",
+      {
+        reason: value.expectedEditListRevision === "none"
+          ? "edit_list_required"
+          : "invalid_edit_list_revision",
+      },
     );
   }
   if (value.config !== undefined && !isObject(value.config)) {
@@ -232,10 +260,18 @@ export function createVideocutWorkflowHandler(
           return new Response("Method Not Allowed", { status: 405, headers: { Allow: "GET" } });
         }
         const snapshot = await readKouboWorkflow(project.directory);
+        const editList = await readEditList(project);
+        const editListRevision = editList?.revision ?? "none";
+        const artifact = await readKouboCutArtifactStatus(
+          project.directory,
+          editList?.revision ?? null,
+        );
         return response(publicSnapshot(
           matched.projectId,
           snapshot,
           activeCuts.has(matched.projectId),
+          editListRevision,
+          artifact,
         ));
       }
       if (request.method !== "POST") {
@@ -250,6 +286,13 @@ export function createVideocutWorkflowHandler(
             { projectId: matched.projectId },
           );
         }
+        if (body.expectedEditListRevision === undefined) {
+          throw new KouboWorkflowError(
+            "revision_required",
+            "apply-cut requires expectedEditListRevision from explicit user confirmation",
+            { reason: "missing_confirmed_edit_list_revision" },
+          );
+        }
         // Validate the optimistic revision before scheduling an expensive task.
         const before = await readKouboWorkflow(project.directory);
         if (before.revision !== body.expectedRevision) {
@@ -259,9 +302,30 @@ export function createVideocutWorkflowHandler(
             { expectedRevision: body.expectedRevision, currentRevision: before.revision },
           );
         }
+        const editList = await readEditList(project);
+        if (!editList) {
+          throw new KouboWorkflowError(
+            "revision_required",
+            "apply-cut requires project prepare to create edit-list.json",
+            { reason: "edit_list_required" },
+          );
+        }
+        const currentEditListRevision = editList.revision;
+        if (body.expectedEditListRevision !== currentEditListRevision) {
+          throw new KouboWorkflowError(
+            "revision_conflict",
+            "edit-list.json changed after the cut was confirmed",
+            {
+              reason: "edit_list_changed_after_confirmation",
+              expectedEditListRevision: body.expectedEditListRevision,
+              currentEditListRevision,
+            },
+          );
+        }
         const operation = runCut(project.directory, {
           confirmed: true,
           expectedRevision: body.expectedRevision,
+          expectedEditListRevision: body.expectedEditListRevision,
           rootSourceCut: "symlink",
         });
         activeCuts.set(matched.projectId, operation);
@@ -294,11 +358,50 @@ export function createVideocutWorkflowHandler(
           path: snapshot.projectPath,
           revision: snapshot.revision,
         });
+        const artifact = await readKouboCutArtifactStatus(
+          project.directory,
+          currentEditListRevision,
+        );
         return response({
-          ...publicSnapshot(matched.projectId, snapshot, !early.result),
+          ...publicSnapshot(
+            matched.projectId,
+            snapshot,
+            !early.result,
+            currentEditListRevision,
+            artifact,
+          ),
           accepted: !early.result,
           action: body.action,
         }, early.result ? 200 : 202);
+      }
+
+      if (body.action === "start-final") {
+        const before = await readKouboWorkflow(project.directory);
+        if (before.revision !== body.expectedRevision) {
+          throw new KouboWorkflowError(
+            "revision_conflict",
+            "project.json changed after it was inspected",
+            { expectedRevision: body.expectedRevision, currentRevision: before.revision },
+          );
+        }
+        const editList = await readEditList(project);
+        const artifact = await readKouboCutArtifactStatus(
+          project.directory,
+          editList?.revision ?? null,
+        );
+        if (artifact.state !== "current") {
+          throw new KouboWorkflowError(
+            "invalid_state",
+            "start-final requires a verified cut artifact for the current edit list",
+            {
+              reason: "cut_artifact_not_current",
+              artifactState: artifact.state,
+              artifactEditListRevision: artifact.editListRevision,
+              currentEditListRevision: editList?.revision ?? null,
+              artifactPath: artifact.path,
+            },
+          );
+        }
       }
 
       const result = await runTransition(
@@ -315,8 +418,19 @@ export function createVideocutWorkflowHandler(
         path: result.projectPath,
         revision: result.revision,
       });
+      const editList = await readEditList(project);
+      const artifact = await readKouboCutArtifactStatus(
+        project.directory,
+        editList?.revision ?? null,
+      );
       return response({
-        ...publicSnapshot(matched.projectId, result, false),
+        ...publicSnapshot(
+          matched.projectId,
+          result,
+          false,
+          editList?.revision ?? "none",
+          artifact,
+        ),
         accepted: false,
         action: body.action,
       });

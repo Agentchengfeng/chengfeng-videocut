@@ -62,9 +62,9 @@ function attachIframeAdapter(
     pause: vi.fn(() => {
       playing = false;
     }),
-    seek: (time: number) => {
+    seek: vi.fn((time: number) => {
       currentTime = time;
-    },
+    }),
     getTime: () => currentTime,
     getDuration: () => options.duration ?? 30,
     isPlaying: () => playing,
@@ -91,82 +91,17 @@ function attachIframeAdapter(
   return adapter;
 }
 
+function replaceIframeDocument(api: ReturnType<typeof useTimelinePlayer>) {
+  Object.defineProperty(api.iframeRef.current!, "contentDocument", {
+    value: document.implementation.createHTMLDocument("refreshed-preview"),
+    configurable: true,
+  });
+}
+
 function renderAttachedTimelinePlayer() {
   const { api, root } = renderTimelinePlayerHarness();
   const adapter = attachIframeAdapter(api);
   return { api, root, adapter };
-}
-
-function attachHostedIframeAdapter(api: ReturnType<typeof useTimelinePlayer>) {
-  const host = document.createElement("hyperframes-player") as HTMLElement & {
-    play: () => void;
-    pause: () => void;
-    seek: (time: number) => void;
-    currentTime: number;
-    duration: number;
-    paused: boolean;
-    ready: boolean;
-  };
-  const shadow = host.attachShadow({ mode: "open" });
-  const iframe = document.createElement("iframe");
-  let innerTime = 0;
-  let innerPlaying = false;
-  const innerAdapter = {
-    play: vi.fn(() => {
-      innerPlaying = true;
-    }),
-    pause: vi.fn(() => {
-      innerPlaying = false;
-    }),
-    seek: vi.fn((time: number) => {
-      innerTime = time;
-    }),
-    getTime: () => innerTime,
-    getDuration: () => 30,
-    isPlaying: () => innerPlaying,
-  };
-  Object.defineProperty(iframe, "contentWindow", {
-    value: {
-      __player: innerAdapter,
-      postMessage: () => {},
-      scrollTo: () => {},
-      addEventListener: () => {},
-      removeEventListener: () => {},
-    },
-    configurable: true,
-  });
-  Object.defineProperty(iframe, "contentDocument", {
-    value: document.implementation.createHTMLDocument("preview"),
-    configurable: true,
-  });
-
-  let hostTime = 0;
-  let hostPaused = true;
-  const hostPlay = vi.fn(() => {
-    hostPaused = false;
-  });
-  const hostPause = vi.fn(() => {
-    hostPaused = true;
-  });
-  const hostSeek = vi.fn((time: number) => {
-    hostTime = time;
-    hostPaused = true;
-  });
-  Object.assign(host, { play: hostPlay, pause: hostPause, seek: hostSeek });
-  Object.defineProperties(host, {
-    currentTime: { get: () => hostTime },
-    duration: { get: () => 30 },
-    paused: { get: () => hostPaused },
-    ready: { get: () => true },
-  });
-  shadow.appendChild(iframe);
-  document.body.appendChild(host);
-
-  act(() => {
-    api.iframeRef.current = iframe;
-    api.onIframeLoad();
-  });
-  return { hostPlay, hostPause, hostSeek, innerAdapter };
 }
 
 function setStorePlaying() {
@@ -201,6 +136,71 @@ function expectStorePlaybackState(
 }
 
 describe("useTimelinePlayer seek hydration", () => {
+  it("starts product EDL audio in the parent Play call stack", async () => {
+    const { api, root } = renderAttachedTimelinePlayer();
+    const audio = document.createElement("audio");
+    const playAudio = vi.fn(() => Promise.resolve());
+    audio.play = playAudio;
+    audio.id = "videocut-edl-audio-success";
+    document.body.append(audio);
+    api.iframeRef.current!.setAttribute("data-videocut-edl-audio-id", audio.id);
+
+    act(() => {
+      api.play();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(playAudio).toHaveBeenCalledTimes(1);
+    expect(usePlayerStore.getState().isPlaying).toBe(true);
+    unmountWithAct(root);
+  });
+
+  it("fails the Studio transport closed when parent EDL audio cannot start", async () => {
+    const { api, root, adapter } = renderAttachedTimelinePlayer();
+    const audio = document.createElement("audio");
+    audio.play = vi.fn(() => Promise.reject(new DOMException("blocked", "NotAllowedError")));
+    audio.id = "videocut-edl-audio-blocked";
+    document.body.append(audio);
+    api.iframeRef.current!.setAttribute("data-videocut-edl-audio-id", audio.id);
+
+    act(() => {
+      api.play();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(adapter.pause).toHaveBeenCalled();
+    expect(usePlayerStore.getState().isPlaying).toBe(false);
+    unmountWithAct(root);
+  });
+
+  it.each([
+    "videocut-audio-gesture-required",
+    "videocut-media-play-error",
+  ])("returns Studio transport to Play when %s fails closed", (type) => {
+    const { api, root, adapter } = renderAttachedTimelinePlayer();
+
+    act(() => {
+      api.play();
+    });
+    expect(usePlayerStore.getState().isPlaying).toBe(true);
+
+    const source = api.iframeRef.current?.contentWindow ?? null;
+    act(() => {
+      window.dispatchEvent(new MessageEvent("message", {
+        data: { source: "chengfeng-videocut", type },
+        source,
+      }));
+    });
+
+    expect(adapter.pause).toHaveBeenCalled();
+    expect(usePlayerStore.getState().isPlaying).toBe(false);
+    unmountWithAct(root);
+  });
+
   it("keeps an external seek request until the iframe adapter is ready", () => {
     const observedTimes: number[] = [];
     const unsubscribe = liveTime.subscribe((time) => {
@@ -226,45 +226,142 @@ describe("useTimelinePlayer seek hydration", () => {
     unsubscribe();
   });
 
-  it("keeps playback running for an external keep-playing seek", () => {
+  it("does not turn a paused transport into playback when keepPlaying waits for an adapter", () => {
+    const { api, root } = renderTimelinePlayerHarness();
+
+    act(() => {
+      usePlayerStore.getState().requestSeek(4.2, { keepPlaying: true });
+    });
+    const adapter = attachIframeAdapter(api);
+
+    expect(adapter.getTime()).toBe(4.2);
+    expect(adapter.play).not.toHaveBeenCalled();
+    expect(usePlayerStore.getState().isPlaying).toBe(false);
+    unmountWithAct(root);
+  });
+
+  it("consumes a same-time external request when only its options changed", () => {
     const { root, adapter } = renderAttachedTimelinePlayer();
 
     act(() => {
-      usePlayerStore.setState({ isPlaying: true });
+      usePlayerStore.getState().requestSeek(4.2);
       usePlayerStore.getState().requestSeek(4.2, { keepPlaying: true });
     });
 
-    expect(adapter.getTime()).toBe(4.2);
-    expect(adapter.isPlaying()).toBe(true);
-    expect(usePlayerStore.getState().isPlaying).toBe(true);
+    expect(adapter.seek).toHaveBeenCalledTimes(4);
     expect(usePlayerStore.getState().requestedSeekTime).toBeNull();
+    unmountWithAct(root);
+  });
+
+  it("prefers an explicit Studio extension transport over document duration reconciliation", () => {
+    const { api, root } = renderTimelinePlayerHarness();
+    const iframe = document.createElement("iframe");
+    const baseAdapter = {
+      play: vi.fn(),
+      pause: vi.fn(),
+      seek: vi.fn(),
+      getTime: () => 0,
+      getDuration: () => 659.711,
+      isPlaying: () => false,
+    };
+    const extensionAdapter = {
+      play: vi.fn(),
+      pause: vi.fn(),
+      seek: vi.fn(),
+      getTime: () => 0,
+      getDuration: () => 242.94,
+      isPlaying: () => false,
+    };
+    Object.defineProperty(iframe, "contentWindow", {
+      value: {
+        __player: baseAdapter,
+        __studioPlaybackAdapter: extensionAdapter,
+        postMessage: vi.fn(),
+        scrollTo: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      },
+      configurable: true,
+    });
+    const previewDocument = document.implementation.createHTMLDocument("preview");
+    const composition = previewDocument.createElement("main");
+    composition.setAttribute("data-composition-id", "root");
+    composition.setAttribute("data-duration", "659.711");
+    previewDocument.body.append(composition);
+    Object.defineProperty(iframe, "contentDocument", {
+      value: previewDocument,
+      configurable: true,
+    });
+
+    act(() => {
+      api.iframeRef.current = iframe;
+      api.onIframeLoad();
+      api.play();
+    });
+
+    expect(extensionAdapter.play).toHaveBeenCalledTimes(1);
+    expect(baseAdapter.play).not.toHaveBeenCalled();
+    unmountWithAct(root);
+  });
+
+  it("does not settle from an unsupported runtime protocol message", () => {
+    const { api, root } = renderTimelinePlayerHarness();
+    const iframe = document.createElement("iframe");
+    const iframeWindow = {
+      postMessage: vi.fn(),
+      scrollTo: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    } as Record<string, unknown>;
+    Object.defineProperty(iframe, "contentWindow", {
+      value: iframeWindow,
+      configurable: true,
+    });
+    Object.defineProperty(iframe, "contentDocument", {
+      value: document.implementation.createHTMLDocument("preview"),
+      configurable: true,
+    });
+
+    act(() => {
+      api.iframeRef.current = iframe;
+      api.onIframeLoad();
+    });
+    expect(usePlayerStore.getState().timelineReady).toBe(false);
+
+    iframeWindow.__player = {
+      play: vi.fn(),
+      pause: vi.fn(),
+      seek: vi.fn(),
+      getTime: () => 0,
+      getDuration: () => 30,
+      isPlaying: () => false,
+    };
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          source: iframeWindow as unknown as Window,
+          data: { source: "hf-preview", type: "state", protocolVersion: 999 },
+        }),
+      );
+    });
+    expect(usePlayerStore.getState().timelineReady).toBe(false);
+
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          source: iframeWindow as unknown as Window,
+          data: { source: "hf-preview", type: "state" },
+        }),
+      );
+    });
+    expect(usePlayerStore.getState().timelineReady).toBe(true);
 
     unmountWithAct(root);
   });
 });
 
 describe("useTimelinePlayer audio controls (#835)", () => {
-  it("uses the hyperframes-player transport so autoplay fallback audio is not left paused", () => {
-    const { api, root } = renderTimelinePlayerHarness();
-    const { hostPlay, hostPause, hostSeek, innerAdapter } = attachHostedIframeAdapter(api);
-
-    act(() => api.play());
-    expect(hostPlay).toHaveBeenCalledTimes(1);
-    expect(innerAdapter.play).not.toHaveBeenCalled();
-    expect(usePlayerStore.getState().isPlaying).toBe(true);
-
-    act(() => api.pause());
-    expect(hostPause).toHaveBeenCalled();
-    expect(innerAdapter.pause).not.toHaveBeenCalled();
-
-    seekWithAct(api, 6.5);
-    expect(hostSeek).toHaveBeenCalledWith(6.5);
-    expect(innerAdapter.seek).not.toHaveBeenCalled();
-
-    unmountWithAct(root);
-  });
-
-  it("applies playback-rate changes immediately and auto-mutes audio above 1x", () => {
+  it("applies playback-rate changes immediately without muting preview audio", () => {
     const { api, root } = renderTimelinePlayerHarness();
     const postMessage = vi.fn();
     const timeScale = vi.fn();
@@ -297,7 +394,7 @@ describe("useTimelinePlayer audio controls (#835)", () => {
         source: "hf-parent",
         type: "control",
         action: "set-muted",
-        muted: true,
+        muted: false,
       }),
       "*",
     );
@@ -385,6 +482,191 @@ describe("useTimelinePlayer seek keepPlaying option (#834)", () => {
     expect(adapter.play).toHaveBeenCalledTimes(1);
     expect(adapter.isPlaying()).toBe(true);
     expectStorePlaybackState(root, { isPlaying: true, currentTime: 0 });
+  });
+});
+
+describe("useTimelinePlayer refresh playback continuity", () => {
+  it("keeps playing across the actual iframe refresh used by a materialized Cuts index", () => {
+    const { api, root, adapter } = renderAttachedTimelinePlayer();
+    act(() => {
+      api.play();
+      adapter.seek(6);
+      api.refreshPlayer();
+    });
+
+    // The public store is paused only while the old document is being replaced.
+    expect(usePlayerStore.getState().isPlaying).toBe(false);
+
+    act(() => {
+      replaceIframeDocument(api);
+      api.onIframeLoad();
+    });
+
+    expect(adapter.getTime()).toBe(6);
+    expect(adapter.play).toHaveBeenCalledTimes(2);
+    expect(usePlayerStore.getState().isPlaying).toBe(true);
+    unmountWithAct(root);
+  });
+
+  it("uses a keep-playing seek requested while refresh is in flight", () => {
+    const { api, root, adapter } = renderAttachedTimelinePlayer();
+    act(() => {
+      api.play();
+      adapter.seek(8);
+      api.saveSeekPosition();
+      usePlayerStore.getState().requestSeek(3, { keepPlaying: true });
+      replaceIframeDocument(api);
+      api.onIframeLoad();
+    });
+
+    expect(adapter.getTime()).toBe(3);
+    expect(adapter.play).toHaveBeenCalledTimes(2);
+    expect(usePlayerStore.getState().isPlaying).toBe(true);
+    unmountWithAct(root);
+  });
+
+  it("resumes a running transport after the refreshed iframe is ready", () => {
+    const { api, root, adapter } = renderAttachedTimelinePlayer();
+    act(() => {
+      api.play();
+      adapter.seek(6);
+      api.saveSeekPosition();
+      adapter.pause();
+      replaceIframeDocument(api);
+    });
+
+    expect(usePlayerStore.getState().isPlaying).toBe(false);
+
+    act(() => {
+      api.onIframeLoad();
+    });
+
+    expect(adapter.getTime()).toBe(6);
+    expect(adapter.play).toHaveBeenCalledTimes(2);
+    expect(usePlayerStore.getState().isPlaying).toBe(true);
+    unmountWithAct(root);
+  });
+
+  it("does not start a paused transport after refresh", () => {
+    const { api, root, adapter } = renderAttachedTimelinePlayer();
+    act(() => {
+      adapter.seek(4);
+      api.saveSeekPosition();
+      replaceIframeDocument(api);
+      api.onIframeLoad();
+    });
+
+    expect(adapter.getTime()).toBe(4);
+    expect(adapter.play).not.toHaveBeenCalled();
+    expect(usePlayerStore.getState().isPlaying).toBe(false);
+    unmountWithAct(root);
+  });
+
+  it("does not treat keepPlaying during refresh as permission to start a paused transport", () => {
+    const { api, root, adapter } = renderAttachedTimelinePlayer();
+    act(() => {
+      adapter.seek(4);
+      api.saveSeekPosition();
+      usePlayerStore.getState().requestSeek(3, { keepPlaying: true });
+      replaceIframeDocument(api);
+      api.onIframeLoad();
+    });
+
+    expect(adapter.getTime()).toBe(3);
+    expect(adapter.play).not.toHaveBeenCalled();
+    expect(usePlayerStore.getState().isPlaying).toBe(false);
+    unmountWithAct(root);
+  });
+
+  it("keeps the original resume intent across overlapping refreshes", () => {
+    const { api, root, adapter } = renderAttachedTimelinePlayer();
+    act(() => {
+      api.play();
+      adapter.seek(8);
+      api.saveSeekPosition();
+      adapter.pause();
+      api.saveSeekPosition();
+      replaceIframeDocument(api);
+      api.onIframeLoad();
+    });
+
+    expect(adapter.getTime()).toBe(8);
+    expect(adapter.play).toHaveBeenCalledTimes(2);
+    expect(usePlayerStore.getState().isPlaying).toBe(true);
+    unmountWithAct(root);
+  });
+
+  it("initializes a refreshed document only once when load fires twice", () => {
+    const { api, root, adapter } = renderAttachedTimelinePlayer();
+    act(() => {
+      api.play();
+      adapter.seek(8);
+      api.saveSeekPosition();
+      adapter.pause();
+      replaceIframeDocument(api);
+      api.onIframeLoad();
+      api.onIframeLoad();
+    });
+
+    expect(adapter.getTime()).toBe(8);
+    expect(adapter.play).toHaveBeenCalledTimes(2);
+    expect(usePlayerStore.getState().isPlaying).toBe(true);
+    unmountWithAct(root);
+  });
+
+  it("does not resume when the restored playhead is at the new end", () => {
+    const { api, root, adapter } = renderAttachedTimelinePlayer();
+    act(() => {
+      api.play();
+      adapter.seek(30);
+      api.saveSeekPosition();
+      adapter.pause();
+      replaceIframeDocument(api);
+      api.onIframeLoad();
+    });
+
+    expect(adapter.getTime()).toBe(30);
+    expect(adapter.play).toHaveBeenCalledTimes(1);
+    expect(usePlayerStore.getState().isPlaying).toBe(false);
+    unmountWithAct(root);
+  });
+
+  it("clears a pending resume and seek when the player resets for another project", () => {
+    const { api, root, adapter } = renderAttachedTimelinePlayer();
+    act(() => {
+      api.play();
+      adapter.seek(8);
+      api.saveSeekPosition();
+      api.resetPlayer();
+      replaceIframeDocument(api);
+      api.onIframeLoad();
+    });
+
+    expect(adapter.getTime()).toBe(0);
+    expect(adapter.play).toHaveBeenCalledTimes(1);
+    expect(usePlayerStore.getState().isPlaying).toBe(false);
+    unmountWithAct(root);
+  });
+
+  it("does not resume in the background when the page hides during refresh", () => {
+    const { api, root, adapter } = renderAttachedTimelinePlayer();
+    const originalHidden = Object.getOwnPropertyDescriptor(document, "hidden");
+    act(() => {
+      api.play();
+      adapter.seek(8);
+      api.saveSeekPosition();
+      Object.defineProperty(document, "hidden", { value: true, configurable: true });
+      document.dispatchEvent(new Event("visibilitychange"));
+      Object.defineProperty(document, "hidden", { value: false, configurable: true });
+      replaceIframeDocument(api);
+      api.onIframeLoad();
+    });
+
+    expect(adapter.getTime()).toBe(8);
+    expect(adapter.play).toHaveBeenCalledTimes(1);
+    expect(usePlayerStore.getState().isPlaying).toBe(false);
+    if (originalHidden) Object.defineProperty(document, "hidden", originalHidden);
+    unmountWithAct(root);
   });
 });
 

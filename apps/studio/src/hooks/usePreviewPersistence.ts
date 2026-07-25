@@ -10,6 +10,15 @@ import type { EditHistoryKind } from "../utils/editHistory";
 import { createDomEditSaveQueue } from "../utils/domEditSaveQueue";
 import { flushStudioPendingEdits } from "../utils/studioPendingEdits";
 import { trackStudioEvent } from "../utils/studioTelemetry";
+import { subscribeProjectFileChanges } from "../utils/projectEvents";
+import { applyUndoRestoreToPreview, type UndoRestoreFile } from "../utils/gsapUndoRestore";
+import { usePlayerStore } from "../player";
+
+/** The restore payload the undo/redo preview-sync consumes (from the history store). */
+interface HistoryPreviewRestore {
+  paths?: string[];
+  files?: Record<string, UndoRestoreFile>;
+}
 
 // ── Types ──
 
@@ -63,19 +72,71 @@ function installManualEditReapply(iframe: HTMLIFrameElement): void {
   }
 }
 
-function shouldReloadForStudioFileChange(
+const NON_RENDERING_PROJECT_DOCUMENTS = new Set([
+  "cut-selection.json",
+  "edit-list.json",
+]);
+
+function readStudioFileChangeProjectId(payload: unknown): string | null {
+  if (typeof payload === "string") {
+    const value = payload.trim();
+    if (!value.startsWith("{")) return null;
+    try {
+      return readStudioFileChangeProjectId(JSON.parse(value) as unknown);
+    } catch {
+      return null;
+    }
+  }
+  if (!payload || typeof payload !== "object") return null;
+  const record = payload as Record<string, unknown>;
+  if (typeof record.projectId === "string") return record.projectId;
+  return "data" in record ? readStudioFileChangeProjectId(record.data) : null;
+}
+
+function studioFileBasename(path: string): string {
+  return path.replace(/\\/g, "/").split("/").at(-1) ?? path;
+}
+
+export function shouldReloadForStudioFileChange(
   payload: unknown,
   pendingTimelineEditPathRef: React.MutableRefObject<Set<string>> | undefined,
   domEditSaveTimestampRef: React.MutableRefObject<number>,
+  projectId?: string | null,
 ): boolean {
   const changedPath = readStudioFileChangePath(payload);
   if (!changedPath) return false;
+  const changedProjectId = readStudioFileChangeProjectId(payload);
+  if (projectId && changedProjectId && changedProjectId !== projectId) return false;
+  // Product-owned metadata changes are followed by one materialized index.html
+  // change. Reloading for all three events tears down the player repeatedly and
+  // used to turn every Cuts edit into a deterministic pause.
+  if (NON_RENDERING_PROJECT_DOCUMENTS.has(studioFileBasename(changedPath))) return false;
   const pendingTimelinePaths = pendingTimelineEditPathRef?.current;
   if (pendingTimelinePaths?.has(changedPath)) {
     pendingTimelinePaths.delete(changedPath);
     return false;
   }
   return Date.now() - domEditSaveTimestampRef.current >= 4000;
+}
+
+export function createStudioFileReloadScheduler(
+  reload: () => void,
+  delayMs = 120,
+): { schedule: () => void; cancel: () => void } {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  return {
+    schedule() {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        reload();
+      }, delayMs);
+    },
+    cancel() {
+      if (timer) clearTimeout(timer);
+      timer = null;
+    },
+  };
 }
 
 // fallow-ignore-next-line complexity
@@ -105,16 +166,14 @@ export function usePreviewPersistence({
   writeProjectFile: _writeProjectFile,
   recordEdit: _recordEdit,
   previewIframeRef,
-  activeCompPathRef: _activeCompPathRef,
+  activeCompPathRef,
   domEditSaveTimestampRef,
   reloadPreview,
   pendingTimelineEditPathRef,
 }: UsePreviewPersistenceParams) {
   void _recordEdit;
-  void _activeCompPathRef;
 
   const [domEditSaveQueuePaused, setDomEditSaveQueuePaused] = useState<string | null>(null);
-
   const domTextCommitVersionRef = useRef(0);
   const showToastRef = useRef(showToast);
   showToastRef.current = showToast;
@@ -126,7 +185,10 @@ export function usePreviewPersistence({
   if (!domEditSaveQueueRef.current) {
     domEditSaveQueueRef.current = createDomEditSaveQueue({
       onOpen: (event) => {
-        const message = "Auto-save is paused. Check your connection.";
+        const message =
+          event.statusCode === 409
+            ? "Save paused: this file changed elsewhere. Reload and review the latest version before reapplying your edit."
+            : "Auto-save is paused. Check your connection.";
         setDomEditSaveQueuePaused(message);
         showToastRef.current(message, "error");
         trackStudioEvent("save_queue_paused", {
@@ -149,7 +211,7 @@ export function usePreviewPersistence({
 
   // ── Queue / drain helpers ──
 
-  const queueDomEditSave = useCallback((save: () => Promise<void>) => {
+  const queueDomEditSave = useCallback(<T>(save: () => Promise<T>): Promise<T> => {
     return domEditSaveQueueRef.current?.enqueue(save) ?? save();
   }, []);
 
@@ -190,12 +252,23 @@ export function usePreviewPersistence({
   // ── Sync preview after undo/redo ──
 
   const syncHistoryPreviewAfterApply = useCallback(
-    async (_paths: string[] | undefined) => {
-      // Motion data is now stored in HTML attributes — any undo/redo that touches HTML
-      // files triggers a full reload which picks up the changes automatically.
-      reloadPreview();
+    async (restore: HistoryPreviewRestore) => {
+      // Prefer an in-place soft reload for a soft-reloadable restore (the change
+      // is confined to the active comp's element attributes / inline-style and/or
+      // its GSAP script) — a full iframe remount blanks the frame black and
+      // re-flashes the WebGL context. applyUndoRestoreToPreview syncs the reverted
+      // attributes onto the live DOM and re-runs the timeline at the SAME playhead,
+      // falling back to reloadPreview for anything structural (split/delete undo),
+      // multi-file, sub-comp, or a permanent soft-reload failure.
+      applyUndoRestoreToPreview(
+        previewIframeRef.current,
+        activeCompPathRef.current,
+        restore.files,
+        usePlayerStore.getState().currentTime,
+        reloadPreview,
+      );
     },
-    [reloadPreview],
+    [previewIframeRef, activeCompPathRef, reloadPreview],
   );
 
   // ── Migrate legacy studio-motion.json ──
@@ -210,26 +283,35 @@ export function usePreviewPersistence({
 
   // ── Listen for external file changes (HMR / SSE) ──
   useMountEffect(() => {
+    // Both the product API and the native directory watcher can report the same
+    // materialized index write. A trailing-edge scheduler collapses that echo,
+    // while also guaranteeing that a second genuine edit inside the window is
+    // represented by the final reload instead of being dropped.
+    const reloadScheduler = createStudioFileReloadScheduler(reloadPreview);
     const handler = (payload?: unknown) => {
       if (
         shouldReloadForStudioFileChange(
           payload,
           pendingTimelineEditPathRef,
           domEditSaveTimestampRef,
+          projectId,
         )
       ) {
-        // fallow-ignore-next-line code-duplication
-        reloadPreview();
+        reloadScheduler.schedule();
       }
     };
+    let unsubscribe: (() => void) | undefined;
     if (import.meta.hot) {
       import.meta.hot.on("hf:file-change", handler);
-      return () => import.meta.hot?.off?.("hf:file-change", handler);
+      unsubscribe = () => import.meta.hot?.off?.("hf:file-change", handler);
+    } else {
+      // SSE fallback for embedded studio server
+      unsubscribe = subscribeProjectFileChanges(handler);
     }
-    // SSE fallback for embedded studio server
-    const es = new EventSource("/api/events");
-    es.addEventListener("file-change", handler);
-    return () => es.close();
+    return () => {
+      reloadScheduler.cancel();
+      unsubscribe?.();
+    };
   });
 
   return {

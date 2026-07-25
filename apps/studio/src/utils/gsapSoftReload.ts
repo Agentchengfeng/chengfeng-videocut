@@ -21,11 +21,12 @@ type IframeWindow = Window & {
 };
 
 /**
- * Product-local URL for the bundled GSAP MotionPathPlugin. Shared between the
- * one-time preview bootstrap (ensureMotionPathPluginLoaded) and the soft-reload
- * fallback so both paths work without network access.
+ * CDN URL for the GSAP MotionPathPlugin. Shared between the one-time preview
+ * bootstrap (ensureMotionPathPluginLoaded) and the soft-reload fallback so the
+ * version is pinned in a single place.
  */
-const MOTION_PATH_PLUGIN_URL = "/api/vendor/MotionPathPlugin.min.js";
+const MOTION_PATH_PLUGIN_CDN =
+  "https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/MotionPathPlugin.min.js";
 
 /**
  * Pre-load + register MotionPathPlugin ONCE in the preview iframe so
@@ -34,15 +35,14 @@ const MOTION_PATH_PLUGIN_URL = "/api/vendor/MotionPathPlugin.min.js";
  *
  * Why: when a user ADDS a motion path to a composition that never used one, the
  * plugin isn't loaded, so the first soft reload takes the async `<script src>`
- * load path — the timeline is killed/cleared while the local request is pending,
+ * load path — the timeline is killed/cleared while the CDN load is pending,
  * producing a visible flash. Loading it eagerly here means the soft reload runs
  * synchronously and `needsMotionPath && !win.MotionPathPlugin` never fires for
  * studio edits.
  *
  * Idempotent (no-ops once the plugin is present or already loading) and
- * defensive: no-ops without gsap/registerPlugin and tolerates a local asset
- * request failure (the soft-reload async fallback in applySoftReload still
- * covers that case).
+ * defensive: no-ops without gsap/registerPlugin and tolerates a CDN failure
+ * (the soft-reload async fallback in applySoftReload still covers that case).
  */
 export function ensureMotionPathPluginLoaded(iframe: HTMLIFrameElement | null): void {
   if (!iframe?.contentWindow || !iframe.contentDocument) return;
@@ -64,7 +64,7 @@ export function ensureMotionPathPluginLoaded(iframe: HTMLIFrameElement | null): 
   try {
     win.__hfMotionPathPluginLoading = true;
     const pluginScript = doc.createElement("script");
-    pluginScript.src = MOTION_PATH_PLUGIN_URL;
+    pluginScript.src = MOTION_PATH_PLUGIN_CDN;
     const finalize = () => {
       win.__hfMotionPathPluginLoading = false;
       try {
@@ -90,7 +90,7 @@ function isGsapScript(text: string): boolean {
   );
 }
 
-function findGsapScriptElements(doc: Document): HTMLScriptElement[] {
+export function findGsapScriptElements(doc: Document): HTMLScriptElement[] {
   const results: HTMLScriptElement[] = [];
   const scripts = doc.querySelectorAll<HTMLScriptElement>("script:not([src])");
   for (const script of scripts) {
@@ -102,8 +102,9 @@ function findGsapScriptElements(doc: Document): HTMLScriptElement[] {
 /**
  * Extract the GSAP timeline script text from a serialized HTML document, for
  * feeding into applySoftReload. Returns null when zero or multiple GSAP scripts
- * are present (ambiguous — caller should fall back to a full reload), matching
- * applySoftReload's own single-script requirement.
+ * are present (ambiguous — a serialized snapshot can't say WHICH script a
+ * single rewritten text corresponds to; caller should fall back to a full
+ * reload), matching applySoftReload's own single-script requirement.
  */
 export function extractGsapScriptText(html: string): string | null {
   const doc = new DOMParser().parseFromString(html, "text/html");
@@ -175,12 +176,61 @@ export type SoftReloadResult = "applied" | "verify-failed" | "cannot-soft-reload
  * synchronous paths.
  */
 export interface SoftReloadOptions {
-  /** Escalation for async MotionPath plugin-load failures. */
+  /** Escalation for async plugin-load failures (e.g. MotionPath CDN error). */
   onAsyncFailure?: () => void;
   /** Seek target for the rebuilt timeline; defaults to the iframe player time. */
   currentTimeOverride?: number;
   /** After-write file HTML — the primary source for authored-opacity restore. */
   authoredHtml?: string;
+}
+
+/**
+ * The soft reload's finalization step, shared with the rebind-only preview sync
+ * below: seek → force timeline rebind → reapply studio manual edits.
+ *
+ * Seek BEFORE rebind: __hfForceTimelineRebind's own internal force-render
+ * (see init.ts) renders the freshly-created timeline at whatever the
+ * runtime's internal scrub position already is, not at whatever we pass
+ * here afterward — a redundant seek() call after rebind can be a GSAP
+ * no-op if the timeline already reports being at that time internally.
+ */
+function finalizeSoftReload(win: IframeWindow, currentTime: number): void {
+  win.__player?.seek?.(currentTime);
+  win.__hfForceTimelineRebind?.();
+  win.__hfStudioManualEditsApply?.();
+}
+
+/**
+ * Run ONLY applySoftReload's finalization (seek → __hfForceTimelineRebind →
+ * manual-edits reapply) against the live iframe — executing NO scripts and
+ * touching NO script elements. `__hfForceTimelineRebind` makes the runtime
+ * re-derive every clip's visibility window from the live DOM's `data-start` /
+ * `data-duration` attributes (init.ts: bindRootTimelineIfAvailable +
+ * syncTimedElementVisibility), so this is the flashless sync for a timing edit
+ * whose attributes were already live-patched and whose GSAP scripts are
+ * unchanged (`window.__timelines` still valid). Works for compositions with
+ * zero GSAP scripts too — the rebind hook is installed unconditionally by the
+ * runtime, independent of any animation library.
+ *
+ * Returns false when the iframe/runtime hook is unavailable or the run threw —
+ * the caller should escalate to a full reload.
+ */
+export function applySoftReloadFinalization(
+  iframe: HTMLIFrameElement | null,
+  currentTime: number,
+): boolean {
+  const win = iframe?.contentWindow as IframeWindow | null;
+  if (!win?.__hfForceTimelineRebind) return false;
+  try {
+    if (win.__hfSuppressSceneMutations) {
+      win.__hfSuppressSceneMutations(() => finalizeSoftReload(win, currentTime));
+    } else {
+      finalizeSoftReload(win, currentTime);
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function applySoftReload(
@@ -370,14 +420,7 @@ export function applySoftReload(
       const s = doc.createElement("script");
       s.textContent = `(function(){${scriptText}\n})();`;
       doc.body.appendChild(s);
-      // Seek BEFORE rebind: __hfForceTimelineRebind's own internal force-render
-      // (see init.ts) renders the freshly-created timeline at whatever the
-      // runtime's internal scrub position already is, not at whatever we pass
-      // here afterward — a redundant seek() call after rebind can be a GSAP
-      // no-op if the timeline already reports being at that time internally.
-      win.__player?.seek?.(currentTime);
-      win.__hfForceTimelineRebind?.();
-      win.__hfStudioManualEditsApply?.();
+      finalizeSoftReload(win, currentTime);
     };
 
     const needsMotionPath = /motionPath\s*[:{]/.test(scriptText);
@@ -405,7 +448,7 @@ export function applySoftReload(
       }
       win.__hfMotionPathPluginLoading = true;
       const pluginScript = doc.createElement("script");
-      pluginScript.src = MOTION_PATH_PLUGIN_URL;
+      pluginScript.src = MOTION_PATH_PLUGIN_CDN;
       pluginScript.onload = () => {
         win.__hfMotionPathPluginLoading = false;
         executeScript();
@@ -433,7 +476,7 @@ export function applySoftReload(
     }
     // When MotionPath needs async loading, the script hasn't executed yet —
     // skip the __timelines check and report success optimistically (the script
-    // WILL run on plugin load; onAsyncFailure covers request failures).
+    // WILL run on plugin load; onAsyncFailure covers the CDN-error case).
     if (deferredToAsync) return "applied";
     // The re-run executed. If the target keys read back, we're done; otherwise
     // it's the TRANSIENT empty-timeline window (live state is correct) — surfaced

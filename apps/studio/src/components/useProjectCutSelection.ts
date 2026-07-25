@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { subscribeProjectFileChanges } from "../product/projectEvents";
 import {
   CutSelectionApiError,
   getProjectCutSelection,
@@ -26,6 +27,14 @@ function parseCutWordIds(payload: unknown): Set<string> {
       ? selection.selectedWordIds
       : selection.deletedWordIds;
   return new Set(Array.isArray(ids) ? ids.map(String) : []);
+}
+
+function sameWordIdSet(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
+  if (left.size !== right.size) return false;
+  for (const id of left) {
+    if (!right.has(id)) return false;
+  }
+  return true;
 }
 
 function readFileChangeProjectId(payload: unknown): string | null {
@@ -68,7 +77,12 @@ export function useProjectCutSelection(
   saveState: CutSaveState;
   selectionLoading: boolean;
   selectionReady: boolean;
-  updateCutWordIds: (next: ReadonlySet<string>) => void;
+	  updateCutWordIds: (
+	    next: ReadonlySet<string>,
+	    options?: { recordUndo?: boolean },
+	  ) => Promise<boolean>;
+	  canUndo: boolean;
+	  undoLastCutChange: () => void;
 } {
   const [cutWordIds, setCutWordIds] = useState<Set<string>>(() => new Set());
   const [saveState, setSaveState] = useState<CutSaveState>("idle");
@@ -83,8 +97,12 @@ export function useProjectCutSelection(
   const serverRevisionRef = useRef("none");
   const selectionDocumentRef = useRef<unknown>(null);
   const selectionReadyRef = useRef(false);
+  const cutWordIdsStateRef = useRef<Set<string>>(new Set());
+  const saveStateRef = useRef<CutSaveState>("idle");
 
   const words = useMemo(() => cues.flatMap((cue) => cue.words), [cues]);
+  cutWordIdsStateRef.current = cutWordIds;
+  saveStateRef.current = saveState;
 
   const loadSelection = useCallback(async (): Promise<boolean> => {
     const revision = ++loadRevisionRef.current;
@@ -95,14 +113,18 @@ export function useProjectCutSelection(
       selectionDocumentRef.current = resource.document;
       selectionReadyRef.current = true;
       setSelectionReady(true);
-      setCutWordIds(parseCutWordIds(resource.document));
+      const loadedWordIds = parseCutWordIds(resource.document);
+      cutWordIdsStateRef.current = loadedWordIds;
+      setCutWordIds(loadedWordIds);
       setSelectionLoading(false);
       return true;
     } catch {
       if (loadRevisionRef.current === revision) {
         selectionReadyRef.current = false;
         setSelectionReady(false);
-        setCutWordIds(parseCutWordIds(selectionDocumentRef.current));
+        const fallbackWordIds = parseCutWordIds(selectionDocumentRef.current);
+        cutWordIdsStateRef.current = fallbackWordIds;
+        setCutWordIds(fallbackWordIds);
         setSelectionLoading(false);
         setSaveState("error");
       }
@@ -127,6 +149,7 @@ export function useProjectCutSelection(
     serverRevisionRef.current = "none";
     selectionDocumentRef.current = null;
     selectionReadyRef.current = false;
+    cutWordIdsStateRef.current = new Set();
     setSelectionReady(false);
     setCutWordIds(new Set());
     setSelectionLoading(true);
@@ -171,21 +194,20 @@ export function useProjectCutSelection(
         void loadSelection();
       }
     };
-    if (import.meta.hot) {
-      import.meta.hot.on("hf:file-change", handleChange);
-      return () => import.meta.hot?.off?.("hf:file-change", handleChange);
-    }
-    const events = new EventSource("/api/events");
-    events.addEventListener("file-change", handleChange);
-    return () => events.close();
+    return subscribeProjectFileChanges(handleChange);
   }, [loadSelection, projectId]);
 
-  const updateCutWordIds = useCallback((next: ReadonlySet<string>) => {
+  const updateCutWordIds = useCallback((
+    next: ReadonlySet<string>,
+    _options: { recordUndo?: boolean } = {},
+  ): Promise<boolean> => {
     const nextCut = new Set(next);
     if (!selectionReadyRef.current) {
       setSaveState("error");
-      return;
+      return Promise.resolve(false);
     }
+    const previousCut = new Set(cutWordIdsStateRef.current);
+    if (sameWordIdSet(previousCut, nextCut)) return Promise.resolve(false);
     const revision = ++saveRevisionRef.current;
     const generation = saveGenerationRef.current;
     const projectEpoch = projectEpochRef.current;
@@ -193,6 +215,7 @@ export function useProjectCutSelection(
       .filter((word) => nextCut.has(word.id))
       .map((word) => word.id);
     loadRevisionRef.current += 1;
+    cutWordIdsStateRef.current = nextCut;
     setCutWordIds(nextCut);
     setSaveState("saving");
     pendingSavesRef.current += 1;
@@ -232,7 +255,9 @@ export function useProjectCutSelection(
                 setSaveState(reloaded ? "conflict" : "error");
               }
             } else {
-              setCutWordIds(parseCutWordIds(selectionDocumentRef.current));
+              const fallbackWordIds = parseCutWordIds(selectionDocumentRef.current);
+              cutWordIdsStateRef.current = fallbackWordIds;
+              setCutWordIds(fallbackWordIds);
               setSaveState("error");
             }
           }
@@ -255,14 +280,19 @@ export function useProjectCutSelection(
       () => undefined,
       () => undefined,
     );
-    void trackedOperation.then(
-      (saved) => {
-        if (saveRevisionRef.current !== revision) return;
-        if (saved) setSaveState("saved");
-      },
-      () => undefined,
-    );
-  }, [projectId, reloadSelection, words]);
+	    void trackedOperation.then(
+	      (saved) => {
+	        if (saveRevisionRef.current !== revision) return;
+	        if (saved) setSaveState("saved");
+	      },
+	      () => undefined,
+	    );
+	    return trackedOperation;
+	  }, [projectId, reloadSelection, words]);
+
+  const undoLastCutChange = useCallback(() => {
+    // Product-owned cut workspace history is ordered globally in CutWorkspace.
+  }, []);
 
   return {
     cutWordIds,
@@ -270,5 +300,7 @@ export function useProjectCutSelection(
     selectionLoading,
     selectionReady,
     updateCutWordIds,
+    canUndo: false,
+    undoLastCutChange,
   };
 }
