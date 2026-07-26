@@ -29,11 +29,6 @@ export interface KouboWordRange {
   end: number;
 }
 
-export interface KouboLaterExactDuplicate {
-  sourceStart: number;
-  sourceEnd: number;
-}
-
 export interface KouboActiveTranscriptPosition {
   cueId: string | null;
   wordId: string | null;
@@ -185,74 +180,6 @@ export function updateKouboCutSelection(
     else next.add(word.id);
   }
   return next;
-}
-
-const MIN_RESTORE_DEDUPLICATE_TOKENS = 8;
-
-function spokenToken(word: TranscriptWord): string {
-  if (word.isGap) return "";
-  return word.text
-    .trim()
-    .toLocaleLowerCase()
-    .replace(/[\s\p{P}\p{S}]/gu, "");
-}
-
-/**
- * Find complete, later text copies that are still physically retained in the
- * current EDL. This is deliberately exact and conservative: short phrases and
- * partly cut candidates never become an automatic deletion proposal.
- */
-export function findLaterRetainedExactDuplicates(
-  words: readonly TranscriptWord[],
-  displayedCutWordIds: ReadonlySet<string>,
-  range: KouboWordRange,
-): KouboLaterExactDuplicate[] {
-  const start = Math.max(0, Math.min(range.start, range.end));
-  const end = Math.min(words.length - 1, Math.max(range.start, range.end));
-  if (!Number.isInteger(start) || !Number.isInteger(end) || start > end) return [];
-  const selected = words.slice(start, end + 1);
-  const tokens = selected.map(spokenToken).filter(Boolean);
-  if (tokens.length < MIN_RESTORE_DEDUPLICATE_TOKENS) return [];
-  const restoredSourceEnd = Math.max(...selected.map((word) => word.end));
-  const duplicates: KouboLaterExactDuplicate[] = [];
-
-  for (let candidateStartIndex = end + 1; candidateStartIndex < words.length; candidateStartIndex += 1) {
-    const first = words[candidateStartIndex];
-    if (!first || displayedCutWordIds.has(first.id) || spokenToken(first) !== tokens[0]) continue;
-    let cursor = candidateStartIndex;
-    let tokenIndex = 0;
-    let firstMatched: TranscriptWord | null = null;
-    let lastMatched: TranscriptWord | null = null;
-    let matched = true;
-    while (cursor < words.length && tokenIndex < tokens.length) {
-      const candidate = words[cursor];
-      if (!candidate) break;
-      const token = spokenToken(candidate);
-      if (!token) {
-        cursor += 1;
-        continue;
-      }
-      if (displayedCutWordIds.has(candidate.id) || token !== tokens[tokenIndex]) {
-        matched = false;
-        break;
-      }
-      firstMatched ??= candidate;
-      lastMatched = candidate;
-      tokenIndex += 1;
-      cursor += 1;
-    }
-    if (
-      matched &&
-      tokenIndex === tokens.length &&
-      firstMatched &&
-      lastMatched &&
-      firstMatched.start >= restoredSourceEnd - 0.001
-    ) {
-      duplicates.push({ sourceStart: firstMatched.start, sourceEnd: lastMatched.end });
-      candidateStartIndex = Math.max(candidateStartIndex, cursor - 1);
-    }
-  }
-  return duplicates;
 }
 
 export function resolveKouboEditingLockReason(

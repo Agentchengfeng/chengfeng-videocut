@@ -318,8 +318,8 @@ export function parseEditListOperation(payload: unknown): EditListOperation {
       return invalid("Restore snapshot requires expectedSegments, beforeSegments, and inverse");
     }
     const inverse = parseEditListOperation(value.inverse);
-    if (inverse.type !== "delete-range" && inverse.type !== "restore-deduplicate") {
-      return invalid("Restore snapshot inverse must be delete-range or restore-deduplicate");
+    if (inverse.type !== "delete-range") {
+      return invalid("Restore snapshot inverse must be delete-range");
     }
     return {
       type,
@@ -333,21 +333,6 @@ export function parseEditListOperation(payload: unknown): EditListOperation {
   }
   if (type === "delete-range") {
     return parseDeleteRangeFields(value);
-  }
-  if (type === "restore-deduplicate") {
-    if (!Array.isArray(value.duplicateRanges) || value.duplicateRanges.length === 0) {
-      return invalid("Restore deduplicate requires at least one duplicate range");
-    }
-    return {
-      type,
-      ...parseRestoreFields(value),
-      duplicateRanges: value.duplicateRanges.map((candidate, index) => {
-        if (!isObject(candidate)) {
-          return invalid(`operation.duplicateRanges[${index}] must be an object`);
-        }
-        return parseDeleteRangeFields(candidate, `operation.duplicateRanges[${index}]`);
-      }),
-    };
   }
   if (type === "restore") {
     return { type, ...parseRestoreFields(value) };
@@ -424,7 +409,7 @@ function nextRestoreId(document: EditListDocument, sourceStart: number, sourceEn
 
 function restoreInsertion(
   document: EditListDocument,
-  operation: Extract<EditListOperation, { type: "restore" | "restore-deduplicate" }>,
+  operation: Extract<EditListOperation, { type: "restore" }>,
 ): { index: number; source: string } {
   const sourceStart = roundTime(operation.sourceStart);
   const sourceEnd = roundTime(operation.sourceEnd);
@@ -504,7 +489,7 @@ function restoreInsertion(
 
 function restoreSegments(
   document: EditListDocument,
-  operation: Extract<EditListOperation, { type: "restore" | "restore-deduplicate" }>,
+  operation: Extract<EditListOperation, { type: "restore" }>,
 ): { segments: EditListSegment[]; source: string; sourceStart: number; sourceEnd: number } {
   const insertion = restoreInsertion(document, operation);
   const sourceStart = roundTime(operation.sourceStart);
@@ -648,32 +633,11 @@ export function applyEditListOperation(
 ): EditListDocument {
   const document = parseEditListDocument(input);
   const operation = parseEditListOperation(rawOperation);
-  if (operation.type === "restore" || operation.type === "restore-deduplicate") {
-    const restored = restoreSegments(document, operation);
-    if (operation.type === "restore") {
-      return manualDocumentWithSegments(document, restored.segments);
-    }
-    const ranges = [...operation.duplicateRanges].sort((left, right) =>
-      left.sourceStart - right.sourceStart || left.sourceEnd - right.sourceEnd,
-    );
-    let previousRangeEnd = restored.sourceEnd;
-    let next = manualDocumentWithSegments(document, restored.segments);
-    for (const range of ranges) {
-      const duplicateStart = roundTime(range.sourceStart);
-      const duplicateEnd = roundTime(range.sourceEnd);
-      if (range.source !== restored.source) {
-        return invalid("Restore duplicate ranges must reference the restored source media");
-      }
-      if (duplicateStart < restored.sourceEnd - TIME_EPSILON) {
-        return invalid("Restore duplicate ranges must be later than the restored source range");
-      }
-      if (duplicateStart < previousRangeEnd - TIME_EPSILON) {
-        return invalid("Restore duplicate ranges must not overlap each other");
-      }
-      next = manualDocumentWithSegments(next, deleteRangeSegments(next, range));
-      previousRangeEnd = duplicateEnd;
-    }
-    return next;
+  if (operation.type === "restore") {
+    // Restore only restores. It must never delete anything else in the same
+    // operation — a restore that silently removes a later identical sentence
+    // was removed on 2026-07-26 because it deleted the more complete take.
+    return manualDocumentWithSegments(document, restoreSegments(document, operation).segments);
   }
   if (operation.type === "delete-range") {
     return manualDocumentWithSegments(document, deleteRangeSegments(document, operation));

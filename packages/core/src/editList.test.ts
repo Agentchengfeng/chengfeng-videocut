@@ -338,4 +338,37 @@ describe("edit-list model", () => {
       "playbackRate must be 1 because the current HyperFrames runtime does not support EDL rate changes",
     );
   });
+  it("restores without deleting anything else, even when the same range recurs later", () => {
+    // A restore used to be able to carry duplicate ranges and delete them in the
+    // same operation, so taking a sentence back could silently remove a later,
+    // identical one. That deleted the *later* take — the opposite of the semantic
+    // layer's delete-earlier-keep-later rule — and it did it without saying so.
+    // Restore now only ever adds retained content.
+    const document = fixture();
+    const before = document.segments.map((segment) => [segment.sourceStart, segment.sourceEnd]);
+    const next = applyEditListOperation(document, {
+      type: "restore",
+      sourceStart: 5,
+      sourceEnd: 7,
+      previousSegmentId: "a-roll-0001",
+      nextSegmentId: "a-roll-0002",
+    });
+    const after = next.segments.map((segment) => [segment.sourceStart, segment.sourceEnd]);
+    for (const range of before) expect(after).toContainEqual(range);
+    expect(after).toContainEqual([5, 7]);
+    expect(next.segments).toHaveLength(document.segments.length + 1);
+  });
+
+  it("rejects a restore that carries duplicate ranges to delete", () => {
+    // The operation no longer exists. Sending it must fail loudly rather than be
+    // silently accepted or downgraded into a plain restore.
+    expect(() => applyEditListOperation(fixture(), {
+      type: "restore-deduplicate",
+      sourceStart: 5,
+      sourceEnd: 7,
+      duplicateRanges: [
+        { type: "delete-range", source: "input/source.mp4", sourceStart: 10, sourceEnd: 12 },
+      ],
+    } as never)).toThrow();
+  });
 });

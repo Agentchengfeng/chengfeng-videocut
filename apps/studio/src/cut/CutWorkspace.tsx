@@ -131,7 +131,7 @@ function invertTimelineOperation(
       const restored = next.segments.find((candidate) => !priorIds.has(candidate.id));
       return restored ? [{ type: "delete", clipId: restored.id }] : null;
     }
-    if (operation.type === "delete-range" || operation.type === "restore-deduplicate") {
+    if (operation.type === "delete-range") {
       return [{
         type: "restore-snapshot",
         expectedSegments: next.segments,

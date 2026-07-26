@@ -76,27 +76,12 @@ export interface EditListRestoreOperation {
   nextSegmentId?: string;
 }
 
-/**
- * Restore one complete retained sentence while atomically removing the later,
- * exact duplicate ranges selected by the transcript surface. Core validates
- * geometry and current EDL retention; transcript text comparison stays in the
- * transcript owner.
- */
-export interface EditListRestoreDeduplicateOperation {
-  type: "restore-deduplicate";
-  sourceStart: number;
-  sourceEnd: number;
-  previousSegmentId?: string;
-  nextSegmentId?: string;
-  duplicateRanges: EditListDeleteRangeOperation[];
-}
-
 export interface EditListRestoreSnapshotOperation {
   type: "restore-snapshot";
   expectedSegments: EditListSegment[];
   beforeSegments: EditListSegment[];
   beforeMode: EditListMode;
-  inverse: EditListDeleteRangeOperation | EditListRestoreDeduplicateOperation;
+  inverse: EditListDeleteRangeOperation;
 }
 
 export type EditListOperation =
@@ -122,8 +107,7 @@ export type EditListOperation =
    * the reducer to infer a source-order insertion point. Both anchors are
    * optional only at the outer boundary; Core verifies their current order.
    */
-  | EditListRestoreOperation
-  | EditListRestoreDeduplicateOperation;
+  | EditListRestoreOperation;
 
 export interface WorkbenchSubtitleCue {
   id: string;

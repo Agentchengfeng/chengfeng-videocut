@@ -17,7 +17,6 @@ import type { useProjectCutSelection } from "../../components/useProjectCutSelec
 import type { ProjectEditListState } from "../../components/useProjectEditList";
 import {
   indexKouboTranscript,
-  findLaterRetainedExactDuplicates,
   isKouboWordInRange,
   resolveKouboEditingLockReason,
   updateKouboCutSelection,
@@ -288,45 +287,19 @@ export const KouboTranscriptPane = memo(function KouboTranscriptPane({
     const next = segments
       .filter((segment) => segment.sourceStart >= sourceEnd - 0.001)
       .sort((left, right) => left.sourceStart - right.sourceStart)[0];
-    const restore = {
+    // Restore restores, and nothing else. It used to also hunt for a later
+    // identical sentence and delete it in the same operation, so that taking a
+    // sentence back could not produce a duplicate. That deleted the *later*
+    // take, which is the opposite of the rule the semantic layer works by — the
+    // second take is usually the finished one — and it did it without saying so.
+    // A visible duplicate the person can remove themselves beats content that
+    // disappears on its own.
+    return {
       type: "restore" as const,
       sourceStart,
       sourceEnd,
       ...(previous ? { previousSegmentId: previous.id } : {}),
       ...(next ? { nextSegmentId: next.id } : {}),
-    };
-    const duplicateRangeCandidates = findLaterRetainedExactDuplicates(
-      wordsRef.current,
-      displayedCutWordIdsRef.current,
-      range,
-    ).map((duplicate) => {
-      const sources = Array.from(new Set(
-        segments
-          .filter((segment) => segment.sourceStart < duplicate.sourceEnd && segment.sourceEnd > duplicate.sourceStart)
-          .map((segment) => segment.source),
-      ));
-      return sources.length === 1
-        ? {
-          type: "delete-range" as const,
-          source: sources[0],
-          sourceStart: duplicate.sourceStart,
-          sourceEnd: duplicate.sourceEnd,
-        }
-        : null;
-    });
-    const duplicateRanges = duplicateRangeCandidates.filter((candidate): candidate is {
-      type: "delete-range";
-      source: string;
-      sourceStart: number;
-      sourceEnd: number;
-    } => candidate !== null);
-    if (duplicateRanges.length === 0 || duplicateRanges.length !== duplicateRangeCandidates.length) {
-      return restore;
-    }
-    return {
-      ...restore,
-      type: "restore-deduplicate" as const,
-      duplicateRanges,
     };
   }, [editList.document?.segments]);
 

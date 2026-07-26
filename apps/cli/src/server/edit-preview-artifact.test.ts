@@ -1428,3 +1428,120 @@ test("preview-only ffmpeg generator emits non-gray cfr short-gop audio-video art
   await command("ffmpeg", ["-v", "error", "-i", output, "-f", "null", "-"]);
   await rm(root, { recursive: true, force: true });
 }, 20_000);
+// --- 账本播放：不生成任何东西 ---------------------------------------------
+
+async function readyProxyFixture(overrides: {
+  segments?: Array<Record<string, unknown>>;
+} = {}) {
+  const f = await fixture();
+  const workbench = JSON.parse(await readFile(join(f.projectDir, "workbench.json"), "utf8"));
+  workbench.previewProxy.status = "ready";
+  workbench.previewProxy.duration = 10;
+  workbench.previewProxy.byteLength = 5;
+  workbench.previewProxy.width = 960;
+  workbench.previewProxy.height = 720;
+  await writeFile(join(f.projectDir, "workbench.json"), JSON.stringify(workbench));
+  if (overrides.segments) {
+    const raw = `${JSON.stringify({
+      schemaVersion: 1, projectId: f.projectId, mode: "manual", sourceDuration: 10, duration: 4,
+      baseCutsRevision: "b".repeat(64), baseTranscriptRevision: "c".repeat(64),
+      segments: overrides.segments,
+    }, null, 2)}\n`;
+    await writeFile(join(f.projectDir, "edit-list.json"), raw);
+  }
+  return f;
+}
+
+test("a ready proxy plays the edit list directly and never generates an artifact", async () => {
+  const f = await readyProxyFixture();
+  await f.writeEdit(4);
+  const workbench = JSON.parse(await readFile(join(f.projectDir, "workbench.json"), "utf8"));
+  workbench.previewProxy.status = "ready";
+  await writeFile(join(f.projectDir, "workbench.json"), JSON.stringify(workbench));
+
+  let generateCalls = 0;
+  const manager = new EditPreviewArtifactManager(f.projectsDir, {
+    generate: async () => { generateCalls += 1; throw new Error("must not encode"); },
+    serializeProjectOperation,
+  });
+
+  const state = await manager.ensure(f.projectId);
+
+  // Current the instant it is asked for: there is no artifact, so nothing can be
+  // stale and no edit may schedule an encode.
+  expect(state.phase).toBe("current");
+  expect(state.profile).toBe("ledger-proxy-v1");
+  expect(state.sourceKind).toBe("ledger-proxy");
+  expect(state.source).toBe(".chengfeng-videocut/preview/source.mp4");
+  expect(state.artifactRevision).toBe(state.editRevision);
+  expect(state.generationMs).toBe(0);
+  expect(state.cacheKey).toBeNull();
+
+  // An edit must not start an encode either.
+  await f.writeEdit(6);
+  manager.schedule(f.projectId);
+  await Bun.sleep(400);
+  expect((await manager.status(f.projectId)).profile).toBe("ledger-proxy-v1");
+  expect(generateCalls).toBe(0);
+
+  await rm(f.projectsDir, { recursive: true, force: true });
+});
+
+test("the edit list cannot be played directly across two source files", async () => {
+  // One <video> can hold one file, so a timeline spanning two of them must keep
+  // the encoded path.
+  //
+  // The other case `canPlayFromLedger` guards — a segment whose speed is not 1x —
+  // cannot be constructed today: `parseEditListDocument` rejects any playbackRate
+  // other than 1 outright ("the current HyperFrames runtime does not support EDL
+  // rate changes"). The guard stays as defence for when that contract opens up,
+  // but it is unreachable, so there is nothing to assert here.
+  const f = await readyProxyFixture({
+    segments: [
+      { id: "a", source: "input/one.mp4", sourceStart: 0, sourceEnd: 2, timelineStart: 0, trackId: "a-roll", playbackRate: 1 },
+      { id: "b", source: "input/two.mp4", sourceStart: 0, sourceEnd: 2, timelineStart: 2, trackId: "a-roll", playbackRate: 1 },
+    ],
+  });
+  const manager = new EditPreviewArtifactManager(f.projectsDir, {
+    generate: async () => { throw new Error("stop before encoding"); },
+    serializeProjectOperation,
+  });
+  const state = await manager.status(f.projectId);
+  expect(state.profile).not.toBe("ledger-proxy-v1");
+  expect(state.sourceKind).not.toBe("ledger-proxy");
+  await rm(f.projectsDir, { recursive: true, force: true });
+});
+
+test("encoded artifacts are bounded instead of accumulating forever", async () => {
+  // The first real project reached 26 files and 1.1GB because nothing ever
+  // deleted one. Keep a few generations for undo, drop the rest.
+  const f = await readyProxyFixture();
+  await f.writeEdit(4);
+  const artifactDir = join(f.projectDir, ".chengfeng-videocut", "preview-edited");
+  await mkdir(artifactDir, { recursive: true });
+  const names: string[] = [];
+  for (let index = 0; index < 8; index += 1) {
+    const name = `${digest(`old-artifact-${index}`)}.mp4`;
+    names.push(name);
+    await writeFile(join(artifactDir, name), "x".repeat(16));
+    // Distinct mtimes so "most recent" is well defined.
+    const when = new Date(1_700_000_000_000 + index * 1000);
+    await utimes(join(artifactDir, name), when, when);
+  }
+  await writeFile(join(artifactDir, "current.json"), "{}");
+
+  const manager = new EditPreviewArtifactManager(f.projectsDir, {
+    generate: async () => { throw new Error("must not encode"); },
+    serializeProjectOperation,
+  });
+  await manager.status(f.projectId);
+  await Bun.sleep(200);
+
+  const left = (await readdir(artifactDir)).filter((name) => name.endsWith(".mp4"));
+  expect(left).toHaveLength(3);
+  // The three newest survive; anything unrelated in the directory is untouched.
+  expect(left.sort()).toEqual(names.slice(-3).sort());
+  expect(await readFile(join(artifactDir, "current.json"), "utf8")).toBe("{}");
+
+  await rm(f.projectsDir, { recursive: true, force: true });
+});

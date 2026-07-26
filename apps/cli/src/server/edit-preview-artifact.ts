@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createReadStream } from "node:fs";
-import { lstat, readFile, mkdir, mkdtemp, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, readFile, mkdir, mkdtemp, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { cutVideoBySegments, probeMedia, probePreviewProxyMedia } from "@video-workbench/koubo-adapter";
 import { parseEditListDocument } from "@video-workbench/core";
 import { serializeProjectOperation as serializeProjectOperationDefault } from "@video-workbench/core/node";
@@ -553,6 +553,52 @@ function finiteNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+// How many encoded artifacts to keep besides the one in use. The cache key is
+// per edit revision, so a couple of recent ones let undo land on a hit instead
+// of a re-encode. Everything older is unreachable: nothing can ask for an edit
+// revision that no longer exists.
+const RETAINED_ARTIFACT_GENERATIONS = 3;
+
+// Encoded artifacts are derived data — 35MB each, one per edit, and the cache key
+// changes on every keystroke. Without a bound they simply accumulate: the first
+// real project reached 26 files and 1.1GB with no way to clean them, because no
+// CLI command and no code path ever deleted one. Pruning belongs here rather than
+// in a command the person has to remember.
+async function pruneEncodedArtifacts(
+  artifactDir: string,
+  keep: readonly string[],
+): Promise<{ removed: number; freedBytes: number }> {
+  const protectedNames = new Set(keep);
+  let removed = 0;
+  let freedBytes = 0;
+  let entries: string[];
+  try {
+    entries = await readdir(artifactDir);
+  } catch {
+    return { removed, freedBytes };
+  }
+  const candidates: Array<{ name: string; mtimeMs: number; size: number }> = [];
+  for (const name of entries) {
+    // Only ever touch this directory's own generated artifacts. The name shape is
+    // the cache key, so anything else here (current.json, a stray temp file being
+    // written by another process) is left alone.
+    if (!/^[a-f0-9]{64}\.mp4$/.test(name) || protectedNames.has(name)) continue;
+    try {
+      const info = await stat(join(artifactDir, name));
+      if (info.isFile()) candidates.push({ name, mtimeMs: info.mtimeMs, size: info.size });
+    } catch { continue; }
+  }
+  candidates.sort((left, right) => right.mtimeMs - left.mtimeMs);
+  for (const candidate of candidates.slice(RETAINED_ARTIFACT_GENERATIONS)) {
+    try {
+      await rm(join(artifactDir, candidate.name), { force: true });
+      removed += 1;
+      freedBytes += candidate.size;
+    } catch { continue; }
+  }
+  return { removed, freedBytes };
+}
+
 // What the edit list can and cannot say through ledger playback.
 //
 // It can say "play these ranges of one file in this order" — that is exactly a
@@ -697,6 +743,13 @@ export class EditPreviewArtifactManager {
         clearTimeout(timer);
         this.timers.delete(projectId);
       }
+      // Ledger playback reads none of the encoded artifacts, so whatever a
+      // previously encoded history left behind is now dead weight. Keep a few
+      // generations in case the project later needs the fallback path.
+      void pruneEncodedArtifacts(
+        join(input.projectDir, ".chengfeng-videocut", "preview-edited"),
+        [],
+      ).catch(() => undefined);
       return state;
     }
     const expectedCacheKey = expectedCacheKeyForInput(input);
@@ -995,6 +1048,13 @@ export class EditPreviewArtifactManager {
         }
         if (!publishResult.state) throw new Error("Preview artifact publish did not return a current state");
         this.states.set(projectId, publishResult.state);
+        // Bound the cache. Never remove the artifact just published, nor the one
+        // the manifest points at — those two can differ for a moment while a
+        // concurrent reader still holds the old manifest.
+        await pruneEncodedArtifacts(artifactDir, [
+          basename(String(publishResult.state.source ?? "")),
+          basename(relativeSource),
+        ].filter(Boolean));
         return;
       } catch (error) {
         const previous = this.states.get(projectId) ?? blankState(projectId, revision);
