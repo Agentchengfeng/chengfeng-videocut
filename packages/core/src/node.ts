@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   access,
+  appendFile,
   lstat,
   mkdir,
   open as openFile,
@@ -487,9 +488,89 @@ export async function atomicWriteJson(path: string, value: unknown): Promise<str
   return sha256(content);
 }
 
+/**
+ * Who asked for a change. The log records what the caller declared; nothing here
+ * can verify it, so `unknown` is honest and must stay the default rather than
+ * being guessed at.
+ */
+export type ProjectEventActor =
+  | "studio-transcript"
+  | "studio-timeline"
+  | "cli"
+  | "skill"
+  | "runtime"
+  | "unknown";
+
+export interface ProjectEvent {
+  type: string;
+  actor?: ProjectEventActor;
+  payload?: JsonObject;
+}
+
+/**
+ * Append one line to the project's `events.jsonl`.
+ *
+ * Every deletion and restore used to leave no trace at all: the cut ranges hold
+ * two numbers and nothing else, and `events.jsonl` only ever carried the two
+ * lines written when a project was prepared. On 2026-07-26 a real timeline lost
+ * two segments and 2.32 seconds and it was impossible to determine what had done
+ * it — not because the evidence was ambiguous, but because none was recorded.
+ *
+ * A failed append must never fail the edit it describes: losing a log line is
+ * strictly better than losing the person's work. It must not be swallowed in
+ * silence either, or the log lies by omission — so failures go to stderr.
+ */
+export async function appendProjectEvent(
+  project: ResolvedProject,
+  event: ProjectEvent,
+  now: () => Date = () => new Date(),
+): Promise<void> {
+  const line = `${JSON.stringify({
+    ts: now().toISOString(),
+    type: event.type,
+    actor: event.actor ?? "unknown",
+    payload: { projectId: project.projectId, ...(event.payload ?? {}) },
+  })}\n`;
+  try {
+    await appendFile(join(project.directory, "events.jsonl"), line, "utf8");
+  } catch (error) {
+    process.stderr.write(
+      `[events] failed to record ${event.type} for ${project.projectId}: ${String(error)}\n`,
+    );
+  }
+}
+
+function cutSelectionEventPayload(result: WriteCutSelectionResult): JsonObject {
+  return {
+    previousRevision: result.previousRevision,
+    revision: result.revision,
+    changed: result.changed,
+    cutWordCount: result.document.cutWordIds.length,
+    cutRangeCount: result.document.cutRanges.length,
+    cutSeconds: Number(
+      result.document.cutRanges
+        .reduce((total, range) => total + Math.max(0, range.end - range.start), 0)
+        .toFixed(3),
+    ),
+  };
+}
+
+function editListEventPayload(result: WriteEditListResult): JsonObject {
+  return {
+    previousRevision: result.previousRevision,
+    revision: result.revision,
+    changed: result.changed,
+    mode: result.document.mode,
+    segmentCount: result.document.segments.length,
+    duration: result.document.duration,
+  };
+}
+
 export interface WriteCutSelectionOptions {
   expectedRevision?: string;
   dryRun?: boolean;
+  /** Declared by the caller and recorded verbatim; nothing here can verify it. */
+  actor?: ProjectEventActor;
   now?: string;
   /**
    * `full-selection` is the authoritative Studio checkbox state. It may keep a
@@ -687,8 +768,18 @@ export async function writeCutSelection(
   proposal: unknown,
   options: WriteCutSelectionOptions = {},
 ): Promise<WriteCutSelectionResult> {
-  const operation = () => writeCutSelectionSnapshot(project, proposal, options);
-  if (options.dryRun) return operation();
+  const operation = async () => {
+    const result = await writeCutSelectionSnapshot(project, proposal, options);
+    if (result.changed) {
+      await appendProjectEvent(project, {
+        type: "cuts_written",
+        actor: options.actor,
+        payload: cutSelectionEventPayload(result),
+      });
+    }
+    return result;
+  };
+  if (options.dryRun) return writeCutSelectionSnapshot(project, proposal, options);
   return serializeProjectOperation(project.directory, operation);
 }
 
@@ -842,6 +933,18 @@ export async function writeCutSelectionWithEditList(
         throw error;
       }
     }
+    // One line for the whole transaction, not one per file: Cuts and the derived
+    // edit list land together or not at all, so two lines would imply two events.
+    await appendProjectEvent(project, {
+      type: "cuts_written",
+      actor: options.actor,
+      payload: {
+        ...cutSelectionEventPayload(cuts),
+        ...(editList?.changed
+          ? { editList: editListEventPayload(editList) }
+          : { editList: null }),
+      },
+    });
     return { cuts, editList };
   };
   if (options.dryRun) return operation();
@@ -851,6 +954,8 @@ export async function writeCutSelectionWithEditList(
 export interface WriteEditListOptions {
   expectedRevision?: string;
   dryRun?: boolean;
+  /** Declared by the caller and recorded verbatim; nothing here can verify it. */
+  actor?: ProjectEventActor;
 }
 
 export interface WriteEditListResult {
@@ -936,8 +1041,20 @@ export async function writeEditList(
   proposal: unknown,
   options: WriteEditListOptions = {},
 ): Promise<WriteEditListResult> {
-  const operation = () => writeEditListSnapshot(project, proposal, options);
-  if (options.dryRun) return operation();
+  const operation = async () => {
+    const result = await writeEditListSnapshot(project, proposal, options);
+    // Inside the lock, after the bytes landed: the log line and the committed
+    // change stand or fall together.
+    if (result.changed) {
+      await appendProjectEvent(project, {
+        type: "edit_list_written",
+        actor: options.actor,
+        payload: editListEventPayload(result),
+      });
+    }
+    return result;
+  };
+  if (options.dryRun) return writeEditListSnapshot(project, proposal, options);
   return serializeProjectOperation(project.directory, operation);
 }
 
@@ -969,10 +1086,38 @@ export async function patchEditList(
     }
     const current = parseEditListDocument(previous.value);
     const next = applyEditListOperation(current, operation);
-    return commitEditListSnapshot(project, previous, next, options);
+    const result = await commitEditListSnapshot(project, previous, next, options);
+    if (result.changed) {
+      await appendProjectEvent(project, {
+        type: "edit_list_patched",
+        actor: options.actor,
+        payload: {
+          // The operation type is the whole point of this line: it is the only
+          // record of *what* was asked for, as opposed to what the file now says.
+          operation: describeEditListOperation(operation),
+          ...editListEventPayload(result),
+        },
+      });
+    }
+    return result;
   };
   if (options.dryRun) return apply();
   return serializeProjectOperation(project.directory, apply);
+}
+
+/**
+ * Reduce an operation to the fields worth keeping in the log. Deliberately does
+ * not persist snapshot payloads: `restore-snapshot` carries whole segment arrays,
+ * and a log that copies them would grow without bound.
+ */
+function describeEditListOperation(operation: EditListOperation | unknown): JsonObject {
+  if (!operation || typeof operation !== "object") return { type: "unknown" };
+  const value = operation as Record<string, unknown>;
+  const described: JsonObject = { type: typeof value.type === "string" ? value.type : "unknown" };
+  for (const field of ["clipId", "start", "sourceStart", "sourceEnd", "source", "previousSegmentId", "nextSegmentId"]) {
+    if (value[field] !== undefined) described[field] = value[field] as never;
+  }
+  return described;
 }
 
 export interface DoctorCheck {

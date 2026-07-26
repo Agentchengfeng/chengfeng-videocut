@@ -715,3 +715,92 @@ describe("project store", () => {
     });
   });
 });
+describe("project event log", () => {
+  // Before this existed, a deletion left two numbers in cut-selection.json and
+  // nothing else, and events.jsonl only ever held the two lines written when the
+  // project was prepared. On 2026-07-26 a real timeline lost two segments and
+  // 2.32 seconds and it was impossible to say what had done it — not because the
+  // evidence was ambiguous, but because none was recorded.
+  const readEvents = async (projectDir: string) => {
+    const raw = await readFile(join(projectDir, "events.jsonl"), "utf8").catch(() => "");
+    return raw.split("\n").filter(Boolean).map((line) => JSON.parse(line) as {
+      ts: string; type: string; actor: string; payload: Record<string, unknown>;
+    });
+  };
+
+  it("records every committed cut-selection change with who asked", async () => {
+    const fixture = await createFixture();
+    const project = await resolveProject(fixture.projectDir);
+
+    const before = await readEvents(fixture.projectDir);
+    await writeCutSelection(project, { cutWordIds: ["w-1", "w-2"] }, { actor: "cli" });
+    const after = await readEvents(fixture.projectDir);
+
+    expect(after).toHaveLength(before.length + 1);
+    const event = after.at(-1)!;
+    expect(event.type).toBe("cuts_written");
+    expect(event.actor).toBe("cli");
+    expect(event.payload.projectId).toBe(project.projectId);
+    expect(event.payload.changed).toBe(true);
+    expect(event.payload.cutWordCount).toBe(2);
+    // The revision pair is what makes an incident traceable: it says which state
+    // this change moved the project from, and to.
+    expect(event.payload.previousRevision).not.toBe(event.payload.revision);
+    expect(String(event.payload.revision)).toMatch(/^[a-f0-9]{64}$/);
+    expect(Date.parse(event.ts)).toBeGreaterThan(0);
+  });
+
+  it("records which timeline operation was asked for, and who by", async () => {
+    const fixture = await createFixture();
+    const project = await resolveProject(fixture.projectDir);
+    const cuts = await readFile(join(fixture.projectDir, "cut-selection.json"), "utf8");
+    const transcript = await readFile(join(fixture.projectDir, "transcript.json"), "utf8");
+    await writeEditList(project, buildEditListFromCuts({
+      projectId: project.projectId,
+      source: "input/source.mp4",
+      sourceDuration: 3,
+      cutsRevision: sha256(cuts),
+      transcriptRevision: sha256(transcript),
+      cutRanges: [{ start: 0, end: 1 }],
+    }), {});
+    const listed = await readEditList(project);
+
+    await patchEditList(project, {
+      type: "delete-range",
+      source: "input/source.mp4",
+      sourceStart: 2,
+      sourceEnd: 3,
+    }, { expectedRevision: listed!.revision, actor: "studio-transcript" });
+
+    const events = await readEvents(fixture.projectDir);
+    const patched = events.filter((event) => event.type === "edit_list_patched");
+    expect(patched).toHaveLength(1);
+    expect(patched[0]!.actor).toBe("studio-transcript");
+    const operation = patched[0]!.payload.operation as Record<string, unknown>;
+    expect(operation.type).toBe("delete-range");
+    expect(operation.sourceStart).toBe(2);
+    expect(operation.sourceEnd).toBe(3);
+    // The write that created the list is its own line, so the two are not confused.
+    expect(events.filter((event) => event.type === "edit_list_written")).toHaveLength(1);
+  });
+
+  it("says unknown rather than guessing when the caller does not declare itself", async () => {
+    const fixture = await createFixture();
+    const project = await resolveProject(fixture.projectDir);
+    await writeCutSelection(project, { cutWordIds: ["w-1", "w-3"] }, {});
+    expect((await readEvents(fixture.projectDir)).at(-1)!.actor).toBe("unknown");
+  });
+
+  it("does not record a dry run or a write that changed nothing", async () => {
+    const fixture = await createFixture();
+    const project = await resolveProject(fixture.projectDir);
+
+    await writeCutSelection(project, { cutWordIds: ["w-1"] }, { dryRun: true, actor: "cli" });
+    expect(await readEvents(fixture.projectDir)).toHaveLength(0);
+
+    // Same ids as the fixture already holds: nothing committed, nothing to say.
+    await writeCutSelection(project, { cutWordIds: ["w-1"] }, { actor: "cli" });
+    const events = await readEvents(fixture.projectDir);
+    expect(events.filter((event) => event.payload.changed === false)).toHaveLength(0);
+  });
+});

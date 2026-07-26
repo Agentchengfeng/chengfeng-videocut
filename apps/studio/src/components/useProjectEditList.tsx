@@ -18,6 +18,7 @@ import {
   EditListApiError,
   getProjectEditList,
   patchProjectEditList,
+  type EditListActor,
 } from "./editListApi";
 
 export type EditListSaveState = "idle" | "saving" | "saved" | "error" | "conflict";
@@ -32,6 +33,7 @@ export interface ProjectEditListState {
   reload: () => Promise<boolean>;
   patchOperation: (
     operation: EditListOperation,
+    actor?: EditListActor,
   ) => Promise<EditListDocument>;
   canUndo: boolean;
   undoLastEditListChange: () => Promise<void>;
@@ -158,6 +160,7 @@ export function useProjectEditList(
 
   const patchOperation = useCallback((
     operation: EditListOperation,
+    actor?: EditListActor,
   ): Promise<EditListDocument> => {
     if (!projectId || !ready) {
       return Promise.reject(new Error("Editable timeline is not ready"));
@@ -170,7 +173,7 @@ export function useProjectEditList(
       .then(async () => {
         if (epoch !== projectEpochRef.current) throw new Error("Project changed while editing");
         try {
-          const resource = await patchProjectEditList(projectId, revisionRef.current, operation);
+          const resource = await patchProjectEditList(projectId, revisionRef.current, operation, actor);
           if (epoch !== projectEpochRef.current) throw new Error("Project changed while editing");
           applyResource(resource, true);
           setSaveState("saved");

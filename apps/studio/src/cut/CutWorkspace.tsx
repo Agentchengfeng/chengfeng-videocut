@@ -4,6 +4,7 @@ import {
   type EditListDocument,
   type EditListOperation,
 } from "@video-workbench/core";
+import type { EditListActor } from "../components/editListApi";
 import { continuousPlaybackDocument } from "../components/editListPlayback";
 import { useProjectCutSelection } from "../components/useProjectCutSelection";
 import { useProjectEditList } from "../components/useProjectEditList";
@@ -286,9 +287,12 @@ export function CutWorkspace({
     else void transportSeek(time);
   }, [artifact.current, editList.revision, projectId, transportSeek]);
 
-  const patchTimelineOperation = useCallback(async (operation: EditListOperation) => {
+  const patchTimelineOperation = useCallback(async (
+    operation: EditListOperation,
+    actor?: EditListActor,
+  ) => {
     const inverseOperations = invertTimelineOperation(editList.document, operation);
-    const nextDocument = await editList.patchOperation(operation);
+    const nextDocument = await editList.patchOperation(operation, actor);
     if (inverseOperations) {
       pushUndoCommand({
         label: `timeline:${operation.type}`,
@@ -320,12 +324,24 @@ export function CutWorkspace({
     return saved;
   }, [cutSelection.cutWordIds, cutSelection.updateCutWordIds, pushUndoCommand]);
 
+  // The two surfaces are indistinguishable once they reach the API, so each
+  // declares itself here. Without this, the event log could say an edit happened
+  // but never which pane the person was using.
+  const patchFromTimeline = useCallback(
+    (operation: EditListOperation) => patchTimelineOperation(operation, "studio-timeline"),
+    [patchTimelineOperation],
+  );
+  const patchFromTranscript = useCallback(
+    (operation: EditListOperation) => patchTimelineOperation(operation, "studio-transcript"),
+    [patchTimelineOperation],
+  );
+
   const timelineEditList = useMemo(() => ({
     ...editList,
-    patchOperation: patchTimelineOperation,
+    patchOperation: patchFromTimeline,
     canUndo: false,
     undoLastEditListChange: async () => undefined,
-  }), [editList, patchTimelineOperation]);
+  }), [editList, patchFromTimeline]);
 
   const transcriptEditList = useMemo(() => ({
     projectId: editList.projectId,
@@ -335,7 +351,7 @@ export function CutWorkspace({
     ready: editList.ready,
     saveState: editList.saveState,
     reload: editList.reload,
-    patchOperation: patchTimelineOperation,
+    patchOperation: patchFromTranscript,
     canUndo: false,
     undoLastEditListChange: async () => undefined,
   }), [

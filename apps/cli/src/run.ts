@@ -305,6 +305,9 @@ async function requestEditListApi(options: {
         ? JSON.stringify({
             expectedRevision: options.expectedRevision,
             operation: options.operation,
+            // Declared so the project's event log can tell a CLI edit apart from
+            // one made in a browser pane. It is a declaration, not a proof.
+            actor: "cli",
           })
         : undefined,
       signal: AbortSignal.timeout(30_000),
@@ -998,6 +1001,7 @@ export async function runCli(
             expectedRevision: parsed.expectedRevision,
             dryRun: true,
             mode: "semantic-overlay",
+            actor: "cli",
           })
         : await updateCutsThroughApi({
             apiBase: parsed.apiBase ?? "http://127.0.0.1:5190",

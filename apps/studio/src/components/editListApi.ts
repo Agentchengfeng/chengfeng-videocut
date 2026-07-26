@@ -143,10 +143,14 @@ export function getProjectEditList(projectId: string): Promise<EditListResource>
   });
 }
 
+/** Which surface asked for the edit; recorded in the project's event log. */
+export type EditListActor = "studio-transcript" | "studio-timeline";
+
 export function patchProjectEditList(
   projectId: string,
   expectedRevision: string,
   operation: EditListOperation,
+  actor?: EditListActor,
 ): Promise<EditListResource> {
   return requestEditList(resourceUrl(projectId), {
     method: "PATCH",
@@ -154,6 +158,6 @@ export function patchProjectEditList(
       Accept: "application/json",
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ expectedRevision, operation }),
+    body: JSON.stringify({ expectedRevision, operation, ...(actor ? { actor } : {}) }),
   });
 }

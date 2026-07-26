@@ -34,7 +34,16 @@ type VideocutEditListHandler = (request: Request) => Promise<Response | null>;
 interface EditListPatchBody {
   expectedRevision: string;
   operation: EditListOperation;
+  /**
+   * Which surface asked. This is a **declaration, not a proof** — every caller
+   * here is an HTTP client and nothing can verify what it says. The allow-list
+   * exists to keep the log's vocabulary closed, not to authenticate anyone. An
+   * absent value stays `unknown`, which is the honest answer.
+   */
+  actor?: "studio-transcript" | "studio-timeline" | "cli" | "skill";
 }
+
+const DECLARABLE_ACTORS = new Set(["studio-transcript", "studio-timeline", "cli", "skill"]);
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -153,7 +162,7 @@ function patchBody(value: unknown): EditListPatchBody {
   if (!isObject(value)) {
     throw new VideocutError("invalid_argument", "Edit-list request body must be an object");
   }
-  const allowed = new Set(["expectedRevision", "operation"]);
+  const allowed = new Set(["expectedRevision", "operation", "actor"]);
   const unsupported = Object.keys(value).filter((key) => !allowed.has(key));
   if (unsupported.length > 0) {
     throw new VideocutError(
@@ -168,9 +177,17 @@ function patchBody(value: unknown): EditListPatchBody {
       "expectedRevision is required and must be 'none' or a SHA-256 revision",
     );
   }
+  if (value.actor !== undefined && (typeof value.actor !== "string" || !DECLARABLE_ACTORS.has(value.actor))) {
+    throw new VideocutError(
+      "invalid_argument",
+      "actor must be omitted or one of the declarable Studio surfaces",
+      { declarable: [...DECLARABLE_ACTORS] },
+    );
+  }
   return {
     expectedRevision: value.expectedRevision,
     operation: parseEditListOperation(value.operation),
+    ...(value.actor ? { actor: value.actor as EditListPatchBody["actor"] } : {}),
   };
 }
 
@@ -213,6 +230,10 @@ export function createVideocutEditListHandler(
       const body = patchBody(await requestJson(request));
       const result = await patchEditList(project, body.operation, {
         expectedRevision: body.expectedRevision,
+        // Recorded verbatim in the project's event log. Nothing here can verify
+        // it, so an absent or unrecognized value stays `unknown` rather than
+        // being guessed from the request.
+        ...(body.actor ? { actor: body.actor } : {}),
       });
       const change = {
         projectId: project.projectId,
