@@ -10,7 +10,7 @@ import {
   utimes,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -585,6 +585,16 @@ describe("project store", () => {
     const { projectDir } = await createFixture();
     const lockPath = projectOperationLockPath(projectDir);
     await mkdir(lockPath);
+    // Claim the lock for a process that is genuinely alive — this one. An
+    // ownerless lock is now recovered on sight, so it can no longer stand in
+    // for a held lock here.
+    await writeFile(join(lockPath, "owner"), JSON.stringify({
+      version: 1,
+      token: "live-owner",
+      pid: process.pid,
+      hostname: hostname(),
+      acquiredAt: new Date().toISOString(),
+    }), "utf8");
 
     await expect(serializeProjectOperation(
       projectDir,
@@ -595,6 +605,16 @@ describe("project store", () => {
       details: { reason: "project_lock_timeout" },
     });
 
+    // Hand the lock to another machine so liveness cannot be probed locally,
+    // then age it past the stale window: that is the case the full timeout is
+    // meant for.
+    await writeFile(join(lockPath, "owner"), JSON.stringify({
+      version: 1,
+      token: "remote-owner",
+      pid: 1,
+      hostname: `${hostname()}-elsewhere`,
+      acquiredAt: new Date().toISOString(),
+    }), "utf8");
     const old = new Date(Date.now() - 2_000);
     await utimes(lockPath, old, old);
     const result = await serializeProjectOperation(
@@ -603,6 +623,46 @@ describe("project store", () => {
       { timeoutMs: 500, staleMs: 20, pollIntervalMs: 5, heartbeatIntervalMs: 10 },
     );
     expect(result).toBe("recovered");
+    expect((await readdir(projectDir)).filter((name) =>
+      name.includes("chengfeng-videocut.write.lock"))).toEqual([]);
+  });
+
+  it("recovers an ownerless lock instead of waiting out the full stale window", async () => {
+    // A process killed between creating the lock directory and writing the
+    // owner leaves a lock nobody can be shown to hold. Treating that as a
+    // possibly-live lock froze every write on the project for the whole stale
+    // window — five minutes in production — with each attempt first hanging for
+    // the full timeout. The lock having no owner is itself the evidence.
+    const { projectDir } = await createFixture();
+    const lockPath = projectOperationLockPath(projectDir);
+    await mkdir(lockPath);
+    const old = new Date(Date.now() - 2_000);
+    await utimes(lockPath, old, old);
+
+    const result = await serializeProjectOperation(
+      projectDir,
+      async () => "recovered",
+      { timeoutMs: 500, staleMs: 300_000, pollIntervalMs: 5, heartbeatIntervalMs: 10 },
+    );
+    expect(result).toBe("recovered");
+    expect((await readdir(projectDir)).filter((name) =>
+      name.includes("chengfeng-videocut.write.lock"))).toEqual([]);
+  });
+
+  it("never publishes a lock without its owner record", async () => {
+    const { projectDir } = await createFixture();
+    const lockPath = projectOperationLockPath(projectDir);
+    let ownerSeen: string | null = null;
+    await serializeProjectOperation(projectDir, async () => {
+      ownerSeen = await readFile(join(lockPath, "owner"), "utf8");
+      return "held";
+    }, { timeoutMs: 500, pollIntervalMs: 5, heartbeatIntervalMs: 10 });
+    expect(ownerSeen).toBeTruthy();
+    expect(JSON.parse(ownerSeen as unknown as string)).toMatchObject({
+      version: 1,
+      pid: process.pid,
+    });
+    // Staging directories must not survive a successful publish.
     expect((await readdir(projectDir)).filter((name) =>
       name.includes("chengfeng-videocut.write.lock"))).toEqual([]);
   });

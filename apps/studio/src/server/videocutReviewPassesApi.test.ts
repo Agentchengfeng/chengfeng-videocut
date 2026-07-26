@@ -94,9 +94,26 @@ describe("videocut review-passes API", () => {
     });
   });
 
-  it("does not present a candidate after the reviewed edit list changes", async () => {
+  it("keeps presenting candidates after the timeline is edited", async () => {
+    // The candidates exist to be reviewed against the timeline, so editing the
+    // timeline must not throw them away. Word-level conclusions — this word is a
+    // stumble, that one repeats a later take — cannot be invalidated by
+    // rearranging which source ranges play.
     const { projectsDir, projectDir } = await fixture();
     await writeFile(join(projectDir, "edit-list.json"), json({ schemaVersion: 1, projectId: "demo", segments: ["changed"] }));
+    const handler = createVideocutReviewPassesHandler({ projectsDir });
+    const response = await handler(request());
+    const payload = await response?.json() as { state: string; removedWordIds: string[]; candidates: unknown[] };
+    expect(payload.state).toBe("current");
+    expect(payload.removedWordIds.length).toBeGreaterThan(0);
+    expect(payload.candidates.length).toBeGreaterThan(0);
+  });
+
+  it("goes stale when the cut selection changes", async () => {
+    // Cuts still count: a candidate must not name a word that is already
+    // deleted there.
+    const { projectsDir, projectDir } = await fixture();
+    await writeFile(join(projectDir, "cut-selection.json"), json({ schemaVersion: 3, cutWordIds: ["changed"], cutRanges: [] }));
     const handler = createVideocutReviewPassesHandler({ projectsDir });
     const response = await handler(request());
     expect(await response?.json()).toMatchObject({

@@ -122,7 +122,15 @@ async function recoverStaleLock(lockPath: string, staleMs: number): Promise<bool
   const ageMs = Date.now() - lockStat.mtimeMs;
   const owner = await readOwner(lockPath);
   let recoverable = ageMs >= staleMs;
-  if (owner?.hostname === hostname()) {
+  if (owner === null) {
+    // Acquisition creates the directory and writes the owner as two steps, so a
+    // process killed between them leaves a lock nobody can be shown to hold.
+    // Waiting the full stale timeout for it froze every write on the project
+    // for five minutes with no way to tell why. An ownerless lock is itself the
+    // evidence that nobody holds it, so recover it on the same short grace
+    // period a confirmed-dead owner gets.
+    recoverable = ageMs >= Math.min(staleMs, 1_000);
+  } else if (owner.hostname === hostname()) {
     const alive = localProcessIsAlive(owner.pid);
     if (alive === true) return false;
     // A confirmed-dead local owner can be recovered after a short grace
@@ -171,15 +179,21 @@ async function acquireProjectLock(
       hostname: hostname(),
       acquiredAt: new Date().toISOString(),
     };
+    // Stage the owner in a private directory and publish it with a single
+    // rename, so the lock never exists without the record of who holds it.
+    // Creating the directory first and writing the owner second left an
+    // ownerless lock behind whenever a process died between the two steps.
+    const staging = `${lockPath}.staging.${process.pid}.${owner.token}`;
     try {
-      await mkdir(lockPath);
+      await mkdir(staging, { recursive: true });
+      await writeFile(join(staging, LOCK_OWNER_NAME), JSON.stringify(owner), {
+        encoding: "utf8",
+        flag: "wx",
+      });
       try {
-        await writeFile(join(lockPath, LOCK_OWNER_NAME), JSON.stringify(owner), {
-          encoding: "utf8",
-          flag: "wx",
-        });
+        await rename(staging, lockPath);
       } catch (error) {
-        await rm(lockPath, { force: true, recursive: true });
+        await rm(staging, { force: true, recursive: true });
         throw error;
       }
 
@@ -190,7 +204,11 @@ async function acquireProjectLock(
       heartbeat.unref?.();
       return { path: lockPath, owner, heartbeat };
     } catch (error) {
-      if (errorCode(error) !== "EEXIST") throw error;
+      // Publishing by rename reports an occupied lock differently per platform:
+      // EEXIST on macOS, ENOTEMPTY on Linux when the target directory is not
+      // empty. Both mean somebody else holds it; anything else is a real fault.
+      const code = errorCode(error);
+      if (code !== "EEXIST" && code !== "ENOTEMPTY") throw error;
     }
 
     if (await recoverStaleLock(lockPath, staleMs)) continue;

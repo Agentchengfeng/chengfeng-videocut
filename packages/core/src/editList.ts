@@ -720,6 +720,24 @@ export function applyEditListOperation(
       Math.abs(sourceStart - segment.sourceStart) <= TIME_EPSILON &&
       Math.abs(sourceEnd - segment.sourceEnd) <= TIME_EPSILON
     ) return document;
+    // Dragging a handle past a neighbour's source range would put the same
+    // spoken content on the timeline twice: the render concatenates segments
+    // verbatim, so the sentence is heard again, while the transcript still
+    // shows it once because a word covered by two segments looks identical to
+    // one covered by a single segment. Restore (:448) and delete-range (:597)
+    // already refuse the same geometry; trim was the one operator that did not.
+    const overlapped = document.segments.find((candidate) =>
+      candidate.id !== segment.id
+      && candidate.source === segment.source
+      && rangesOverlap(sourceStart, sourceEnd, candidate.sourceStart, candidate.sourceEnd),
+    );
+    if (overlapped) {
+      return invalid("Trim would overlap another retained edit-list segment", {
+        sourceStart,
+        sourceEnd,
+        overlappingSegmentId: overlapped.id,
+      });
+    }
     segments[index] = { ...segment, sourceStart, sourceEnd };
   } else if (operation.type === "split") {
     const duration = editListSegmentDuration(segment);

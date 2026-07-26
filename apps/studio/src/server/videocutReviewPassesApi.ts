@@ -243,19 +243,28 @@ export function createVideocutReviewPassesHandler(
       if (!document || document.projectId !== project.projectId) {
         return response(project.projectId, "invalid", undefined, "第二遍候选格式无效");
       }
-      const [transcript, cuts, editList] = await Promise.all([
+      const [transcript, cuts] = await Promise.all([
         readProjectDocument(project, "transcript.json"),
         readOptionalProjectDocument(project, "cut-selection.json"),
-        readOptionalProjectDocument(project, "edit-list.json"),
       ]);
       const cutsRevision = cuts?.revision ?? "none";
-      const editListRevision = editList?.revision ?? "none";
+      // Review passes are word-level conclusions: which words are a stumble, a
+      // restart, or a repeat of a later take. Only the transcript can invalidate
+      // them, and cut-selection because a candidate must not name a word that is
+      // already deleted there.
+      //
+      // The edit list deliberately does NOT take part. It records which source
+      // ranges play and in what order — rearranging, trimming or removing a
+      // segment cannot change whether a given word is a stumble. Including it
+      // here made the artifact self-invalidating: the candidates exist to be
+      // reviewed on the timeline, and the first timeline edit threw all of them
+      // away with no way to regenerate. `document.editListRevision` is still
+      // persisted as provenance, but it is no longer a staleness key.
       if (
         document.transcriptRevision !== transcript.revision ||
-        document.cutsRevision !== cutsRevision ||
-        document.editListRevision !== editListRevision
+        document.cutsRevision !== cutsRevision
       ) {
-        return response(project.projectId, "stale", undefined, "项目文稿或剪辑已变化，请重新生成第二遍候选");
+        return response(project.projectId, "stale", undefined, "项目文稿或删词结果已变化，请重新生成第二遍候选");
       }
       const words = transcriptWords(transcript.value);
       const candidates = words ? validCurrentCandidates(document, words) : null;

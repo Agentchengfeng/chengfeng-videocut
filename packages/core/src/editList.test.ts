@@ -74,6 +74,38 @@ describe("edit-list model", () => {
     expect(trimmed.segments[1].timelineStart).toBe(2);
   });
 
+  it("refuses a trim that would overlap a neighbour's source range", () => {
+    // The fixture keeps source 2-5 and 7-10. Dragging the first segment's tail
+    // past 7 would render 7-8 twice: the concatenation repeats it, while the
+    // transcript still shows those words once, so the duplicate is inaudible on
+    // screen and deleting it from the transcript would remove both copies.
+    const document = fixture();
+    expect(() => applyEditListOperation(document, {
+      type: "trim",
+      clipId: "a-roll-0001",
+      sourceStart: 2,
+      sourceEnd: 8,
+    })).toThrow(/overlap/i);
+
+    // Growing up to — but not into — the neighbour stays legal.
+    const grown = applyEditListOperation(document, {
+      type: "trim",
+      clipId: "a-roll-0001",
+      sourceStart: 2,
+      sourceEnd: 7,
+    });
+    expect(grown.segments[0]).toMatchObject({ sourceStart: 2, sourceEnd: 7 });
+    expect(grown.segments[1].timelineStart).toBe(5);
+
+    // The leading handle is guarded in the same direction.
+    expect(() => applyEditListOperation(document, {
+      type: "trim",
+      clipId: "a-roll-0002",
+      sourceStart: 4,
+      sourceEnd: 10,
+    })).toThrow(/overlap/i);
+  });
+
   it("splits without changing total duration, then deletes with ripple", () => {
     const split = applyEditListOperation(fixture(), {
       type: "split",
