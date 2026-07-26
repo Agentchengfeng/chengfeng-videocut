@@ -1447,11 +1447,11 @@ function stubStream(segments: readonly { start: number; end: number }[]) {
   const list = segments.map((segment, index) => {
     const entry = {
       source: `.chengfeng-videocut/preview-stream/${index}.m4s`,
-      headExtra: 0,
-      out,
-      dur: segment.end - segment.start,
+      offset: out,
+      start: out,
+      end: out + (segment.end - segment.start),
     };
-    out += entry.dur;
+    out = entry.end;
     return entry;
   });
   return {

@@ -1,58 +1,73 @@
 /// <reference types="node" />
 
-import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 
 /**
  * Media for playback that never seeks.
  *
- * The previous approach played the whole proxy and jumped `currentTime` at every
+ * The first approach played the whole proxy and jumped `currentTime` at every
  * retained boundary. Every measurement said it was clean — zero dropped frames, a
  * single contiguous buffered range, 0–1ms stalls, exact landing positions — and it
  * was audibly broken: setting `currentTime` stops the decoder, not the sound, so
  * the 150–400ms already handed to the sound card played on. What sits immediately
  * after a retained boundary is always deleted content, so every seam leaked deleted
- * speech. Muting could not reach audio that was already past the volume stage, and
- * seeking early would have clipped the end of retained speech.
+ * speech. Only a person listening caught it.
  *
- * Only a person listening caught it. This module exists so playback has nothing to
- * jump over: the retained ranges are cut into fragments and assembled into one
- * continuous stream before the player ever sees them.
+ * So the retained ranges are assembled into one continuous stream before the player
+ * ever sees them, and there is nothing left to jump over.
  *
- * Nothing here re-encodes. Fragments are stream copies, which is why an edit costs
- * milliseconds instead of the twelve seconds a full re-encode took.
+ * ## Why a fixed grid, and not a fragment per range
+ *
+ * Cutting one fragment per retained range meant an edit ran ffmpeg, and ffmpeg had
+ * to open the whole proxy. That open is nearly free while the file is still in the
+ * page cache and expensive when it is not — measured at 2.4s on an external USB
+ * disk, which is where these projects actually live. So every edit after a pause
+ * froze the app for a second or two, unpredictably, for work the user could not see.
+ *
+ * The proxy is therefore sliced once, on a fixed ~2s grid, and never sliced again.
+ * A retained range is then expressed as *whole grid chunks plus a trim window* —
+ * arithmetic, not media work. An edit runs no subprocess and reads no large file,
+ * so its cost no longer depends on how fast the user's disk is or on what happens
+ * to be cached. Slicing costs one pass over the proxy (~0.15s warm) and the chunks
+ * together take the same space the single rewrapped copy used to.
+ *
+ * This is what streaming players do, for the same reason.
  */
 
 const STREAM_DIRECTORY = "preview-stream" as const;
-const FRAGMENTED_SUFFIX = ".frag.mp4" as const;
-const KEYFRAMES_SUFFIX = ".keyframes.json" as const;
-/** Keep a few generations so undo lands on a cache hit instead of a re-cut. */
-const RETAINED_CHUNK_GENERATIONS = 240;
+const CHUNK_INDEX_SUFFIX = ".chunks.json" as const;
+/** Grid pitch. Small enough that a range wastes little, large enough to keep the count sane. */
+const CHUNK_SECONDS = 2;
 
 export interface PreviewStreamSegment {
-  /** Project-relative path of the fragment, servable by the preview media route. */
+  /** Project-relative path of the chunk, servable by the preview media route. */
   source: string;
   /**
-   * Seconds of extra media at the head of this fragment.
+   * Where this chunk's own timeline zero lands on the assembled timeline.
    *
-   * A stream copy can only start at a keyframe, so a fragment begins at or before
-   * the requested range. The player trims exactly this much when appending, which
-   * is what keeps the join frame-accurate without re-encoding: the data is
-   * keyframe-aligned, the boundary is not.
+   * Chunks are cut with reset timestamps, so each one starts at zero regardless of
+   * where it sits in the proxy. This is negative whenever a chunk starts before the
+   * retained range it serves.
    */
-  headExtra: number;
-  /** Where this fragment starts on the assembled timeline. */
-  out: number;
-  /** Retained duration, excluding `headExtra`. */
-  dur: number;
+  offset: number;
+  /**
+   * Keep only this span of assembled time from the chunk.
+   *
+   * The grid does not line up with speech, so the first and last chunk of a range
+   * carry material that belongs to deleted content. The trim window discards it
+   * *before* it becomes media — which is the whole point: audio that never enters
+   * the buffer can never be heard, whereas audio skipped at playback time can.
+   */
+  start: number;
+  end: number;
 }
 
 export interface PreviewStream {
   segments: PreviewStreamSegment[];
   totalSeconds: number;
-  /** Codec string the player needs before it can accept any fragment. */
+  /** Codec string the player needs before it can accept any chunk. */
   mimeType: string;
 }
 
@@ -60,13 +75,15 @@ export interface BuildPreviewStreamInput {
   projectDir: string;
   /** Project-relative path of the ready preview proxy. */
   proxySource: string;
-  /** Identity of the proxy; a new one invalidates the fragmented copy and the index. */
+  /** Identity of the proxy; a new one invalidates the grid. */
   proxyCacheKey: string;
   segments: readonly { start: number; end: number }[];
 }
 
-function sha256(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
+export interface GridChunk {
+  name: string;
+  start: number;
+  end: number;
 }
 
 function roundSeconds(value: number): number {
@@ -98,165 +115,126 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-/**
- * Rewrap the proxy so its fragments can be appended one at a time, and record
- * where its keyframes are. Both are stream copies of an existing file, keyed by the
- * proxy's identity, so this happens once per proxy rather than once per edit.
- */
-async function ensureFragmentedProxy(input: BuildPreviewStreamInput): Promise<{
-  fragmented: string;
-  keyframes: number[];
-}> {
-  const directory = join(input.projectDir, ".chengfeng-videocut", STREAM_DIRECTORY);
-  await mkdir(directory, { recursive: true });
-  const fragmented = join(directory, `${input.proxyCacheKey}${FRAGMENTED_SUFFIX}`);
-  const indexPath = join(directory, `${input.proxyCacheKey}${KEYFRAMES_SUFFIX}`);
-  const proxy = join(input.projectDir, input.proxySource);
-
-  if (!await exists(fragmented)) {
-    const temporary = `${fragmented}.tmp-${process.pid}`;
-    try {
-      await run("ffmpeg", [
-        "-y", "-v", "error", "-i", `file:${proxy}`, "-c", "copy",
-        "-movflags", "frag_keyframe+empty_moov+default_base_moof",
-        // Named explicitly: the temporary carries a `.tmp-<pid>` suffix so the
-        // container cannot be inferred from the extension.
-        "-f", "mp4", `file:${temporary}`,
-      ]);
-      await rename(temporary, fragmented);
-    } catch (error) {
-      await rm(temporary, { force: true }).catch(() => undefined);
-      throw error;
-    }
+function parseSegmentList(csv: string, directory: string): GridChunk[] {
+  const chunks: GridChunk[] = [];
+  for (const line of csv.split("\n")) {
+    const [name, start, end] = line.trim().split(",");
+    if (!name || start === undefined || end === undefined) continue;
+    const from = Number(start);
+    const to = Number(end);
+    if (!Number.isFinite(from) || !Number.isFinite(to) || !(to > from)) continue;
+    chunks.push({ name: join(directory, name).split("/").pop() ?? name, start: from, end: to });
   }
-
-  if (!await exists(indexPath)) {
-    // Packet flags rather than `-skip_frame nokey`: that option filters frames, not
-    // packets, and silently returns every packet here.
-    const raw = await run("ffprobe", [
-      "-v", "error", "-select_streams", "v:0",
-      "-show_entries", "packet=pts_time,flags",
-      "-of", "csv=p=0", `file:${fragmented}`,
-    ]);
-    const keyframes = raw.split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => line.split(","))
-      .filter((parts) => (parts[1] ?? "").includes("K"))
-      .map((parts) => Number(parts[0]))
-      .filter((value) => Number.isFinite(value))
-      .sort((left, right) => left - right);
-    if (keyframes.length === 0) {
-      throw new Error("Fragmented preview proxy reports no keyframes");
-    }
-    const temporary = `${indexPath}.tmp-${process.pid}`;
-    await writeFile(temporary, JSON.stringify(keyframes), "utf8");
-    await rename(temporary, indexPath);
-    return { fragmented, keyframes };
-  }
-
-  const keyframes = JSON.parse(await readFile(indexPath, "utf8")) as unknown;
-  if (!Array.isArray(keyframes) || keyframes.length === 0) {
-    throw new Error("Preview proxy keyframe index is unusable");
-  }
-  return { fragmented, keyframes: keyframes as number[] };
-}
-
-function keyframeAtOrBefore(keyframes: readonly number[], time: number): number {
-  let low = 0;
-  let high = keyframes.length - 1;
-  let best = keyframes[0] ?? 0;
-  while (low <= high) {
-    const middle = (low + high) >> 1;
-    const candidate = keyframes[middle]!;
-    if (candidate <= time + 1e-6) {
-      best = candidate;
-      low = middle + 1;
-    } else {
-      high = middle - 1;
-    }
-  }
-  return best;
+  return chunks;
 }
 
 /**
- * Drop fragments no longer referenced, keeping a bounded history.
+ * Slice the proxy onto the grid, once per proxy.
  *
- * Fragments are keyed by source range, so most of them survive an edit untouched —
- * that is the whole reason a keystroke costs milliseconds. The bound exists because
- * the previous cache had none and reached 26 files and 1.1GB on a real project.
+ * `-map 0` is required: without it the segment muxer reports "output file does not
+ * contain any stream" and writes nothing. Each chunk carries `empty_moov`, so it is
+ * self-describing and can be appended on its own, and `-reset_timestamps` makes
+ * every chunk start at zero — which is why placement is per-chunk arithmetic rather
+ * than something that has to be read back out of the media.
  */
-async function pruneChunks(directory: string, keep: ReadonlySet<string>): Promise<void> {
+async function ensureGrid(input: BuildPreviewStreamInput): Promise<GridChunk[]> {
+  const directory = join(input.projectDir, ".chengfeng-videocut", STREAM_DIRECTORY, input.proxyCacheKey);
+  const indexPath = `${directory}${CHUNK_INDEX_SUFFIX}`;
+  if (await exists(indexPath)) {
+    return JSON.parse(await readFile(indexPath, "utf8")) as GridChunk[];
+  }
+
+  const staging = `${directory}.tmp-${process.pid}`;
+  await rm(staging, { recursive: true, force: true });
+  await mkdir(staging, { recursive: true });
+  try {
+    const listPath = join(staging, "list.csv");
+    await run("ffmpeg", [
+      "-y", "-v", "error",
+      "-i", `file:${join(input.projectDir, input.proxySource)}`,
+      "-map", "0", "-c", "copy",
+      "-f", "segment",
+      "-segment_time", String(CHUNK_SECONDS),
+      "-reset_timestamps", "1",
+      "-segment_format", "mp4",
+      "-segment_format_options", "movflags=frag_keyframe+empty_moov+default_base_moof",
+      "-segment_list", `file:${listPath}`,
+      "-segment_list_type", "csv",
+      `file:${join(staging, "%05d.m4s")}`,
+    ]);
+    const chunks = parseSegmentList(await readFile(listPath, "utf8"), staging);
+    if (chunks.length === 0) throw new Error("proxy produced no playable chunks");
+    await rm(listPath, { force: true });
+    await rm(directory, { recursive: true, force: true });
+    await rename(staging, directory);
+    await writeFile(indexPath, JSON.stringify(chunks), "utf8");
+    return chunks;
+  } catch (error) {
+    await rm(staging, { recursive: true, force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+/** Drop grids belonging to proxies that no longer exist. */
+async function pruneGrids(root: string, keep: string): Promise<void> {
   let entries: string[];
   try {
-    entries = await readdir(directory);
+    entries = await readdir(root);
   } catch {
     return;
   }
-  const candidates: Array<{ name: string; mtimeMs: number }> = [];
-  for (const name of entries) {
-    if (!/^[a-f0-9]{64}\.m4s$/.test(name) || keep.has(name)) continue;
-    try {
-      const info = await stat(join(directory, name));
-      if (info.isFile()) candidates.push({ name, mtimeMs: info.mtimeMs });
-    } catch { continue; }
+  await Promise.all(entries.map(async (entry) => {
+    if (entry === keep || entry === `${keep}${CHUNK_INDEX_SUFFIX}`) return;
+    await rm(join(root, entry), { recursive: true, force: true }).catch(() => undefined);
+  }));
+}
+
+/**
+ * Place retained ranges onto the grid. Pure arithmetic — this is the entire cost of
+ * an edit, and the only part that can be wrong without anything reporting an error.
+ *
+ * Every chunk a range touches gets the *same* trim window (the range's span on the
+ * assembled timeline) and its own offset. The window is what makes grid alignment
+ * irrelevant: material outside the range is discarded before it becomes media.
+ */
+export function planPreviewStreamSegments(
+  chunks: readonly GridChunk[],
+  ranges: readonly { start: number; end: number }[],
+  sourceOf: (chunk: GridChunk) => string,
+): { segments: PreviewStreamSegment[]; totalSeconds: number } {
+  const segments: PreviewStreamSegment[] = [];
+  let out = 0;
+  for (const range of ranges) {
+    const duration = range.end - range.start;
+    if (!(duration > 0)) continue;
+    for (const chunk of chunks) {
+      // Half-open on both sides: a chunk that merely touches a boundary carries
+      // nothing of this range, and appending it would be pure waste.
+      if (chunk.end <= range.start || chunk.start >= range.end) continue;
+      segments.push({
+        source: sourceOf(chunk),
+        offset: roundSeconds(out + chunk.start - range.start),
+        start: roundSeconds(out),
+        end: roundSeconds(out + duration),
+      });
+    }
+    out += duration;
   }
-  candidates.sort((left, right) => right.mtimeMs - left.mtimeMs);
-  for (const candidate of candidates.slice(RETAINED_CHUNK_GENERATIONS)) {
-    await rm(join(directory, candidate.name), { force: true }).catch(() => undefined);
-  }
+  return { segments, totalSeconds: roundSeconds(out) };
 }
 
 export async function buildPreviewStream(
   input: BuildPreviewStreamInput,
 ): Promise<PreviewStream> {
-  const { fragmented, keyframes } = await ensureFragmentedProxy(input);
-  const directory = join(input.projectDir, ".chengfeng-videocut", STREAM_DIRECTORY);
-  const segments: PreviewStreamSegment[] = [];
-  const keep = new Set<string>();
-  let out = 0;
-
-  for (const segment of input.segments) {
-    const start = segment.start;
-    const end = segment.end;
-    const duration = end - start;
-    if (!(duration > 0)) continue;
-    const keyframe = keyframeAtOrBefore(keyframes, start);
-    // Keyed by what the fragment contains, not by which edit asked for it, so an
-    // unchanged range is never cut twice.
-    const name = `${sha256(`${input.proxyCacheKey}|${keyframe.toFixed(6)}|${end.toFixed(6)}`)}.m4s`;
-    const path = join(directory, name);
-    keep.add(name);
-    if (!await exists(path)) {
-      const temporary = `${path}.tmp-${process.pid}`;
-      try {
-        await run("ffmpeg", [
-          "-y", "-v", "error",
-          "-ss", keyframe.toFixed(6), "-to", end.toFixed(6),
-          "-i", `file:${fragmented}`, "-c", "copy",
-          "-movflags", "frag_keyframe+empty_moov+default_base_moof",
-          "-f", "mp4", `file:${temporary}`,
-        ]);
-        await rename(temporary, path);
-      } catch (error) {
-        await rm(temporary, { force: true }).catch(() => undefined);
-        throw error;
-      }
-    }
-    segments.push({
-      source: `.chengfeng-videocut/${STREAM_DIRECTORY}/${basename(path)}`,
-      headExtra: roundSeconds(Math.max(0, start - keyframe)),
-      out: roundSeconds(out),
-      dur: roundSeconds(duration),
-    });
-    out += duration;
-  }
-
-  await pruneChunks(directory, keep);
-
+  const chunks = await ensureGrid(input);
+  const planned = planPreviewStreamSegments(
+    chunks,
+    input.segments,
+    (chunk) => `.chengfeng-videocut/${STREAM_DIRECTORY}/${input.proxyCacheKey}/${chunk.name}`,
+  );
+  await pruneGrids(join(input.projectDir, ".chengfeng-videocut", STREAM_DIRECTORY), input.proxyCacheKey);
   return {
-    segments,
-    totalSeconds: roundSeconds(out),
+    ...planned,
     mimeType: 'video/mp4; codecs="avc1.640028, mp4a.40.2"',
   };
 }

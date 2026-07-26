@@ -11,11 +11,11 @@ export type PreviewArtifactSourceKind = "canonical" | "fast-proxy" | "ledger-pro
 
 export interface PreviewArtifactStreamSegment {
   source: string;
-  /** Extra media at the fragment's head, from keyframe-aligned cutting. Trim it. */
-  headExtra: number;
-  /** Where the fragment starts on the assembled timeline. */
-  out: number;
-  dur: number;
+  /** Where this chunk's own zero lands on the assembled timeline; often negative. */
+  offset: number;
+  /** Keep only this span of assembled time from the chunk; discard the rest. */
+  start: number;
+  end: number;
 }
 
 export interface PreviewArtifactStream {
