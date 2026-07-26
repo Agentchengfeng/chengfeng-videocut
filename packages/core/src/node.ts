@@ -15,6 +15,7 @@ import { constants as fsConstants } from "node:fs";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isKnownNaturalPausePolicyVersion } from "@video-workbench/contracts";
 import {
   buildCutSelectionDocument,
   buildCutSelectionFromProposal,
@@ -522,7 +523,7 @@ function naturalPauseBaselineWordIds(
   const initialization = previous.initialization;
   if (
     !isObject(initialization) ||
-    initialization.naturalPausePolicy !== "natural-pause-v2" ||
+    !isKnownNaturalPausePolicyVersion(initialization.naturalPausePolicy) ||
     !Array.isArray(initialization.baselineCutWordIds)
   ) {
     return [];

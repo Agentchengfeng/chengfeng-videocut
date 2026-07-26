@@ -1,3 +1,8 @@
+import {
+  CURRENT_NATURAL_PAUSE_POLICY_VERSION,
+  type NaturalPausePolicyVersion,
+} from "@video-workbench/contracts";
+
 export interface NaturalPauseWord {
   start: number;
   end: number;
@@ -5,7 +10,12 @@ export interface NaturalPauseWord {
 }
 
 export interface NaturalPausePolicy {
-  version: string;
+  /**
+   * Must be one of the versions declared in contracts. Core's semantic-overlay
+   * baseline gate only trusts a policy string it knows, so a version invented
+   * here would silently drop the whole pause baseline.
+   */
+  version: NaturalPausePolicyVersion;
   keepAfterPreviousWord: number;
   keepBeforeNextWord: number;
 }
@@ -45,7 +55,7 @@ export interface NaturalPausePlan {
 }
 
 export const DEFAULT_NATURAL_PAUSE_POLICY: Readonly<NaturalPausePolicy> = Object.freeze({
-  version: "natural-pause-v4-delete-all-gaps",
+  version: CURRENT_NATURAL_PAUSE_POLICY_VERSION,
   keepAfterPreviousWord: 0.08,
   keepBeforeNextWord: 0.16,
 });

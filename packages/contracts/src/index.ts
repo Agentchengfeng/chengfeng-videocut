@@ -215,3 +215,38 @@ export function assertWorkbenchProjectManifest(
     throw new TypeError("HyperFrames engine config requires projectId and entry");
   }
 }
+
+/**
+ * Natural-pause policy versions that Product has ever written into
+ * `cut-selection.json` at `initialization.naturalPausePolicy`.
+ *
+ * This list is the single source of truth for two sides that must agree:
+ * the writer (koubo-adapter's natural pause planner) and the reader
+ * (core's semantic-overlay baseline gate). Before this existed the gate
+ * compared against a hardcoded "natural-pause-v2" while the writer had
+ * moved on to v3 and then v4, so every semantic-overlay write silently
+ * discarded the entire pause baseline and the cut collapsed back to
+ * roughly the unedited source.
+ *
+ * Adding a new policy version means adding it here. A version that is not
+ * listed is treated as untrusted and its baseline is not merged.
+ */
+export const NATURAL_PAUSE_POLICY_VERSIONS = [
+  "natural-pause-v2",
+  "natural-pause-v3-direct-delete",
+  "natural-pause-v4-delete-all-gaps",
+] as const;
+
+export type NaturalPausePolicyVersion = (typeof NATURAL_PAUSE_POLICY_VERSIONS)[number];
+
+/** The version a fresh plan is written with. Writers must use this. */
+export const CURRENT_NATURAL_PAUSE_POLICY_VERSION: NaturalPausePolicyVersion =
+  "natural-pause-v4-delete-all-gaps";
+
+/** True when a persisted policy string is one Product itself wrote. */
+export function isKnownNaturalPausePolicyVersion(
+  value: unknown,
+): value is NaturalPausePolicyVersion {
+  return typeof value === "string"
+    && (NATURAL_PAUSE_POLICY_VERSIONS as readonly string[]).includes(value);
+}
