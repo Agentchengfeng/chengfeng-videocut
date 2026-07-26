@@ -179,35 +179,6 @@ export function deriveActualCutWordIds(
   return actualCuts;
 }
 
-// One transport, two kinds of media.
-//
-// Ledger playback hands the real edit list to the transport: the media is the
-// whole source proxy and every boundary is a `currentTime` jump. The encoded
-// fallback hands this projection instead, because a rendered artifact has
-// already had the cuts baked in — its source time *is* timeline time, so the
-// correct edit list to play it with is a single segment covering everything.
-//
-// Without this, the transport would try to jump between retained ranges inside
-// media that no longer contains the gaps, and every boundary would land in the
-// wrong place.
-export function continuousPlaybackDocument(
-  document: EditListDocument | null,
-): EditListDocument | null {
-  if (!document) return null;
-  const first = document.segments[0];
-  if (!first) return document;
-  return {
-    ...document,
-    segments: [{
-      ...first,
-      sourceStart: 0,
-      sourceEnd: document.duration,
-      timelineStart: 0,
-      playbackRate: 1,
-    }],
-  };
-}
-
 export function shouldUseLegacyCutPlayback(input: {
   document: EditListDocument | null;
   loading: boolean;

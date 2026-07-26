@@ -3,6 +3,10 @@ import { extname, isAbsolute, relative, resolve } from "node:path";
 
 const MEDIA_TYPES = new Map<string, string>([
   [".mp4", "video/mp4"],
+  // Assembled-stream fragments. Without this the route returns null rather than a
+  // 404, and the request falls through to a handler with no Range guarantee — the
+  // failure would look like media that simply does not play.
+  [".m4s", "video/iso.segment"],
   [".mov", "video/quicktime"],
   [".m4v", "video/x-m4v"],
   [".webm", "video/webm"],

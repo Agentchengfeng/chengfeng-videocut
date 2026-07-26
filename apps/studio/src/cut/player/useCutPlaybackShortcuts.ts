@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { EdlVideoTransport } from "./useEdlVideoTransport";
+import type { EdlVideoTransport } from "./useAssembledVideoTransport";
 import {
   isCutPlaybackShortcutTarget,
   resolveCutPlaybackShortcut,

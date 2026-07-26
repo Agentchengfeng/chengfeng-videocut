@@ -8,6 +8,7 @@ import { cutVideoBySegments, probeMedia, probePreviewProxyMedia } from "@video-w
 import { parseEditListDocument } from "@video-workbench/core";
 import { serializeProjectOperation as serializeProjectOperationDefault } from "@video-workbench/core/node";
 import { isSafeProjectId } from "./project-media";
+import { buildPreviewStream, type PreviewStream } from "./preview-stream";
 
 export const EDIT_PREVIEW_CONFIG = Object.freeze({
   profile: "sharp-canonical-v1",
@@ -50,6 +51,14 @@ export interface EditPreviewArtifactState {
   hasAudio: boolean | null;
   generatedAt: string | null;
   generationMs: number | null;
+  /**
+   * Fragments to assemble into one continuous stream, in order.
+   *
+   * Present only on the ledger path. Its absence means the player has a single
+   * finished file to play straight through; its presence means the player must
+   * assemble, because a player that jumps leaks the deleted audio it jumps over.
+   */
+  stream: PreviewStream | null;
   error: string | null;
 }
 
@@ -90,6 +99,8 @@ export interface ProjectInput {
 
 export interface EditPreviewArtifactDependencies {
   generate?: PreviewArtifactGenerate;
+  /** Injectable so unit tests need not supply decodable media to exercise state. */
+  buildStream?: typeof buildPreviewStream;
   probe?: typeof probeMedia;
   readProjectInput?: (projectsDir: string, projectId: string) => Promise<ProjectInput>;
   serializeProjectOperation?: ProjectOperationSerializer;
@@ -621,7 +632,21 @@ export function canPlayFromLedger(input: ProjectInput): boolean {
 // The ledger state is `current` the instant it is asked for. There is nothing to
 // generate, so no edit can leave it stale and `artifactRevision` always equals
 // the edit revision it was asked about.
-function ledgerProxyState(input: ProjectInput, generatedAt: string): EditPreviewArtifactState {
+async function ledgerProxyState(
+  input: ProjectInput,
+  generatedAt: string,
+  buildStream: typeof buildPreviewStream,
+): Promise<EditPreviewArtifactState> {
+  // Cut the fragments now. They are stream copies keyed by source range, so an
+  // unchanged range is reused and a keystroke costs milliseconds — but they must
+  // exist before the state claims to be playable, or the player would assemble
+  // from files that are not there yet.
+  const stream = await buildStream({
+    projectDir: input.projectDir,
+    proxySource: input.previewProxySource as string,
+    proxyCacheKey: input.previewProxyCacheKey || sha256(input.previewProxySource as string),
+    segments: input.segments.map((segment) => ({ start: segment.start, end: segment.end })),
+  });
   return {
     schemaVersion: 2,
     projectId: input.projectId,
@@ -637,13 +662,14 @@ function ledgerProxyState(input: ProjectInput, generatedAt: string): EditPreview
     width: input.previewProxyWidth ?? null,
     height: input.previewProxyHeight ?? null,
     videoBitrate: null,
-    // The proxy spans the whole source; the edit list decides what is played.
-    duration: input.previewProxyDuration ?? null,
+    // The assembled length, not the proxy's: what plays is the stream.
+    duration: stream.totalSeconds,
     byteLength: input.previewProxyByteLength ?? null,
     hasVideo: true,
     hasAudio: true,
     generatedAt,
     generationMs: 0,
+    stream,
     error: null,
   };
 }
@@ -654,7 +680,7 @@ function blankState(projectId: string, editRevision = "none"): EditPreviewArtifa
     artifactRevision: null, cacheKey: null, sourceSha256: null, source: null,
     duration: null, byteLength: null, hasVideo: null, hasAudio: null,
     profile: null, sourceKind: null, sourceFrameRate: null, width: null, height: null, videoBitrate: null,
-    generatedAt: null, generationMs: null, error: null,
+    generatedAt: null, generationMs: null, stream: null, error: null,
   };
 }
 
@@ -717,11 +743,13 @@ export class EditPreviewArtifactManager {
   private readonly probe: typeof probeMedia;
   private readonly readProjectInput: (projectsDir: string, projectId: string) => Promise<ProjectInput>;
   private readonly serializeProjectOperation: ProjectOperationSerializer;
+  private readonly buildStream: typeof buildPreviewStream;
   private readonly now: () => number;
   private readonly debounceMs: number;
 
   constructor(private readonly projectsDir: string, dependencies: EditPreviewArtifactDependencies = {}) {
     this.generate = dependencies.generate ?? generatePreviewArtifactVideo;
+    this.buildStream = dependencies.buildStream ?? buildPreviewStream;
     this.probe = dependencies.probe ?? probeMedia;
     this.readProjectInput = dependencies.readProjectInput ?? projectInput;
     this.serializeProjectOperation = dependencies.serializeProjectOperation ?? serializeProjectOperationDefault;
@@ -735,7 +763,7 @@ export class EditPreviewArtifactManager {
       // No artifact, so nothing can be stale and nothing may be scheduled. Drop
       // any state left by the encoded path so a previously rendered artifact can
       // never be reported as the current preview for this revision.
-      const state = ledgerProxyState(input, new Date(this.now()).toISOString());
+      const state = await ledgerProxyState(input, new Date(this.now()).toISOString(), this.buildStream);
       this.states.set(projectId, state);
       this.desired.set(projectId, input.editRevision);
       const timer = this.timers.get(projectId);
@@ -828,7 +856,7 @@ export class EditPreviewArtifactManager {
         // Ledger playback has no generation step. Publish the current state and
         // stop — never fall through into the debounce timer, or every edit would
         // start an ffmpeg run whose output nobody reads.
-        this.states.set(projectId, ledgerProxyState(input, new Date(this.now()).toISOString()));
+        this.states.set(projectId, await ledgerProxyState(input, new Date(this.now()).toISOString(), this.buildStream));
         const pending = this.timers.get(projectId);
         if (pending) {
           clearTimeout(pending);
@@ -943,7 +971,7 @@ export class EditPreviewArtifactManager {
               sourceFrameRate: input.previewFrameRate,
               width: validated.media.width, height: validated.media.height,
               videoBitrate: validated.media.videoBitrate,
-              generatedAt: new Date(this.now()).toISOString(), generationMs: this.now() - started, error: null,
+              generatedAt: new Date(this.now()).toISOString(), generationMs: this.now() - started, stream: null, error: null,
             };
             temporaryManifest = `${manifest}.tmp-${process.pid}-${this.now()}`;
             await writeFile(temporaryManifest, `${JSON.stringify(next, null, 2)}\n`);
@@ -1029,7 +1057,7 @@ export class EditPreviewArtifactManager {
             width: publishValidated.media.width, height: publishValidated.media.height,
             videoBitrate: publishValidated.media.videoBitrate,
             generatedAt: new Date(this.now()).toISOString(),
-            generationMs: this.now() - started, error: null,
+            generationMs: this.now() - started, stream: null, error: null,
           };
           temporaryManifest = `${manifest}.tmp-${process.pid}-${this.now()}`;
           await writeFile(temporaryManifest, `${JSON.stringify(next, null, 2)}\n`);

@@ -14,6 +14,7 @@ import {
 } from "@video-workbench/koubo-adapter";
 import {
   buildPlaybackTranscript,
+  correctTranscriptText,
   doctor,
   inspectProject,
   projectUrl,
@@ -951,6 +952,28 @@ export async function runCli(
           `Revision: ${data.previousRevision ?? "none"} -> ${data.revision}\n` +
           `Timeline: ${data.segmentCount} segments, ${data.duration ?? "?"}s (${data.mode ?? "?"})`,
         );
+      }
+      return 0;
+    }
+    if (parsed.command === "transcript.correct") {
+      await assertRegisteredProject({ project, cwd, projectsDir, outputDir: parsed.outputDir });
+      const file = await readProposal(parsed.file as string, cwd);
+      const list = (file as { corrections?: unknown }).corrections ?? file;
+      if (!Array.isArray(list)) {
+        throw new VideocutError(
+          "invalid_transcript",
+          "corrections file must be an array, or an object with a corrections array",
+        );
+      }
+      const data = await correctTranscriptText(
+        project,
+        list as Array<{ wordId: string; text: string }>,
+        { dryRun: parsed.dryRun, actor: "skill" },
+      );
+      if (parsed.json) io.stdout(JSON.stringify(successEnvelope(parsed.command, data)));
+      else {
+        const verb = data.dryRun ? "Would correct" : data.changed ? "Corrected" : "Unchanged";
+        io.stdout(`${verb} ${data.applied.length} word(s) in ${data.path}\nRevision: ${data.revision}`);
       }
       return 0;
     }

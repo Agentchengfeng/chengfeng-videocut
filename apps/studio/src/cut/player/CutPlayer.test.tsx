@@ -4,7 +4,7 @@ import { act, createRef } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CutPlayer } from "./CutPlayer";
-import type { EdlVideoTransport } from "./useEdlVideoTransport";
+import type { EdlVideoTransport } from "./useAssembledVideoTransport";
 
 Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 

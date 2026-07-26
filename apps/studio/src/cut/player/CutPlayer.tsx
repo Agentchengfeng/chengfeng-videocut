@@ -10,7 +10,7 @@ import {
 import {
   CUT_PLAYER_FRAME_RATE,
 } from "./playbackShortcuts";
-import type { EdlVideoTransport } from "./useEdlVideoTransport";
+import type { EdlVideoTransport } from "./useAssembledVideoTransport";
 import type { PreviewArtifactProfile } from "./previewArtifact";
 import { useCutPlaybackShortcuts } from "./useCutPlaybackShortcuts";
 
@@ -188,7 +188,10 @@ export function CutPlayer({
         {sourceUrl ? (
           <video
             ref={transport.videoRef}
-            src={sourceUrl}
+            // No `src` here on purpose. The transport owns it: an assembled stream
+            // is attached as an object URL, and writing `src` from JSX would let
+            // every re-render replace it with the raw file — which is both the wrong
+            // media and a player that jumps.
             preload="auto"
             playsInline
             muted={transport.muted}

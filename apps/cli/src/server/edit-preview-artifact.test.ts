@@ -1428,6 +1428,27 @@ test("preview-only ffmpeg generator emits non-gray cfr short-gop audio-video art
   await command("ffmpeg", ["-v", "error", "-i", output, "-f", "null", "-"]);
   await rm(root, { recursive: true, force: true });
 }, 20_000);
+// The fixture's proxy is a placeholder, not decodable media. Fragment production is
+// exercised for real by the ffmpeg test in this file; these cases are about state.
+function stubStream(segments: readonly { start: number; end: number }[]) {
+  let out = 0;
+  const list = segments.map((segment, index) => {
+    const entry = {
+      source: `.chengfeng-videocut/preview-stream/${index}.m4s`,
+      headExtra: 0,
+      out,
+      dur: segment.end - segment.start,
+    };
+    out += entry.dur;
+    return entry;
+  });
+  return {
+    segments: list,
+    totalSeconds: out,
+    mimeType: 'video/mp4; codecs="avc1.640028, mp4a.40.2"',
+  };
+}
+
 // --- 账本播放：不生成任何东西 ---------------------------------------------
 
 async function readyProxyFixture(overrides: {
@@ -1462,6 +1483,7 @@ test("a ready proxy plays the edit list directly and never generates an artifact
   let generateCalls = 0;
   const manager = new EditPreviewArtifactManager(f.projectsDir, {
     generate: async () => { generateCalls += 1; throw new Error("must not encode"); },
+    buildStream: async (input) => stubStream(input.segments),
     serializeProjectOperation,
   });
 
@@ -1476,6 +1498,10 @@ test("a ready proxy plays the edit list directly and never generates an artifact
   expect(state.artifactRevision).toBe(state.editRevision);
   expect(state.generationMs).toBe(0);
   expect(state.cacheKey).toBeNull();
+  // The player is handed fragments to assemble, never a ledger to jump around.
+  expect(state.stream?.segments.length).toBeGreaterThan(0);
+  expect(state.stream?.totalSeconds).toBeCloseTo(4, 6);
+  expect(state.duration).toBeCloseTo(4, 6);
 
   // An edit must not start an encode either.
   await f.writeEdit(6);
@@ -1532,6 +1558,7 @@ test("encoded artifacts are bounded instead of accumulating forever", async () =
 
   const manager = new EditPreviewArtifactManager(f.projectsDir, {
     generate: async () => { throw new Error("must not encode"); },
+    buildStream: async (input) => stubStream(input.segments),
     serializeProjectOperation,
   });
   await manager.status(f.projectId);

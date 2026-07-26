@@ -1,6 +1,6 @@
 import { useId } from "react";
 import type { ProjectEditListState } from "../../components/useProjectEditList";
-import type { EdlVideoTransport } from "../player/useEdlVideoTransport";
+import type { EdlVideoTransport } from "../player/useAssembledVideoTransport";
 
 export type CutInspectorEditList = Pick<
   ProjectEditListState,

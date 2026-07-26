@@ -21,6 +21,7 @@ export type CliCommand =
   | "artifact.put"
   | "cuts.get"
   | "transcript.playback"
+  | "transcript.correct"
   | "cuts.set"
   | "cuts.apply"
   | "editList.get"
@@ -229,7 +230,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     for (const name of booleanValues) {
       if (!allowedBoolean.includes(name)) usageError(`${name} is not valid for this command`);
     }
-    if (dryRun && !allowDryRun) usageError("--dry-run is only valid for cuts set");
+    if (dryRun && !allowDryRun) usageError("--dry-run is not valid for this command");
     if (openBrowser && !(
       positionals[0] === "start" ||
       (positionals[0] === "service" && positionals[1] === "ensure")
@@ -449,6 +450,22 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
       ["--confirmed"],
     );
     return { command: "cuts.apply", project: positionals[2], ...common };
+  }
+  if (positionals[0] === "transcript" && positionals[1] === "correct") {
+    if (positionals.length !== 3) {
+      usageError("Usage: chengfeng-videocut transcript correct <project> --file <corrections.json>");
+    }
+    assertOptions(["--file", "--projects-dir", "--output-dir"], [], true);
+    const correctionsFile = values.get("--file");
+    if (!correctionsFile) {
+      usageError("transcript correct requires --file <corrections.json>");
+    }
+    return {
+      command: "transcript.correct",
+      project: positionals[2],
+      file: correctionsFile,
+      ...common,
+    };
   }
   if (positionals[0] === "transcript" && positionals[1] === "playback") {
     if (positionals.length !== 3) {

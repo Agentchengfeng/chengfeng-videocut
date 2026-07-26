@@ -5,15 +5,14 @@ import {
   type EditListOperation,
 } from "@video-workbench/core";
 import type { EditListActor } from "../components/editListApi";
-import { continuousPlaybackDocument } from "../components/editListPlayback";
 import { useProjectCutSelection } from "../components/useProjectCutSelection";
 import { useProjectEditList } from "../components/useProjectEditList";
 import { useKouboTranscript } from "../extensions/koubo/useKouboTranscript";
 import { CutFeaturePanel } from "./features/CutFeaturePanel";
 import { TranscriptPaneResizer, TRANSCRIPT_WIDTH_DEFAULT } from "./layout/TranscriptPaneResizer";
 import { CutPlayer } from "./player/CutPlayer";
-import { useEdlVideoTransport } from "./player/useEdlVideoTransport";
-import { playsFromLedger, previewArtifactUrl, usePreviewArtifact } from "./player/previewArtifact";
+import { useAssembledVideoTransport } from "./player/useAssembledVideoTransport";
+import { previewArtifactUrl, usePreviewArtifact } from "./player/previewArtifact";
 import { CutTimeline } from "./timeline/CutTimeline";
 import { KouboTranscriptPlaybackMarker } from "./transcript/KouboTranscriptPlaybackMarker";
 
@@ -214,21 +213,22 @@ export function CutWorkspace({
   const artifactSource = artifact.state.source
     ? previewArtifactUrl(projectId, artifact.state.source)
     : null;
-  // The edit list the transport plays with depends on what the media is.
-  // Ledger playback gets the real one — the proxy holds the whole source and
-  // every boundary is a `currentTime` jump, which is how desktop editors work
-  // and why no media has to be produced per edit. The encoded fallback gets a
-  // single-segment projection, because those cuts are already baked in.
-  const playbackDocument = useMemo(
-    () => playsFromLedger(artifact.state)
-      ? editList.document
-      : continuousPlaybackDocument(editList.document),
-    [artifact.state, editList.document],
+  // The transport is handed finished media, never an edit list to follow.
+  //
+  // It used to be given the ledger and told to jump `currentTime` at every retained
+  // boundary. That leaked 150-400ms of deleted speech at each seam — setting
+  // `currentTime` stops the decoder, not the sound already handed to the sound card
+  // — and every available measurement said it was clean. Assembling the retained
+  // ranges into one continuous stream first removes the boundary entirely.
+  const fragmentUrl = useCallback(
+    (source: string) => previewArtifactUrl(projectId, source),
+    [projectId],
   );
-  const transport = useEdlVideoTransport({
-    document: playbackDocument,
-    revision: editList.revision,
+  const transport = useAssembledVideoTransport({
+    stream: artifact.state.stream ?? null,
     sourceUrl: artifactSource,
+    resolveFragmentUrl: fragmentUrl,
+    duration: editList.document?.duration ?? 0,
     initialTimelineTime,
   });
   // The transport publishes a new wrapper when timelineTime advances. Its seek

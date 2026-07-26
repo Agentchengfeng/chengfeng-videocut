@@ -9,6 +9,21 @@ export type PreviewArtifactPhase = "generating" | "current" | "failed" | "stale"
 export type PreviewArtifactProfile = "sharp-canonical-v1" | "fast-proxy-v1" | "ledger-proxy-v1";
 export type PreviewArtifactSourceKind = "canonical" | "fast-proxy" | "ledger-proxy";
 
+export interface PreviewArtifactStreamSegment {
+  source: string;
+  /** Extra media at the fragment's head, from keyframe-aligned cutting. Trim it. */
+  headExtra: number;
+  /** Where the fragment starts on the assembled timeline. */
+  out: number;
+  dur: number;
+}
+
+export interface PreviewArtifactStream {
+  segments: PreviewArtifactStreamSegment[];
+  totalSeconds: number;
+  mimeType: string;
+}
+
 export interface PreviewArtifactState {
   phase: PreviewArtifactPhase;
   editRevision: string;
@@ -18,6 +33,12 @@ export interface PreviewArtifactState {
   sourceKind?: PreviewArtifactSourceKind | null;
   width?: number | null;
   height?: number | null;
+  /**
+   * Fragments to assemble, in order. Present means assemble; absent means a single
+   * finished file plays straight through. Either way playback never jumps — a
+   * player that jumps leaks the deleted audio it jumps over.
+   */
+  stream?: PreviewArtifactStream | null;
   error: string | null;
 }
 

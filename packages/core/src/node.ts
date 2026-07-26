@@ -1258,6 +1258,142 @@ function roundSeconds(value: number): number {
   return Math.round(Math.max(0, value) * 1000) / 1000;
 }
 
+export interface TranscriptTextCorrection {
+  wordId: string;
+  text: string;
+}
+
+export interface CorrectTranscriptTextResult {
+  projectId: string;
+  path: string;
+  previousRevision: string;
+  revision: string;
+  changed: boolean;
+  dryRun: boolean;
+  applied: Array<{ wordId: string; from: string; to: string }>;
+  unchanged: number;
+}
+
+/**
+ * Fix what the transcript says without touching when it says it.
+ *
+ * A mis-heard proper noun is not surplus speech — deleting the word would leave
+ * the sentence short a word, and no amount of cutting can turn "Clock" back into
+ * "Grok". So this is the one edit the transcript needs that the cut path cannot
+ * express. On a real project it was the difference between subtitles that read
+ * `Codex` / `CodeX` / `codex` and subtitles that read one thing.
+ *
+ * The hard constraint is the whole design: **timing is the ground truth for every
+ * cut already made**. Word ids, word count, and every start/end must come out
+ * identical. A correction that shifted a single boundary would silently move every
+ * downstream deletion off its target, so the write refuses rather than adjusts:
+ * an unknown id, a changed count, or any attempt to reach a time field fails.
+ */
+export async function correctTranscriptText(
+  project: ResolvedProject,
+  corrections: readonly TranscriptTextCorrection[],
+  options: { dryRun?: boolean; actor?: ProjectEventActor } = {},
+): Promise<CorrectTranscriptTextResult> {
+  const apply = async (): Promise<CorrectTranscriptTextResult> => {
+    const path = documentPath(project, "transcript.json");
+    const previous = await readOptionalJsonAt(path);
+    if (!previous) {
+      throw new VideocutError("invalid_transcript", "transcript.json does not exist");
+    }
+    const requested = new Map<string, string>();
+    for (const correction of corrections) {
+      const wordId = typeof correction.wordId === "string" ? correction.wordId.trim() : "";
+      if (!wordId) {
+        throw new VideocutError("invalid_transcript", "every correction needs a wordId");
+      }
+      if (typeof correction.text !== "string") {
+        throw new VideocutError("invalid_transcript", `correction for ${wordId} needs text`);
+      }
+      if (requested.has(wordId)) {
+        throw new VideocutError("invalid_transcript", `duplicate correction for ${wordId}`, { wordId });
+      }
+      requested.set(wordId, correction.text);
+    }
+    const document = JSON.parse(JSON.stringify(previous.value)) as {
+      cues?: Array<{ words?: Array<Record<string, unknown>> }>;
+    };
+    const applied: Array<{ wordId: string; from: string; to: string }> = [];
+    const seen = new Set<string>();
+    let unchanged = 0;
+    for (const cue of document.cues ?? []) {
+      for (const word of cue.words ?? []) {
+        const wordId = typeof word.id === "string" ? word.id : "";
+        if (!wordId || !requested.has(wordId)) continue;
+        seen.add(wordId);
+        const next = requested.get(wordId) as string;
+        const from = typeof word.text === "string" ? word.text : "";
+        if (from === next) {
+          unchanged += 1;
+          continue;
+        }
+        word.text = next;
+        applied.push({ wordId, from, to: next });
+      }
+    }
+    const missing = [...requested.keys()].filter((wordId) => !seen.has(wordId));
+    if (missing.length > 0) {
+      throw new VideocutError(
+        "invalid_transcript",
+        `${missing.length} correction(s) name a word that is not in transcript.json`,
+        { unknownWordIds: missing.slice(0, 20) },
+      );
+    }
+    // The timing contract, re-derived from both documents and compared. Cheaper to
+    // state as an assertion than to trust, because a violation is silent and
+    // catastrophic: every existing cut would land somewhere else.
+    const before = parseTranscriptWords(previous.value);
+    const after = parseTranscriptWords(document);
+    if (before.length !== after.length) {
+      throw new VideocutError("invalid_transcript", "a text correction must not change the word count");
+    }
+    for (let index = 0; index < before.length; index += 1) {
+      const left = before[index]!;
+      const right = after[index]!;
+      if (left.id !== right.id || left.start !== right.start || left.end !== right.end
+        || (left.isGap === true) !== (right.isGap === true)) {
+        throw new VideocutError(
+          "invalid_transcript",
+          "a text correction must not change any word id, time or gap flag",
+          { wordId: left.id },
+        );
+      }
+    }
+    const content = serializeJson(document);
+    const revision = sha256(content);
+    const changed = revision !== previous.revision;
+    if (!options.dryRun && changed) {
+      await atomicWriteText(path, content);
+      await appendProjectEvent(project, {
+        type: "transcript_text_corrected",
+        actor: options.actor,
+        payload: {
+          previousRevision: previous.revision,
+          revision,
+          correctedWordCount: applied.length,
+          corrections: applied.slice(0, 40),
+        },
+      });
+    }
+    return {
+      projectId: project.projectId,
+      path,
+      previousRevision: previous.revision,
+      revision: changed ? revision : previous.revision,
+      changed,
+      dryRun: Boolean(options.dryRun),
+      applied,
+      unchanged,
+    };
+  };
+  if (options.dryRun) return apply();
+  return serializeProjectOperation(project.directory, apply);
+}
+
 export async function doctor(
   options: Pick<ProjectResolutionOptions, "projectsDir"> = {},
 ): Promise<{ healthy: boolean; capabilities: DoctorCapabilities; checks: DoctorCheck[] }> {
