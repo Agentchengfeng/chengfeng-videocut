@@ -20,6 +20,7 @@ export type CliCommand =
   | "project.prepare"
   | "artifact.put"
   | "cuts.get"
+  | "transcript.playback"
   | "cuts.set"
   | "cuts.apply"
   | "editList.get"
@@ -448,6 +449,13 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
       ["--confirmed"],
     );
     return { command: "cuts.apply", project: positionals[2], ...common };
+  }
+  if (positionals[0] === "transcript" && positionals[1] === "playback") {
+    if (positionals.length !== 3) {
+      usageError("Usage: chengfeng-videocut transcript playback <project>");
+    }
+    assertOptions(["--projects-dir", "--output-dir"]);
+    return { command: "transcript.playback", project: positionals[2], ...common };
   }
   if (positionals[0] === "cuts" && positionals[1] === "get") {
     if (positionals.length !== 3) {

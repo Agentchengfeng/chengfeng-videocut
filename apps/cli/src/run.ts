@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { VideocutError, asVideocutError } from "@video-workbench/core";
+import { VideocutError, asVideocutError, parseTranscriptWords } from "@video-workbench/core";
 import {
   createKouboProject,
   prepareKouboProject,
@@ -13,9 +13,12 @@ import {
   type TranscribeKouboVideoResult,
 } from "@video-workbench/koubo-adapter";
 import {
+  buildPlaybackTranscript,
   doctor,
   inspectProject,
   projectUrl,
+  readEditList,
+  readProjectDocument,
   registerProject,
   resolveProject,
   writeCutSelection,
@@ -951,6 +954,24 @@ export async function runCli(
       }
       return 0;
     }
+    if (parsed.command === "transcript.playback") {
+      await assertRegisteredProject({ project, cwd, projectsDir, outputDir: parsed.outputDir });
+      // What the audience hears, in the order they hear it. The judging layer must
+      // never assemble this itself: doing so wrong is silent and it changes the
+      // verdict, not just the presentation.
+      const [transcript, editList] = await Promise.all([
+        readProjectDocument(project, "transcript.json"),
+        readEditList(project),
+      ]);
+      const playback = buildPlaybackTranscript(
+        project.projectId,
+        parseTranscriptWords(transcript.value),
+        editList?.value ?? null,
+      );
+      if (parsed.json) io.stdout(JSON.stringify(successEnvelope(parsed.command, playback)));
+      else io.stdout(JSON.stringify(playback, null, 2));
+      return 0;
+    }
     if (parsed.command === "cuts.get") {
       await assertRegisteredProject({ project, cwd, projectsDir, outputDir: parsed.outputDir });
       const result = await readCutsThroughApi({
@@ -1016,6 +1037,23 @@ export async function runCli(
       await assertRegisteredProject({ project, cwd, projectsDir });
       const cutWordIds = proposalCutWordIds(proposal);
       const reasons = proposalReasons(proposal);
+      // Read the state being replaced, so the result can say what this write let go
+      // of. Best-effort on purpose: a malformed proposal must still fail with its
+      // own error rather than behind a connection error, and an unreachable service
+      // must fail at the write. When it cannot be read the result says so — a
+      // missing comparison is reported, never silently omitted.
+      let previousCutWordIdList: string[] | null = null;
+      try {
+        const before = await readCutsThroughApi({
+          apiBase: parsed.apiBase ?? "http://127.0.0.1:5190",
+          projectId: project.projectId,
+        });
+        previousCutWordIdList = Array.isArray(before.document?.cutWordIds)
+          ? before.document.cutWordIds.filter((id): id is string => typeof id === "string")
+          : [];
+      } catch {
+        previousCutWordIdList = null;
+      }
       const result = parsed.dryRun
         ? await writeCutSelection(project, {
             cutWordIds,
@@ -1033,6 +1071,46 @@ export async function runCli(
             cutWordIds,
             ...(reasons === undefined ? {} : { reasons }),
           });
+      // Two different checks, because the obvious one guards the wrong thing.
+      //
+      // Reading back and confirming the write landed as written catches a corrupt
+      // or racing write. It does *not* catch what actually went wrong on
+      // 2026-07-26: a submission carrying only the newly-found words replaced the
+      // whole previous conclusion. Written and read-back agreed perfectly — both
+      // said 386 — and `changed: true` is what success looks like. The cut word
+      // count had fallen from 430, the audio stayed correct because a manual
+      // timeline is only ever carved, and the ledger quietly regressed.
+      //
+      // Submitting fewer words is also how the contract expresses a deliberate
+      // retraction, so it cannot be refused. What can be done is refuse to let it
+      // pass silently: report exactly which previously-cut words are no longer
+      // cut, so an accidental delta is visible in the same breath as the success.
+      const verified = parsed.dryRun ? null : await readCutsThroughApi({
+        apiBase: parsed.apiBase ?? "http://127.0.0.1:5190",
+        projectId: project.projectId,
+      });
+      if (verified) {
+        const readBackWordCount = Array.isArray(verified.document?.cutWordIds)
+          ? verified.document.cutWordIds.length
+          : null;
+        const mismatch =
+          verified.revision !== result.revision
+            ? { field: "revision", wrote: result.revision, readBack: verified.revision }
+            : readBackWordCount !== result.document.cutWordIds.length
+              ? { field: "cutWordCount", wrote: result.document.cutWordIds.length, readBack: readBackWordCount }
+              : null;
+        if (mismatch) {
+          throw new VideocutError(
+            "readback_mismatch",
+            "cut-selection.json read back differently than it was written; nothing was reported as saved",
+            { projectId: project.projectId, ...mismatch },
+          );
+        }
+      }
+      const nextCutWordIds = new Set(result.document.cutWordIds);
+      const noLongerCut = previousCutWordIdList === null
+        ? null
+        : previousCutWordIdList.filter((id) => !nextCutWordIds.has(id));
       const data = {
         projectId: result.projectId,
         path: join(project.directory, "cut-selection.json"),
@@ -1042,6 +1120,17 @@ export async function runCli(
         dryRun: parsed.dryRun,
         cutWordCount: result.document.cutWordIds.length,
         cutRangeCount: result.document.cutRanges.length,
+        // Present only when the write was verified against the product's own
+        // read-back. Its absence is what a caller should look for.
+        ...(verified ? { readBackVerified: true } : {}),
+        // Words this write stopped cutting. Legitimate when a retraction was
+        // intended; the signal that a delta was submitted by mistake when it was
+        // not. Always reported, never inferred to be either.
+        ...(noLongerCut === null
+          ? { noLongerCut: "unknown" as const }
+          : noLongerCut.length > 0
+            ? { noLongerCut: noLongerCut.length, noLongerCutSample: noLongerCut.slice(0, 8) }
+            : {}),
       };
       if (parsed.json) io.stdout(JSON.stringify(successEnvelope(parsed.command, data)));
       else {

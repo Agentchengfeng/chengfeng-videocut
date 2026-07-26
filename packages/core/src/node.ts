@@ -1160,6 +1160,104 @@ async function findExecutable(name: string): Promise<string | null> {
   return null;
 }
 
+/**
+ * One entry of what the audience actually hears, in the order they hear it.
+ */
+export type PlaybackTranscriptEntry =
+  | { id: string; text: string; isGap: boolean; seconds: number }
+  | { removedSpeech: string; seconds: number };
+
+export interface PlaybackTranscript {
+  projectId: string;
+  /** Plain-language contract, carried in the payload because it is what stops the reader misjudging. */
+  note: string;
+  totalPlayedSeconds: number;
+  stream: PlaybackTranscriptEntry[];
+}
+
+/**
+ * Flatten the transcript into what the audience hears.
+ *
+ * Judging "did this get said twice" depends on adjacency, and adjacency means
+ * *heard* next to each other, not stored next to each other. In an edited
+ * project two lines 40 seconds apart in the source can be back-to-back on the
+ * timeline, and two lines that are adjacent in the source can have content
+ * between them.
+ *
+ * Handing over the raw transcript instead makes the reader draw the wrong
+ * conclusion in a specific, observed way: it sees the cue numbering skip, reads
+ * that as "several seconds were withheld from me", and refuses to judge. On
+ * 2026-07-26 that rejected two correct calls, one of them a plainly visible
+ * repeat. The criteria were fine; the input lied about what was missing.
+ *
+ * Two details matter as much as the ordering:
+ *
+ * - A removed stretch is marked only when *speech* was removed. Marking
+ *   compressed pauses too took the marker count from 15 to 58 on a real project
+ *   and made every reader assume the whole piece was riddled with breaks, which
+ *   pushes them toward refusing to cut anything.
+ * - The marker says the content will not play, so it is not missing context.
+ *   Without that, "something was removed here" reads as "something is hidden
+ *   from you", which is the same failure as the cue-number skip.
+ */
+export function buildPlaybackTranscript(
+  projectId: string,
+  words: readonly ReturnType<typeof parseTranscriptWords>[number][],
+  editList: EditListDocument | null,
+): PlaybackTranscript {
+  const segments = [...(editList?.segments ?? [])].sort(
+    (left, right) => left.timelineStart - right.timelineStart,
+  );
+  const plays = (word: { start: number; end: number }): boolean => segments.some(
+    (segment) => segment.sourceStart < word.end - PLAYBACK_EPSILON
+      && segment.sourceEnd > word.start + PLAYBACK_EPSILON,
+  );
+  const ordered = [...words].sort((left, right) => left.start - right.start);
+  const stream: PlaybackTranscriptEntry[] = [];
+  let removed: typeof ordered = [];
+  for (const word of ordered) {
+    if (!plays(word)) {
+      removed.push(word);
+      continue;
+    }
+    if (removed.length > 0) {
+      const spoken = removed.filter((candidate) => candidate.isGap !== true);
+      if (spoken.length > 0) {
+        stream.push({
+          removedSpeech: spoken.map((candidate) => candidate.text ?? "").join(""),
+          seconds: roundSeconds(removed.reduce((total, candidate) => total + (candidate.end - candidate.start), 0)),
+        });
+      }
+      removed = [];
+    }
+    stream.push({
+      id: word.id,
+      text: word.text ?? "",
+      isGap: word.isGap === true,
+      seconds: roundSeconds(word.end - word.start),
+    });
+  }
+  return {
+    projectId,
+    note: [
+      "stream 是按播放顺序铺平的，就是听众实际会听到的全部内容，一个字不缺。",
+      "removedSpeech 表示此处原本说过话、已被删除、不会播出——它不是缺失的资料，判断时当它不存在。",
+      "被压掉的停顿不做标记，因为那不影响语义。",
+      "相邻两个条目播出来就是相邻的：判断重复只看这个顺序，不要用源片秒数。",
+    ].join(""),
+    totalPlayedSeconds: roundSeconds(
+      segments.reduce((total, segment) => total + (segment.sourceEnd - segment.sourceStart), 0),
+    ),
+    stream,
+  };
+}
+
+const PLAYBACK_EPSILON = 0.0005;
+
+function roundSeconds(value: number): number {
+  return Math.round(Math.max(0, value) * 1000) / 1000;
+}
+
 export async function doctor(
   options: Pick<ProjectResolutionOptions, "projectsDir"> = {},
 ): Promise<{ healthy: boolean; capabilities: DoctorCapabilities; checks: DoctorCheck[] }> {

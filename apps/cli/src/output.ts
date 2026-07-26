@@ -107,6 +107,7 @@ Usage:
   chengfeng-videocut workflow get <project> [--api-base <url>] [--json]
   chengfeng-videocut workflow transition <project> --action <start-final|confirm-storyboard|confirm-animation|confirm-timeline> --expected-revision <sha256> --confirmed [--file <config.json>] [--api-base <url>] [--json]
   chengfeng-videocut render run <project> --expected-revision <sha256> --confirmed [--renderer <absolute-file>] [--projects-dir <dir>] [--output-dir <dir>] [--json]
+  chengfeng-videocut transcript playback <project> [--json]
   chengfeng-videocut cuts get <project> [--api-base <url>] [--json]
   chengfeng-videocut cuts set <project> --file <file> --expected-revision <none|sha256> [--api-base <url>] [--json]
   chengfeng-videocut cuts set <project> --file <file> --dry-run [--json]
@@ -117,6 +118,8 @@ service stop disables and boots out the LaunchAgent; service start re-enables it
 start serves the Studio in the foreground on 127.0.0.1:5190 by default. It remains available for development diagnostics and does not open a browser unless --open is provided.
 Project may be an absolute directory or an id registered in the Workbench.
 cuts set writes through the running product API; --dry-run performs a local read-only calculation.
+transcript playback flattens the transcript into what the audience hears, in that order, with removed speech marked. Judging repetition depends on heard adjacency, so this is the only correct input for a semantic pass — assembling it by hand gets it wrong silently.
+cuts set reads the result back and reports any previously-cut words it let go of.
 cuts get returns the independent cut-selection revision required by cuts set.
 cutRanges are derived from transcript.json + cutWordIds; supplied cutRanges are ignored.
 cuts apply requires the exact edit-list revision returned to the user at confirmation time; it never substitutes the current latest revision.

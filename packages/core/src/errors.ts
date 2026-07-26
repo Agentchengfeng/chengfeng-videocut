@@ -13,6 +13,14 @@ export type VideocutErrorCode =
   | "media_has_no_audio"
   | "missing_cloud_transcription_adapter"
   | "cloud_transcription_failed"
+  /**
+   * A write succeeded but reading it back did not match what was written. The
+   * write protocol always required this check; leaving it as prose meant it could
+   * be skipped, and on 2026-07-26 it was — a submission silently replaced the
+   * previous conclusion and nothing objected. This code exists so an unverified
+   * write reports failure rather than success.
+   */
+  | "readback_mismatch"
   | "io_error";
 
 export class VideocutError extends Error {

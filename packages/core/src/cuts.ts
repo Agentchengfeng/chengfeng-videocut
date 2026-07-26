@@ -5,6 +5,8 @@ export interface TimedWord {
   start: number;
   end: number;
   isGap?: boolean;
+  /** Present when the transcript carried one. Timing consumers ignore it. */
+  text?: string;
 }
 
 export interface CutTimeRange {
@@ -109,7 +111,13 @@ export function parseTranscriptWords(payload: unknown): TimedWord[] {
         );
       }
       seenIds.add(id);
-      words.push({ id, start, end, isGap: word.isGap === true });
+      words.push({
+        id,
+        start,
+        end,
+        isGap: word.isGap === true,
+        ...(typeof word.text === "string" ? { text: word.text } : {}),
+      });
     });
   });
 
