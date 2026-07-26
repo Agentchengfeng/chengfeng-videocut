@@ -129,7 +129,7 @@ export function useAssembledVideoTransport(input: {
     // Fragment list plus order: two edits that retain the same ranges in the same
     // order genuinely are the same stream and must not force a rebuild.
     key: input.stream
-      ? `stream:${input.stream.segments.map((segment) => `${segment.source}@${segment.offset}`).join("|")}`
+      ? `stream:${input.stream.segments.map((segment) => `${segment.source}@${segment.out}`).join("|")}`
       : `file:${input.sourceUrl ?? ""}`,
     stream: input.stream,
     sourceUrl: input.sourceUrl,
@@ -208,14 +208,12 @@ export function useAssembledVideoTransport(input: {
           await settled();
           // The trim window is judged *after* `timestampOffset` is applied, so it
           // must be expressed in assembled time. Using source time here silently
-          // discards every chunk and leaves an empty buffer with no error.
-          // Widen first: a leftover window from the previous chunk would reject
-          // this one before its own window is ever set.
+          // discards every fragment and leaves an empty buffer with no error.
           buffer.appendWindowStart = 0;
           buffer.appendWindowEnd = Infinity;
-          buffer.timestampOffset = segment.offset;
-          buffer.appendWindowStart = segment.start;
-          buffer.appendWindowEnd = segment.end;
+          buffer.timestampOffset = segment.out - segment.headExtra;
+          buffer.appendWindowStart = segment.out;
+          buffer.appendWindowEnd = segment.out + segment.dur;
           buffer.appendBuffer(bytes);
           await settled();
         }
