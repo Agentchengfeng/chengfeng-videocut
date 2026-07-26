@@ -191,6 +191,21 @@ async function readProposal(file: string, cwd: string): Promise<unknown> {
   }
 }
 
+/**
+ * The declared reason for each group of cut words, passed through untouched.
+ * Core validates the shape and narrows it to words actually cut; the CLI's only
+ * job is to not lose it.
+ */
+function proposalReasons(proposal: unknown): unknown {
+  if (!proposal || typeof proposal !== "object" || Array.isArray(proposal)) return undefined;
+  const reasons = (proposal as Record<string, unknown>).reasons;
+  if (reasons === undefined) return undefined;
+  if (!Array.isArray(reasons)) {
+    throw new VideocutError("invalid_cut_selection", "reasons must be an array when present");
+  }
+  return reasons;
+}
+
 function proposalCutWordIds(proposal: unknown): unknown[] {
   if (!proposal || typeof proposal !== "object" || Array.isArray(proposal)) {
     throw new VideocutError("invalid_cut_selection", "cut-selection input must be a JSON object");
@@ -433,6 +448,7 @@ async function updateCutsThroughApi(options: {
   projectId: string;
   expectedRevision: string;
   cutWordIds: unknown[];
+  reasons?: unknown;
 }): Promise<CutsApiResult> {
   const endpoint = apiEndpoint(options.apiBase, options.projectId);
   let response: Response;
@@ -444,6 +460,9 @@ async function updateCutsThroughApi(options: {
         expectedRevision: options.expectedRevision,
         cutWordIds: options.cutWordIds,
         mode: "semantic-overlay",
+        // Carry the declared reason through. Dropping it here is what left
+        // "why was this deleted" unanswerable for every deletion ever made.
+        ...(options.reasons === undefined ? {} : { reasons: options.reasons }),
       }),
       signal: AbortSignal.timeout(15_000),
     });
@@ -996,8 +1015,12 @@ export async function runCli(
       // same real directory before calculating or sending any update.
       await assertRegisteredProject({ project, cwd, projectsDir });
       const cutWordIds = proposalCutWordIds(proposal);
+      const reasons = proposalReasons(proposal);
       const result = parsed.dryRun
-        ? await writeCutSelection(project, { cutWordIds }, {
+        ? await writeCutSelection(project, {
+            cutWordIds,
+            ...(reasons === undefined ? {} : { reasons }),
+          }, {
             expectedRevision: parsed.expectedRevision,
             dryRun: true,
             mode: "semantic-overlay",
@@ -1008,6 +1031,7 @@ export async function runCli(
             projectId: project.projectId,
             expectedRevision: parsed.expectedRevision as string,
             cutWordIds,
+            ...(reasons === undefined ? {} : { reasons }),
           });
       const data = {
         projectId: result.projectId,

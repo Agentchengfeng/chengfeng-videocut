@@ -12,12 +12,34 @@ export interface CutTimeRange {
   end: number;
 }
 
+/**
+ * Why a set of words was cut.
+ *
+ * The reason hangs off the *decision* — the words someone chose — not off
+ * `cutRanges`. Ranges are derived from the words and get merged and widened
+ * across enclosed gaps, so one range can span several unrelated decisions and
+ * would have nowhere honest to put a single reason.
+ *
+ * Only what the caller declared is recorded. Nothing here can verify it.
+ */
+export interface CutSelectionReason {
+  wordIds: string[];
+  kind: string;
+  risk: "low" | "high";
+}
+
 export type JsonObject = Record<string, unknown>;
 
 export type CutSelectionDocument = JsonObject & {
   schemaVersion: 3;
   cutWordIds: string[];
   cutRanges: CutTimeRange[];
+  /**
+   * Absent on documents written before reasons existed, and absent when the
+   * caller declared none. An empty array and a missing field mean the same
+   * thing: nobody said why.
+   */
+  reasons?: CutSelectionReason[];
   updatedAt: string;
 };
 
@@ -191,6 +213,49 @@ export interface BuildCutSelectionOptions {
   overlay?: unknown;
   updatedAt?: string;
   rejectUnknownWordIds?: boolean;
+  /** As supplied by the caller; validated and narrowed to words actually cut. */
+  reasons?: unknown;
+}
+
+/**
+ * Narrow declared reasons to the ones still true of this document.
+ *
+ * A reason must never outlive the deletion it explains. `buildCutSelectionDocument`
+ * spreads `previous`, so without this a reason would survive the word being
+ * restored and the ledger would claim a cut that no longer exists. Every write
+ * recomputes the list from scratch against the words actually cut.
+ */
+function buildCutSelectionReasons(
+  declared: unknown,
+  cutWordIds: ReadonlySet<string>,
+): CutSelectionReason[] {
+  if (declared === undefined || declared === null) return [];
+  if (!Array.isArray(declared)) {
+    throw new VideocutError("invalid_cut_selection", "reasons must be an array when present");
+  }
+  const reasons: CutSelectionReason[] = [];
+  declared.forEach((entry, index) => {
+    if (!isObject(entry)) {
+      throw new VideocutError("invalid_cut_selection", `reasons[${index}] must be an object`);
+    }
+    const kind = typeof entry.kind === "string" ? entry.kind.trim() : "";
+    if (!kind) {
+      throw new VideocutError("invalid_cut_selection", `reasons[${index}].kind must be a non-empty string`);
+    }
+    if (entry.risk !== "low" && entry.risk !== "high") {
+      throw new VideocutError("invalid_cut_selection", `reasons[${index}].risk must be "low" or "high"`);
+    }
+    if (!Array.isArray(entry.wordIds)) {
+      throw new VideocutError("invalid_cut_selection", `reasons[${index}].wordIds must be an array`);
+    }
+    const ids = parseCutWordIds(entry.wordIds);
+    // Keep only the ids this document actually cuts. A reason naming words that
+    // are not deleted would be a claim about something that did not happen.
+    const kept = ids.filter((id) => cutWordIds.has(id));
+    if (kept.length === 0) return;
+    reasons.push({ wordIds: kept, kind, risk: entry.risk });
+  });
+  return reasons;
 }
 
 export function buildCutSelectionDocument(
@@ -220,12 +285,17 @@ export function buildCutSelectionDocument(
     .map((word) => word.id);
   if (options.rejectUnknownWordIds === false) orderedIds.push(...unknownIds);
 
+  const reasons = buildCutSelectionReasons(options.reasons, new Set(orderedIds));
+  const { reasons: _staleReasons, ...carried } = previous;
   return {
-    ...previous,
+    ...carried,
     ...overlay,
     schemaVersion: 3,
     cutWordIds: orderedIds,
     cutRanges: buildCutTimeRanges(options.words, cutWordIds),
+    // Omit the key entirely when nobody said why, so a document with no reasons
+    // reads the same as one written before reasons existed.
+    ...(reasons.length > 0 ? { reasons } : {}),
     updatedAt: options.updatedAt ?? new Date().toISOString(),
   };
 }
@@ -247,6 +317,7 @@ export function buildCutSelectionFromProposal(
     cutWordIds: parseCutWordIds(proposal.cutWordIds),
     previous,
     updatedAt,
+    reasons: proposal.reasons,
   });
 }
 

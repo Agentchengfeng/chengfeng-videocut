@@ -156,3 +156,61 @@ describe("cut selection contract", () => {
     ).toThrow("not unique");
   });
 });
+
+describe("cut reasons", () => {
+  const words = [
+    { id: "w-1", text: "因", start: 0, end: 1 },
+    { id: "w-2", text: "为", start: 1, end: 2 },
+    { id: "w-3", text: "今", start: 2, end: 3 },
+  ];
+
+  it("records why a group of words was cut", () => {
+    const document = buildCutSelectionFromProposal(words, {
+      cutWordIds: ["w-1", "w-2"],
+      reasons: [{ wordIds: ["w-1", "w-2"], kind: "repeat", risk: "low" }],
+    });
+    expect(document.reasons).toEqual([{ wordIds: ["w-1", "w-2"], kind: "repeat", risk: "low" }]);
+  });
+
+  it("never lets a reason outlive the deletion it explains", () => {
+    // The builder spreads `previous`, so a reason left in place would survive the
+    // word being restored and claim a cut that no longer exists.
+    const first = buildCutSelectionFromProposal(words, {
+      cutWordIds: ["w-1", "w-2"],
+      reasons: [{ wordIds: ["w-1", "w-2"], kind: "repeat", risk: "low" }],
+    });
+    const second = buildCutSelectionFromProposal(words, { cutWordIds: [] }, first);
+    expect(second.cutWordIds).toEqual([]);
+    expect(second.reasons).toBeUndefined();
+  });
+
+  it("drops the part of a reason that names words which are not cut", () => {
+    const document = buildCutSelectionFromProposal(words, {
+      cutWordIds: ["w-1"],
+      reasons: [{ wordIds: ["w-1", "w-3"], kind: "fragment", risk: "high" }],
+    });
+    // w-3 is not deleted, so saying it was would be a claim about something that
+    // did not happen.
+    expect(document.reasons).toEqual([{ wordIds: ["w-1"], kind: "fragment", risk: "high" }]);
+  });
+
+  it("omits the field entirely when nobody said why", () => {
+    const document = buildCutSelectionFromProposal(words, { cutWordIds: ["w-1"] });
+    expect("reasons" in document).toBe(false);
+  });
+
+  it("refuses a malformed reason instead of recording a half-truth", () => {
+    for (const reasons of [
+      "not-an-array",
+      [{ wordIds: ["w-1"], kind: "", risk: "low" }],
+      [{ wordIds: ["w-1"], kind: "repeat", risk: "medium" }],
+      [{ wordIds: "w-1", kind: "repeat", risk: "low" }],
+      [{ kind: "repeat", risk: "low" }],
+    ]) {
+      expect(() => buildCutSelectionFromProposal(words, {
+        cutWordIds: ["w-1"],
+        reasons,
+      })).toThrow();
+    }
+  });
+});

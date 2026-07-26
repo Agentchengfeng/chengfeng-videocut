@@ -31,6 +31,12 @@ interface CutsPutBody {
   expectedRevision: string;
   cutWordIds: unknown[];
   mode: CutSelectionWriteMode;
+  /**
+   * Why those words were chosen, as declared by the caller. Core validates the
+   * shape and drops any entry whose words are not actually cut; nothing here can
+   * verify the claim itself. Absent means nobody said.
+   */
+  reasons?: unknown;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -169,7 +175,7 @@ function parsePutBody(value: unknown): CutsPutBody {
   if (!isObject(value)) {
     throw new VideocutError("invalid_argument", "Cuts request body must be a JSON object");
   }
-  const allowedKeys = new Set(["expectedRevision", "cutWordIds", "mode"]);
+  const allowedKeys = new Set(["expectedRevision", "cutWordIds", "mode", "reasons"]);
   const unexpectedKeys = Object.keys(value).filter((key) => !allowedKeys.has(key));
   if (unexpectedKeys.length > 0) {
     throw new VideocutError(
@@ -197,10 +203,14 @@ function parsePutBody(value: unknown): CutsPutBody {
       { supportedModes: ["semantic-overlay", "full-selection"] },
     );
   }
+  if (value.reasons !== undefined && !Array.isArray(value.reasons)) {
+    throw new VideocutError("invalid_argument", "reasons must be an array when present");
+  }
   return {
     expectedRevision: value.expectedRevision,
     cutWordIds: value.cutWordIds,
     mode: value.mode,
+    ...(value.reasons === undefined ? {} : { reasons: value.reasons }),
   };
 }
 
@@ -306,11 +316,19 @@ export function createVideocutCutsHandler(
       const transaction = await mutex.run(lockKey, () =>
         writeCutSelectionWithEditList(
           project,
-          // The API intentionally forwards only the word ids plus an explicit
-          // write intent. Metadata, ranges and timestamps supplied by a caller
-          // can never replace the stored values.
-          { cutWordIds: body.cutWordIds },
-          { expectedRevision: body.expectedRevision, mode: body.mode },
+          // Word ids, the declared reason for choosing them, and an explicit
+          // write intent — nothing else. Metadata, ranges and timestamps supplied
+          // by a caller can never replace the stored values; ranges in particular
+          // are always re-derived from the words.
+          //
+          // Reasons used to be refused here, which is why "why was this deleted"
+          // had no answer anywhere in the product: the Skill was told to produce
+          // them and the write path dropped them on the floor.
+          {
+            cutWordIds: body.cutWordIds,
+            ...(body.reasons === undefined ? {} : { reasons: body.reasons }),
+          },
+          { expectedRevision: body.expectedRevision, mode: body.mode, actor: "skill" },
         ),
       );
       const result = transaction.cuts;

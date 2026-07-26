@@ -697,6 +697,10 @@ function buildProductCutSelectionFromProposal(
     cutWordIds: new Set([...baseline, ...semanticCutWordIds]),
     previous,
     updatedAt,
+    // Only the semantic decisions carry a declared reason. The baseline's reason
+    // is the pause policy already recorded in `initialization.naturalPausePolicy`,
+    // so inventing per-word entries for it would add noise, not information.
+    reasons: isObject(proposal) ? proposal.reasons : undefined,
   });
 }
 
