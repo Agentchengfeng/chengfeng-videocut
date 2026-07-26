@@ -38,7 +38,7 @@ export const CutFeaturePanel = memo(function CutFeaturePanel(props: CutFeaturePa
           aria-controls={transcriptPanelId}
           tabIndex={0}
         >
-          {props.reviewPasses?.state === "current" ? "新文稿" : "文稿"}
+          文稿
         </button>
       </div>
 

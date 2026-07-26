@@ -12,7 +12,6 @@ import motionPathPluginSource from "gsap/dist/MotionPathPlugin.min.js" with { ty
 import gsapSource from "gsap/dist/gsap.min.js" with { type: "text" };
 import { createVideocutCutsHandler } from "../../../studio/src/server/videocutCutsApi";
 import { createVideocutEditListHandler } from "../../../studio/src/server/videocutEditListApi";
-import { createVideocutReviewPassesHandler } from "../../../studio/src/server/videocutReviewPassesApi";
 import { createVideocutTimelineMediaHandler } from "../../../studio/src/server/videocutTimelineMediaApi";
 import { materializeKouboEditListIndex } from "@video-workbench/koubo-adapter";
 import { serializeProjectOperation } from "@video-workbench/core/node";
@@ -443,7 +442,6 @@ export async function startStudioServer(
       events.publish("file-change", change);
     },
   });
-  const reviewPassesApi = createVideocutReviewPassesHandler({ projectsDir });
   const editListApi = createVideocutEditListHandler({
     projectsDir,
     materializeIndex: materializeEditListIndex,
@@ -502,10 +500,6 @@ export async function startStudioServer(
         }
         if (url.pathname.startsWith("/api/")) {
           const response = await cutsApi(request);
-          if (response) return response;
-        }
-        if (url.pathname.startsWith("/api/")) {
-          const response = await reviewPassesApi(request);
           if (response) return response;
         }
         if (url.pathname === "/api/runtime.js") {

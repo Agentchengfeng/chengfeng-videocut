@@ -20,6 +20,15 @@ export const EDIT_PREVIEW_CONFIG = Object.freeze({
 
 export type EditPreviewPhase = "generating" | "current" | "failed" | "stale";
 
+// `ledger-proxy-v1` is not a rendered artifact. It says: play the preview proxy
+// directly and let the player follow the edit list, the way every desktop NLE
+// does — the timeline *is* the source, so no intermediate media exists and no
+// edit can make it stale. The three encoded profiles above stay for the cases
+// the ledger cannot express (several source files, or a segment whose speed is
+// not 1x); see `canPlayFromLedger`.
+export type EditPreviewProfile = "sharp-canonical-v1" | "fast-proxy-v1" | "ledger-proxy-v1";
+export type EditPreviewSourceKind = "canonical" | "fast-proxy" | "ledger-proxy";
+
 export interface EditPreviewArtifactState {
   schemaVersion: 2;
   projectId: string;
@@ -29,8 +38,8 @@ export interface EditPreviewArtifactState {
   cacheKey: string | null;
   sourceSha256: string | null;
   source: string | null;
-  profile: "sharp-canonical-v1" | "fast-proxy-v1" | null;
-  sourceKind: "canonical" | "fast-proxy" | null;
+  profile: EditPreviewProfile | null;
+  sourceKind: EditPreviewSourceKind | null;
   sourceFrameRate: number | null;
   width: number | null;
   height: number | null;
@@ -68,6 +77,13 @@ export interface ProjectInput {
   previewFrameRate: number;
   previewProxyRevision: string;
   previewProxyCacheKey: string;
+  /** Project-relative path of a ready preview proxy, when the project has one. */
+  previewProxySource?: string;
+  previewProxyDuration?: number | null;
+  previewProxyByteLength?: number | null;
+  previewProxyWidth?: number | null;
+  previewProxyHeight?: number | null;
+  previewProxyFrameRate?: number | null;
   segments: Array<{ start: number; end: number; source?: string; playbackRate?: number }>;
   duration: number;
 }
@@ -475,6 +491,15 @@ export async function projectInput(projectsDir: string, projectId: string): Prom
   const canonicalRelative = hasCanonical ? String(canonicalCandidate) : "";
   const previewProxyRevision = String(workbench.previewProxy?.revision ?? "");
   const previewProxyCacheKey = String(workbench.previewProxy?.cacheKey ?? "");
+  // A ready proxy is what makes ledger playback viable: it is keyframed every
+  // 0.2s, so jumping between retained ranges costs a decoder flush and at most
+  // six frames. Only accept it when the proxy declared itself ready and the file
+  // is really inside the project.
+  const proxyReady = workbench.previewProxy?.status === "ready" && Boolean(proxySource);
+  const previewProxySource = proxyReady
+    && await projectFile(realProjectDir, proxySource, "Preview proxy").then(() => proxySource, () => "")
+    ? proxySource
+    : undefined;
   if (!/^[a-f0-9]{64}$/.test(sourceSha256)) throw new Error("Current project has no verified canonical source SHA-256");
   let sourceProxy: string;
   let sourceKind: "canonical" | "fast-proxy" = "canonical";
@@ -508,6 +533,12 @@ export async function projectInput(projectsDir: string, projectId: string): Prom
     previewFrameRate,
     previewProxyRevision,
     previewProxyCacheKey,
+    previewProxySource,
+    previewProxyDuration: finiteNumber(workbench.previewProxy?.duration),
+    previewProxyByteLength: finiteNumber(workbench.previewProxy?.byteLength),
+    previewProxyWidth: finiteNumber(workbench.previewProxy?.width),
+    previewProxyHeight: finiteNumber(workbench.previewProxy?.height),
+    previewProxyFrameRate: finiteFrameRate(workbench.previewProxy?.frameRate),
     duration: edit.duration,
     segments: edit.segments.map((segment) => ({
       source: segment.source,
@@ -515,6 +546,59 @@ export async function projectInput(projectsDir: string, projectId: string): Prom
       end: segment.sourceEnd,
       playbackRate: segment.playbackRate,
     })),
+  };
+}
+
+function finiteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+// What the edit list can and cannot say through ledger playback.
+//
+// It can say "play these ranges of one file in this order" — that is exactly a
+// `currentTime` jump per boundary, so no media has to be produced. It cannot say
+// "play two different files" (one `<video>` element, and a second one is a hard
+// rule violation) and it cannot say "play this range at 1.5x" (the element has a
+// single playbackRate, and per-segment speed would need it changed mid-stream in
+// a way that drifts audio). Those two cases keep the encoded artifact path.
+export function canPlayFromLedger(input: ProjectInput): boolean {
+  if (!input.previewProxySource) return false;
+  if (input.segments.length === 0) return false;
+  const sources = new Set(input.segments.map((segment) => segment.source ?? ""));
+  if (sources.size !== 1) return false;
+  return input.segments.every((segment) => {
+    const rate = segment.playbackRate ?? 1;
+    return Number.isFinite(rate) && Math.abs(rate - 1) < 1e-9;
+  });
+}
+
+// The ledger state is `current` the instant it is asked for. There is nothing to
+// generate, so no edit can leave it stale and `artifactRevision` always equals
+// the edit revision it was asked about.
+function ledgerProxyState(input: ProjectInput, generatedAt: string): EditPreviewArtifactState {
+  return {
+    schemaVersion: 2,
+    projectId: input.projectId,
+    phase: "current",
+    editRevision: input.editRevision,
+    artifactRevision: input.editRevision,
+    cacheKey: null,
+    sourceSha256: input.sourceSha256,
+    source: input.previewProxySource ?? null,
+    profile: "ledger-proxy-v1",
+    sourceKind: "ledger-proxy",
+    sourceFrameRate: input.previewProxyFrameRate ?? input.previewFrameRate,
+    width: input.previewProxyWidth ?? null,
+    height: input.previewProxyHeight ?? null,
+    videoBitrate: null,
+    // The proxy spans the whole source; the edit list decides what is played.
+    duration: input.previewProxyDuration ?? null,
+    byteLength: input.previewProxyByteLength ?? null,
+    hasVideo: true,
+    hasAudio: true,
+    generatedAt,
+    generationMs: 0,
+    error: null,
   };
 }
 
@@ -601,6 +685,20 @@ export class EditPreviewArtifactManager {
 
   async status(projectId: string): Promise<EditPreviewArtifactState> {
     const input = await this.readProjectInput(this.projectsDir, projectId);
+    if (canPlayFromLedger(input)) {
+      // No artifact, so nothing can be stale and nothing may be scheduled. Drop
+      // any state left by the encoded path so a previously rendered artifact can
+      // never be reported as the current preview for this revision.
+      const state = ledgerProxyState(input, new Date(this.now()).toISOString());
+      this.states.set(projectId, state);
+      this.desired.set(projectId, input.editRevision);
+      const timer = this.timers.get(projectId);
+      if (timer) {
+        clearTimeout(timer);
+        this.timers.delete(projectId);
+      }
+      return state;
+    }
     const expectedCacheKey = expectedCacheKeyForInput(input);
     const manifest = join(input.projectDir, ".chengfeng-videocut", "preview-edited", "current.json");
     try {
@@ -673,6 +771,18 @@ export class EditPreviewArtifactManager {
     void this.readProjectInput(this.projectsDir, projectId).then(async (input) => {
       if (this.scheduleEpochs.get(projectId) !== epoch) return;
       this.desired.set(projectId, input.editRevision);
+      if (canPlayFromLedger(input)) {
+        // Ledger playback has no generation step. Publish the current state and
+        // stop — never fall through into the debounce timer, or every edit would
+        // start an ffmpeg run whose output nobody reads.
+        this.states.set(projectId, ledgerProxyState(input, new Date(this.now()).toISOString()));
+        const pending = this.timers.get(projectId);
+        if (pending) {
+          clearTimeout(pending);
+          this.timers.delete(projectId);
+        }
+        return;
+      }
       const cacheKey = expectedCacheKeyForInput(input);
       const previous = this.states.get(projectId);
       const source = await trustedPreviousPreviewSource(input.projectDir, previous?.source);

@@ -11,6 +11,7 @@ import {
   CUT_PLAYER_FRAME_RATE,
 } from "./playbackShortcuts";
 import type { EdlVideoTransport } from "./useEdlVideoTransport";
+import type { PreviewArtifactProfile } from "./previewArtifact";
 import { useCutPlaybackShortcuts } from "./useCutPlaybackShortcuts";
 
 function formatTime(seconds: number): string {
@@ -44,7 +45,7 @@ export function CutPlayer({
   transport: EdlVideoTransport;
   onTimelineTimeCommit: (time: number) => void;
   artifactPhase?: "generating" | "current" | "failed" | "stale";
-  artifactProfile?: "sharp-canonical-v1" | "fast-proxy-v1" | null;
+  artifactProfile?: PreviewArtifactProfile | null;
   onArtifactRetry?: () => void;
 }) {
   const activity = transport.error

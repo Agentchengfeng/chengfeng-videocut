@@ -363,4 +363,64 @@ describe("CutPlayer controls", () => {
 
     act(() => root.unmount());
   });
+  // This is the product's single hardest media rule: one <video>, no independent
+  // <audio>, no <iframe>, and one playback clock. Until now nothing enforced it,
+  // which is how an unused second transport and a second preview surface both
+  // survived in the tree. Assert it on every profile the player can be handed.
+  it.each([
+    ["ledger-proxy-v1" as const, "current" as const],
+    ["fast-proxy-v1" as const, "current" as const],
+    ["sharp-canonical-v1" as const, "generating" as const],
+  ])("owns exactly one media element for profile %s", (profile, phase) => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const transport = transportFixture();
+
+    act(() => root.render(
+      <CutPlayer
+        sourceUrl="/api/projects/cut-player/preview.mp4"
+        transport={transport}
+        artifactPhase={phase}
+        artifactProfile={profile}
+        onTimelineTimeCommit={vi.fn()}
+      />,
+    ));
+
+    expect(host.querySelectorAll("video")).toHaveLength(1);
+    expect(host.querySelectorAll("audio")).toHaveLength(0);
+    expect(host.querySelectorAll("iframe")).toHaveLength(0);
+    // The one element must be the transport's own, or there are two clocks.
+    expect(host.querySelector("video")).toBe(transport.videoRef.current);
+    expect(host.querySelectorAll('[data-koubo-media-owner="video"]')).toHaveLength(1);
+
+    act(() => root.unmount());
+  });
+
+  it("never tells the person to wait while the ledger is playing", () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+
+    act(() => root.render(
+      <CutPlayer
+        sourceUrl="/api/projects/cut-player/preview.mp4"
+        transport={transportFixture()}
+        artifactPhase="current"
+        artifactProfile="ledger-proxy-v1"
+        onTimelineTimeCommit={vi.fn()}
+      />,
+    ));
+
+    // Ledger playback has no generation step, so none of the artifact banners
+    // may appear and the controls must never be disabled waiting for one.
+    expect(host.querySelector(".cf-cut-preview-retry")).toBeNull();
+    const banners = [...host.querySelectorAll(".cf-cut-player-state")].map((node) => node.textContent ?? "");
+    expect(banners.some((text) => text.includes("正在生成"))).toBe(false);
+    expect(banners.some((text) => text.includes("已过期"))).toBe(false);
+    expect(banners.some((text) => text.includes("低资源预览"))).toBe(false);
+    expect(host.querySelector<HTMLButtonElement>(".cf-cut-play-button")?.disabled).toBe(false);
+
+    act(() => root.unmount());
+  });
 });

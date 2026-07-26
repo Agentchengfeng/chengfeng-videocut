@@ -13,7 +13,7 @@ const harness = vi.hoisted(() => ({
   patchOperation: vi.fn(),
   undoLastCutChange: vi.fn(),
   undoLastEditListChange: vi.fn(async () => undefined),
-  useContinuousVideoTransport: vi.fn(),
+  useEdlVideoTransport: vi.fn(),
   useKouboTranscript: vi.fn(),
   useProjectCutSelection: vi.fn(),
   usePreviewArtifact: vi.fn(),
@@ -32,13 +32,17 @@ vi.mock("../extensions/koubo/useKouboTranscript", () => ({
   useKouboTranscript: harness.useKouboTranscript,
 }));
 
-vi.mock("./player/useContinuousVideoTransport", () => ({
-  useContinuousVideoTransport: harness.useContinuousVideoTransport,
+vi.mock("./player/useEdlVideoTransport", () => ({
+  useEdlVideoTransport: harness.useEdlVideoTransport,
 }));
 
 vi.mock("./player/previewArtifact", () => ({
   previewArtifactUrl: () => "/preview/current.mp4",
   usePreviewArtifact: harness.usePreviewArtifact,
+  // These cases all describe the encoded-artifact path, so the workspace must
+  // hand the transport the single-segment projection, not the real edit list.
+  // The ledger path has its own cases below.
+  playsFromLedger: (state: { sourceKind?: string | null }) => state.sourceKind === "ledger-proxy",
 }));
 
 vi.mock("./player/CutPlayer", () => ({
@@ -207,7 +211,7 @@ beforeEach(() => {
   harness.useProjectEditList.mockReset();
   harness.useKouboTranscript.mockReset();
   harness.useProjectCutSelection.mockReset();
-  harness.useContinuousVideoTransport.mockReset();
+  harness.useEdlVideoTransport.mockReset();
   harness.usePreviewArtifact.mockReset();
   harness.useProjectEditList.mockReturnValue({
     projectId: "layout-contract",
@@ -246,7 +250,7 @@ beforeEach(() => {
     },
     retry: vi.fn(),
   });
-  harness.useContinuousVideoTransport.mockReturnValue({
+  harness.useEdlVideoTransport.mockReturnValue({
     videoRef: { current: null },
     timelineTime: 2.5,
     duration: 10,
@@ -640,7 +644,7 @@ describe("CutWorkspace single-page layout contract", () => {
       />,
     ));
 
-    expect(harness.useContinuousVideoTransport).toHaveBeenLastCalledWith(expect.objectContaining({
+    expect(harness.useEdlVideoTransport).toHaveBeenLastCalledWith(expect.objectContaining({
       sourceUrl: "/preview/current.mp4",
     }));
     expect(harness.cutPlayerProps.at(-1)?.sourceUrl).toBe("/preview/current.mp4");
@@ -662,7 +666,7 @@ describe("CutWorkspace single-page layout contract", () => {
       },
       retry: vi.fn(),
     }));
-    harness.useContinuousVideoTransport.mockReturnValue({
+    harness.useEdlVideoTransport.mockReturnValue({
       videoRef: { current: null }, timelineTime: 1, duration: 10, isPlaying: false, desiredPlaying: false,
       isWaiting: false, isSeeking: false, playbackRate: 1, volume: 1, muted: false, loopEnabled: false, error: null,
       play: vi.fn(async () => undefined), pause: vi.fn(), togglePlay: vi.fn(async () => undefined), seek,
@@ -713,7 +717,7 @@ describe("CutWorkspace single-page layout contract", () => {
       },
       retry: vi.fn(),
     }));
-    harness.useContinuousVideoTransport.mockReturnValue({
+    harness.useEdlVideoTransport.mockReturnValue({
       videoRef: { current: null }, timelineTime: 1, duration: 10, isPlaying: false, desiredPlaying: false,
       isWaiting: false, isSeeking: false, playbackRate: 1, volume: 1, muted: false, loopEnabled: false, error: null,
       play: vi.fn(async () => undefined), pause: vi.fn(), togglePlay: vi.fn(async () => undefined), seek,
@@ -738,7 +742,7 @@ describe("CutWorkspace single-page layout contract", () => {
 
   it("forwards a transcript playback request to the current EDL transport", () => {
     const seek = vi.fn(async () => undefined);
-    harness.useContinuousVideoTransport.mockReturnValue({
+    harness.useEdlVideoTransport.mockReturnValue({
       videoRef: { current: null }, timelineTime: 1, duration: 10, isPlaying: false, desiredPlaying: false,
       isWaiting: false, isSeeking: false, playbackRate: 1, volume: 1, muted: false, loopEnabled: false, error: null,
       play: vi.fn(async () => undefined), pause: vi.fn(), togglePlay: vi.fn(async () => undefined), seek,
@@ -758,7 +762,7 @@ describe("CutWorkspace single-page layout contract", () => {
   it("keeps the transcript seek callback stable while the transport wrapper advances", () => {
     const transportSeek = vi.fn(async () => undefined);
     let timelineTime = 1;
-    harness.useContinuousVideoTransport.mockImplementation(() => ({
+    harness.useEdlVideoTransport.mockImplementation(() => ({
       videoRef: { current: null }, timelineTime, duration: 10, isPlaying: true, desiredPlaying: true,
       isWaiting: false, isSeeking: false, playbackRate: 1, volume: 1, muted: false, loopEnabled: false, error: null,
       play: vi.fn(async () => undefined), pause: vi.fn(), togglePlay: vi.fn(async () => undefined), seek: transportSeek,
@@ -815,7 +819,7 @@ describe("CutWorkspace single-page layout contract", () => {
       },
       retry: vi.fn(),
     }));
-    harness.useContinuousVideoTransport.mockReturnValue({
+    harness.useEdlVideoTransport.mockReturnValue({
       videoRef: { current: null },
       timelineTime: 3,
       duration: 10,
@@ -891,7 +895,7 @@ describe("CutWorkspace single-page layout contract", () => {
       },
       retry: vi.fn(),
     }));
-    harness.useContinuousVideoTransport.mockReturnValue({
+    harness.useEdlVideoTransport.mockReturnValue({
       videoRef: { current: null },
       timelineTime: 6,
       duration: 10,
@@ -961,7 +965,7 @@ describe("CutWorkspace single-page layout contract", () => {
       },
       retry: vi.fn(),
     }));
-    harness.useContinuousVideoTransport.mockReturnValue({
+    harness.useEdlVideoTransport.mockReturnValue({
       videoRef: { current: null },
       timelineTime: 3,
       duration: 10,
@@ -1031,7 +1035,7 @@ describe("CutWorkspace single-page layout contract", () => {
       },
       retry: vi.fn(),
     }));
-    harness.useContinuousVideoTransport.mockImplementation(() => ({
+    harness.useEdlVideoTransport.mockImplementation(() => ({
       videoRef: { current: null },
       timelineTime: 3,
       duration: 10,
@@ -1103,7 +1107,7 @@ describe("CutWorkspace single-page layout contract", () => {
       },
       retry: vi.fn(),
     }));
-    harness.useContinuousVideoTransport.mockImplementation(() => ({
+    harness.useEdlVideoTransport.mockImplementation(() => ({
       videoRef: { current: null },
       timelineTime: 3,
       duration: 10,
@@ -1161,7 +1165,7 @@ describe("CutWorkspace single-page layout contract", () => {
       canUndo: false,
       undoLastEditListChange: harness.undoLastEditListChange,
     }));
-    harness.useContinuousVideoTransport.mockReturnValue({
+    harness.useEdlVideoTransport.mockReturnValue({
       videoRef: { current: null },
       timelineTime: 6,
       duration: 10,
@@ -1194,7 +1198,7 @@ describe("CutWorkspace single-page layout contract", () => {
     act(() => root.render(<CutWorkspace projectId="layout-contract" initialTimelineTime={6} onTimelineTimeCommit={vi.fn()} />));
 
     expect(restoreIntent).not.toHaveBeenCalled();
-    expect(harness.useContinuousVideoTransport).toHaveBeenLastCalledWith(expect.objectContaining({
+    expect(harness.useEdlVideoTransport).toHaveBeenLastCalledWith(expect.objectContaining({
       initialTimelineTime: 6,
     }));
 
@@ -1260,7 +1264,7 @@ describe("CutWorkspace single-page layout contract", () => {
       />,
     ));
 
-    const transport = harness.useContinuousVideoTransport.mock.results.at(-1)?.value;
+    const transport = harness.useEdlVideoTransport.mock.results.at(-1)?.value;
     const button = host.querySelector<HTMLButtonElement>('[role="tab"]');
     if (!button) throw new Error("Expected the local feature tab");
     const buttonSpace = new KeyboardEvent("keydown", {

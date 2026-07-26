@@ -64,10 +64,7 @@ afterEach(() => {
   harness.transcriptProps.mockReset();
 });
 
-function renderPanel(
-  onSeek = vi.fn(),
-  reviewPasses?: NonNullable<Parameters<typeof CutFeaturePanel>[0]["reviewPasses"]>,
-) {
+function renderPanel(onSeek = vi.fn()) {
   const host = document.createElement("div");
   document.body.append(host);
   const root = createRoot(host);
@@ -78,7 +75,6 @@ function renderPanel(
       editList={editList}
       transcript={transcript}
       cutSelection={cutSelection}
-      reviewPasses={reviewPasses}
       onSeek={onSeek}
     />,
   ));
@@ -126,23 +122,5 @@ describe("CutFeaturePanel", () => {
     act(() => root.unmount());
     expect(editList.patchOperation).not.toHaveBeenCalled();
     expect(onSeek).not.toHaveBeenCalled();
-  });
-
-  it("labels the left pane as a new transcript only for a current two-pass review", () => {
-    const { host, root } = renderPanel(vi.fn(), {
-      state: "current",
-      removedWordIds: ["w-1"],
-      candidates: [{
-        id: "repeat-1",
-        kind: "repeat",
-        decision: "listen_then_decide",
-        removeWordIds: ["w-2"],
-        keepWordIds: ["w-3"],
-        reason: "需试听确认",
-      }],
-      reason: null,
-    });
-    expect(host.querySelector('[role="tab"]')?.textContent?.trim()).toBe("新文稿");
-    act(() => root.unmount());
   });
 });

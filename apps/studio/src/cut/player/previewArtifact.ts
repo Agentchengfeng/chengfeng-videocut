@@ -1,16 +1,29 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 export type PreviewArtifactPhase = "generating" | "current" | "failed" | "stale";
+
+// `ledger-proxy` is not a rendered artifact: the source is the whole preview
+// proxy and the edit list decides what plays, so there is no generation step and
+// no edit can make it stale. The two encoded kinds remain for what the ledger
+// cannot express — several source files, or a segment whose speed is not 1x.
+export type PreviewArtifactProfile = "sharp-canonical-v1" | "fast-proxy-v1" | "ledger-proxy-v1";
+export type PreviewArtifactSourceKind = "canonical" | "fast-proxy" | "ledger-proxy";
+
 export interface PreviewArtifactState {
   phase: PreviewArtifactPhase;
   editRevision: string;
   artifactRevision: string | null;
   source: string | null;
-  profile?: "sharp-canonical-v1" | "fast-proxy-v1" | null;
-  sourceKind?: "canonical" | "fast-proxy" | null;
+  profile?: PreviewArtifactProfile | null;
+  sourceKind?: PreviewArtifactSourceKind | null;
   width?: number | null;
   height?: number | null;
   error: string | null;
+}
+
+/** True when the player must follow the edit list instead of playing the source straight through. */
+export function playsFromLedger(state: PreviewArtifactState): boolean {
+  return state.sourceKind === "ledger-proxy";
 }
 
 export function previewArtifactUrl(projectId: string, source: string): string {

@@ -4,15 +4,15 @@ import {
   type EditListDocument,
   type EditListOperation,
 } from "@video-workbench/core";
+import { continuousPlaybackDocument } from "../components/editListPlayback";
 import { useProjectCutSelection } from "../components/useProjectCutSelection";
 import { useProjectEditList } from "../components/useProjectEditList";
 import { useKouboTranscript } from "../extensions/koubo/useKouboTranscript";
 import { CutFeaturePanel } from "./features/CutFeaturePanel";
 import { TranscriptPaneResizer, TRANSCRIPT_WIDTH_DEFAULT } from "./layout/TranscriptPaneResizer";
 import { CutPlayer } from "./player/CutPlayer";
-import { useContinuousVideoTransport } from "./player/useContinuousVideoTransport";
-import { previewArtifactUrl, usePreviewArtifact } from "./player/previewArtifact";
-import { useProjectReviewPasses } from "./review/useProjectReviewPasses";
+import { useEdlVideoTransport } from "./player/useEdlVideoTransport";
+import { playsFromLedger, previewArtifactUrl, usePreviewArtifact } from "./player/previewArtifact";
 import { CutTimeline } from "./timeline/CutTimeline";
 import { KouboTranscriptPlaybackMarker } from "./transcript/KouboTranscriptPlaybackMarker";
 
@@ -209,22 +209,31 @@ export function CutWorkspace({
   const editList = useProjectEditList(projectId);
   const transcript = useKouboTranscript(projectId);
   const cutSelection = useProjectCutSelection(projectId, transcript.cues);
-  const reviewPasses = useProjectReviewPasses(projectId);
   const artifact = usePreviewArtifact(projectId, editList.revision);
   const artifactSource = artifact.state.source
     ? previewArtifactUrl(projectId, artifact.state.source)
     : null;
-  const continuousTransport = useContinuousVideoTransport({
-    document: editList.document,
+  // The edit list the transport plays with depends on what the media is.
+  // Ledger playback gets the real one — the proxy holds the whole source and
+  // every boundary is a `currentTime` jump, which is how desktop editors work
+  // and why no media has to be produced per edit. The encoded fallback gets a
+  // single-segment projection, because those cuts are already baked in.
+  const playbackDocument = useMemo(
+    () => playsFromLedger(artifact.state)
+      ? editList.document
+      : continuousPlaybackDocument(editList.document),
+    [artifact.state, editList.document],
+  );
+  const transport = useEdlVideoTransport({
+    document: playbackDocument,
     revision: editList.revision,
     sourceUrl: artifactSource,
     initialTimelineTime,
   });
-  const transport = continuousTransport;
-  // `useContinuousVideoTransport` publishes a new wrapper when timelineTime
-  // advances. Its seek function itself is stable for one media source, so use
-  // that function as the dependency of transcript seeking. Depending on the
-  // wrapper would recreate `onSeek` every frame and defeat memoized cues.
+  // The transport publishes a new wrapper when timelineTime advances. Its seek
+  // function itself is stable for one media source, so use that function as the
+  // dependency of transcript seeking. Depending on the wrapper would recreate
+  // `onSeek` every frame and defeat memoized cues.
   const transportSeek = transport.seek;
   const activeSource = artifactSource;
   const previousRevisionRef = useRef(editList.revision);
@@ -451,7 +460,6 @@ export function CutWorkspace({
       data-product-can-undo={canUndo ? "true" : "false"}
       data-edit-list-save-state={editList.saveState}
       data-cut-selection-save-state={cutSelection.saveState}
-      data-review-passes-state={reviewPasses.state}
       data-transcript-resizing={isResizingTranscript ? "true" : "false"}
     >
       <CutFeaturePanel
@@ -459,7 +467,6 @@ export function CutWorkspace({
         editList={transcriptEditList}
         transcript={transcriptForPanel}
         cutSelection={transcriptCutSelection}
-        reviewPasses={reviewPasses}
         onSeek={seek}
       />
 

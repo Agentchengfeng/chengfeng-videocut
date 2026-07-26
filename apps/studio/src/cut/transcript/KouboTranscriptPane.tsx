@@ -25,14 +25,12 @@ import {
   type KouboWordRange,
 } from "../../extensions/koubo/kouboViewModel";
 import type { useKouboTranscript } from "../../extensions/koubo/useKouboTranscript";
-import type { ProjectReviewPasses } from "../review/useProjectReviewPasses";
 
 export interface KouboTranscriptPaneProps {
   projectId: string;
   editList: ProjectEditListState;
   transcript: ReturnType<typeof useKouboTranscript>;
   cutSelection: ReturnType<typeof useProjectCutSelection>;
-  reviewPasses?: ProjectReviewPasses;
   onSeek: (time: number, options?: { keepPlaying?: boolean }) => void;
 }
 
@@ -61,8 +59,6 @@ interface KouboTranscriptCueProps {
   displayedCutWordIds: ReadonlySet<string>;
   selectionRange: KouboWordRange | null;
   keyboardAnchorWordId: string | null;
-  virtualRemovedWordIds: ReadonlySet<string>;
-  hideGaps: boolean;
   manualMode: boolean;
   editingLockReason: string | null;
   onWordPointerDown: (
@@ -77,14 +73,14 @@ interface KouboTranscriptCueProps {
   ) => void;
 }
 
+// A word leaves the transcript for exactly one reason: it is an uncut pause too
+// short to be worth a chip. Nothing else may hide a word. A deleted word stays
+// visible and struck through so it can be read and restored — hiding it is how
+// the transcript stopped agreeing with the audio.
 function shouldShowTranscriptWord(
   word: IndexedKouboCue["words"][number]["word"],
   displayedCutWordIds: ReadonlySet<string>,
-  virtualRemovedWordIds: ReadonlySet<string>,
-  hideGaps: boolean,
 ): boolean {
-  if (word.sourceWordIds.every((wordId) => virtualRemovedWordIds.has(wordId))) return false;
-  if (hideGaps && word.isGap) return false;
   const cut = word.sourceWordIds.every((wordId) => displayedCutWordIds.has(wordId));
   const gap = Math.max(0, word.end - word.start);
   return !(word.isGap && gap < 0.35 && !cut);
@@ -96,8 +92,6 @@ const KouboTranscriptCue = memo(function KouboTranscriptCue({
   displayedCutWordIds,
   selectionRange,
   keyboardAnchorWordId,
-  virtualRemovedWordIds,
-  hideGaps,
   manualMode,
   editingLockReason,
   onWordPointerDown,
@@ -106,8 +100,6 @@ const KouboTranscriptCue = memo(function KouboTranscriptCue({
   const visibleWords = cue.words.filter(({ word }) => shouldShowTranscriptWord(
     word,
     displayedCutWordIds,
-    virtualRemovedWordIds,
-    hideGaps,
   ));
   if (visibleWords.length === 0) return null;
   return (
@@ -206,7 +198,6 @@ export const KouboTranscriptPane = memo(function KouboTranscriptPane({
   editList,
   transcript,
   cutSelection,
-  reviewPasses = { state: "missing", removedWordIds: [], candidates: [], reason: null },
   onSeek,
 }: KouboTranscriptPaneProps) {
   const [selectionRange, setSelectionRange] = useState<KouboWordRange | null>(null);
@@ -229,13 +220,6 @@ export const KouboTranscriptPane = memo(function KouboTranscriptPane({
   } = cutSelection;
 
   const sourceWords = useMemo(() => cues.flatMap((cue) => cue.words), [cues]);
-  const virtualRemovedWordIds = useMemo(() => reviewPasses.state === "current"
-    ? new Set([
-      ...reviewPasses.removedWordIds,
-      ...reviewPasses.candidates.flatMap((candidate) => candidate.removeWordIds),
-    ])
-    : new Set<string>(), [reviewPasses]);
-  const virtualTranscript = reviewPasses.state === "current";
   const displayedCutWordIds = useMemo(
     () => deriveActualCutWordIds(sourceWords, cutWordIds, editList.document),
     [cutWordIds, editList.document, sourceWords],
@@ -245,8 +229,8 @@ export const KouboTranscriptPane = memo(function KouboTranscriptPane({
     [cues, displayedCutWordIds],
   );
   const visibleTranscriptCues = useMemo(() => indexedTranscript.cues.filter((cue) => cue.words.some(({ word }) =>
-    shouldShowTranscriptWord(word, displayedCutWordIds, virtualRemovedWordIds, virtualTranscript),
-  )), [displayedCutWordIds, indexedTranscript.cues, virtualRemovedWordIds, virtualTranscript]);
+    shouldShowTranscriptWord(word, displayedCutWordIds),
+  )), [displayedCutWordIds, indexedTranscript.cues]);
   const editingLockReason = resolveKouboEditingLockReason({
     transcriptLoading,
     selectionLoading,
@@ -564,12 +548,12 @@ export const KouboTranscriptPane = memo(function KouboTranscriptPane({
     let firstVisible: string | null = null;
     for (const cue of visibleTranscriptCues) {
       for (const { word } of cue.words) {
-        if (!shouldShowTranscriptWord(word, displayedCutWordIds, virtualRemovedWordIds, virtualTranscript)) continue;
+        if (!shouldShowTranscriptWord(word, displayedCutWordIds)) continue;
         firstVisible ??= word.id;
       }
     }
     return firstVisible;
-  }, [displayedCutWordIds, virtualRemovedWordIds, virtualTranscript, visibleTranscriptCues]);
+  }, [displayedCutWordIds, visibleTranscriptCues]);
   const keyboardAnchorWordId = keyboardAnchor;
 
   const handleWordPointerDown = useCallback((
@@ -664,16 +648,15 @@ export const KouboTranscriptPane = memo(function KouboTranscriptPane({
       {(saveState === "error" || saveState === "conflict") && (
         <div className="cut-transcript-notice is-error" role="alert">{saveStatus}</div>
       )}
-      {reviewPasses.state === "stale" && (
-        <div className="cut-transcript-notice" role="status">
-          第二遍候选已过期，请重新生成
-        </div>
-      )}
-      {reviewPasses.state === "invalid" && reviewPasses.reason && (
-        <div className="cut-transcript-notice is-error" role="alert">
-          第二遍候选不可用：{reviewPasses.reason}
-        </div>
-      )}
+      {/*
+        Review passes never speak to the person editing. They are an internal
+        staged artifact; when it is stale or malformed there is nothing the
+        person can do about it — no button regenerates it, and no code in the
+        product writes it. A notice asking them to "重新生成" named a concept
+        they never asked for and an action that does not exist.
+        `missing` was always silent; stale and invalid now behave the same way:
+        the panel simply proceeds without review passes.
+      */}
 
       {selectionRange && (
         <div
@@ -731,8 +714,6 @@ export const KouboTranscriptPane = memo(function KouboTranscriptPane({
             displayedCutWordIds={displayedCutWordIds}
             selectionRange={selectionRange}
             keyboardAnchorWordId={keyboardAnchorWordId}
-            virtualRemovedWordIds={virtualRemovedWordIds}
-            hideGaps={virtualTranscript}
             manualMode={editList.document?.mode === "manual"}
             editingLockReason={editingLockReason}
             onWordPointerDown={handleWordPointerDown}

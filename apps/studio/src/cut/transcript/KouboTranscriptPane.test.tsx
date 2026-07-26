@@ -7,7 +7,6 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProjectEditListState } from "../../components/useProjectEditList";
 import type { TranscriptCue } from "../../components/kouboTranscript";
-import type { ProjectReviewPasses } from "../review/useProjectReviewPasses";
 import { KouboTranscriptPane } from "./KouboTranscriptPane";
 
 Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
@@ -81,7 +80,6 @@ function renderPane(
     editList?: ProjectEditListState;
     cutWordIds?: ReadonlySet<string>;
     cues?: TranscriptCue[];
-    reviewPasses?: ProjectReviewPasses;
   } = {},
 ) {
   const host = document.createElement("div");
@@ -103,7 +101,6 @@ function renderPane(
         canUndo: false,
         undoLastCutChange: vi.fn(),
       }}
-      reviewPasses={options.reviewPasses}
       onSeek={onSeek}
     />,
   ));
@@ -149,10 +146,22 @@ describe("KouboTranscriptPane sidebar contract", () => {
     act(() => rendered.root.unmount());
   });
 
-  it("renders a two-pass virtual new transcript without a repeat review card or edit action", () => {
+  it("keeps every deleted word visible and struck through, hiding only a short uncut pause", () => {
+    // Deleted-ness is read off the edit list, not off cutWordIds: a word counts
+    // as deleted when no retained segment covers its midpoint. Dropping the
+    // first two seconds is what deletes w1 and w2.
+    const base = editListFixture("cuts-derived");
     const rendered = renderPane("cuts-derived", {
+      editList: {
+        ...base,
+        document: {
+          ...base.document!,
+          duration: 8,
+          segments: [{ ...base.document!.segments[0]!, sourceStart: 2 }],
+        },
+      },
       cues: [{
-        id: "cue-removed",
+        id: "cue-deleted",
         start: 0,
         end: 2,
         words: [
@@ -165,32 +174,29 @@ describe("KouboTranscriptPane sidebar contract", () => {
         end: 4,
         words: [
           { id: "g1", text: "", start: 2, end: 2.6, isGap: true },
-          { id: "w3", text: "我", start: 2, end: 3, isGap: false },
-          { id: "w4", text: "看", start: 3, end: 4, isGap: false },
+          { id: "w3", text: "我", start: 2.6, end: 3, isGap: false },
+          { id: "g2", text: "", start: 3, end: 3.1, isGap: true },
+          { id: "w4", text: "看", start: 3.1, end: 4, isGap: false },
         ],
       }],
-      reviewPasses: {
-        state: "current",
-        reason: null,
-        removedWordIds: ["w1"],
-        candidates: [{
-          id: "repeat-1",
-          kind: "repeat",
-          decision: "listen_then_decide",
-          removeWordIds: ["w2"],
-          keepWordIds: ["w3", "w4"],
-          reason: "后一句更完整，需试听确认",
-        }],
-      },
     });
-    expect(rendered.host.querySelector("[data-review-pass=repeat]")).toBeNull();
-    expect(rendered.host.querySelector('[data-word-id="w1"]')).toBeNull();
-    expect(rendered.host.querySelector('[data-word-id="w2"]')).toBeNull();
+    // A deleted word is "gone from the cut, still on the page" — that is the
+    // only way a person can see what was removed and take it back.
+    for (const wordId of ["w1", "w2"]) {
+      const word = rendered.host.querySelector(`[data-word-id="${wordId}"]`);
+      expect(word).not.toBeNull();
+      expect(word?.className).toContain("is-cut");
+    }
+    // A whole cue of deleted words still renders, and段 numbering does not
+    // silently close up over it.
+    expect(rendered.host.querySelectorAll(".cut-transcript-cue")).toHaveLength(2);
+    expect([...rendered.host.querySelectorAll(".cut-transcript-cue")]
+      .map((cue) => cue.getAttribute("data-cue-index"))).toEqual(["1", "2"]);
+    // The 0.6s pause is worth a chip; the 0.1s one is not. This is the sole
+    // reason a word may leave the transcript.
+    expect(rendered.host.querySelector('[data-word-id="g1"]')).not.toBeNull();
+    expect(rendered.host.querySelector('[data-word-id="g2"]')).toBeNull();
     expect(rendered.host.querySelector('[data-word-id="w3"]')?.textContent).toBe("我");
-    expect(rendered.host.querySelector('[data-word-id="w4"]')?.textContent).toBe("看");
-    expect(rendered.host.querySelector('[data-word-id="g1"]')).toBeNull();
-    expect(rendered.host.querySelectorAll(".cut-transcript-cue")).toHaveLength(1);
-    expect(rendered.host.querySelector(".cut-transcript-cue")?.getAttribute("data-cue-index")).toBe("1");
     expect(rendered.onSeek).not.toHaveBeenCalled();
     expect(rendered.updateCutWordIds).not.toHaveBeenCalled();
     act(() => rendered.root.unmount());
