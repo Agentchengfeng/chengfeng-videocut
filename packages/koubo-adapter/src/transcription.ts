@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { createReadStream } from "node:fs";
 import {
   lstat,
   link,
@@ -31,10 +32,30 @@ export interface VolcengineTimedWord {
   end: number;
 }
 
+/**
+ * Which media this transcript was produced from.
+ *
+ * Word timings are only meaningful against one specific file. Without this the
+ * product happily accepted a transcript belonging to a different video — or the
+ * post-cut transcript re-attached to the original source — and every later
+ * deletion then cut at the wrong timecode with nothing reporting an error.
+ * The video already gets a sha gate at project level; the transcript had none.
+ */
+export interface TranscriptMediaBinding {
+  /** Path as given at transcribe time, kept for humans; never trusted alone. */
+  source: string;
+  /** SHA-256 of the media bytes. This is what the gate compares. */
+  sha256: string;
+  /** Probed duration in seconds; catches a transcript shorter than its media. */
+  duration: number;
+}
+
 export interface VolcengineTranscriptDocument {
   schemaVersion: 1;
   provider: "volcengine";
   language: string;
+  /** Absent on transcripts written before this field existed. */
+  media?: TranscriptMediaBinding;
   cues: Array<{
     id: string;
     words: Array<{
@@ -252,10 +273,22 @@ function rounded(value: number): number {
   return Math.round(value * 1_000) / 1_000;
 }
 
+async function sha256File(path: string): Promise<string> {
+  const hash = createHash("sha256");
+  await new Promise<void>((resolvePromise, reject) => {
+    const stream = createReadStream(path);
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("error", reject);
+    stream.on("end", resolvePromise);
+  });
+  return hash.digest("hex");
+}
+
 export function buildVolcengineTranscript(input: {
   result: unknown;
   language: string;
   duration: number;
+  media?: TranscriptMediaBinding;
 }): VolcengineTranscriptDocument {
   const sourceWords = timedWords(input.result);
   if (sourceWords.length === 0) {
@@ -306,6 +339,7 @@ export function buildVolcengineTranscript(input: {
     schemaVersion: 1,
     provider: "volcengine",
     language: input.language,
+    ...(input.media ? { media: input.media } : {}),
     cues: [{ id: "volcengine-source", words }],
   };
 }
@@ -461,6 +495,11 @@ export async function transcribeKouboVideo(
       result,
       language: (options.language ?? DEFAULT_LANGUAGE).trim() || DEFAULT_LANGUAGE,
       duration: media.duration,
+      media: {
+        source: options.video,
+        sha256: await sha256File(source),
+        duration: media.duration,
+      },
     });
     await writeTranscriptAtomically(root, output, document);
     const wordCount = document.cues.flatMap((cue) => cue.words).length;

@@ -60,6 +60,12 @@ export interface KouboTranscriptCue {
 
 export interface KouboTranscript {
   schemaVersion: 1;
+  /**
+   * Which media this transcript was produced from, when the source declared it.
+   * Carried through normalization so the binding survives into the project and
+   * can still be checked later; see assertTranscriptMatchesVideo.
+   */
+  media?: { source?: string; sha256: string; duration?: number };
   cues: KouboTranscriptCue[];
 }
 
@@ -551,7 +557,16 @@ export function normalizeKouboTranscript(payload: unknown): KouboTranscript {
       words,
     });
   });
-  return { schemaVersion: 1, cues };
+  const media = isObject(source.media) && typeof source.media.sha256 === "string"
+    ? {
+      sha256: source.media.sha256,
+      ...(typeof source.media.source === "string" ? { source: source.media.source } : {}),
+      ...(Number.isFinite(source.media.duration)
+        ? { duration: Number(source.media.duration) }
+        : {}),
+    }
+    : undefined;
+  return { schemaVersion: 1, ...(media ? { media } : {}), cues };
 }
 
 async function findFile(jobDir: string, candidates: readonly string[]): Promise<string | null> {
@@ -746,7 +761,17 @@ function materializeCutTranscript(
       if (cut) cutWordIds.push(id);
     }
   }
-  return { transcript: { schemaVersion: 1, cues: groupWords(splitWords) }, cutWordIds };
+  // Splitting words around pause boundaries does not change which media the
+  // timings belong to, so the binding must ride along or the project's own
+  // transcript loses it and can never be checked again.
+  return {
+    transcript: {
+      schemaVersion: 1,
+      ...(transcript.media ? { media: transcript.media } : {}),
+      cues: groupWords(splitWords),
+    },
+    cutWordIds,
+  };
 }
 
 function buildRanges(
@@ -1226,6 +1251,54 @@ async function probeDuration(path: string): Promise<number> {
   }
 }
 
+/**
+ * Refuse a transcript that was produced from different media.
+ *
+ * Word timings only mean something against one specific file. Attaching the
+ * post-cut transcript back to the original source — one flag away in the normal
+ * flow, since both live in the same job directory — used to succeed silently,
+ * after which every deletion cut at the wrong timecode. The video already gets
+ * a sha gate at project level; this gives the transcript the same one.
+ *
+ * Transcripts written before the binding existed carry no `media` field. Those
+ * stay accepted: refusing them would strand existing projects, and the failure
+ * they risk is the one this gate is being added to catch going forward.
+ */
+async function assertTranscriptMatchesVideo(
+  transcriptPath: string,
+  videoPath: string,
+  declaredTranscript: string,
+): Promise<void> {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(await readFile(transcriptPath, "utf8")) as unknown;
+  } catch {
+    return; // SRT and unparsable inputs are handled by loadTranscript above.
+  }
+  const record = raw && typeof raw === "object" && !Array.isArray(raw)
+    ? (raw as Record<string, unknown>)
+    : null;
+  const media = record && record.media && typeof record.media === "object"
+    && !Array.isArray(record.media)
+    ? (record.media as Record<string, unknown>)
+    : null;
+  if (!media || typeof media.sha256 !== "string") return;
+
+  const actual = await sha256File(videoPath);
+  if (actual === media.sha256) return;
+  throw new VideocutError(
+    "invalid_transcript",
+    `${declaredTranscript} was transcribed from different media than the given --video`,
+    {
+      reason: "transcript_media_mismatch",
+      transcript: declaredTranscript,
+      transcribedFrom: typeof media.source === "string" ? media.source : undefined,
+      expectedSha256: media.sha256,
+      actualSha256: actual,
+    },
+  );
+}
+
 async function sha256File(path: string): Promise<string> {
   const hash = createHash("sha256");
   await new Promise<void>((resolvePromise, reject) => {
@@ -1405,6 +1478,10 @@ async function prepareKouboProjectSnapshot(
         "字幕/3_输出/video.srt",
       ]);
   if (!transcriptPath) throw new Error("No transcript source was found for this task");
+  // Swapping the transcript on an existing project is the sharpest edge here:
+  // the post-cut transcript lives in the same job directory as the source one,
+  // so re-attaching it to the original video is a single flag away.
+  await assertTranscriptMatchesVideo(transcriptPath, videoPath, options.transcript ?? transcriptPath);
   const sourceTranscript = await loadTranscript(transcriptPath);
   if (sourceTranscript.cues.length === 0) throw new Error(`Transcript is empty: ${transcriptPath}`);
   const sourceWords = sourceTranscript.cues.flatMap((cue) => cue.words);
@@ -1789,6 +1866,7 @@ export async function createKouboProject(
         { cause: error instanceof Error ? error.message : String(error) },
       );
     }
+    await assertTranscriptMatchesVideo(transcriptPath, videoPath, options.transcript);
 
     const canonicalVideo = join(jobDir, "input", `source${videoExtension}`);
     const canonicalTranscript = transcriptExtension === ".srt"

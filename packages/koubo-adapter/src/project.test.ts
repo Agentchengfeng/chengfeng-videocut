@@ -88,6 +88,69 @@ async function createFixture(name = "real-task"): Promise<{
   return { root, job, video, transcript };
 }
 
+describe("transcript media binding", () => {
+  const transcriptWithMedia = (sha256: string, source = "uploads/talk.mp4") => JSON.stringify({
+    schemaVersion: 1,
+    provider: "volcengine",
+    language: "zh-CN",
+    media: { source, sha256, duration: 2 },
+    cues: [{
+      id: "cloud-cue",
+      words: [
+        { id: "cloud-w-1", text: "真", start: 0, end: 1 },
+        { id: "cloud-w-2", text: "实", start: 1, end: 2 },
+      ],
+    }],
+  });
+
+  it("accepts a transcript bound to the given video", async () => {
+    const fixtureValue = await createFixture();
+    const sha = createHash("sha256").update("real-task-media").digest("hex");
+    await writeFile(fixtureValue.transcript, transcriptWithMedia(sha));
+    const result = await createKouboProject(fixtureValue.job, {
+      video: "uploads/talk.mp4",
+      transcript: "cloud/words.json",
+      aspectRatio: "4:3",
+      now: fixedNow,
+    });
+    expect(result.projectId).toBe("real-task");
+    // The binding must survive normalization, or nothing can be checked later.
+    expect(JSON.parse(await readFile(join(fixtureValue.job, "transcript.json"), "utf8")))
+      .toMatchObject({ media: { sha256: sha } });
+  });
+
+  it("refuses a transcript produced from different media", async () => {
+    // The post-cut transcript lives in the same job directory as the source
+    // one, so re-attaching it to the original video is a single flag away.
+    // Before the gate this succeeded and every later deletion cut at the wrong
+    // timecode with nothing reporting an error.
+    const fixtureValue = await createFixture();
+    const foreign = createHash("sha256").update("some-other-video").digest("hex");
+    await writeFile(fixtureValue.transcript, transcriptWithMedia(foreign, "input/source_cut.mp4"));
+    await expect(createKouboProject(fixtureValue.job, {
+      video: "uploads/talk.mp4",
+      transcript: "cloud/words.json",
+      aspectRatio: "4:3",
+      now: fixedNow,
+    })).rejects.toMatchObject({
+      code: "invalid_transcript",
+      details: { reason: "transcript_media_mismatch", transcribedFrom: "input/source_cut.mp4" },
+    });
+  });
+
+  it("still accepts transcripts written before the binding existed", async () => {
+    // Refusing these would strand every existing project.
+    const fixtureValue = await createFixture();
+    const result = await createKouboProject(fixtureValue.job, {
+      video: "uploads/talk.mp4",
+      transcript: "cloud/words.json",
+      aspectRatio: "4:3",
+      now: fixedNow,
+    });
+    expect(result.projectId).toBe("real-task");
+  });
+});
+
 describe("createKouboProject contract", () => {
   it("creates canonical task inputs and prepares a new project without demo files", async () => {
     const fixtureValue = await createFixture();
