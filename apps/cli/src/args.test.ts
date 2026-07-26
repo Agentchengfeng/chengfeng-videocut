@@ -82,6 +82,44 @@ describe("start argument parser", () => {
     ).toMatchObject({ command: "cuts.set", dryRun: true });
   });
 
+  it("parses the edit-list read and segment-level write commands", () => {
+    const revision = "a".repeat(64);
+    expect(parseArgs(["edit-list", "get", "demo", "--json"])).toMatchObject({
+      command: "editList.get",
+      project: "demo",
+      json: true,
+    });
+    expect(parseArgs([
+      "edit-list", "patch", "demo",
+      "--file", "op.json",
+      "--expected-revision", revision,
+      "--json",
+    ])).toMatchObject({
+      command: "editList.patch",
+      project: "demo",
+      file: "op.json",
+      expectedRevision: revision,
+      json: true,
+    });
+
+    // A segment-level write must always name the revision it was built against;
+    // there is no dry-run escape hatch here, because a dry run that skipped the
+    // edit-list guards is exactly what used to report success and then 409.
+    expect(() => parseArgs(["edit-list", "patch", "demo", "--file", "op.json"])).toThrow(
+      "requires --expected-revision",
+    );
+    expect(() => parseArgs([
+      "edit-list", "patch", "demo", "--file", "op.json", "--dry-run",
+    ])).toThrow("requires --expected-revision");
+    expect(() => parseArgs([
+      "edit-list", "patch", "demo", "--expected-revision", revision,
+    ])).toThrow("requires --file");
+    expect(() => parseArgs([
+      "edit-list", "patch", "demo", "--file", "op.json", "--expected-revision", "nope",
+    ])).toThrow("must be 'none' or a SHA-256 revision");
+    expect(() => parseArgs(["edit-list", "frobnicate", "demo"])).toThrow("Unknown command");
+  });
+
   it("parses task-local project preparation flags", () => {
     expect(parseArgs([
       "project", "create", "/tmp/job",

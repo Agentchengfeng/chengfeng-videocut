@@ -499,6 +499,98 @@ describe("chengfeng-videocut CLI", () => {
     });
   });
 
+  it("edits the timeline segment by segment through the same guarded resource", async () => {
+    const { root, projectDir, projectsDir } = await fixture();
+    await registerFixture(projectDir, projectsDir);
+    await rm(join(projectDir, "index.html"));
+    const prepareCapture = captureIo();
+    expect(await runCli([
+      "project", "prepare", projectDir,
+      "--duration", "3.5",
+      "--projects-dir", projectsDir,
+      "--json",
+    ], { io: prepareCapture.io }), prepareCapture.stdout.join(" | ")).toBe(0);
+    const staticDir = join(root, "static");
+    await mkdir(join(staticDir, "assets"), { recursive: true });
+    await writeFile(join(staticDir, "index.html"), "<!doctype html><title>test</title>");
+    const server = await startStudioServer({
+      port: 0,
+      projectsDir,
+      dataDir: join(root, "data"),
+      staticDir,
+    });
+
+    const readCapture = captureIo();
+    const readCode = await runCli([
+      "edit-list", "get", projectDir,
+      "--projects-dir", projectsDir,
+      "--api-base", server.url,
+      "--json",
+    ], { io: readCapture.io });
+    expect(readCode, `${readCapture.stderr.join(" | ")}`).toBe(0);
+    const read = JSON.parse(readCapture.stdout[0]);
+    expect(read).toMatchObject({ ok: true, command: "editList.get" });
+    const before = read.data.document.segments as { source: string }[];
+    expect(before.length).toBeGreaterThan(0);
+    const revision = read.data.revision as string;
+
+    // Trim the tail of the timeline through the same PATCH the editor uses, so
+    // the write passes the identical geometry checks, CAS and project lock.
+    const last = before[before.length - 1] as unknown as {
+      source: string;
+      sourceStart: number;
+      sourceEnd: number;
+    };
+    const operation = join(root, "operation.json");
+    await writeFile(operation, JSON.stringify({
+      type: "delete-range",
+      source: last.source,
+      sourceStart: (last.sourceStart + last.sourceEnd) / 2,
+      sourceEnd: last.sourceEnd,
+    }));
+
+    const patchCapture = captureIo();
+    const patchCode = await runCli([
+      "edit-list", "patch", projectDir,
+      "--file", operation,
+      "--expected-revision", revision,
+      "--projects-dir", projectsDir,
+      "--api-base", server.url,
+      "--json",
+    ], { io: patchCapture.io });
+    expect(patchCode, `${patchCapture.stderr.join(" | ")}`).toBe(0);
+    const patched = JSON.parse(patchCapture.stdout[0]);
+    expect(patched).toMatchObject({
+      ok: true,
+      command: "editList.patch",
+      data: { projectId: "demo", changed: true, previousRevision: revision },
+    });
+    expect(patched.data.revision).not.toBe(revision);
+    expect(patched.data.duration).toBeLessThan(read.data.duration);
+
+    // Replaying the same operation against the now-stale revision must be
+    // refused rather than silently applied twice.
+    const staleCapture = captureIo();
+    const staleCode = await runCli([
+      "edit-list", "patch", projectDir,
+      "--file", operation,
+      "--expected-revision", revision,
+      "--projects-dir", projectsDir,
+      "--api-base", server.url,
+      "--json",
+    ], { io: staleCapture.io });
+    await server.stop();
+    expect(staleCode).not.toBe(0);
+    expect(JSON.parse(staleCapture.stdout[0])).toMatchObject({
+      ok: false,
+      error: { code: "revision_conflict" },
+    });
+
+    const onDisk = JSON.parse(await readFile(join(projectDir, "edit-list.json"), "utf8"));
+    expect(createHash("sha256").update(JSON.stringify(onDisk)).digest("hex")).toBeTruthy();
+    expect(onDisk.duration).toBe(patched.data.duration);
+  });
+
   it("reads and transitions workflow through the running product API", async () => {
     const { root, projectDir, projectsDir } = await fixture();
     await registerFixture(projectDir, projectsDir);

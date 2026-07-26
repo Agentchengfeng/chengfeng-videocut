@@ -22,6 +22,8 @@ export type CliCommand =
   | "cuts.get"
   | "cuts.set"
   | "cuts.apply"
+  | "editList.get"
+  | "editList.patch"
   | "workflow.get"
   | "workflow.transition"
   | "render.run";
@@ -482,6 +484,46 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     );
     return {
       command: "cuts.set",
+      project: positionals[2],
+      file,
+      ...common,
+    };
+  }
+  if (positionals[0] === "edit-list" && positionals[1] === "get") {
+    if (positionals.length !== 3) {
+      usageError("Usage: chengfeng-videocut edit-list get <project>");
+    }
+    assertOptions(["--projects-dir", "--output-dir", "--api-base"]);
+    return { command: "editList.get", project: positionals[2], ...common };
+  }
+  if (positionals[0] === "edit-list" && positionals[1] === "patch") {
+    if (positionals.length !== 3) {
+      usageError(
+        "Usage: chengfeng-videocut edit-list patch <project> --file <operation.json> --expected-revision <sha256>",
+      );
+    }
+    const file = values.get("--file");
+    if (!file) {
+      usageError("edit-list patch requires --file <operation.json>");
+    }
+    const expectedRevision = values.get("--expected-revision");
+    // Unlike cuts set there is no dry-run branch here: the whole point of this
+    // command is to exercise the same guarded path the editor uses, and a
+    // dry-run that skipped the edit-list guards is what previously produced a
+    // green light followed by a 409.
+    if (!expectedRevision) {
+      usageError("edit-list patch requires --expected-revision <sha256> from a prior edit-list get");
+    }
+    if (!/^(?:none|[a-f0-9]{64})$/.test(expectedRevision)) {
+      usageError("--expected-revision must be 'none' or a SHA-256 revision");
+    }
+    assertOptions(
+      ["--file", "--expected-revision", "--projects-dir", "--output-dir", "--api-base"],
+      [],
+      true,
+    );
+    return {
+      command: "editList.patch",
       project: positionals[2],
       file,
       ...common,

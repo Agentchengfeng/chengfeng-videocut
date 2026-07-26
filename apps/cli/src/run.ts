@@ -245,7 +245,7 @@ function apiEndpoint(apiBase: string, projectId: string): string {
 function projectApiEndpoint(
   apiBase: string,
   projectId: string,
-  resource: "workflow" | "actions",
+  resource: "workflow" | "actions" | "edit-list",
 ): string {
   let base: URL;
   try {
@@ -266,6 +266,95 @@ function objectRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
+}
+
+interface EditListApiResult {
+  projectId: string;
+  exists?: boolean;
+  changed?: boolean;
+  previousRevision?: string;
+  revision: string;
+  document: Record<string, unknown> | null;
+}
+
+/**
+ * Read or write the edit list over the same HTTP resource the editor uses.
+ *
+ * The CLI deliberately owns no edit-list writing logic of its own: a segment
+ * level change must pass the same geometry checks, the same CAS and the same
+ * project lock whether it came from a pointer drag or from an agent. Before
+ * this existed there was no sanctioned CLI path at all, so an agent facing a
+ * manual timeline had nothing left but to edit project files directly.
+ */
+async function requestEditListApi(options: {
+  apiBase: string;
+  projectId: string;
+  method: "GET" | "PATCH";
+  expectedRevision?: string;
+  operation?: unknown;
+}): Promise<EditListApiResult> {
+  const endpoint = projectApiEndpoint(options.apiBase, options.projectId, "edit-list");
+  let response: Response;
+  try {
+    response = await fetch(endpoint, {
+      method: options.method,
+      headers: options.method === "PATCH"
+        ? { "Content-Type": "application/json" }
+        : { Accept: "application/json" },
+      body: options.method === "PATCH"
+        ? JSON.stringify({
+            expectedRevision: options.expectedRevision,
+            operation: options.operation,
+          })
+        : undefined,
+      signal: AbortSignal.timeout(30_000),
+    });
+  } catch (error) {
+    throw new CliRequestError(
+      "service_unavailable",
+      `Cannot reach chengfeng-videocut at ${options.apiBase}`,
+      { endpoint, cause: error instanceof Error ? error.message : String(error) },
+    );
+  }
+
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new CliRequestError(
+      "service_unavailable",
+      `chengfeng-videocut returned an invalid response (${response.status})`,
+      { endpoint, status: response.status },
+    );
+  }
+  const record = objectRecord(payload);
+  if (!response.ok) {
+    const errorRecord = objectRecord(record?.error);
+    throw new CliRequestError(
+      typeof errorRecord?.code === "string" ? errorRecord.code : "service_unavailable",
+      typeof errorRecord?.message === "string"
+        ? errorRecord.message
+        : `chengfeng-videocut request failed (${response.status})`,
+      objectRecord(errorRecord?.details) ?? { endpoint, status: response.status },
+    );
+  }
+  if (!record || typeof record.revision !== "string") {
+    throw new CliRequestError(
+      "service_unavailable",
+      "chengfeng-videocut returned an unexpected edit-list payload",
+      { endpoint },
+    );
+  }
+  return {
+    projectId: options.projectId,
+    exists: typeof record.exists === "boolean" ? record.exists : undefined,
+    changed: typeof record.changed === "boolean" ? record.changed : undefined,
+    previousRevision: typeof record.previousRevision === "string"
+      ? record.previousRevision
+      : undefined,
+    revision: record.revision,
+    document: objectRecord(record.document),
+  };
 }
 
 async function readCutsThroughApi(options: {
@@ -794,6 +883,50 @@ export async function runCli(
       };
       if (parsed.json) io.stdout(JSON.stringify(successEnvelope(parsed.command, data)));
       else io.stdout(`Published ${result.type}: ${result.target}\nStatus: ${result.status}`);
+      return 0;
+    }
+    if (parsed.command === "editList.get" || parsed.command === "editList.patch") {
+      await assertRegisteredProject({ project, cwd, projectsDir, outputDir: parsed.outputDir });
+      const apiBase = parsed.apiBase ?? "http://127.0.0.1:5190";
+      const operation = parsed.command === "editList.patch"
+        ? await readProposal(parsed.file as string, cwd)
+        : undefined;
+      const result = await requestEditListApi({
+        apiBase,
+        projectId: project.projectId,
+        method: parsed.command === "editList.patch" ? "PATCH" : "GET",
+        expectedRevision: parsed.expectedRevision,
+        operation,
+      });
+      const segments = Array.isArray(result.document?.segments)
+        ? (result.document.segments as unknown[])
+        : [];
+      const data = {
+        projectId: result.projectId,
+        path: join(project.directory, "edit-list.json"),
+        ...(result.exists === undefined ? {} : { exists: result.exists }),
+        ...(result.changed === undefined ? {} : { changed: result.changed }),
+        ...(result.previousRevision === undefined
+          ? {}
+          : { previousRevision: result.previousRevision }),
+        revision: result.revision,
+        mode: typeof result.document?.mode === "string" ? result.document.mode : null,
+        duration: typeof result.document?.duration === "number"
+          ? result.document.duration
+          : null,
+        segmentCount: segments.length,
+        document: result.document,
+      };
+      if (parsed.json) io.stdout(JSON.stringify(successEnvelope(parsed.command, data)));
+      else if (parsed.command === "editList.get") {
+        io.stdout(JSON.stringify(data, null, 2));
+      } else {
+        io.stdout(
+          `${data.changed ? "Applied" : "No change"}\n` +
+          `Revision: ${data.previousRevision ?? "none"} -> ${data.revision}\n` +
+          `Timeline: ${data.segmentCount} segments, ${data.duration ?? "?"}s (${data.mode ?? "?"})`,
+        );
+      }
       return 0;
     }
     if (parsed.command === "cuts.get") {
