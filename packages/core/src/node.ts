@@ -515,6 +515,61 @@ export interface WriteCutSelectionResult {
   document: CutSelectionDocument;
 }
 
+/**
+ * Carve newly deleted ranges out of a hand-arranged timeline.
+ *
+ * Regenerating the timeline from Cuts would throw away the arrangement, so only
+ * the difference is applied, one range at a time, through the same operator the
+ * editor uses. Everything the user did — order, trims, restores — survives.
+ *
+ * Two kinds of range are deliberately skipped:
+ *  - ranges already absent from the timeline, so nothing to do;
+ *  - ranges the user restored on purpose. A restore is a decision and a review
+ *    result is a suggestion, so the decision wins. Assuming the opposite is how
+ *    a sentence ended up playing twice.
+ */
+const CUT_RANGE_EPSILON = 0.0005;
+
+function applyNewCutRangesToManualTimeline(
+  current: EditListDocument,
+  previous: CutSelectionDocument | undefined,
+  next: CutSelectionDocument,
+): EditListDocument {
+  const source = current.segments[0]?.source;
+  if (!source) return current;
+
+  const wasDeleted = (start: number, end: number): boolean =>
+    (previous?.cutRanges ?? []).some((range) =>
+      range.start <= start + CUT_RANGE_EPSILON && range.end >= end - CUT_RANGE_EPSILON);
+
+  let document = current;
+  for (const range of next.cutRanges) {
+    // Only act on ranges Cuts did not already claim; the rest are either
+    // untouched or were restored by hand afterwards.
+    if (wasDeleted(range.start, range.end)) continue;
+    const audible = document.segments.some((segment) =>
+      segment.source === source
+      && segment.sourceStart < range.end - CUT_RANGE_EPSILON
+      && segment.sourceEnd > range.start + CUT_RANGE_EPSILON);
+    if (!audible) continue;
+    try {
+      document = applyEditListOperation(document, {
+        type: "delete-range",
+        source,
+        sourceStart: range.start,
+        sourceEnd: range.end,
+      });
+    } catch {
+      // A single unusable range must not abandon the rest. Geometry that the
+      // operator refuses — a range shorter than the minimum segment, or one
+      // that would empty the timeline — is left in place on the timeline while
+      // still being recorded in Cuts as the reason it should go.
+      continue;
+    }
+  }
+  return document;
+}
+
 function naturalPauseBaselineWordIds(
   words: readonly ReturnType<typeof parseTranscriptWords>[number][],
   previous: unknown,
@@ -690,17 +745,6 @@ export async function writeCutSelectionWithEditList(
         },
       );
     }
-    if (cutsChange && currentEditList?.mode === "manual") {
-      throw new VideocutError(
-        "revision_conflict",
-        "Cuts cannot change while edit-list.json contains manual timeline edits",
-        {
-          reason: "manual_edit_list_requires_rebase",
-          editListRevision: previousEditList?.revision,
-          cutsRevision: previousCuts?.revision ?? null,
-        },
-      );
-    }
 
     const cutsPath = documentPath(project, "cut-selection.json");
     const cutsContent = cutsChange ? serializeJson(candidate) : previousCuts?.raw ?? "";
@@ -734,6 +778,32 @@ export async function writeCutSelectionWithEditList(
       });
       editListContent = serializeJson(nextEditList);
       editListRevision = sha256(editListContent);
+    } else if (cutsChange && currentEditList.mode === "manual") {
+      // A hand-arranged timeline cannot be regenerated from Cuts without
+      // discarding the arrangement, so this used to be refused outright — which
+      // left semantic review with no way in at all once the user had touched the
+      // timeline even once.
+      //
+      // Instead of rebuilding, carve out only what is newly deleted. Ranges the
+      // user still has on the timeline but that Cuts now marks deleted are
+      // removed one at a time through the same operator the editor uses, so the
+      // order, trims and restores all survive.
+      //
+      // Ranges already absent are skipped, and a range the user deliberately
+      // restored is skipped too: an explicit user action outranks a suggestion,
+      // which is exactly the case that produced a duplicated sentence when the
+      // opposite was assumed.
+      nextEditList = applyNewCutRangesToManualTimeline(
+        currentEditList,
+        previousCuts?.value as CutSelectionDocument | undefined,
+        candidate,
+      );
+      if (nextEditList !== currentEditList) {
+        editListContent = serializeJson(nextEditList);
+        editListRevision = sha256(editListContent);
+      } else {
+        nextEditList = null;
+      }
     }
 
     const editList: WriteEditListResult | null = nextEditList && editListContent && editListRevision

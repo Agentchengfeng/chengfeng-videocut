@@ -407,24 +407,70 @@ describe("videocut cuts API", () => {
     expect(await readFile(cutsPath, "utf8")).toBe(before);
   });
 
-  it("rejects Cuts changes over a manual EDL without changing either document", async () => {
+  it("carves new deletions out of a manual EDL instead of refusing or rebuilding", async () => {
+    // Refusing this outright left semantic review with no way in once the user
+    // had touched the timeline even once. Rebuilding from Cuts would discard the
+    // arrangement. So only the newly deleted range is carved out, one operation
+    // at a time, and the hand-arranged timeline otherwise stands.
     const { projectsDir, projectDir, cutsPath } = await createFixture();
-    const editListBefore = await addEditListFixture(projectDir, "manual");
+    // The shared fixture keeps only 1-2s, so deleting w-2 would empty the
+    // timeline and be refused for that reason instead. Give the project a
+    // hand-arranged timeline with room to lose a range.
+    const editListPath = join(projectDir, "edit-list.json");
+    await writeFile(editListPath, `${JSON.stringify({
+      schemaVersion: 1,
+      projectId: "demo",
+      sourceDuration: 2,
+      baseCutsRevision: sha256(await readFile(cutsPath, "utf8")),
+      baseTranscriptRevision: sha256(await readFile(join(projectDir, "transcript.json"), "utf8")),
+      mode: "manual",
+      duration: 2,
+      segments: [
+        {
+          id: "a-roll-0001", source: "input/source.mp4",
+          sourceStart: 0, sourceEnd: 1, timelineStart: 0, trackId: "a-roll", playbackRate: 1,
+        },
+        {
+          id: "a-roll-0002", source: "input/source.mp4",
+          sourceStart: 1, sourceEnd: 2, timelineStart: 1, trackId: "a-roll", playbackRate: 1,
+        },
+      ],
+    }, null, 2)}\n`);
+    const before = JSON.parse(await readFile(editListPath, "utf8")) as {
+      mode: string;
+      duration: number;
+      segments: { sourceStart: number; sourceEnd: number }[];
+    };
+    expect(before.mode).toBe("manual");
     const cutsBefore = await readFile(cutsPath, "utf8");
+
     const handle = createVideocutCutsHandler({ projectsDir });
     const response = await requiredResponse(handle(cutsRequest("PUT", {
       expectedRevision: sha256(cutsBefore),
       cutWordIds: ["w-2"],
     })));
 
-    expect(response.status).toBe(409);
-    expect(await response.json()).toMatchObject({
-      error: {
-        code: "revision_conflict",
-        details: { reason: "manual_edit_list_requires_rebase" },
-      },
-    });
-    expect(await readFile(cutsPath, "utf8")).toBe(cutsBefore);
+    expect(response.status).toBe(200);
+    const after = JSON.parse(await readFile(editListPath, "utf8")) as typeof before;
+    expect(after.mode).toBe("manual");
+    expect(after.duration).toBeLessThan(before.duration);
+    // Cuts recorded the reason as well, so the deletion is still explainable.
+    expect(JSON.parse(await readFile(cutsPath, "utf8")).cutWordIds).toContain("w-2");
+  });
+
+  it("leaves a manual EDL untouched when the deletion is already off the timeline", async () => {
+    // Ranges Cuts already claimed, and ranges the user restored on purpose, are
+    // both skipped: an explicit user action outranks a suggestion.
+    const { projectsDir, projectDir, cutsPath } = await createFixture();
+    const editListBefore = await addEditListFixture(projectDir, "manual");
+    const cutsBefore = JSON.parse(await readFile(cutsPath, "utf8")) as { cutWordIds: string[] };
+    const handle = createVideocutCutsHandler({ projectsDir });
+    const response = await requiredResponse(handle(cutsRequest("PUT", {
+      expectedRevision: sha256(await readFile(cutsPath, "utf8")),
+      cutWordIds: cutsBefore.cutWordIds,
+    })));
+
+    expect(response.status).toBe(200);
     expect(await readFile(join(projectDir, "edit-list.json"), "utf8")).toBe(editListBefore);
   });
 });
