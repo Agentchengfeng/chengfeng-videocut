@@ -1,10 +1,10 @@
 // @vitest-environment happy-dom
 
-import { act, createRef } from "react";
+import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CutPlayer } from "./CutPlayer";
-import type { EdlVideoTransport } from "./useAssembledVideoTransport";
+import { createTransportVideoRef, type EdlVideoTransport } from "./useAssembledVideoTransport";
 
 Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 
@@ -15,7 +15,7 @@ afterEach(() => {
 
 function transportFixture(overrides: Partial<EdlVideoTransport> = {}): EdlVideoTransport {
   return {
-    videoRef: createRef<HTMLVideoElement>(),
+    videoRef: createTransportVideoRef(),
     timelineTime: 12.4,
     duration: 230.5,
     isPlaying: false,

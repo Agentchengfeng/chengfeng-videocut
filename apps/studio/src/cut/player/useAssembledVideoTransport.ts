@@ -1,11 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type RefObject,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PreviewArtifactStream } from "./previewArtifact";
 
 /**
@@ -30,8 +23,36 @@ import type { PreviewArtifactStream } from "./previewArtifact";
  * mapping, no boundary epsilon. A seek is a seek.
  */
 
+/**
+ * A ref React can attach and this hook can also *notice*.
+ *
+ * The player renders its `<video>` only once there is something to play, so the
+ * element arrives several commits after this hook first runs. A plain ref makes
+ * that arrival invisible to effects: they run once against `null`, bail, and never
+ * re-run unless some unrelated dependency happens to change. That is how playback
+ * once ended up sounding perfect with a frozen playhead — the assemble effect
+ * re-ran when the fragment list arrived, the clock subscription did not.
+ *
+ * Holding the element in state makes its arrival a dependency like any other.
+ */
+export type TransportVideoRef = ((node: HTMLVideoElement | null) => void) & {
+  current: HTMLVideoElement | null;
+};
+
+/** Exported so a stubbed transport in a test can supply a real one. */
+export function createTransportVideoRef(
+  onAttach: (node: HTMLVideoElement | null) => void = () => {},
+): TransportVideoRef {
+  const attach = ((node: HTMLVideoElement | null) => {
+    attach.current = node;
+    onAttach(node);
+  }) as TransportVideoRef;
+  attach.current = null;
+  return attach;
+}
+
 export interface EdlVideoTransport {
-  videoRef: RefObject<HTMLVideoElement | null>;
+  videoRef: TransportVideoRef;
   timelineTime: number;
   duration: number;
   isPlaying: boolean;
@@ -84,7 +105,8 @@ export function useAssembledVideoTransport(input: {
   duration: number;
   initialTimelineTime: number;
 }): EdlVideoTransport {
-  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [video, setVideo] = useState<HTMLVideoElement | null>(null);
+  const videoRef = useMemo(() => createTransportVideoRef(setVideo), []);
   const timelineTimeRef = useRef(Math.max(0, input.initialTimelineTime));
   const playingIntentRef = useRef(false);
   const seekGenerationRef = useRef(0);
@@ -126,7 +148,6 @@ export function useAssembledVideoTransport(input: {
   // Assemble. Rebuilt only when the target's identity changes, so an edit that
   // leaves the retained ranges alone never disturbs playback.
   useEffect(() => {
-    const video = videoRef.current;
     if (!video) return;
     let cancelled = false;
     setReady(false);
@@ -209,7 +230,7 @@ export function useAssembledVideoTransport(input: {
     return () => {
       cancelled = true;
     };
-  }, [input.resolveFragmentUrl, target]);
+  }, [input.resolveFragmentUrl, target, video]);
 
   useEffect(() => () => {
     if (objectUrlRef.current) {
@@ -338,7 +359,6 @@ export function useAssembledVideoTransport(input: {
 
   // Follow the media rather than a timer: the element is the only clock.
   useEffect(() => {
-    const video = videoRef.current;
     if (!video) return;
     const onTime = () => {
       publishTimelineTime(video.currentTime);
@@ -380,7 +400,7 @@ export function useAssembledVideoTransport(input: {
       video.removeEventListener("error", onError);
       video.removeEventListener("ended", onEnded);
     };
-  }, [duration, loopEnabled, publishTimelineTime, seek]);
+  }, [duration, loopEnabled, publishTimelineTime, seek, video]);
 
   return {
     videoRef,

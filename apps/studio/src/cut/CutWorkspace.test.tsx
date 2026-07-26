@@ -6,6 +6,15 @@ import { createRoot } from "react-dom/client";
 import { applyEditListOperation, type EditListDocument, type EditListOperation } from "@video-workbench/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+/** The real transport hands React a ref it can also notice; a stub must be callable too. */
+function stubVideoRef() {
+  const attach = ((node: HTMLVideoElement | null) => {
+    attach.current = node;
+  }) as ((node: HTMLVideoElement | null) => void) & { current: HTMLVideoElement | null };
+  attach.current = null;
+  return attach;
+}
+
 const harness = vi.hoisted(() => ({
   cutPlayerProps: [] as Array<Record<string, unknown>>,
   cutTimelineProps: [] as Array<Record<string, unknown>>,
@@ -247,7 +256,7 @@ beforeEach(() => {
     retry: vi.fn(),
   });
   harness.useAssembledVideoTransport.mockReturnValue({
-    videoRef: { current: null },
+    videoRef: stubVideoRef(),
     timelineTime: 2.5,
     duration: 10,
     isPlaying: false,
@@ -663,7 +672,7 @@ describe("CutWorkspace single-page layout contract", () => {
       retry: vi.fn(),
     }));
     harness.useAssembledVideoTransport.mockReturnValue({
-      videoRef: { current: null }, timelineTime: 1, duration: 10, isPlaying: false, desiredPlaying: false,
+      videoRef: stubVideoRef(), timelineTime: 1, duration: 10, isPlaying: false, desiredPlaying: false,
       isWaiting: false, isSeeking: false, playbackRate: 1, volume: 1, muted: false, loopEnabled: false, error: null,
       play: vi.fn(async () => undefined), pause: vi.fn(), togglePlay: vi.fn(async () => undefined), seek,
       setPlaybackRate: vi.fn(), setVolume: vi.fn(), toggleMuted: vi.fn(), toggleLoop: vi.fn(), restoreIntent: vi.fn(async () => undefined),
@@ -714,7 +723,7 @@ describe("CutWorkspace single-page layout contract", () => {
       retry: vi.fn(),
     }));
     harness.useAssembledVideoTransport.mockReturnValue({
-      videoRef: { current: null }, timelineTime: 1, duration: 10, isPlaying: false, desiredPlaying: false,
+      videoRef: stubVideoRef(), timelineTime: 1, duration: 10, isPlaying: false, desiredPlaying: false,
       isWaiting: false, isSeeking: false, playbackRate: 1, volume: 1, muted: false, loopEnabled: false, error: null,
       play: vi.fn(async () => undefined), pause: vi.fn(), togglePlay: vi.fn(async () => undefined), seek,
       setPlaybackRate: vi.fn(), setVolume: vi.fn(), toggleMuted: vi.fn(), toggleLoop: vi.fn(), restoreIntent: vi.fn(async () => undefined),
@@ -739,7 +748,7 @@ describe("CutWorkspace single-page layout contract", () => {
   it("forwards a transcript playback request to the current EDL transport", () => {
     const seek = vi.fn(async () => undefined);
     harness.useAssembledVideoTransport.mockReturnValue({
-      videoRef: { current: null }, timelineTime: 1, duration: 10, isPlaying: false, desiredPlaying: false,
+      videoRef: stubVideoRef(), timelineTime: 1, duration: 10, isPlaying: false, desiredPlaying: false,
       isWaiting: false, isSeeking: false, playbackRate: 1, volume: 1, muted: false, loopEnabled: false, error: null,
       play: vi.fn(async () => undefined), pause: vi.fn(), togglePlay: vi.fn(async () => undefined), seek,
       setPlaybackRate: vi.fn(), setVolume: vi.fn(), toggleMuted: vi.fn(), toggleLoop: vi.fn(), restoreIntent: vi.fn(async () => undefined),
@@ -759,7 +768,7 @@ describe("CutWorkspace single-page layout contract", () => {
     const transportSeek = vi.fn(async () => undefined);
     let timelineTime = 1;
     harness.useAssembledVideoTransport.mockImplementation(() => ({
-      videoRef: { current: null }, timelineTime, duration: 10, isPlaying: true, desiredPlaying: true,
+      videoRef: stubVideoRef(), timelineTime, duration: 10, isPlaying: true, desiredPlaying: true,
       isWaiting: false, isSeeking: false, playbackRate: 1, volume: 1, muted: false, loopEnabled: false, error: null,
       play: vi.fn(async () => undefined), pause: vi.fn(), togglePlay: vi.fn(async () => undefined), seek: transportSeek,
       setPlaybackRate: vi.fn(), setVolume: vi.fn(), toggleMuted: vi.fn(), toggleLoop: vi.fn(), restoreIntent: vi.fn(async () => undefined),
@@ -816,7 +825,7 @@ describe("CutWorkspace single-page layout contract", () => {
       retry: vi.fn(),
     }));
     harness.useAssembledVideoTransport.mockReturnValue({
-      videoRef: { current: null },
+      videoRef: stubVideoRef(),
       timelineTime: 3,
       duration: 10,
       isPlaying: true,
@@ -892,7 +901,7 @@ describe("CutWorkspace single-page layout contract", () => {
       retry: vi.fn(),
     }));
     harness.useAssembledVideoTransport.mockReturnValue({
-      videoRef: { current: null },
+      videoRef: stubVideoRef(),
       timelineTime: 6,
       duration: 10,
       isPlaying: false,
@@ -962,7 +971,7 @@ describe("CutWorkspace single-page layout contract", () => {
       retry: vi.fn(),
     }));
     harness.useAssembledVideoTransport.mockReturnValue({
-      videoRef: { current: null },
+      videoRef: stubVideoRef(),
       timelineTime: 3,
       duration: 10,
       isPlaying: false,
@@ -1032,7 +1041,7 @@ describe("CutWorkspace single-page layout contract", () => {
       retry: vi.fn(),
     }));
     harness.useAssembledVideoTransport.mockImplementation(() => ({
-      videoRef: { current: null },
+      videoRef: stubVideoRef(),
       timelineTime: 3,
       duration: 10,
       isPlaying: desiredPlaying,
@@ -1104,7 +1113,7 @@ describe("CutWorkspace single-page layout contract", () => {
       retry: vi.fn(),
     }));
     harness.useAssembledVideoTransport.mockImplementation(() => ({
-      videoRef: { current: null },
+      videoRef: stubVideoRef(),
       timelineTime: 3,
       duration: 10,
       isPlaying: desiredPlaying,
@@ -1162,7 +1171,7 @@ describe("CutWorkspace single-page layout contract", () => {
       undoLastEditListChange: harness.undoLastEditListChange,
     }));
     harness.useAssembledVideoTransport.mockReturnValue({
-      videoRef: { current: null },
+      videoRef: stubVideoRef(),
       timelineTime: 6,
       duration: 10,
       isPlaying: false,

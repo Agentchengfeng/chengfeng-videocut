@@ -80,6 +80,14 @@ function signalStats(output: string): Record<string, number> {
   );
 }
 
+async function waitUntil(condition: () => Promise<boolean> | boolean, what: string) {
+  for (let index = 0; index < 400; index += 1) {
+    if (await condition()) return;
+    await Bun.sleep(5);
+  }
+  throw new Error(`Timed out waiting for ${what}`);
+}
+
 async function waitFor(manager: EditPreviewArtifactManager, projectId: string, phase: string) {
   for (let index = 0; index < 100; index += 1) {
     const state = await manager.status(projectId);
@@ -1255,8 +1263,12 @@ test("final probe cannot publish an old revision when project identity changes b
   });
 
   manager.schedule(f.projectId);
-  await Bun.sleep(80);
   const manifest = join(f.projectDir, ".chengfeng-videocut", "preview-edited", "current.json");
+  // A fixed sleep is a guess about how fast this machine is: under a full-suite
+  // load nothing had been published yet and this read hit a missing file. Publish
+  // is atomic, so the manifest appearing at all is the event worth waiting for —
+  // and what it holds when it appears is exactly what this test is about.
+  await waitUntil(() => Bun.file(manifest).exists(), "the first publish");
   let saved = JSON.parse(await readFile(manifest, "utf8"));
   expect(saved.editRevision).not.toBe(r1);
   const tempFilesAfterFirstRun = (await readdir(join(f.projectDir, ".chengfeng-videocut", "preview-edited")))
