@@ -8,7 +8,6 @@ import {
   DEFAULT_SUBTITLE_STYLE,
   displayColumns,
   joinWordText,
-  resolveCueStyle,
   subtitleCueTimings,
   subtitleStaleness,
   SUBTITLE_SCHEMA_VERSION,
@@ -85,10 +84,13 @@ function gap(id: string, start: number, end: number): TimedWord {
 }
 
 describe("displayColumns", () => {
-  it("counts a Han character as one column and a Latin character as half", () => {
+  it("uses the measured width of each character class, not a flat half for Latin", () => {
     expect(displayColumns("今天")).toBe(2);
-    expect(displayColumns("Grok")).toBe(2);
-    expect(displayColumns("今天用 Grok")).toBe(5);
+    // G is a capital (0.7), rok are lowercase (0.55 each).
+    expect(displayColumns("Grok")).toBeCloseTo(2.35, 5);
+    expect(displayColumns("今天用 Grok")).toBeCloseTo(5.35, 5);
+    // Whitespace was never spoken and takes no room on a centred line.
+    expect(displayColumns("  今天  ")).toBe(2);
   });
 });
 
@@ -105,6 +107,48 @@ describe("joinWordText", () => {
 });
 
 describe("buildSubtitleCues", () => {
+  it("ends a screen where a sentence ended: a cue boundary the audience also hears", () => {
+    const words: TimedWord[] = [
+      // 0 -> 1.2, then 0.15s of silence, then 1.35 -> 2.55.
+      ...speech(0, "这是前面一句", "a").map((word) => ({ ...word, cueId: "cue-1" })),
+      ...speech(1.35, "这是后面一句", "b").map((word) => ({ ...word, cueId: "cue-2" })),
+    ];
+    const cues = buildSubtitleCues(words, fullEditList(3), { maxColumns: 40 });
+    expect(cues.map((cue) => cue.text)).toEqual(["这是前面一句", "这是后面一句"]);
+  });
+
+  it("ignores a cue boundary the audience cannot hear", () => {
+    // Streaming recognition closes a cue mid-word when it revises a hypothesis.
+    // No silence, so it is not a sentence end and must not split anything.
+    const words: TimedWord[] = [
+      ...speech(0, "他和我现在正", "a").map((word) => ({ ...word, cueId: "cue-1" })),
+      ...speech(1.2, "在做的事情", "b").map((word) => ({ ...word, cueId: "cue-2" })),
+    ];
+    const cues = buildSubtitleCues(words, fullEditList(3), { maxColumns: 40 });
+    expect(cues.map((cue) => cue.text)).toEqual(["他和我现在正在做的事情"]);
+  });
+
+  it("absorbs a stub back into the line it came off", () => {
+    // The 0.15s cue boundary is a sentence end by the rule above, but taking it
+    // would leave a two-character screen. Judging the result overrules it.
+    const words: TimedWord[] = [
+      ...speech(0, "这是前面一句", "a").map((word) => ({ ...word, cueId: "cue-1" })),
+      ...speech(1.35, "结尾", "b").map((word) => ({ ...word, cueId: "cue-2" })),
+    ];
+    const cues = buildSubtitleCues(words, fullEditList(3), { maxColumns: 40 });
+    expect(cues.map((cue) => cue.text)).toEqual(["这是前面一句结尾"]);
+  });
+
+  it("keeps a stub separate when merging it would cross deleted speech", () => {
+    const words: TimedWord[] = [
+      ...speech(0, "这是前面一句", "a"),
+      ...speech(1.2, "这几个字被删掉", "b"),
+      ...speech(2.6, "结尾", "c"),
+    ];
+    const cues = buildSubtitleCues(words, editListWithHole(3, 1.2, 2.6), { maxColumns: 40 });
+    expect(cues.map((cue) => cue.text)).toEqual(["这是前面一句", "结尾"]);
+  });
+
   it("spreads a long run evenly instead of leaving a stub at the end", () => {
     // Greedy filling gives 6/6/3 and the last screen flashes past. Fifteen
     // columns over three screens is 5/5/5.
@@ -131,71 +175,63 @@ describe("buildSubtitleCues", () => {
   it("gives a single word wider than the limit its own screen rather than dropping it", () => {
     const words: TimedWord[] = [
       { id: "a", text: "Supercalifragilistic", start: 0, end: 1, isGap: false },
-      { id: "b", text: "词", start: 1, end: 1.2, isGap: false },
+      { id: "b", text: "另一个够长的屏", start: 1, end: 2.4, isGap: false },
     ];
-    const cues = buildSubtitleCues(words, fullEditList(2), { maxColumns: 4 });
+    const cues = buildSubtitleCues(words, fullEditList(3), { maxColumns: 4 });
     expect(cues.flatMap((cue) => cue.wordIds)).toEqual(["a", "b"]);
   });
 
   it("breaks where the audience hears a pause", () => {
     const words: TimedWord[] = [
-      ...speech(0, "开场白", "a"),
-      gap("g-1", 0.6, 1.4),
-      ...speech(1.4, "正文", "b"),
+      ...speech(0, "这是开场白", "a"),
+      gap("g-1", 1.0, 1.8),
+      ...speech(1.8, "这是正文内容", "b"),
     ];
-    const cues = buildSubtitleCues(words, fullEditList(3), { maxColumns: 40 });
-    expect(cues.map((cue) => cue.text)).toEqual(["开场白", "正文"]);
+    const cues = buildSubtitleCues(words, fullEditList(4), { maxColumns: 40 });
+    expect(cues.map((cue) => cue.text)).toEqual(["这是开场白", "这是正文内容"]);
   });
 
   it("keeps a sentence together when only a short breath separates the words", () => {
     const words: TimedWord[] = [
-      ...speech(0, "开场白", "a"),
-      gap("g-1", 0.6, 0.7),
-      ...speech(0.7, "正文", "b"),
+      ...speech(0, "这是开场白", "a"),
+      gap("g-1", 1.0, 1.1),
+      ...speech(1.1, "这是正文内容", "b"),
     ];
-    const cues = buildSubtitleCues(words, fullEditList(3), { maxColumns: 40 });
-    expect(cues.map((cue) => cue.text)).toEqual(["开场白正文"]);
+    const cues = buildSubtitleCues(words, fullEditList(4), { maxColumns: 40 });
+    expect(cues.map((cue) => cue.text)).toEqual(["这是开场白这是正文内容"]);
   });
 
   it("does not split a sentence just because a pause was trimmed out of it", () => {
-    // 0.6-1.4 is silence and it is deleted. The words either side are one
+    // 1.0-1.8 is silence and it is deleted. The words either side are one
     // sentence and must stay on one screen.
     const words: TimedWord[] = [
-      ...speech(0, "开场白", "a"),
-      gap("g-1", 0.6, 1.4),
-      ...speech(1.4, "正文", "b"),
+      ...speech(0, "这是开场白", "a"),
+      gap("g-1", 1.0, 1.8),
+      ...speech(1.8, "这是正文内容", "b"),
     ];
-    const cues = buildSubtitleCues(
-      words,
-      editListWithHole(3, 0.6, 1.4),
-      { maxColumns: 40 },
-    );
-    expect(cues.map((cue) => cue.text)).toEqual(["开场白正文"]);
+    const cues = buildSubtitleCues(words, editListWithHole(4, 1.0, 1.8), { maxColumns: 40 });
+    expect(cues.map((cue) => cue.text)).toEqual(["这是开场白这是正文内容"]);
   });
 
   it("splits where deleted speech used to be", () => {
-    // 0.6-1.2 was spoken and is deleted. What is either side of it is now
+    // 1.0-2.4 was spoken and is deleted. What is either side of it is now
     // adjacent on the timeline but has nothing to do with each other.
     const words: TimedWord[] = [
-      ...speech(0, "开场白", "a"),
-      ...speech(0.6, "被删掉", "b"),
-      ...speech(1.2, "正文", "c"),
+      ...speech(0, "这是开场白", "a"),
+      ...speech(1.0, "这几个字被删掉", "b"),
+      ...speech(2.4, "这是正文内容", "c"),
     ];
-    const cues = buildSubtitleCues(
-      words,
-      editListWithHole(3, 0.6, 1.2),
-      { maxColumns: 40 },
-    );
-    expect(cues.map((cue) => cue.text)).toEqual(["开场白", "正文"]);
+    const cues = buildSubtitleCues(words, editListWithHole(4, 1.0, 2.4), { maxColumns: 40 });
+    expect(cues.map((cue) => cue.text)).toEqual(["这是开场白", "这是正文内容"]);
   });
 
   it("never puts a deleted word on a screen", () => {
     const words: TimedWord[] = [
-      ...speech(0, "留下", "a"),
-      ...speech(0.4, "删掉", "b"),
-      ...speech(0.8, "留下", "c"),
+      ...speech(0, "这几个字留下", "a"),
+      ...speech(1.2, "这几个字删掉", "b"),
+      ...speech(2.4, "这几个字留下", "c"),
     ];
-    const cues = buildSubtitleCues(words, editListWithHole(3, 0.4, 0.8), {});
+    const cues = buildSubtitleCues(words, editListWithHole(4, 1.2, 2.4), {});
     const claimed = cues.flatMap((cue) => cue.wordIds);
     expect(claimed.some((id) => id.startsWith("b-"))).toBe(false);
   });
@@ -224,14 +260,14 @@ describe("subtitleCueTimings", () => {
     const words: TimedWord[] = [
       ...speech(0, "开场", "a"),
       ...speech(0.4, "删掉", "b"),
-      ...speech(0.8, "正文", "c"),
+      ...speech(0.8, "这是正文内容", "c"),
     ];
     const document: SubtitleDocument = {
       schemaVersion: SUBTITLE_SCHEMA_VERSION,
       projectId: "p",
       baseTranscriptRevision: "tr",
       style: DEFAULT_SUBTITLE_STYLE,
-      cues: [{ id: "sub-0001", wordIds: ["c-0", "c-1"], text: "正文" }],
+      cues: [{ id: "sub-0001", wordIds: ["c-0", "c-1"], text: "这是正文内容" }],
     };
     const [timing] = subtitleCueTimings(document, words, editListWithHole(1.2, 0.4, 0.8));
     // Source 0.8 with 0.4s removed before it lands at 0.4 on the timeline.
@@ -311,21 +347,6 @@ describe("subtitleStaleness", () => {
     expect(stale[0]?.missingWordIds).toEqual(["ghost"]);
     expect(stale[0]?.cutWordIds).toEqual([]);
     expect(stale[0]?.orphaned).toBe(false);
-  });
-});
-
-describe("resolveCueStyle", () => {
-  it("layers a screen's overrides on top of the document style", () => {
-    const document: SubtitleDocument = {
-      schemaVersion: SUBTITLE_SCHEMA_VERSION,
-      projectId: "p",
-      baseTranscriptRevision: "tr",
-      style: { ...DEFAULT_SUBTITLE_STYLE, color: "#ffffff" },
-      cues: [{ id: "sub-0001", wordIds: ["w-0"], text: "今", style: { color: "#ffcc00" } }],
-    };
-    expect(resolveCueStyle(document, document.cues[0]!).color).toBe("#ffcc00");
-    expect(resolveCueStyle(document, document.cues[0]!).fontSize)
-      .toBe(DEFAULT_SUBTITLE_STYLE.fontSize);
   });
 });
 

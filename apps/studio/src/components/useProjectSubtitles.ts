@@ -77,12 +77,29 @@ export interface ProjectSubtitles {
   /** Replace the whole document. Text edits settle before writing. */
   save: (next: SubtitleDocument, options?: { immediate?: boolean }) => void;
   setCueText: (cueId: string, text: string) => void;
-  setStyle: (patch: Partial<SubtitleStyle>) => void;
-  setCueStyle: (cueId: string, patch: Partial<SubtitleStyle> | null) => void;
-  /** Move this screen's words onto the end of the one before it. */
-  mergeWithPrevious: (cueId: string) => void;
-  /** Break this screen in two, before the word at `wordIndex`. */
-  splitAt: (cueId: string, wordIndex: number) => void;
+  /** One look for the whole document. There is deliberately no per-screen style. */
+  setStyle: (style: SubtitleStyle) => void;
+  /**
+   * Move this screen's words onto the end of the one before it.
+   *
+   * Returns where the join happened — the surviving screen and the text offset
+   * of the seam — so the caller can put the caret there. Merging is a text
+   * edit (backspace across a screen break), and a text edit that loses the
+   * caret breaks the illusion that the list is one document.
+   */
+  mergeWithPrevious: (cueId: string) => { cueId: string; offset: number } | null;
+  /**
+   * Break this screen in two. The text splits exactly at `textOffset` — the
+   * caret, which is where the person pressed Enter — and the words split at
+   * `wordIndex`. They are separate numbers because the text is the person's
+   * own writing: its character positions stopped corresponding to word
+   * boundaries the moment it was edited, and one word ("Codex") can be many
+   * characters. Returns the id of the new second screen.
+   */
+  splitAt: (
+    cueId: string,
+    at: { wordIndex: number; textOffset: number },
+  ) => string | null;
 }
 
 export function useProjectSubtitles(projectId: string): ProjectSubtitles {
@@ -222,30 +239,20 @@ export function useProjectSubtitles(projectId: string): ProjectSubtitles {
     if (next) save(next);
   }, [save, withCues]);
 
-  const setStyle = useCallback((patch: Partial<SubtitleStyle>) => {
+  const setStyle = useCallback((style: SubtitleStyle) => {
     const current = documentRef.current;
     if (!current) return;
-    save({ ...current, style: { ...current.style, ...patch } }, { immediate: true });
+    save({ ...current, style }, { immediate: true });
   }, [save]);
 
-  const setCueStyle = useCallback((cueId: string, patch: Partial<SubtitleStyle> | null) => {
-    const next = withCues((cues) => cues.map((cue) => {
-      if (cue.id !== cueId) return cue;
-      if (patch === null) {
-        const { style: _dropped, ...rest } = cue;
-        return rest;
-      }
-      return { ...cue, style: { ...(cue.style ?? {}), ...patch } };
-    }));
-    if (next) save(next, { immediate: true });
-  }, [save, withCues]);
-
   const mergeWithPrevious = useCallback((cueId: string) => {
+    let seam: { cueId: string; offset: number } | null = null;
     const next = withCues((cues) => {
       const index = cues.findIndex((cue) => cue.id === cueId);
       if (index <= 0) return null;
       const previous = cues[index - 1] as SubtitleCue;
       const current = cues[index] as SubtitleCue;
+      seam = { cueId: previous.id, offset: previous.text.length };
       const merged: SubtitleCue = {
         ...previous,
         wordIds: [...previous.wordIds, ...current.wordIds],
@@ -255,34 +262,43 @@ export function useProjectSubtitles(projectId: string): ProjectSubtitles {
       };
       return [...cues.slice(0, index - 1), merged, ...cues.slice(index + 1)];
     });
-    if (next) save(next, { immediate: true });
+    if (!next) return null;
+    save(next, { immediate: true });
+    return seam;
   }, [save, withCues]);
 
-  const splitAt = useCallback((cueId: string, wordIndex: number) => {
+  const splitAt = useCallback((
+    cueId: string,
+    at: { wordIndex: number; textOffset: number },
+  ) => {
+    let created: string | null = null;
     const next = withCues((cues) => {
       const index = cues.findIndex((cue) => cue.id === cueId);
       if (index < 0) return null;
       const current = cues[index] as SubtitleCue;
-      if (wordIndex <= 0 || wordIndex >= current.wordIds.length) return null;
-      // The text is the person's, so it cannot be re-derived from the words.
-      // Split it at the same proportion and let them fix the seam if needed.
-      const at = Math.min(current.text.length, Math.max(0, wordIndex));
+      // A break at the very edge produces a screen with nothing on it — either
+      // no text to display or no words to give it a time. Refuse both.
+      if (at.wordIndex <= 0 || at.wordIndex >= current.wordIds.length) return null;
+      if (at.textOffset <= 0 || at.textOffset >= current.text.length) return null;
       const left: SubtitleCue = {
         ...current,
-        wordIds: current.wordIds.slice(0, wordIndex),
-        text: current.text.slice(0, at),
+        wordIds: current.wordIds.slice(0, at.wordIndex),
+        text: current.text.slice(0, at.textOffset),
       };
       const right: SubtitleCue = {
         ...current,
         // A duplicate cue id is refused on save, and splitting the same screen
         // twice would produce one. Take the first suffix nobody holds.
         id: freeCueId(cues, current.id),
-        wordIds: current.wordIds.slice(wordIndex),
-        text: current.text.slice(at),
+        wordIds: current.wordIds.slice(at.wordIndex),
+        text: current.text.slice(at.textOffset),
       };
+      created = right.id;
       return [...cues.slice(0, index), left, right, ...cues.slice(index + 1)];
     });
-    if (next) save(next, { immediate: true });
+    if (!next) return null;
+    save(next, { immediate: true });
+    return created;
   }, [save, withCues]);
 
   // Stable while nothing changed. The subtitle list is memoized on this object,
@@ -302,7 +318,6 @@ export function useProjectSubtitles(projectId: string): ProjectSubtitles {
     save,
     setCueText,
     setStyle,
-    setCueStyle,
     mergeWithPrevious,
     splitAt,
   }), [
@@ -316,7 +331,6 @@ export function useProjectSubtitles(projectId: string): ProjectSubtitles {
     revision,
     save,
     saveState,
-    setCueStyle,
     setCueText,
     setStyle,
     splitAt,

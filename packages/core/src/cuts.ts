@@ -7,6 +7,15 @@ export interface TimedWord {
   isGap?: boolean;
   /** Present when the transcript carried one. Timing consumers ignore it. */
   text?: string;
+  /**
+   * The transcript cue this word came from.
+   *
+   * Transcription groups words into utterances, and after the cut those groups
+   * line up with sentences often enough to be worth reading — but only in
+   * combination with a pause, because streaming recognition also ends a cue
+   * mid-word when it revises a hypothesis. Cutting decisions ignore this.
+   */
+  cueId?: string;
 }
 
 export interface CutTimeRange {
@@ -111,12 +120,14 @@ export function parseTranscriptWords(payload: unknown): TimedWord[] {
         );
       }
       seenIds.add(id);
+      const cueId = typeof cue.id === "string" ? cue.id.trim() : "";
       words.push({
         id,
         start,
         end,
         isGap: word.isGap === true,
         ...(typeof word.text === "string" ? { text: word.text } : {}),
+        ...(cueId ? { cueId } : {}),
       });
     });
   });

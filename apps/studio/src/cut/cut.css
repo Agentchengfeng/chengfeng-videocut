@@ -1300,10 +1300,14 @@ select:focus-visible,
    inset, centred the same way. Everything inside is then measured in cqh/cqw,
    which is exactly what the document stores — percentages of the frame — so
    the preview and an export draw the same picture at different sizes. */
+/* Sized in JS to the picture inside the video element, not the element: the two
+   differ by however much `object-fit: contain` letterboxes, and CSS cannot know
+   the media's shape. Until metadata lands there is nothing to draw on anyway. */
 .cf-cut-subtitle-overlay {
   position: absolute;
-  inset: 8px;
-  width: min(calc(100% - 16px), calc((100vh - 230px) * 4 / 3));
+  inset: 0;
+  width: 0;
+  height: 0;
   margin: auto;
   container-type: size;
   pointer-events: none;
@@ -1313,14 +1317,19 @@ select:focus-visible,
    container's content box, and every size in the document is measured against
    it. Padding the offset in made 5.4% of a 564px frame render at 26px instead
    of 30px — the preview would have been quietly lying about the export. */
+/* Full-width band, shrink-to-fit box centred in it. Centring with `left: 50%`
+   instead capped the box's automatic width at the half-frame to its right, so
+   a line that fits across the frame wrapped to three lines at half width. */
 .cf-cut-subtitle-overlay__text {
   position: absolute;
-  left: 50%;
+  right: 0;
+  left: 0;
+  width: fit-content;
+  margin: 0 auto;
   padding: 0.1em 0.3em;
   border-radius: 0.1em;
   text-align: center;
   text-wrap: balance;
-  transform: translateX(-50%);
 }
 
 .cf-cut-subtitle-overlay[data-anchor="bottom"] .cf-cut-subtitle-overlay__text {
@@ -1333,7 +1342,7 @@ select:focus-visible,
 
 .cf-cut-subtitle-overlay[data-anchor="middle"] .cf-cut-subtitle-overlay__text {
   top: 50%;
-  transform: translate(-50%, -50%);
+  transform: translateY(-50%);
 }
 
 /* Subtitle pane --------------------------------------------------- */
@@ -1501,24 +1510,20 @@ select:focus-visible,
   width: 100%;
   min-height: 28px;
   padding: 3px 6px;
-  border: 1px solid transparent;
-  border-radius: 5px;
+  border: 0;
   background: transparent;
   color: var(--text-1);
   font-size: 13px;
   line-height: 20px;
   resize: none;
   field-sizing: content;
-  transition: background-color 120ms ease, border-color 120ms ease;
 }
 
-.cf-subtitle-row__text:hover {
-  background: rgb(255 255 255 / 3%);
-}
-
+/* No hover tint, no focus box, no border — the subtitle is the text, and the
+   text is what you click into. A field around it said "fill this in" about
+   something that is already filled in, and put a second rectangle inside a row
+   that is already a row. The caret is the only affordance needed. */
 .cf-subtitle-row__text:focus {
-  border-color: #303036;
-  background: var(--panel-input);
   outline: none;
 }
 

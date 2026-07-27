@@ -407,11 +407,7 @@ export function CutWorkspace({
     if (!timing) return null;
     const cue = subtitleDocument.cues.find((candidate) => candidate.id === timing.cueId);
     if (!cue || !cue.text.trim()) return null;
-    return {
-      cueId: cue.id,
-      text: cue.text,
-      style: { ...subtitleDocument.style, ...(cue.style ?? {}) },
-    };
+    return { cueId: cue.id, text: cue.text, style: subtitleDocument.style };
   }, [subtitles.document, subtitles.timings, transport.timelineTime]);
 
   const canUndo = undoDepth > 0 && editList.saveState !== "saving" && cutSelection.saveState !== "saving";
@@ -555,12 +551,7 @@ export function CutWorkspace({
         subtitle={activeSubtitle}
       />
 
-      <CutInspector
-        editList={editList}
-        transport={transport}
-        subtitles={subtitles}
-        selectedSubtitleCueId={featureTab === "subtitle" ? selectedSubtitleCueId : null}
-      />
+      <CutInspector subtitles={subtitles} />
 
       <CutTimeline
         projectId={projectId}

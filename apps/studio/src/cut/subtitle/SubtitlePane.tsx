@@ -87,7 +87,7 @@ const SubtitleRow = memo(function SubtitleRow({
   onSeek: () => void;
   onTextChange: (text: string) => void;
   onMerge: () => void;
-  onSplit: (wordIndex: number) => void;
+  onSplit: (at: { wordIndex: number; textOffset: number }) => void;
 }) {
   const notes = problems(timing, stale);
   return (
@@ -132,7 +132,10 @@ const SubtitleRow = memo(function SubtitleRow({
             // the same thing, and it pushed the actual words down the row.
             if (event.key === "Enter" && !event.shiftKey && collapsed) {
               event.preventDefault();
-              onSplit(wordIndexAt(words, cue.text, at));
+              // The caret says exactly where the *text* breaks. Which word it
+              // falls on has to be worked out, because one word can be several
+              // characters and the text may have been rewritten since.
+              onSplit({ wordIndex: wordIndexAt(words, cue.text, at), textOffset: at });
               return;
             }
             if (event.key === "Backspace" && collapsed && at === 0 && index > 0) {
@@ -265,7 +268,7 @@ export const SubtitlePane = memo(function SubtitlePane({
             }}
             onTextChange={(text) => subtitles.setCueText(cue.id, text)}
             onMerge={() => subtitles.mergeWithPrevious(cue.id)}
-            onSplit={(wordIndex) => subtitles.splitAt(cue.id, wordIndex)}
+            onSplit={(at) => subtitles.splitAt(cue.id, at)}
           />
         ))}
       </ol>

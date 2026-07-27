@@ -145,7 +145,15 @@ export function matchSubtitleStylePreset(style: SubtitleStyle): SubtitleStylePre
   ).every((key) => preset.style[key] === style[key])) ?? null;
 }
 
-/** One screenful of subtitle. */
+/**
+ * One screenful of subtitle.
+ *
+ * There is deliberately no per-screen style. One document, one look: a second
+ * place to set the same thing is a second place for it to be wrong, and the
+ * thing it bought — an emphasised line here and there — was not worth the
+ * column of controls, the override markers, and the way back that all had to
+ * exist for it.
+ */
 export interface SubtitleCue {
   id: string;
   /**
@@ -155,8 +163,6 @@ export interface SubtitleCue {
   wordIds: string[];
   /** What is displayed. Starts as the words joined up, then is edited freely. */
   text: string;
-  /** Style fields that differ from the document's, for this screen only. */
-  style?: Partial<SubtitleStyle>;
 }
 
 export interface SubtitleDocument {
@@ -223,11 +229,26 @@ export const COMFORTABLE_COLUMNS_PER_SECOND = 9;
 /** A screen shorter than this reads as a flash even when it has few words. */
 export const MINIMUM_SCREEN_SECONDS = 0.7;
 
+/**
+ * How wide a character is, as a fraction of a Han character.
+ *
+ * Measured in the browser at subtitle size in PingFang SC, not assumed: a flat
+ * one-half for everything Latin under-counted a real line by 17%, and the line
+ * that was supposed to fit wrapped.
+ */
+const COLUMN_WIDTHS = { han: 1, upper: 0.7, lower: 0.55 } as const;
+
 export function displayColumns(text: string): number {
   let columns = 0;
   for (const character of text) {
     if (/\s/u.test(character)) continue;
-    columns += /[\u{2E80}-\u{9FFF}\u{F900}-\u{FAFF}\u{FF00}-\u{FF60}]/u.test(character) ? 1 : 0.5;
+    if (/[\u{2E80}-\u{9FFF}\u{F900}-\u{FAFF}\u{FF00}-\u{FF60}]/u.test(character)) {
+      columns += COLUMN_WIDTHS.han;
+    } else if (/[A-Z]/u.test(character)) {
+      columns += COLUMN_WIDTHS.upper;
+    } else {
+      columns += COLUMN_WIDTHS.lower;
+    }
   }
   return columns;
 }
@@ -390,7 +411,7 @@ export function joinWordText(words: readonly TimedWord[]): string {
 }
 
 export interface BuildSubtitleCuesOptions {
-  /** Widest a screen may get, in display columns. */
+  /** Widest a screen may get, in display columns. One screen is one line. */
   maxColumns?: number;
   /**
    * A heard pause at least this long ends the screen. Anything shorter is a
@@ -403,7 +424,15 @@ export interface BuildSubtitleCuesOptions {
   tightBreakCost?: number;
 }
 
-const DEFAULT_MAX_COLUMNS = 16;
+/**
+ * How wide one screen gets, in display columns.
+ *
+ * One screen is one line, so this is what a line can hold. At the standard look
+ * — 5.4% of frame height, 86% of frame width — a 4:3 frame fits 21 Han
+ * characters across. Eighteen leaves room for the wider looks without
+ * re-splitting, and reads as one glance.
+ */
+const DEFAULT_MAX_COLUMNS = 17;
 const DEFAULT_BREAK_PAUSE_SECONDS = 0.32;
 
 /**
@@ -421,7 +450,37 @@ interface SpeechRun {
   words: TimedWord[];
   /** Timeline seconds of silence before words[k]; index 0 is the run's start. */
   gapBefore: number[];
+  /** Speech was cut out between the previous run and this one. */
+  afterDeletion: boolean;
 }
+
+/**
+ * Narrower than this and a screen is a stub, not a screen.
+ *
+ * Four columns is two Han characters plus a little. Below it the eye registers
+ * a flicker rather than a line, whatever the timing says.
+ */
+const MINIMUM_SCREEN_COLUMNS = 4;
+
+/**
+ * The shortest silence that makes a transcript cue boundary a sentence end.
+ *
+ * Transcription groups words into utterances, and after the cut those groups
+ * mostly are sentences — but not reliably, because streaming recognition also
+ * closes a cue when it revises its hypothesis, and that happens mid-word with
+ * no silence at all. Measured on a real recording:
+ *
+ * ```text
+ * 每天早上Codex都会调用Grok │ 查询最新信息再筛选…   0.88s   a sentence
+ * 我看一眼就能看到他和我现在正 │ 在做的事情有什么关系  0.00s   a revision, splitting 正/在
+ * ```
+ *
+ * So neither signal is enough alone: the pause says "something ended", the cue
+ * boundary says "the recogniser thought so too". Requiring both is what tells a
+ * sentence from an artefact, and it is why this threshold can be far below the
+ * one a pause needs to break a sentence open from the inside.
+ */
+const SENTENCE_PAUSE_SECONDS = 0.1;
 
 /**
  * Split one run into screens, balancing their lengths and preferring pauses.
@@ -491,14 +550,17 @@ function splitRun(
 /**
  * Cut the retained speech into screens.
  *
- * Two things end a run of speech outright, before any balancing:
+ * Three things end a run of speech outright, before any balancing:
  *
  * 1. **Speech was deleted here.** Two words either side of a removed sentence
  *    are neighbours on the timeline but have nothing to do with each other.
  *    A deleted *silence* is not a break — trimming a pause out of the middle of
  *    a sentence must not split the sentence.
- * 2. **The audience hears a pause.** Measured on the edited timeline, not the
- *    source, because that is what they actually experience.
+ * 2. **A sentence ended.** The transcript's own cue boundary, but only where
+ *    the audience also hears a pause — see `SENTENCE_PAUSE_SECONDS` for why one
+ *    without the other is not evidence.
+ * 3. **The audience hears a long pause**, anywhere. A break inside what
+ *    transcription called one utterance needs more silence to justify itself.
  *
  * Whatever is left over is longer than one screen, and `splitRun` divides it.
  *
@@ -518,13 +580,14 @@ export function buildSubtitleCues(
   const ordered = [...words].sort((left, right) => left.start - right.start);
 
   const runs: SpeechRun[] = [];
-  let run: SpeechRun = { words: [], gapBefore: [] };
+  let run: SpeechRun = { words: [], gapBefore: [], afterDeletion: false };
   let previousEndTimeline: number | null = null;
+  let previousCueId: string | null = null;
   let speechDeletedSinceLastKept = false;
 
-  const endRun = () => {
+  const endRun = (afterDeletion = false) => {
     if (run.words.length > 0) runs.push(run);
-    run = { words: [], gapBefore: [] };
+    run = { words: [], gapBefore: [], afterDeletion };
   };
 
   for (const word of ordered) {
@@ -548,13 +611,18 @@ export function buildSubtitleCues(
       continue;
     }
 
-    if (speechDeletedSinceLastKept) endRun();
+    if (speechDeletedSinceLastKept) endRun(true);
     speechDeletedSinceLastKept = false;
 
     const gap = previousEndTimeline !== null && startOnTimeline !== null
       ? Math.max(0, startOnTimeline - previousEndTimeline)
       : 0;
-    if (run.words.length > 0 && gap >= breakPause) endRun();
+    const sentenceEnded = previousCueId !== null
+      && word.cueId !== undefined
+      && word.cueId !== previousCueId
+      && gap >= SENTENCE_PAUSE_SECONDS;
+    if (run.words.length > 0 && (sentenceEnded || gap >= breakPause)) endRun();
+    previousCueId = word.cueId ?? previousCueId;
 
     run.gapBefore.push(run.words.length === 0 ? breakPause : gap);
     run.words.push(word);
@@ -562,19 +630,67 @@ export function buildSubtitleCues(
   }
   endRun();
 
-  const cues: SubtitleCue[] = [];
+  // Screens, each carrying whether anything was cut away just before it.
+  const screens: Array<{ words: TimedWord[]; afterDeletion: boolean }> = [];
   for (const item of runs) {
-    for (const screen of splitRun(item, maxColumns, breakPause, tightBreakCost)) {
-      const text = joinWordText(screen);
-      if (!text) continue;
-      cues.push({
-        id: `${prefix}-${String(cues.length + 1).padStart(4, "0")}`,
-        wordIds: screen.map((word) => word.id),
-        text,
-      });
+    for (const [index, words] of splitRun(item, maxColumns, breakPause, tightBreakCost).entries()) {
+      if (!joinWordText(words)) continue;
+      screens.push({ words, afterDeletion: item.afterDeletion && index === 0 });
     }
   }
-  return cues;
+
+  return mergeStubScreens(screens, maxColumns).map((words, index) => ({
+    id: `${prefix}-${String(index + 1).padStart(4, "0")}`,
+    wordIds: words.map((word) => word.id),
+    text: joinWordText(words),
+  }));
+}
+
+/**
+ * Absorb one- and two-character screens into the line they came off.
+ *
+ * A sentence break is worth taking when it produces two screens; when it
+ * produces a screen and a stub it was not a sentence break at all. On a real
+ * recording this is what streaming recognition looks like from the outside:
+ *
+ * ```text
+ * 已经被我外包给了Codex和 │ Grok      the recogniser revised, 0.12s apart
+ * 布任务让它继续去给我深   │ 挖
+ * ```
+ *
+ * The alternative was to keep raising the pause threshold until those stopped
+ * appearing — but the threshold that removes them is the one that also removes
+ * the real sentence breaks, because the two are only 0.12s and 0.88s apart in
+ * *one* recording and nothing says the next one is spaced the same. Judging the
+ * result instead of the signal does not have that problem.
+ *
+ * Always backwards: a stub is the tail of the phrase before it. Never across a
+ * deletion — the screens either side of removed speech have nothing to do with
+ * each other, which is the whole reason they were separated.
+ */
+function mergeStubScreens(
+  screens: ReadonlyArray<{ words: TimedWord[]; afterDeletion: boolean }>,
+  maxColumns: number,
+): TimedWord[][] {
+  const out: Array<{ words: TimedWord[]; afterDeletion: boolean }> = [];
+  for (const screen of screens) {
+    const previous = out.at(-1);
+    const columns = displayColumns(joinWordText(screen.words));
+    const merged = previous
+      ? displayColumns(joinWordText([...previous.words, ...screen.words]))
+      : 0;
+    if (
+      previous
+      && !screen.afterDeletion
+      && columns < MINIMUM_SCREEN_COLUMNS
+      && merged <= maxColumns
+    ) {
+      previous.words = [...previous.words, ...screen.words];
+      continue;
+    }
+    out.push({ words: [...screen.words], afterDeletion: screen.afterDeletion });
+  }
+  return out.map((screen) => screen.words);
 }
 
 export function createSubtitleDocument(
@@ -591,11 +707,6 @@ export function createSubtitleDocument(
     style: { ...DEFAULT_SUBTITLE_STYLE, ...(options.style ?? {}) },
     cues: buildSubtitleCues(words, editList, options),
   };
-}
-
-/** The style a screen is actually drawn with: document style plus its overrides. */
-export function resolveCueStyle(document: SubtitleDocument, cue: SubtitleCue): SubtitleStyle {
-  return { ...document.style, ...(cue.style ?? {}) };
 }
 
 /* ---------------------------------------------------------------- validation */

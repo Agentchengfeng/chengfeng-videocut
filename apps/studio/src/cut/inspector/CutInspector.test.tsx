@@ -2,191 +2,122 @@
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import type { EditListDocument } from "@video-workbench/core";
-import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  CutInspector,
-  type CutInspectorEditList,
-  type CutInspectorTransport,
-} from "./CutInspector";
+  DEFAULT_SUBTITLE_STYLE,
+  SUBTITLE_STYLE_PRESETS,
+  type SubtitleDocument,
+} from "@video-workbench/core";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ProjectSubtitles } from "../../components/useProjectSubtitles";
+import { CutInspector } from "./CutInspector";
 
 Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 
-const revision = "a".repeat(64);
+let root: Root | null = null;
+let host: HTMLElement | null = null;
 
-function documentFixture(mode: EditListDocument["mode"] = "cuts-derived"): EditListDocument {
+afterEach(() => {
+  if (root) act(() => root?.unmount());
+  root = null;
+  host?.remove();
+  host = null;
+});
+
+function subtitleDocument(style = DEFAULT_SUBTITLE_STYLE): SubtitleDocument {
   return {
     schemaVersion: 1,
     projectId: "inspector-contract",
-    sourceDuration: 659.7,
-    baseCutsRevision: revision,
-    baseTranscriptRevision: revision,
-    mode,
-    duration: 213.1,
-    segments: [
-      {
-        id: "a-roll-0001",
-        source: "input/source.mp4",
-        sourceStart: 0,
-        sourceEnd: 100,
-        timelineStart: 0,
-        trackId: "a-roll",
-        playbackRate: 1,
-      },
-      {
-        id: "a-roll-0002",
-        source: "input/source.mp4",
-        sourceStart: 120,
-        sourceEnd: 233.1,
-        timelineStart: 100,
-        trackId: "a-roll",
-        playbackRate: 1,
-      },
-    ],
+    baseTranscriptRevision: "b".repeat(64),
+    style,
+    cues: [{ id: "sub-0001", wordIds: ["w-1"], text: "今天" }],
   };
 }
 
-function editListFixture(
-  overrides: Partial<CutInspectorEditList> = {},
-): CutInspectorEditList {
+function subtitlesFixture(document: SubtitleDocument | null): ProjectSubtitles {
   return {
-    document: documentFixture(),
+    projectId: "inspector-contract",
+    document,
+    revision: document ? "c".repeat(64) : "none",
+    timings: [],
+    stale: [],
     loading: false,
     ready: true,
-    ...overrides,
+    saveState: "idle",
+    error: null,
+    reload: vi.fn(async () => undefined),
+    save: vi.fn(),
+    setCueText: vi.fn(),
+    setStyle: vi.fn(),
+    mergeWithPrevious: vi.fn(),
+    splitAt: vi.fn(),
   };
 }
 
-function transportFixture(
-  overrides: Partial<CutInspectorTransport> = {},
-): CutInspectorTransport {
-  return {
-    muted: false,
-    volume: 0.8,
-    playbackRate: 1,
-    toggleMuted: vi.fn(),
-    setVolume: vi.fn(),
-    setPlaybackRate: vi.fn(),
-    ...overrides,
-  };
-}
-
-function renderInspector(
-  editList: CutInspectorEditList,
-  transport: CutInspectorTransport,
-): { host: HTMLDivElement; root: Root } {
-  const host = document.createElement("div");
+function render(subtitles?: ProjectSubtitles): HTMLElement {
+  host = document.createElement("div");
   document.body.append(host);
-  const root = createRoot(host);
-  act(() => root.render(<CutInspector editList={editList} transport={transport} />));
-  return { host, root };
+  root = createRoot(host);
+  act(() => root?.render(<CutInspector {...(subtitles ? { subtitles } : {})} />));
+  return host;
 }
 
-function setNativeInputValue(input: HTMLInputElement, value: string): void {
-  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
-  if (!setter) throw new Error("Expected the native input value setter");
-  setter.call(input, value);
-}
-
-afterEach(() => {
-  document.body.replaceChildren();
-  vi.restoreAllMocks();
-});
-
-describe("CutInspector real parameter contract", () => {
-  it("renders only values owned by the edit list and labels preview controls as session-only", () => {
-    const rendered = renderInspector(editListFixture(), transportFixture());
-
-    expect(rendered.host.querySelector('[data-koubo-inspector="true"]')).not.toBeNull();
-    expect(rendered.host.textContent).toContain("仅影响当前预览，不写入项目或成片。");
-    expect(rendered.host.textContent).toContain("文稿剪辑");
-    expect(rendered.host.textContent).toContain("10:59.7");
-    expect(rendered.host.textContent).toContain("03:33.1");
-    expect(rendered.host.textContent).toContain("07:26.6");
-    expect(rendered.host.textContent).toContain("片段数");
-    expect(rendered.host.textContent).toContain("2");
-
-    for (const unsupported of ["画幅", "分辨率", "帧率", "保存位置", "成片倍速", "片段速度"]) {
-      expect(rendered.host.textContent).not.toContain(unsupported);
-    }
-
-    act(() => rendered.root.unmount());
+describe("CutInspector", () => {
+  it("groups parameters by what they are for, and shows a group only when it exists", () => {
+    const element = render(subtitlesFixture(subtitleDocument()));
+    const groups = Array.from(element.querySelectorAll(".cf-cut-inspector__group-title"))
+      .map((node) => node.textContent);
+    expect(element.querySelector("h2")?.textContent).toBe("参数");
+    expect(groups).toEqual(["字幕"]);
   });
 
-  it("forwards preview controls to the existing transport without owning another value", () => {
-    const editList = editListFixture();
-    const transport = transportFixture();
-    const rendered = renderInspector(editList, transport);
-    const mute = rendered.host.querySelector<HTMLButtonElement>('[aria-label="预览静音"]');
-    const volume = rendered.host.querySelector<HTMLInputElement>('[aria-label="预览音量"]');
-    const playbackRate = rendered.host.querySelector<HTMLSelectElement>(
-      '[aria-label="预览倍速"]',
-    );
+  it("does not keep a playback group, whose controls already sit under the video", () => {
+    const element = render(subtitlesFixture(subtitleDocument()));
+    expect(element.textContent).not.toContain("预览音量");
+    expect(element.textContent).not.toContain("预览倍速");
+    expect(element.textContent).not.toContain("仅影响当前预览");
+  });
 
-    expect(mute).not.toBeNull();
-    expect(volume).not.toBeNull();
-    expect(playbackRate).not.toBeNull();
+  it("does not restate the cut as a table of figures nobody asked for", () => {
+    const element = render(subtitlesFixture(subtitleDocument()));
+    expect(element.textContent).not.toContain("原素材时长");
+    expect(element.textContent).not.toContain("成片时长");
+    expect(element.textContent).not.toContain("片段数");
+  });
 
-    act(() => mute?.click());
+  it("offers whole looks rather than the fields a look is made of", () => {
+    const element = render(subtitlesFixture(subtitleDocument()));
+    const tiles = Array.from(element.querySelectorAll<HTMLButtonElement>('[role="radio"]'));
+    expect(tiles).toHaveLength(SUBTITLE_STYLE_PRESETS.length);
+    expect(tiles.map((tile) => tile.textContent?.replace("字幕", "")))
+      .toEqual(SUBTITLE_STYLE_PRESETS.map((preset) => preset.label));
+    // The controls a preset replaced must not come back alongside it.
+    expect(element.querySelector('input[type="color"]')).toBeNull();
+    expect(element.querySelector('input[type="range"]')).toBeNull();
+    expect(element.querySelector("select")).toBeNull();
+  });
+
+  it("marks the look the document is actually using", () => {
+    const preset = SUBTITLE_STYLE_PRESETS[2]!;
+    const element = render(subtitlesFixture(subtitleDocument(preset.style)));
+    const checked = Array.from(element.querySelectorAll<HTMLElement>('[role="radio"]'))
+      .filter((tile) => tile.getAttribute("aria-checked") === "true")
+      .map((tile) => tile.textContent?.replace("字幕", ""));
+    expect(checked).toEqual([preset.label]);
+  });
+
+  it("writes the whole style, not a patch, so no second place can disagree", () => {
+    const subtitles = subtitlesFixture(subtitleDocument());
+    const element = render(subtitles);
+    const large = SUBTITLE_STYLE_PRESETS[1]!;
     act(() => {
-      if (!volume) return;
-      setNativeInputValue(volume, "0.35");
-      volume.dispatchEvent(new Event("input", { bubbles: true }));
+      Array.from(element.querySelectorAll<HTMLButtonElement>('[role="radio"]'))[1]?.click();
     });
-    act(() => {
-      if (!playbackRate) return;
-      playbackRate.value = "1.5";
-      playbackRate.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-
-    expect(transport.toggleMuted).toHaveBeenCalledOnce();
-    expect(transport.setVolume).toHaveBeenCalledWith(0.35);
-    expect(transport.setPlaybackRate).toHaveBeenCalledWith(1.5);
-    act(() => rendered.root.render(<CutInspector editList={editList} transport={transport} />));
-    expect(volume?.value).toBe("0.8");
-    expect(playbackRate?.value).toBe("1");
-
-    act(() => rendered.root.unmount());
+    expect(subtitles.setStyle).toHaveBeenCalledWith(large.style);
   });
 
-  it.each([
-    {
-      name: "loading",
-      editList: editListFixture({ document: null, loading: true, ready: false }),
-      status: "正在读取剪辑信息…",
-    },
-    {
-      name: "not ready",
-      editList: editListFixture({ document: null, loading: false, ready: false }),
-      status: "剪辑信息尚未就绪",
-    },
-  ])("disables controls and omits fake facts while $name", ({ editList, status }) => {
-    const rendered = renderInspector(editList, transportFixture());
-    const inspector = rendered.host.querySelector<HTMLElement>("[data-koubo-inspector]");
-    const facts = rendered.host.querySelector(".cf-cut-inspector__facts");
-
-    expect(inspector?.getAttribute("aria-busy")).toBe(String(editList.loading));
-    expect(rendered.host.textContent).toContain(status);
-    expect(facts).toBeNull();
-    expect(rendered.host.querySelector<HTMLButtonElement>("button")?.disabled).toBe(true);
-    expect(rendered.host.querySelector<HTMLInputElement>('input[type="range"]')?.disabled).toBe(
-      true,
-    );
-    expect(rendered.host.querySelector<HTMLSelectElement>("select")?.disabled).toBe(true);
-    expect(rendered.host.textContent).not.toContain("00:00.0");
-    expect(rendered.host.textContent).not.toContain("0 段");
-
-    act(() => rendered.root.unmount());
-  });
-
-  it("uses the manual-mode label without creating a writable mode control", () => {
-    const editList = editListFixture({ document: documentFixture("manual") });
-    const rendered = renderInspector(editList, transportFixture({ muted: true }));
-
-    expect(rendered.host.textContent).toContain("手动精剪");
-    expect(rendered.host.querySelector('[aria-label="取消预览静音"]')).not.toBeNull();
-    expect(rendered.host.querySelector('select[aria-label="剪辑模式"]')).toBeNull();
-
-    act(() => rendered.root.unmount());
+  it("says so plainly when there is nothing to adjust", () => {
+    const element = render(subtitlesFixture(null));
+    expect(element.textContent).toContain("还没有可调的参数");
+    expect(element.querySelector('[role="radio"]')).toBeNull();
   });
 });
