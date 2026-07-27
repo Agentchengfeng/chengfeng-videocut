@@ -44,6 +44,18 @@ const LOUDNESS_SUFFIX = ".loudness.json" as const;
 const LOUDNESS_STEP = 0.01;
 /** How far a boundary may move to find silence, in seconds. */
 const QUIET_SEARCH_SECONDS = 0.25;
+/**
+ * How far above the room tone still counts as sound.
+ *
+ * A word's tail decays through this range rather than stopping, and a cut placed in
+ * that decay is heard as a stray vowel — 「第一站」 ended up cut at a level of 567
+ * against a floor of 248, and it sounded like an 「喔」 had been left behind.
+ *
+ * 2.5x missed that entirely: at 1.5x the same boundary moves 30ms and lands at 294,
+ * which is essentially the room. Across a whole project this costs 0.13 seconds.
+ * Lower still (1.3x) starts chasing the room tone itself for no audible gain.
+ */
+const SOUND_ABOVE_FLOOR = 1.5;
 /** Keep a few generations so undo lands on a cache hit instead of a re-cut. */
 const RETAINED_CHUNK_GENERATIONS = 240;
 /**
@@ -164,7 +176,7 @@ async function exists(path: string): Promise<boolean> {
 async function ensureProxyIndexes(input: BuildPreviewStreamInput): Promise<{
   proxy: string;
   keyframes: number[];
-  loudness: { step: number; rms: number[]; quiet: number };
+  loudness: { step: number; rms: number[]; quiet: number; floor: number };
 }> {
   const directory = join(input.projectDir, ".chengfeng-videocut", STREAM_DIRECTORY);
   await mkdir(directory, { recursive: true });
@@ -219,14 +231,23 @@ async function ensureProxyIndexes(input: BuildPreviewStreamInput): Promise<{
  * Computed once per proxy and cached beside the keyframe index. One pass over the
  * audio of an eight-minute proxy takes about two seconds.
  */
+function quietFrom(floor: number): number {
+  return Math.max(1, Math.round(floor * SOUND_ABOVE_FLOOR));
+}
+
 async function ensureLoudness(
   source: string,
   indexPath: string,
-): Promise<{ step: number; rms: number[]; quiet: number }> {
+): Promise<{ step: number; rms: number[]; quiet: number; floor: number }> {
   if (await exists(indexPath)) {
     const stored = JSON.parse(await readFile(indexPath, "utf8")) as
-      { step: number; rms: number[]; quiet: number };
-    if (stored?.rms?.length) return stored;
+      { step: number; rms: number[]; quiet: number; floor?: number };
+    if (stored?.rms?.length) {
+      // Recompute the verdict from the stored floor so changing the multiplier
+      // takes effect without anyone having to know this cache exists.
+      const floor = stored.floor ?? stored.quiet / 2.5;
+      return { ...stored, floor, quiet: quietFrom(floor) };
+    }
   }
   const raw = await runBinary("ffmpeg", [
     "-v", "error", "-i", `file:${source}`,
@@ -248,7 +269,10 @@ async function ensureLoudness(
   // low percentile rather than the minimum keeps one freak sample from setting it.
   const sorted = [...rms].sort((left, right) => left - right);
   const floor = sorted[Math.floor(sorted.length * 0.05)] ?? 0;
-  const map = { step: LOUDNESS_STEP, rms, quiet: Math.max(1, Math.round(floor * 2.5)) };
+  // Store the floor, not the verdict: the multiplier is a judgement that gets
+  // revisited, and baking it into the cache would make revisiting it require
+  // deleting files nobody remembers exist.
+  const map = { step: LOUDNESS_STEP, rms, floor, quiet: quietFrom(floor) };
   const temporary = scratchPath(indexPath);
   await writeFile(temporary, JSON.stringify(map), "utf8");
   await rename(temporary, indexPath);
