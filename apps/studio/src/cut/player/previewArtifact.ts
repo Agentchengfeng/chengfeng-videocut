@@ -64,6 +64,16 @@ export function usePreviewArtifact(projectId: string, editRevision: string) {
   useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    // A failed poll is a moment, not a verdict.
+    //
+    // Giving up on the first error meant one 58ms blip right after an edit left the
+    // player disabled until the page was reloaded — which is exactly what "deleting
+    // freezes it, refreshing fixes it" was. The service had already recovered on its
+    // own; nobody was asking it any more.
+    let consecutiveFailures = 0;
+    const retryDelay = () => Math.min(350 * 2 ** Math.max(0, consecutiveFailures - 1), 5_000);
+    /** Report failure only once it has stopped looking like a blip. */
+    const FAILURES_BEFORE_REPORTING = 3;
     const poll = async () => {
       try {
         const pendingRetry = pendingRetryTokenRef.current;
@@ -82,14 +92,21 @@ export function usePreviewArtifact(projectId: string, editRevision: string) {
         if (!response.ok) throw new Error(`preview artifact ${response.status}`);
         const next = await response.json() as PreviewArtifactState;
         if (cancelled) return;
+        consecutiveFailures = 0;
         setState(next);
+        // A failure the service *reports* stays put on purpose: it means generation
+        // itself failed, retrying costs real work, and there is a button for it.
+        // What must not stay put is a failure we merely failed to ask about.
         if (next.phase !== "failed" && (next.phase !== "current" || next.artifactRevision !== editRevision)) {
           timer = setTimeout(poll, 350);
         }
       } catch (error) {
-        if (!cancelled) {
+        if (cancelled) return;
+        consecutiveFailures += 1;
+        if (consecutiveFailures >= FAILURES_BEFORE_REPORTING) {
           setState((current) => ({ ...current, phase: "failed", editRevision, error: String(error) }));
         }
+        timer = setTimeout(poll, retryDelay());
       }
     };
     void poll();

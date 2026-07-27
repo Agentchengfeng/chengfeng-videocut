@@ -111,4 +111,41 @@ describe("usePreviewArtifact", () => {
     expect(methods).toEqual(["GET", "GET", "GET"]);
     act(() => root.unmount());
   });
+  it("recovers on its own when a request fails and the next one succeeds", async () => {
+    // A 58ms blip right after an edit used to disable the player until the page was
+    // reloaded: the request threw, the hook reported failure and stopped asking, and
+    // the service — which had already recovered — was never asked again.
+    vi.useFakeTimers();
+    let calls = 0;
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("boom");
+      return response({
+        phase: "current", editRevision: "r1", artifactRevision: "r1",
+        source: "preview.mp4", error: null,
+      });
+    }));
+    let hook: ReturnType<typeof usePreviewArtifact> | null = null;
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+
+    await act(async () => root.render(
+      <Harness editRevision="r1" onValue={(value) => { hook = value; }} />,
+    ));
+    await act(async () => { await Promise.resolve(); });
+    // One failure is a blip, not a verdict: nothing is reported to the player yet.
+    expect(hook!.state.phase).not.toBe("failed");
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(400); });
+    expect(calls).toBeGreaterThan(1);
+    expect(hook!.state.phase).toBe("current");
+    expect(hook!.current).toBe(true);
+
+    root.unmount();
+    host.remove();
+    vi.useRealTimers();
+  });
+
 });
+
