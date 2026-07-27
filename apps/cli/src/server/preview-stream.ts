@@ -132,6 +132,20 @@ async function run(command: string, args: readonly string[]): Promise<string> {
   });
 }
 
+/**
+ * A scratch path no other write can collide with.
+ *
+ * The process id alone does not do that: two requests arriving together are the
+ * *same* process, so both cut the same fragment into the same temporary file, the
+ * first rename succeeds and the second fails with ENOENT — a 500 for work that had
+ * in fact just completed. One edit plus a poll is enough to line them up.
+ */
+let scratchCounter = 0;
+function scratchPath(path: string): string {
+  scratchCounter += 1;
+  return `${path}.tmp-${process.pid}-${scratchCounter}`;
+}
+
 async function exists(path: string): Promise<boolean> {
   try {
     const info = await stat(path);
@@ -177,7 +191,7 @@ async function ensureProxyIndexes(input: BuildPreviewStreamInput): Promise<{
     if (keyframes.length === 0) {
       throw new Error("Fragmented preview proxy reports no keyframes");
     }
-    const temporary = `${indexPath}.tmp-${process.pid}`;
+    const temporary = scratchPath(indexPath);
     await writeFile(temporary, JSON.stringify(keyframes), "utf8");
     await rename(temporary, indexPath);
     return { proxy, keyframes, loudness: await ensureLoudness(proxy, loudnessPath) };
@@ -235,7 +249,7 @@ async function ensureLoudness(
   const sorted = [...rms].sort((left, right) => left - right);
   const floor = sorted[Math.floor(sorted.length * 0.05)] ?? 0;
   const map = { step: LOUDNESS_STEP, rms, quiet: Math.max(1, Math.round(floor * 2.5)) };
-  const temporary = `${indexPath}.tmp-${process.pid}`;
+  const temporary = scratchPath(indexPath);
   await writeFile(temporary, JSON.stringify(map), "utf8");
   await rename(temporary, indexPath);
   return map;
@@ -480,7 +494,7 @@ export async function buildPreviewStream(
     const path = join(directory, name);
     keep.add(name);
     if (!await exists(path)) {
-      const temporary = `${path}.tmp-${process.pid}`;
+      const temporary = scratchPath(path);
       // Video is copied; only the audio is touched, and only at the two ends. The
       // re-encode costs about 50ms per fragment, which is the price of not clicking.
       const fadeIn = roundSeconds(start - keyframe);

@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
-import { mergeContiguousRanges, quietBoundaryAfter, soundSpillsInto } from "./preview-stream";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { buildPreviewStream, mergeContiguousRanges, quietBoundaryAfter, soundSpillsInto } from "./preview-stream";
 
 test("ranges still adjacent in the source become one, so the seam never exists", () => {
   // What an undone cut leaves behind: restore inserts a range instead of growing
@@ -113,4 +116,39 @@ test("a range made entirely of leftover sound is not trimmed away", () => {
   // this product refuses.
   const spill = { step: 0.01, quiet: 100, rms: Array.from({ length: 60 }, () => 900) };
   expect(quietBoundaryAfter(spill, 0.1, 0.06)).toBe(0.1);
+});
+
+test("two builds racing for the same fragment do not fight over one scratch file", async () => {
+  // One edit plus a poll is enough to line two builds up on the same fragment. They
+  // used to write it through a scratch path named only after the process id — the
+  // same path for both — so the first rename won and the second failed with ENOENT.
+  // The endpoint answered 500 for work that had in fact just completed, and the
+  // player, seeing a failure, stopped asking.
+  const root = await mkdtemp(join(tmpdir(), "preview-stream-race-"));
+  try {
+    const input = {
+      projectDir: root,
+      proxySource: "missing.mp4",
+      proxyCacheKey: "race",
+      segments: [{ start: 0, end: 1 }],
+    };
+    // Both fail — there is no media here — but they must fail on the *media*, never
+    // on each other's temporary files.
+    const outcomes = await Promise.allSettled([
+      buildPreviewStream(input),
+      buildPreviewStream(input),
+    ]);
+    for (const outcome of outcomes) {
+      expect(outcome.status).toBe("rejected");
+      const reason = String((outcome as PromiseRejectedResult).reason);
+      expect(reason).not.toContain("ENOENT");
+      expect(reason).not.toContain("rename");
+    }
+    // No scratch file left behind either.
+    const directory = join(root, ".chengfeng-videocut", "preview-stream");
+    const left = await readdir(directory).catch(() => [] as string[]);
+    expect(left.filter((name) => name.includes(".tmp-"))).toEqual([]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
