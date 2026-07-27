@@ -33,14 +33,48 @@ export interface ParsedDictionary {
   ignored: Array<{ line: number; text: string }>;
 }
 
-/** Any of these separates the heard spelling from the written one. */
-const ARROW = /\s*(?:->|→|=>|\t|=)\s*/;
+/** The cells of a Markdown table row, or null when the line is not one. */
+function tableCells(raw: string): string[] | null {
+  const line = raw.trim();
+  if (!line.startsWith("|")) return null;
+  return line.replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => cell.trim());
+}
+
+function isSeparatorRow(raw: string): boolean {
+  const cells = tableCells(raw);
+  return cells !== null && cells.length > 0 && cells.every((cell) => /^:?-{2,}:?$/.test(cell));
+}
+
+/**
+ * A two-column Markdown table row, or null.
+ *
+ * The dictionary this product already maintains is written as
+ * `| 正确写法 | 常见误识别 |` — one row per correct spelling, with every
+ * mishearing of it on the right. That is a better shape than one rule per line
+ * (a name is misheard five ways, and they belong together), and it is the shape
+ * a person is already keeping up to date. Reading it directly is cheaper than
+ * asking anyone to maintain a second copy in a different format.
+ *
+ * The header row and the `| --- |` separator produce nothing, because neither
+ * half survives as a rule.
+ */
+function tableRow(raw: string): [string, string] | null {
+  const cells = tableCells(raw);
+  if (!cells || cells.length !== 2) return null;
+  if (isSeparatorRow(raw)) return null;
+  return [cells[0] ?? "", cells[1] ?? ""];
+}
+
+function unquote(value: string): string {
+  return value.replace(/^[`「"']|[`」"']$/g, "").trim();
+}
 
 /**
  * Read a dictionary file.
  *
- * A rule is a Markdown list item: `- heard -> written`. Everything else is
- * prose and is ignored without comment.
+ * Two shapes, because the file is written and reviewed by a person: a
+ * `| 正确写法 | 常见误识别 |` table, and `- heard -> written` list items.
+ * Everything else is prose and is ignored without comment.
  *
  * That restriction is the whole design. The first version treated every line as
  * a candidate rule, so that a bare list of rules would work — and then reading
@@ -50,33 +84,40 @@ const ARROW = /\s*(?:->|→|=>|\t|=)\s*/;
  * `from = to`. A file that is meant to be read by a person has to say which
  * lines are the data.
  *
- * A list item that cannot be read is still reported: a typo in a rule is
+ * A row or list item that cannot be read is still reported: a typo in a rule is
  * otherwise indistinguishable from a name that never came up.
  */
 export function parseDictionary(source: string): ParsedDictionary {
   const entries: DictionaryEntry[] = [];
   const ignored: ParsedDictionary["ignored"] = [];
   const seen = new Set<string>();
-  source.split(/\r?\n/).forEach((raw, index) => {
-    if (!/^\s*[-*+]\s+/.test(raw)) return;
-    const line = raw.replace(/#.*$/, "").replace(/^\s*[-*+]\s+/, "").trim();
-    if (!line) return;
-    const parts = line.split(ARROW);
-    if (parts.length !== 2) {
-      ignored.push({ line: index + 1, text: raw.trim() });
-      return;
-    }
-    const from = (parts[0] ?? "").replace(/^[`「"']|[`」"']$/g, "").trim();
-    const to = (parts[1] ?? "").replace(/^[`「"']|[`」"']$/g, "").trim();
-    if (!from || from === to) {
-      ignored.push({ line: index + 1, text: raw.trim() });
-      return;
-    }
+  const add = (from: string, to: string): boolean => {
+    if (!from || !to || from === to) return false;
     // First rule wins, so a project's own additions can be listed above the
     // general ones without the later duplicate silently overriding them.
-    if (seen.has(from)) return;
+    if (seen.has(from)) return true;
     seen.add(from);
     entries.push({ from, to });
+    return true;
+  };
+
+  const lines = source.split(/\r?\n/);
+  lines.forEach((raw, index) => {
+    const row = tableRow(raw);
+    if (row) {
+      // A table's header is the row directly above the `| --- |` separator.
+      // Without this the header itself becomes a rule renaming one column title
+      // to the other, which then matches nothing and looks like a silent bug.
+      if (isSeparatorRow(lines[index + 1] ?? "")) return;
+      const [to, heard] = row;
+      let wrote = false;
+      for (const from of heard.split(/\s*\/\s*/)) {
+        // A parenthetical is a note to the reader, not part of the spelling.
+        if (add(unquote(from.replace(/[（(][^)）]*[)）]/g, "")), unquote(to))) wrote = true;
+      }
+      if (!wrote) ignored.push({ line: index + 1, text: raw.trim() });
+      return;
+    }
   });
   return { entries, ignored };
 }

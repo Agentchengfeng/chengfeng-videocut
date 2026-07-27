@@ -2,58 +2,66 @@ import { describe, expect, it } from "bun:test";
 import { matchDictionary, parseDictionary } from "./dictionary";
 
 describe("parseDictionary", () => {
-  it("reads a rule from each list item, in any of the usual arrows", () => {
-    const { entries } = parseDictionary([
-      "# 我常说的专名",
-      "",
-      "- 叉 → X            # 从来不是「叉子」的意思",
-      "* `Tibbo` => `Tibo`",
-      "  + tibor = Tibo",
+  it("reads the table the product already maintains, one row to many rules", () => {
+    // `| 正确写法 | 常见误识别 |` is the shape a person is already keeping up to
+    // date, and it groups a name's five mishearings where they belong.
+    const { entries, ignored } = parseDictionary([
+      "| 正确写法 | 常见误识别 |",
+      "| --- | --- |",
+      "| Grok | grok / Clock / 格罗克 |",
+      "| Codex | CodeX / codex |",
     ].join("\n"));
     expect(entries).toEqual([
-      { from: "叉", to: "X" },
-      { from: "Tibbo", to: "Tibo" },
-      { from: "tibor", to: "Tibo" },
+      { from: "grok", to: "Grok" },
+      { from: "Clock", to: "Grok" },
+      { from: "格罗克", to: "Grok" },
+      { from: "CodeX", to: "Codex" },
+      { from: "codex", to: "Codex" },
     ]);
-  });
-
-  it("ignores prose, however much of it there is", () => {
-    // The real dictionary is a document that explains itself. Treating every
-    // line as a candidate rule reported thirty lines of prose as broken.
-    const { entries, ignored } = parseDictionary([
-      "转录会把名字听错，而且是固定地听错。",
-      "",
-      "```text",
-      "词典    永远这么写",
-      "```",
-      "",
-      "- 叉 -> X",
-    ].join("\n"));
-    expect(entries).toEqual([{ from: "叉", to: "X" }]);
+    // The header and the separator are not broken rules.
     expect(ignored).toEqual([]);
   });
 
-  it("never reads a sentence as a rule just because it contains a separator", () => {
-    // A prose line with a tab or an `=` has the shape of `from = to`.
-    const { entries } = parseDictionary("先看看会改什么就加 --dry-run = 这样\n");
-    expect(entries).toEqual([]);
+  it("drops the reader's parenthetical notes rather than matching on them", () => {
+    const { entries } = parseDictionary([
+      "| X | 叉 / 推特（说话人说「叉」时按原文保留，不换） |",
+    ].join("\n"));
+    expect(entries).toEqual([
+      { from: "叉", to: "X" },
+      { from: "推特", to: "X" },
+    ]);
   });
 
-  it("reports a list item it could not read instead of dropping it", () => {
-    const { entries, ignored } = parseDictionary("- 叉 -> X\n- 这条没有箭头\n");
-    expect(entries).toHaveLength(1);
-    expect(ignored).toEqual([{ line: 2, text: "- 这条没有箭头" }]);
-  });
-
-  it("ignores a rule that changes nothing", () => {
-    const { entries, ignored } = parseDictionary("- X -> X\n");
-    expect(entries).toEqual([]);
-    expect(ignored).toHaveLength(1);
+  it("never turns a row into a rule that renames something to itself", () => {
+    const { entries } = parseDictionary("| Agent | agent / Agent |\n");
+    expect(entries).toEqual([{ from: "agent", to: "Agent" }]);
   });
 
   it("lets the first rule for a word win", () => {
-    const { entries } = parseDictionary("- 叉 -> X\n- 叉 -> 交叉\n");
+    const { entries } = parseDictionary("| X | 叉 |\n| 交叉 | 叉 |\n");
     expect(entries).toEqual([{ from: "叉", to: "X" }]);
+  });
+
+  it("ignores prose, including prose written as a bullet list", () => {
+    // This project's own dictionary explains its rules in a bullet list. Those
+    // bullets are not rules, and reporting them as broken ones is noise that
+    // trains people to ignore the report.
+    const { entries, ignored } = parseDictionary([
+      "转录会把名字听错，而且是固定地听错。",
+      "",
+      "- **只改文字，不改时间。** 改了时间，所有已做的删除都会砍在错误位置。",
+      "- 同一族里选出现次数最多的正确写法做基准；次数相同时选官方写法。",
+      "",
+      "| Grok | grok |",
+    ].join("\n"));
+    expect(entries).toEqual([{ from: "grok", to: "Grok" }]);
+    expect(ignored).toEqual([]);
+  });
+
+  it("reports a table row it could not read", () => {
+    const { entries, ignored } = parseDictionary("| Grok | grok |\n| 只有一半 |  |\n");
+    expect(entries).toEqual([{ from: "grok", to: "Grok" }]);
+    expect(ignored).toEqual([{ line: 2, text: "| 只有一半 |  |" }]);
   });
 });
 
