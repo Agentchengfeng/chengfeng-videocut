@@ -22,6 +22,7 @@ export type CliCommand =
   | "cuts.get"
   | "transcript.playback"
   | "transcript.retranscribe"
+  | "transcript.align"
   | "transcript.correct"
   | "cuts.set"
   | "cuts.apply"
@@ -87,6 +88,7 @@ const VALUE_OPTIONS = new Set([
   "--action",
   "--renderer",
   "--lines",
+  "--script",
 ]);
 
 const BOOLEAN_OPTIONS = new Set([
@@ -467,6 +469,15 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
       file: correctionsFile,
       ...common,
     };
+  }
+  if (positionals[0] === "transcript" && positionals[1] === "align") {
+    if (positionals.length !== 3) {
+      usageError("Usage: chengfeng-videocut transcript align <project> --script <file>");
+    }
+    assertOptions(["--script", "--projects-dir", "--output-dir"], [], true);
+    const script = values.get("--script");
+    if (!script) usageError("transcript align requires --script <file>");
+    return { ...common, command: "transcript.align", project: positionals[2], file: script };
   }
   if (positionals[0] === "transcript" && positionals[1] === "retranscribe") {
     if (positionals.length !== 3) {

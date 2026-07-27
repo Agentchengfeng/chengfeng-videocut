@@ -7,6 +7,7 @@ import {
   prepareKouboProject,
   putKouboArtifact,
   runKouboRender,
+  alignScriptToWords,
   transcribeKouboVideo,
   transcribeProjectCut,
   type KouboArtifactType,
@@ -1019,6 +1020,33 @@ export async function runCli(
       }
       return 0;
     }
+    if (parsed.command === "transcript.align") {
+      await assertRegisteredProject({ project, cwd, projectsDir, outputDir: parsed.outputDir });
+      const transcript = await readProjectDocument<{
+        cues?: Array<{ words?: Array<{ id?: string; text?: string; isGap?: boolean }> }>;
+      }>(project, "transcript.json");
+      const words = (transcript.value.cues ?? []).flatMap((cue) => cue.words ?? [])
+        .filter((word): word is { id: string; text: string; isGap?: boolean } =>
+          typeof word.id === "string" && typeof word.text === "string");
+      const markdown = await readFile(resolve(cwd, parsed.file as string), "utf8");
+      const alignment = alignScriptToWords(markdown, words);
+      const data = {
+        corrections: alignment.corrections,
+        // Terms the script spells but whose position in the speech is not decidable.
+        // Reported, never guessed: a wrong name is worse than a misheard one.
+        undecided: [...new Set(alignment.unmatched.map((item) => item.text))],
+        totalWords: alignment.totalWords,
+      };
+      if (parsed.json) io.stdout(JSON.stringify(successEnvelope(parsed.command, data)));
+      else {
+        for (const correction of data.corrections) {
+          io.stdout(`${correction.from} -> ${correction.to}`);
+        }
+        if (data.undecided.length > 0) io.stdout(`undecided: ${data.undecided.join(" ")}`);
+      }
+      return 0;
+    }
+
     if (parsed.command === "transcript.playback") {
       await assertRegisteredProject({ project, cwd, projectsDir, outputDir: parsed.outputDir });
       // What the audience hears, in the order they hear it. The judging layer must
