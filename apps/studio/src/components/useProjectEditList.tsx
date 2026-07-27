@@ -87,14 +87,26 @@ export function useProjectEditList(
       notify: boolean,
       applyOptions: { clearUndo?: boolean } = {},
     ) => {
+      // Same revision means the same document — the revision *is* the content's
+      // hash. Handing React a fresh object anyway makes every consumer keyed on its
+      // identity recompute: three thousand transcript words re-derived, re-indexed
+      // and re-rendered for a document that did not change.
+      //
+      // That is not hypothetical. A write lands twice here: once from the response,
+      // once from the file-change event that follows it. The second pass produces an
+      // identical document and costs exactly as much as the first.
+      const unchanged = resource.revision === revisionRef.current
+        && documentRef.current !== null
+        && resource.document !== null;
+      const document = unchanged ? documentRef.current : resource.document;
       revisionRef.current = resource.revision;
       setRevision(resource.revision);
-      documentRef.current = resource.document;
-      setDocument(resource.document);
+      documentRef.current = document;
+      setDocument(document);
       setReady(true);
       setLoading(false);
       setSaveState("idle");
-      if (notify && resource.document) onDocumentChangeRef.current?.(resource.document);
+      if (notify && document) onDocumentChangeRef.current?.(document);
     },
     [],
   );
