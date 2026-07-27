@@ -505,14 +505,39 @@ const DEFAULT_MAX_COLUMNS = 17;
 const DEFAULT_BREAK_PAUSE_SECONDS = 0.32;
 
 /**
- * What it costs to break at a tight junction, in units of squared columns.
+ * What it costs to break where the speaker did not pause, in squared columns.
  *
- * Nine is three columns of imbalance: the splitter will accept a screen three
- * columns off-balance in exchange for landing the break on a real pause, and
- * will not accept four. That trade is the whole point — the pause is where a
- * person would have put the break themselves.
+ * Forty-nine is seven columns of imbalance: the splitter will accept a screen
+ * seven columns off-balance in exchange for landing the break on a real pause.
+ * That sounds like a lot until you notice what the alternative costs — a pause
+ * is where a person would have broken the line themselves, and evenness is only
+ * a proxy for readability.
+ *
+ * It was 9 first, chosen from a sweep that counted "breaks at a zero gap" and
+ * "spread of screen widths" — two summaries that cannot see whether the break
+ * landed *inside a word*. On a real recording it did, six times:
+ *
+ * ```text
+ * 续研究什 │ 么也可以      0.32s pause available 6 characters away, ignored
+ * 我们就可 │ 以去安装
+ * ```
+ *
+ * The arithmetic says why: imbalance is squared and reaches 289 at this screen
+ * width, while the pause bonus topped out at 9. Any break that evened the
+ * screens out won, always. Re-swept counting split words instead:
+ *
+ * ```text
+ * 代价   9   劈开 6 处
+ * 代价  49   劈开 2 处   读速无损     <- 拐点
+ * 代价 121   劈开 2 处   再加没用
+ * 代价 200   劈开 2 处   开始伤读速
+ * ```
+ *
+ * The two that survive sit in stretches with no pause anywhere; no amount of
+ * weighting invents a signal that is not there. Those need punctuation, which
+ * transcription returns and this product currently discards.
  */
-const TIGHT_BREAK_COST = 9;
+const TIGHT_BREAK_COST = 49;
 
 /** One stretch of speech that has to be split into screens by itself. */
 interface SpeechRun {
