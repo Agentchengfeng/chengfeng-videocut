@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mergeContiguousRanges, quietBoundaryAfter } from "./preview-stream";
+import { mergeContiguousRanges, quietBoundaryAfter, soundSpillsInto } from "./preview-stream";
 
 test("ranges still adjacent in the source become one, so the seam never exists", () => {
   // What an undone cut leaves behind: restore inserts a range instead of growing
@@ -88,4 +88,29 @@ test("a boundary never reaches into the next thing said", () => {
   // kept range opened with 「我们」 as well.
   const speaking = { step: 0.01, quiet: 100, rms: Array.from({ length: 100 }, () => 900) };
   expect(quietBoundaryAfter(speaking, 0.2, 0)).toBe(0.2);
+});
+
+// Loud 0.00–0.05 (a take that was cut), quiet 0.05–0.09, loud again from 0.09.
+const SPILL = { step: 0.01, quiet: 100, rms: [900, 900, 900, 900, 900, 50, 50, 50, 50, 900, 900, 900] };
+
+test("sound left over from the previous take counts as spilling in", () => {
+  expect(soundSpillsInto(SPILL, 0.03)).toBe(true);
+});
+
+test("a word starting out of silence is not spilling in", () => {
+  // 0.09 is loud, but 0.07 before it was quiet: this is an onset, and moving the
+  // boundary past it would cut the word off at its own beginning.
+  expect(soundSpillsInto(SPILL, 0.09)).toBe(false);
+});
+
+test("silence is never spilling in", () => {
+  expect(soundSpillsInto(SPILL, 0.06)).toBe(false);
+});
+
+test("a range made entirely of leftover sound is not trimmed away", () => {
+  // Half its own length is the limit. A range the user restored on purpose must
+  // stay audible: marked kept on screen and silent in the ears is the one mismatch
+  // this product refuses.
+  const spill = { step: 0.01, quiet: 100, rms: Array.from({ length: 60 }, () => 900) };
+  expect(quietBoundaryAfter(spill, 0.1, 0.06)).toBe(0.1);
 });

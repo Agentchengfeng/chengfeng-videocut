@@ -293,6 +293,26 @@ function nextOnsetAfter(onsets: readonly number[], time: number): number | null 
  * sample, so a boundary already in silence does not move at all, and it gives up
  * after a quarter second rather than run into whatever comes next.
  */
+/**
+ * True when the sound at this instant is spilling over from before it.
+ *
+ * A boundary can be loud for two opposite reasons, and they need opposite handling:
+ * the kept word is starting (leave it alone — moving would clip its onset), or what
+ * was deleted is still ringing out (move past it — playing it is the leak this
+ * design exists to prevent). Speech that was already loud a moment earlier is the
+ * second kind; a genuine onset rises out of silence.
+ */
+export function soundSpillsInto(
+  map: { step: number; rms: number[]; quiet: number },
+  time: number,
+): boolean {
+  const at = (seconds: number) => map.rms[Math.floor(seconds / map.step)] ?? 0;
+  if (at(time) <= map.quiet) return false;
+  // Two samples back: one is within the rise of a real onset, three starts reaching
+  // into whatever preceded a genuine pause.
+  return at(time - map.step * 2) > map.quiet;
+}
+
 export function quietBoundaryAfter(
   map: { step: number; rms: number[]; quiet: number },
   time: number,
@@ -413,7 +433,22 @@ export async function placeCutBoundaries(input: {
       onsets.length === 0 ? 0 : (nextOnsetAfter(onsets, range.end) ?? Infinity) - range.end,
     ];
     const room = Math.max(0, Math.min(...limits));
-    return { start: range.start, end: quietBoundaryAfter(loudness, range.end, room) };
+    const end = quietBoundaryAfter(loudness, range.end, room);
+    // The same rule at the other edge. A range can open in the middle of the take
+    // that was cut — transcription put the boundary there, but the previous take is
+    // still ringing — and then the kept word is heard twice: once as that leftover,
+    // once for real. Only move when the sound is spilling in; a range that opens on
+    // its own word's onset must not lose it.
+    //
+    // At most half the range, so a range can never be trimmed out of existence. A
+    // range made *entirely* of leftover sound is usually one the user restored on
+    // purpose; making it vanish would leave it marked kept on screen and silent in
+    // the ears, which is the one mismatch this product refuses.
+    const spillRoom = Math.min(QUIET_SEARCH_SECONDS, (end - range.start) / 2);
+    const start = soundSpillsInto(loudness, range.start)
+      ? quietBoundaryAfter(loudness, range.start, Math.max(0, spillRoom))
+      : range.start;
+    return { start, end };
   });
 }
 
