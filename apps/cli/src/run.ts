@@ -8,6 +8,7 @@ import {
   putKouboArtifact,
   runKouboRender,
   transcribeKouboVideo,
+  transcribeProjectCut,
   type KouboArtifactType,
   type RunKouboRenderOptions,
   type TranscribeKouboVideoResult,
@@ -65,6 +66,8 @@ export interface RunCliOptions {
     jobDir: string,
     options: { video: string; output: string; language?: string },
   ) => Promise<TranscribeKouboVideoResult>;
+  /** Injectable so the CLI can be exercised without calling the cloud. */
+  runCutTranscription?: typeof transcribeProjectCut;
 }
 
 interface CliRenderResult {
@@ -725,6 +728,45 @@ export async function runCli(
       };
       if (parsed.json) io.stdout(JSON.stringify(successEnvelope(parsed.command, data)));
       else io.stdout(`${BRAND_NAME} running at ${server.url}`);
+      return 0;
+    }
+
+    if (parsed.command === "transcript.retranscribe") {
+      const project = await resolveProject(projectInput(parsed.command, parsed.project), {
+        cwd, projectsDir: parsed.projectsDir, outputDir: parsed.outputDir,
+      });
+      const document = JSON.parse(
+        await readFile(join(project.directory, "edit-list.json"), "utf8"),
+      ) as { segments?: Array<{ sourceStart?: number; sourceEnd?: number }> };
+      // Playback order, which is the order the audience hears and therefore the
+      // order the transcript must come back in.
+      const ranges = (document.segments ?? [])
+        .map((segment) => ({ start: Number(segment.sourceStart), end: Number(segment.sourceEnd) }))
+        .filter((range) => Number.isFinite(range.start) && Number.isFinite(range.end) && range.end > range.start)
+        .sort((left, right) => left.start - right.start);
+      const manifest = JSON.parse(
+        await readFile(join(project.directory, "project.json"), "utf8"),
+      ) as { inputVideo?: string };
+      if (!manifest.inputVideo) {
+        throw new VideocutError("invalid_argument", "project.json does not record an inputVideo");
+      }
+      const result = await (options.runCutTranscription ?? transcribeProjectCut)({
+        source: resolve(project.directory, manifest.inputVideo),
+        ranges,
+        output: resolve(cwd, parsed.output as string),
+        language: parsed.language,
+      });
+      const data = {
+        provider: result.provider,
+        source: result.source,
+        output: result.output,
+        cueCount: result.cueCount,
+        wordCount: result.wordCount,
+        duration: result.duration,
+        keptRanges: ranges.length,
+      };
+      if (parsed.json) io.stdout(JSON.stringify(successEnvelope(parsed.command, data)));
+      else io.stdout(`Transcribed the cut (${data.keptRanges} ranges, ${data.duration.toFixed(2)}s) to ${data.output}`);
       return 0;
     }
 

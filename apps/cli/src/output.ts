@@ -108,6 +108,7 @@ Usage:
   chengfeng-videocut workflow transition <project> --action <start-final|confirm-storyboard|confirm-animation|confirm-timeline> --expected-revision <sha256> --confirmed [--file <config.json>] [--api-base <url>] [--json]
   chengfeng-videocut render run <project> --expected-revision <sha256> --confirmed [--renderer <absolute-file>] [--projects-dir <dir>] [--output-dir <dir>] [--json]
   chengfeng-videocut transcript playback <project> [--json]
+  chengfeng-videocut transcript retranscribe <project> --output <file> [--language <code>] [--json]
   chengfeng-videocut transcript correct <project> --file <corrections.json> [--dry-run] [--json]
   chengfeng-videocut cuts get <project> [--api-base <url>] [--json]
   chengfeng-videocut cuts set <project> --file <file> --expected-revision <none|sha256> [--api-base <url>] [--json]
@@ -121,6 +122,7 @@ Project may be an absolute directory or an id registered in the Workbench.
 cuts set writes through the running product API; --dry-run performs a local read-only calculation.
 transcript correct fixes what the transcript says without touching when it says it: word ids, word count and every timestamp must come out identical, or the write is refused. A mis-heard proper noun is not surplus speech, so cutting cannot repair it.
 transcript playback flattens the transcript into what the audience hears, in that order, with removed speech marked. Judging repetition depends on heard adjacency, so this is the only correct input for a semantic pass — assembling it by hand gets it wrong silently.
+transcript retranscribe transcribes the cut itself, without exporting it first: it concatenates only the kept ranges' audio and sends that. The times that come back are already on the cut timeline, because the audio that went in is the cut — nothing maps between timelines. This is what subtitles need.
 cuts set reads the result back and reports any previously-cut words it let go of.
 cuts get returns the independent cut-selection revision required by cuts set.
 cutRanges are derived from transcript.json + cutWordIds; supplied cutRanges are ignored.

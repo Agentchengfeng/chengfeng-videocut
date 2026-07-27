@@ -21,6 +21,7 @@ export type CliCommand =
   | "artifact.put"
   | "cuts.get"
   | "transcript.playback"
+  | "transcript.retranscribe"
   | "transcript.correct"
   | "cuts.set"
   | "cuts.apply"
@@ -465,6 +466,21 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
       project: positionals[2],
       file: correctionsFile,
       ...common,
+    };
+  }
+  if (positionals[0] === "transcript" && positionals[1] === "retranscribe") {
+    if (positionals.length !== 3) {
+      usageError("Usage: chengfeng-videocut transcript retranscribe <project> --output <file>");
+    }
+    assertOptions(["--output", "--language", "--projects-dir", "--output-dir"], [], true);
+    const output = values.get("--output");
+    if (!output) usageError("transcript retranscribe requires --output <file>");
+    return {
+      ...common,
+      command: "transcript.retranscribe",
+      project: positionals[2],
+      output,
+      language: values.get("--language"),
     };
   }
   if (positionals[0] === "transcript" && positionals[1] === "playback") {

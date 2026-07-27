@@ -133,7 +133,7 @@ describe("chengfeng-videocut CLI", () => {
       },
     });
 
-    expect(code, capture.stderr.join(" | ")).toBe(0);
+    expect(code, capture.stdout.join(" | ")).toBe(0);
     expect(calls).toEqual([{
       jobDir: "/tmp/task-01",
       options: { video: "uploads/talk.mp4", output: "cloud/words.json", language: "zh-CN" },
@@ -1055,4 +1055,49 @@ describe("chengfeng-videocut CLI", () => {
     });
     await expect(readFile(join(projectDir, "cut-selection.json"), "utf8")).rejects.toThrow();
   });
+  it("transcribes the cut itself instead of demanding an export first", async () => {
+    const { projectDir, projectsDir } = await fixture();
+    await registerFixture(projectDir, projectsDir);
+    await writeFile(join(projectDir, "edit-list.json"), JSON.stringify({
+      schemaVersion: 1, projectId: "demo", sourceDuration: 10, mode: "magnetic", duration: 3,
+      segments: [
+        { id: "a", source: "input/source.mp4", sourceStart: 2, sourceEnd: 3, timelineStart: 0, trackId: "a-roll", playbackRate: 1 },
+        { id: "b", source: "input/source.mp4", sourceStart: 6, sourceEnd: 8, timelineStart: 1, trackId: "a-roll", playbackRate: 1 },
+      ],
+    }));
+    const capture = captureIo();
+    let seen: { source: string; ranges: readonly { start: number; end: number }[] } | null = null;
+    const code = await runCli(
+      [
+        "transcript", "retranscribe", "demo",
+        "--output", join(projectDir, "cut.json"),
+        "--projects-dir", projectsDir, "--json",
+      ],
+      {
+        io: capture.io,
+        // Subtitles need word times on the *cut* timeline. Sending only the kept
+        // ranges' audio makes those times right by construction — there is no
+        // mapping between timelines afterwards, and that mapping is the step that
+        // keeps being got wrong.
+        runCutTranscription: async (options) => {
+          seen = { source: options.source, ranges: options.ranges };
+          return {
+            provider: "volcengine", source: options.source, output: options.output,
+            cueCount: 1, wordCount: 3,
+            duration: options.ranges.reduce((total, range) => total + (range.end - range.start), 0),
+          };
+        },
+      },
+    );
+
+    expect(code, capture.stderr.join(" | ")).toBe(0);
+    expect(seen).not.toBeNull();
+    // Exactly the kept ranges, in the order they are heard — not the whole source.
+    expect(seen!.ranges).toEqual([{ start: 2, end: 3 }, { start: 6, end: 8 }]);
+    expect(seen!.source.endsWith("input/source.mp4")).toBe(true);
+    const payload = JSON.parse(capture.stdout.join("")) as { data: { duration: number; keptRanges: number } };
+    expect(payload.data.keptRanges).toBe(2);
+    expect(payload.data.duration).toBe(3);
+  });
+
 });

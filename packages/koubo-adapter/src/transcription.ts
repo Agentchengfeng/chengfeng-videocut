@@ -10,6 +10,7 @@ import {
   realpath,
   rm,
   writeFile,
+  rename,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -450,6 +451,133 @@ async function writeTranscriptAtomically(
       }
       throw error;
     }
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Concatenate just the kept ranges' audio into one continuous track.
+ *
+ * Everything downstream — subtitles above all — needs word times on the *cut*
+ * timeline, and the only honest way to get them is to transcribe what a person
+ * actually hears. Doing that used to mean exporting the film first, which put the
+ * whole of subtitling behind a render nobody needed yet.
+ *
+ * One ffmpeg call rather than a file per range: the ranges are already known and
+ * the filter graph keeps the result gapless by construction, so there is no seam
+ * arithmetic here to get wrong.
+ */
+export function buildCutAudioArgs(
+  source: string,
+  ranges: readonly { start: number; end: number }[],
+  output: string,
+): string[] {
+  const parts = ranges.map((range, index) =>
+    `[0:a]atrim=start=${range.start.toFixed(6)}:end=${range.end.toFixed(6)},`
+    + `asetpts=PTS-STARTPTS[a${index}]`);
+  const inputs = ranges.map((_, index) => `[a${index}]`).join("");
+  const filter = `${parts.join(";")};${inputs}concat=n=${ranges.length}:v=0:a=1[out]`;
+  return [
+    "-y", "-v", "error", "-i", `file:${source}`,
+    "-filter_complex", filter, "-map", "[out]",
+    "-acodec", "libmp3lame", `file:${output}`,
+  ];
+}
+
+function runFfmpegArgs(args: readonly string[]): Promise<void> {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn("ffmpeg", [...args], { stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (chunk: string) => { stderr += chunk; });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) resolvePromise();
+      else reject(new Error(`ffmpeg cut audio failed (${code ?? "signal"}): ${stderr.trim().slice(-1000)}`));
+    });
+  });
+}
+
+export interface TranscribeProjectCutOptions {
+  /** Absolute path of the source video the ledger refers to. */
+  source: string;
+  /** Kept ranges in source seconds, in playback order. */
+  ranges: readonly { start: number; end: number }[];
+  /** Absolute path to write the transcript to. */
+  output: string;
+  language?: string;
+  apiKey?: string;
+  resourceId?: string;
+  modelName?: string;
+  pollIntervalMs?: number;
+  maxPollAttempts?: number;
+  dependencies?: Partial<TranscriptionDependencies> & {
+    extractCutAudio?: (source: string, ranges: readonly { start: number; end: number }[], output: string) => Promise<void>;
+  };
+}
+
+/**
+ * Transcribe the cut itself, without exporting it first.
+ *
+ * The times that come back are already on the cut timeline, because the audio that
+ * went in *is* the cut. Nothing here maps between timelines — that mapping is
+ * exactly the thing that keeps being got wrong.
+ */
+export async function transcribeProjectCut(
+  options: TranscribeProjectCutOptions,
+): Promise<TranscribeKouboVideoResult> {
+  const ranges = options.ranges.filter((range) => range.end > range.start);
+  if (ranges.length === 0) {
+    throw new VideocutError("invalid_argument", "The edit list keeps nothing to transcribe");
+  }
+  const apiKey = (options.apiKey ?? process.env.VOLCENGINE_API_KEY ?? "").trim();
+  if (!apiKey) {
+    throw new VideocutError(
+      "missing_cloud_transcription_adapter",
+      "Volcengine transcription requires VOLCENGINE_API_KEY",
+    );
+  }
+  const dependencies = { ...defaultDependencies(), ...options.dependencies };
+  const extractCutAudio = options.dependencies?.extractCutAudio
+    ?? ((source: string, keep: readonly { start: number; end: number }[], output: string) =>
+      runFfmpegArgs(buildCutAudioArgs(source, keep, output)));
+  const media = await dependencies.probe(options.source);
+  if (!media.hasAudio) {
+    throw new VideocutError("media_has_no_audio", "Source video has no audio stream", { source: options.source });
+  }
+  const duration = ranges.reduce((total, range) => total + (range.end - range.start), 0);
+  const temporaryDirectory = await mkdtemp(join(tmpdir(), "chengfeng-videocut-cut-audio-"));
+  const audio = join(temporaryDirectory, "audio.mp3");
+  try {
+    await extractCutAudio(options.source, ranges, audio);
+    const result = await submitAndPoll({
+      audio,
+      apiKey,
+      resourceId: (options.resourceId ?? process.env.VOLCENGINE_ASR_RESOURCE_ID ?? DEFAULT_RESOURCE_ID).trim(),
+      modelName: (options.modelName ?? process.env.VOLCENGINE_ASR_MODEL_NAME ?? DEFAULT_MODEL_NAME).trim(),
+      language: (options.language ?? DEFAULT_LANGUAGE).trim() || DEFAULT_LANGUAGE,
+      pollIntervalMs: options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
+      maxPollAttempts: options.maxPollAttempts ?? DEFAULT_MAX_POLL_ATTEMPTS,
+      dependencies,
+    });
+    const document = buildVolcengineTranscript({
+      result,
+      language: (options.language ?? DEFAULT_LANGUAGE).trim() || DEFAULT_LANGUAGE,
+      duration,
+    });
+    await mkdir(dirname(options.output), { recursive: true });
+    const temporary = `${options.output}.tmp-${process.pid}`;
+    await writeFile(temporary, `${JSON.stringify(document, null, 2)}\n`, "utf8");
+    await rename(temporary, options.output);
+    return {
+      provider: "volcengine",
+      source: options.source,
+      output: options.output,
+      cueCount: document.cues.length,
+      wordCount: document.cues.flatMap((cue) => cue.words).length,
+      duration,
+    };
   } finally {
     await rm(temporaryDirectory, { recursive: true, force: true });
   }
