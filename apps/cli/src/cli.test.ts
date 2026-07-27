@@ -134,10 +134,17 @@ describe("chengfeng-videocut CLI", () => {
     });
 
     expect(code, capture.stdout.join(" | ")).toBe(0);
-    expect(calls).toEqual([{
-      jobDir: "/tmp/task-01",
-      options: { video: "uploads/talk.mp4", output: "cloud/words.json", language: "zh-CN" },
-    }]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.jobDir).toBe("/tmp/task-01");
+    // Not an exact match any more: the CLI now also passes whatever credentials
+    // are configured on this machine, and a test that pinned the whole options
+    // object would pass or fail depending on whether the developer running it
+    // has a key set.
+    expect(calls[0]?.options).toMatchObject({
+      video: "uploads/talk.mp4",
+      output: "cloud/words.json",
+      language: "zh-CN",
+    });
     expect(JSON.parse(capture.stdout[0])).toMatchObject({
       command: "transcribe",
       ok: true,
