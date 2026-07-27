@@ -47,15 +47,37 @@ const QUIET_SEARCH_SECONDS = 0.25;
 /**
  * How far above the room tone still counts as sound.
  *
- * A word's tail decays through this range rather than stopping, and a cut placed in
- * that decay is heard as a stray vowel — 「第一站」 ended up cut at a level of 567
- * against a floor of 248, and it sounded like an 「喔」 had been left behind.
- *
- * 2.5x missed that entirely: at 1.5x the same boundary moves 30ms and lands at 294,
- * which is essentially the room. Across a whole project this costs 0.13 seconds.
- * Lower still (1.3x) starts chasing the room tone itself for no audible gain.
+ * This is the *fallback* yardstick, used only where no transcript word can be tied
+ * to a boundary. Where one can, `tailReleaseLevel` scales the verdict to that word
+ * — see the constants below for why a single absolute level cannot work.
  */
 const SOUND_ABOVE_FLOOR = 1.5;
+/**
+ * When a word's tail counts as closed, relative to that word's own peak.
+ *
+ * How quiet "quiet" is depends on the word that made the sound: a loud word rings
+ * out loudly, a soft one softly, and any absolute level splits them wrong. Both
+ * failures were measured on one recording (floor 248): 「站」 peaks at 2468 and its
+ * tail was still an audible 「喔」 at 567 — 23% of its peak — which floor x 2.5
+ * (620) waved through; 「到」 peaks at 2112 and its tail still simmered audibly at
+ * 339 — 16% of its peak — which floor x 1.5 (372) waved through. Chasing the second
+ * with a still-lower absolute would start cutting into room noise everywhere else.
+ *
+ * 15% is -16.5dB below the word's own peak. The measured leaks sat at -12~-16dB of
+ * their words; the landings listeners accepted sat at -17dB and below. And because
+ * a tail decays steeply, the search lands well under whatever ceiling admits it —
+ * both measured cases land within 2% either side of the room tone.
+ */
+const TAIL_RELEASE_RATIO = 0.15;
+/**
+ * The release level never demands quieter than the room itself.
+ *
+ * The floor is the 5th percentile, so genuine room tone spends most of its time
+ * above it — this recording's room idles at 248-280 against a floor of 248.
+ * Requiring a dip under 1.2x floor would wait for silence the recording does not
+ * contain, and the search would give up and leave the cut in the worst place.
+ */
+const FLOOR_RELEASE = 1.2;
 /** Keep a few generations so undo lands on a cache hit instead of a re-cut. */
 const RETAINED_CHUNK_GENERATIONS = 240;
 /**
@@ -280,30 +302,109 @@ async function ensureLoudness(
 }
 
 /**
- * When the next word starts speaking, in source seconds.
+ * What the transcript knows about where speech is, in source seconds.
  *
- * A boundary may be extended through the silence after the kept speech, but it must
- * stop before whatever is said next — kept or deleted, it does not matter, because
- * either way playing it here is wrong. Deleted speech played twice is the bug this
- * whole design exists to prevent; kept speech played early is just as wrong.
+ * `onsets` is where each word starts speaking. A boundary may be extended through
+ * the silence after the kept speech, but it must stop before whatever is said next
+ * — kept or deleted, it does not matter, because either way playing it here is
+ * wrong. Deleted speech played twice is the bug this whole design exists to
+ * prevent; kept speech played early is just as wrong.
+ *
+ * `words` carries the full spans, for tying a boundary to the word whose sound is
+ * decaying across it. A word with a broken end still contributes its onset — the
+ * guard above must not weaken just because a span cannot be measured.
  */
-async function speechOnsets(projectDir: string): Promise<number[]> {
+async function transcriptGuide(projectDir: string): Promise<{
+  onsets: number[];
+  words: { start: number; end: number }[];
+}> {
   try {
     const raw = JSON.parse(await readFile(join(projectDir, "transcript.json"), "utf8")) as {
-      cues?: Array<{ words?: Array<{ start?: number; isGap?: boolean }> }>;
+      cues?: Array<{ words?: Array<{ start?: number; end?: number; isGap?: boolean }> }>;
     };
     const onsets: number[] = [];
+    const words: { start: number; end: number }[] = [];
     for (const cue of raw.cues ?? []) {
       for (const word of cue.words ?? []) {
         if (word.isGap === true) continue;
-        if (typeof word.start === "number" && Number.isFinite(word.start)) onsets.push(word.start);
+        if (typeof word.start !== "number" || !Number.isFinite(word.start)) continue;
+        onsets.push(word.start);
+        if (typeof word.end === "number" && Number.isFinite(word.end) && word.end > word.start) {
+          words.push({ start: word.start, end: word.end });
+        }
       }
     }
-    return onsets.sort((left, right) => left - right);
+    return {
+      onsets: onsets.sort((left, right) => left - right),
+      words: words.sort((left, right) => left.start - right.start),
+    };
   } catch {
     // No transcript to consult: refuse to extend rather than guess where speech is.
-    return [];
+    return { onsets: [], words: [] };
   }
+}
+
+/** The last word that starts at or before this instant, by transcript order. */
+function wordAtOrBefore(
+  words: readonly { start: number; end: number }[],
+  time: number,
+): { start: number; end: number } | null {
+  let low = 0;
+  let high = words.length - 1;
+  let found: { start: number; end: number } | null = null;
+  while (low <= high) {
+    const middle = (low + high) >> 1;
+    const candidate = words[middle]!;
+    if (candidate.start <= time + 1e-6) {
+      found = candidate;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return found;
+}
+
+/**
+ * True when this instant falls inside a transcribed word.
+ *
+ * A range that opens on a word the transcript can see is opening on speech, not on
+ * leftover sound — whatever the level says, moving the boundary would clip words,
+ * and the loudness map cannot tell a word's own body from a tail. The transcript
+ * can, so it gets the veto.
+ */
+function insideSpokenWord(
+  words: readonly { start: number; end: number }[],
+  time: number,
+): boolean {
+  const word = wordAtOrBefore(words, time);
+  return word !== null && time < word.end - 1e-6;
+}
+
+/**
+ * The level at which the sound decaying across this boundary counts as closed.
+ *
+ * The word responsible is the last one the transcript starts before the boundary:
+ * at a range end that is the kept word being completed, at a range start it is the
+ * deleted word whose tail is spilling in. Its own peak sets the yardstick —
+ * `TAIL_RELEASE_RATIO` of it, but never below what the room itself produces. With
+ * no transcript, or no word to tie to, the absolute fallback stands.
+ */
+export function tailReleaseLevel(
+  map: { step: number; rms: number[]; quiet: number; floor: number },
+  words: readonly { start: number; end: number }[],
+  boundary: number,
+): number {
+  const word = wordAtOrBefore(words, boundary);
+  if (!word) return map.quiet;
+  const first = Math.max(0, Math.floor(word.start / map.step));
+  const last = Math.min(map.rms.length - 1, Math.floor(word.end / map.step));
+  let peak = 0;
+  for (let index = first; index <= last; index += 1) {
+    peak = Math.max(peak, map.rms[index] ?? 0);
+  }
+  if (peak <= 0) return map.quiet;
+  return Math.max(map.floor * FLOOR_RELEASE, peak * TAIL_RELEASE_RATIO);
 }
 
 function nextOnsetAfter(onsets: readonly number[], time: number): number | null {
@@ -340,12 +441,28 @@ function nextOnsetAfter(onsets: readonly number[], time: number): number | null 
  * design exists to prevent). Speech that was already loud a moment earlier is the
  * second kind; a genuine onset rises out of silence.
  */
+/**
+ * Closed means staying quiet, not dipping.
+ *
+ * A ringing tail passes through single quiet samples on its way back up — this
+ * recording reads 278 at 185.59 with 426 right behind it — and a cut in that dip
+ * leaks the rest of the ring. Two consecutive samples (20ms) is enough to tell a
+ * dip from a landing without demanding a pause the speech may not contain.
+ */
+function soundClosedAt(
+  map: { step: number; rms: number[]; quiet: number },
+  time: number,
+): boolean {
+  const at = (seconds: number) => map.rms[Math.floor(seconds / map.step)] ?? 0;
+  return at(time) <= map.quiet && at(time + map.step) <= map.quiet;
+}
+
 export function soundSpillsInto(
   map: { step: number; rms: number[]; quiet: number },
   time: number,
 ): boolean {
   const at = (seconds: number) => map.rms[Math.floor(seconds / map.step)] ?? 0;
-  if (at(time) <= map.quiet) return false;
+  if (soundClosedAt(map, time)) return false;
   // Two samples back: one is within the rise of a real onset, three starts reaching
   // into whatever preceded a genuine pause.
   return at(time - map.step * 2) > map.quiet;
@@ -356,12 +473,11 @@ export function quietBoundaryAfter(
   time: number,
   limitSeconds = QUIET_SEARCH_SECONDS,
 ): number {
-  const at = (seconds: number) => map.rms[Math.floor(seconds / map.step)] ?? 0;
-  if (at(time) <= map.quiet) return time;
+  if (soundClosedAt(map, time)) return time;
   const steps = Math.ceil(limitSeconds / map.step);
   for (let index = 1; index <= steps; index += 1) {
     const candidate = time + index * map.step;
-    if (at(candidate) <= map.quiet) return roundSeconds(candidate);
+    if (soundClosedAt(map, candidate)) return roundSeconds(candidate);
   }
   return time;
 }
@@ -459,9 +575,14 @@ export async function placeCutBoundaries(input: {
     proxyCacheKey: input.proxyCacheKey,
     segments: [],
   });
-  const onsets = await speechOnsets(input.projectDir);
+  const { onsets, words } = await transcriptGuide(input.projectDir);
   const ranges = [...input.ranges];
   return ranges.map((range, index) => {
+    // The word decaying across each edge sets the yardstick there — its own peak,
+    // not a project-wide constant, decides how quiet its tail must get. Every
+    // absolute level tried so far let one word's tail through while chasing
+    // another's; the only measure they all share is themselves.
+    const endRelease = { ...loudness, quiet: tailReleaseLevel(loudness, words, range.end) };
     const limits = [
       QUIET_SEARCH_SECONDS,
       ranges[index + 1] === undefined ? Infinity : ranges[index + 1]!.start - range.end,
@@ -471,20 +592,40 @@ export async function placeCutBoundaries(input: {
       onsets.length === 0 ? 0 : (nextOnsetAfter(onsets, range.end) ?? Infinity) - range.end,
     ];
     const room = Math.max(0, Math.min(...limits));
-    const end = quietBoundaryAfter(loudness, range.end, room);
+    const end = quietBoundaryAfter(endRelease, range.end, room);
     // The same rule at the other edge. A range can open in the middle of the take
     // that was cut — transcription put the boundary there, but the previous take is
     // still ringing — and then the kept word is heard twice: once as that leftover,
     // once for real. Only move when the sound is spilling in; a range that opens on
-    // its own word's onset must not lose it.
+    // its own word's onset must not lose it — the transcript, not the level, gets
+    // that veto, because a word-relative level is low enough to mistake a noisy
+    // pause before an onset for a tail.
     //
     // At most half the range, so a range can never be trimmed out of existence. A
     // range made *entirely* of leftover sound is usually one the user restored on
     // purpose; making it vanish would leave it marked kept on screen and silent in
-    // the ears, which is the one mismatch this product refuses.
-    const spillRoom = Math.min(QUIET_SEARCH_SECONDS, (end - range.start) / 2);
-    const start = soundSpillsInto(loudness, range.start)
-      ? quietBoundaryAfter(loudness, range.start, Math.max(0, spillRoom))
+    // the ears, which is the one mismatch this product refuses. And never up to the
+    // next onset: the same hard stop the end obeys, because the first kept word is
+    // exactly what a start must not eat.
+    const startRelease = { ...loudness, quiet: tailReleaseLevel(loudness, words, range.start) };
+    const spillRoom = Math.min(
+      QUIET_SEARCH_SECONDS,
+      (end - range.start) / 2,
+      onsets.length === 0
+        ? QUIET_SEARCH_SECONDS
+        : (nextOnsetAfter(onsets, range.start) ?? Infinity) - range.start,
+    );
+    // A start that continues straight on from the previous range is not a cut at
+    // all — the source is contiguous there, the seam gets merged away before
+    // cutting, and nothing was deleted that could spill in. Moving it would tear a
+    // hole in speech the user kept: a real project's restore seam at 187.19 sits in
+    // a word's decay, exactly the shape the spill test looks for.
+    const previous = ranges[index - 1];
+    const seam = previous !== undefined && Math.abs(range.start - previous.end) < 1e-3;
+    const start = !seam
+      && !insideSpokenWord(words, range.start)
+      && soundSpillsInto(startRelease, range.start)
+      ? quietBoundaryAfter(startRelease, range.start, Math.max(0, spillRoom))
       : range.start;
     return { start, end };
   });
