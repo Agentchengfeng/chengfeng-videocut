@@ -15,16 +15,24 @@ import {
   type TranscribeKouboVideoResult,
 } from "@video-workbench/koubo-adapter";
 import {
+  subtitleCueTimings,
+  subtitleStaleness,
+  type SubtitleDocument,
+} from "@video-workbench/core";
+import {
   buildPlaybackTranscript,
+  buildProjectSubtitles,
   correctTranscriptText,
   doctor,
   inspectProject,
   projectUrl,
   readEditList,
   readProjectDocument,
+  readSubtitleState,
   registerProject,
   resolveProject,
   writeCutSelection,
+  writeSubtitles,
 } from "@video-workbench/core/node";
 import { parseArgs, type CliCommand } from "./args";
 import { openBrowser as defaultOpenBrowser } from "./server/open-browser";
@@ -1044,6 +1052,76 @@ export async function runCli(
         }
         if (data.undecided.length > 0) io.stdout(`undecided: ${data.undecided.join(" ")}`);
       }
+      return 0;
+    }
+
+    if (
+      parsed.command === "subtitle.get"
+      || parsed.command === "subtitle.build"
+      || parsed.command === "subtitle.set"
+    ) {
+      await assertRegisteredProject({ project, cwd, projectsDir, outputDir: parsed.outputDir });
+      let written: SubtitleDocument | null = null;
+      let writtenRevision: string | null = null;
+      if (parsed.command === "subtitle.build") {
+        const result = await buildProjectSubtitles(project, {
+          actor: "cli",
+          replace: parsed.replace,
+          ...(parsed.dryRun ? { dryRun: true } : {}),
+          ...(parsed.maxColumns !== undefined ? { maxColumns: parsed.maxColumns } : {}),
+          ...(parsed.breakPauseSeconds !== undefined
+            ? { breakPauseSeconds: parsed.breakPauseSeconds }
+            : {}),
+        });
+        written = result.document;
+        writtenRevision = result.revision;
+      }
+      if (parsed.command === "subtitle.set") {
+        const result = await writeSubtitles(
+          project,
+          await readProposal(parsed.file as string, cwd),
+          {
+            actor: "cli",
+            ...(parsed.dryRun ? { dryRun: true } : {}),
+            ...(parsed.expectedRevision ? { expectedRevision: parsed.expectedRevision } : {}),
+          },
+        );
+        written = result.document;
+        writtenRevision = result.revision;
+      }
+      // Report the document this command produced, not what is on disk: with
+      // --dry-run nothing was written, and reading disk back would describe the
+      // old state while claiming to describe the new one.
+      const state = await readSubtitleState(project);
+      const [transcript, editList] = await Promise.all([
+        readProjectDocument(project, "transcript.json"),
+        readEditList(project),
+      ]);
+      const words = parseTranscriptWords(transcript.value);
+      const document = written ?? state.document;
+      const timings = document
+        ? subtitleCueTimings(document, words, editList?.value ?? null)
+        : [];
+      const data = {
+        projectId: state.projectId,
+        path: join(project.directory, "subtitles.json"),
+        exists: document !== null,
+        dryRun: parsed.dryRun,
+        revision: writtenRevision ?? state.revision,
+        cueCount: document?.cues.length ?? 0,
+        // Screens the cut broke — always the exact list, never "may be stale".
+        stale: document ? subtitleStaleness(document, words, editList?.value ?? null) : [],
+        tooFast: timings.filter((timing) => timing.tooFast && !timing.orphaned)
+          .map((timing) => timing.cueId),
+        tooShort: timings.filter((timing) => timing.tooShort && !timing.orphaned)
+          .map((timing) => timing.cueId),
+        transcriptMoved: document !== null
+          && state.transcriptRevision !== null
+          && document.baseTranscriptRevision !== state.transcriptRevision,
+        ...(parsed.command === "subtitle.get" ? { document } : {}),
+      };
+      if (parsed.json) io.stdout(JSON.stringify(successEnvelope(parsed.command, data)));
+      else io.stdout(JSON.stringify(data, null, 2));
       return 0;
     }
 

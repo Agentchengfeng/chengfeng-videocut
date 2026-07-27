@@ -115,6 +115,9 @@ Usage:
   chengfeng-videocut cuts set <project> --file <file> --expected-revision <none|sha256> [--api-base <url>] [--json]
   chengfeng-videocut cuts set <project> --file <file> --dry-run [--json]
   chengfeng-videocut cuts apply <project> --expected-revision <sha256> --expected-edit-list-revision <sha256> --confirmed [--api-base <url>] [--json]
+  chengfeng-videocut subtitle get <project> [--json]
+  chengfeng-videocut subtitle build <project> [--replace] [--max-columns <n>] [--break-pause <seconds>] [--dry-run] [--json]
+  chengfeng-videocut subtitle set <project> --file <subtitles.json> [--expected-revision <sha256>] [--dry-run] [--json]
 
 service ensure is the product entry point: it atomically installs or recovers the macOS user LaunchAgent and waits for a matching ready Runtime.
 service stop disables and boots out the LaunchAgent; service start re-enables it. Service commands fail closed on non-macOS systems and never kill an unknown process occupying port 5190.
@@ -125,6 +128,8 @@ transcript correct fixes what the transcript says without touching when it says 
 transcript playback flattens the transcript into what the audience hears, in that order, with removed speech marked. Judging repetition depends on heard adjacency, so this is the only correct input for a semantic pass — assembling it by hand gets it wrong silently.
 transcript retranscribe transcribes the cut itself, without exporting it first: it concatenates only the kept ranges' audio and sends that. The times that come back are already on the cut timeline, because the audio that went in is the cut — nothing maps between timelines. This is what subtitles need.
 transcript align proposes spellings from the script the speaker wrote, by finding each term's neighbours in both texts. It corrects only what the context singles out and reports the rest as undecided — transcription mishears proper nouns in ways no dictionary derives from the audio, and a wrong name is worse than a misheard one.
+subtitle cues store word ids, never seconds: the cut owns when, the subtitle owns what is written. Timing and staleness are therefore recomputed on every read and never stored, and every subtitle command reports stale as the exact list of broken screens — the product may not say "subtitles may be out of date".
+subtitle build writes a first draft split at deleted speech, at heard pauses, and at the column limit. It refuses to overwrite an existing document without --replace, because splitting and wording are the part a person spent their time on.
 cuts set reads the result back and reports any previously-cut words it let go of.
 cuts get returns the independent cut-selection revision required by cuts set.
 cutRanges are derived from transcript.json + cutWordIds; supplied cutRanges are ignored.

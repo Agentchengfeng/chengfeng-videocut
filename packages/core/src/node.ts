@@ -37,6 +37,12 @@ import {
   type EditListOperation,
 } from "./editList";
 import { VideocutError } from "./errors";
+import {
+  assertSubtitleDocument,
+  createSubtitleDocument,
+  subtitleStaleness,
+  type SubtitleDocument,
+} from "./subtitles";
 import { serializeProjectOperation } from "./projectLock";
 export {
   PROJECT_OPERATION_LOCK_NAME,
@@ -50,6 +56,7 @@ export const PROJECT_DOCUMENT_NAMES = [
   "transcript.json",
   "cut-selection.json",
   "edit-list.json",
+  "subtitles.json",
   "visual-plan.json",
   "workbench.json",
 ] as const;
@@ -1070,6 +1077,194 @@ export async function writeEditList(
   };
   if (options.dryRun) return writeEditListSnapshot(project, proposal, options);
   return serializeProjectOperation(project.directory, operation);
+}
+
+/* ---------------------------------------------------------------- subtitles */
+
+export interface WriteSubtitlesOptions {
+  expectedRevision?: string;
+  dryRun?: boolean;
+  /** Declared by the caller and recorded verbatim; nothing here can verify it. */
+  actor?: ProjectEventActor;
+}
+
+export interface WriteSubtitlesResult {
+  projectId: string;
+  path: string;
+  previousRevision: string | null;
+  revision: string;
+  changed: boolean;
+  dryRun: boolean;
+  document: SubtitleDocument;
+}
+
+export async function readSubtitles(
+  project: ResolvedProject,
+): Promise<JsonDocument<SubtitleDocument> | null> {
+  const snapshot = await readOptionalProjectDocument(project, "subtitles.json");
+  if (!snapshot) return null;
+  assertSubtitleDocument(snapshot.value);
+  return { ...snapshot, value: snapshot.value };
+}
+
+/**
+ * Write `subtitles.json`.
+ *
+ * Unlike the edit list this has no operation reducer: a subtitle document is
+ * small, and every change to it — retyping a line, moving a word to the next
+ * screen, nudging the colour — is the person editing text. A whole-document
+ * write with a revision check is the honest model of that, and CAS is what
+ * stops two open tabs from silently overwriting each other.
+ */
+export async function writeSubtitles(
+  project: ResolvedProject,
+  proposal: unknown,
+  options: WriteSubtitlesOptions = {},
+): Promise<WriteSubtitlesResult> {
+  const commit = async (): Promise<WriteSubtitlesResult> => {
+    const targetPath = documentPath(project, "subtitles.json");
+    const previous = await readOptionalJsonAt(targetPath);
+    const currentRevision = previous?.revision ?? null;
+    if (options.expectedRevision !== undefined) {
+      const expectedCurrent = currentRevision ?? "none";
+      if (options.expectedRevision !== expectedCurrent) {
+        throw new VideocutError(
+          "revision_conflict",
+          "subtitles.json changed after it was inspected",
+          { expectedRevision: options.expectedRevision, currentRevision },
+        );
+      }
+    }
+    assertSubtitleDocument(proposal);
+    const document = proposal;
+    if (document.projectId !== project.projectId) {
+      throw new VideocutError(
+        "invalid_subtitles",
+        "subtitles.json projectId does not match the registered project",
+        { documentProjectId: document.projectId, projectId: project.projectId },
+      );
+    }
+    const content = serializeJson(document);
+    const nextRevision = sha256(content);
+    if (previous && previous.revision === nextRevision) {
+      return {
+        projectId: project.projectId,
+        path: targetPath,
+        previousRevision: currentRevision,
+        revision: nextRevision,
+        changed: false,
+        dryRun: Boolean(options.dryRun),
+        document,
+      };
+    }
+    if (!options.dryRun) await atomicWriteText(targetPath, content);
+    const result: WriteSubtitlesResult = {
+      projectId: project.projectId,
+      path: targetPath,
+      previousRevision: currentRevision,
+      revision: nextRevision,
+      changed: true,
+      dryRun: Boolean(options.dryRun),
+      document,
+    };
+    if (!options.dryRun) {
+      await appendProjectEvent(project, {
+        type: "subtitles_written",
+        actor: options.actor,
+        payload: {
+          previousRevision: result.previousRevision,
+          revision: result.revision,
+          cueCount: document.cues.length,
+        },
+      });
+    }
+    return result;
+  };
+  if (options.dryRun) return commit();
+  return serializeProjectOperation(project.directory, commit);
+}
+
+export interface SubtitleProjectState {
+  projectId: string;
+  document: SubtitleDocument | null;
+  revision: string | null;
+  /** Screens the edit broke. Empty when nothing did. */
+  stale: ReturnType<typeof subtitleStaleness>;
+  /** Transcript revision the stored document was built against. */
+  baseTranscriptRevision: string | null;
+  /** Transcript revision on disk right now. */
+  transcriptRevision: string | null;
+}
+
+/**
+ * Everything the subtitle surface needs, read in one pass.
+ *
+ * Staleness is computed here rather than stored, for the same reason timing is:
+ * a stored answer goes wrong the moment someone edits the cut, and a wrong
+ * answer about what is broken is worse than no answer.
+ */
+export async function readSubtitleState(
+  project: ResolvedProject,
+): Promise<SubtitleProjectState> {
+  const [subtitles, transcript, editList] = await Promise.all([
+    readSubtitles(project),
+    readOptionalProjectDocument(project, "transcript.json"),
+    readOptionalJsonAt(documentPath(project, "edit-list.json")),
+  ]);
+  const words = transcript ? parseTranscriptWords(transcript.value) : [];
+  const timeline = editList ? parseEditListDocument(editList.value) : null;
+  return {
+    projectId: project.projectId,
+    document: subtitles?.value ?? null,
+    revision: subtitles?.revision ?? null,
+    stale: subtitles ? subtitleStaleness(subtitles.value, words, timeline) : [],
+    baseTranscriptRevision: subtitles?.value.baseTranscriptRevision ?? null,
+    transcriptRevision: transcript?.revision ?? null,
+  };
+}
+
+/**
+ * Build a first draft of the subtitles from the transcript and the current cut.
+ *
+ * Refuses to overwrite an existing document unless asked. Splitting and wording
+ * are what a person spends their time on here; silently replacing that with a
+ * fresh machine split is the single most destructive thing this command could do.
+ */
+export async function buildProjectSubtitles(
+  project: ResolvedProject,
+  options: WriteSubtitlesOptions & {
+    replace?: boolean;
+    maxColumns?: number;
+    breakPauseSeconds?: number;
+  } = {},
+): Promise<WriteSubtitlesResult> {
+  const existing = await readSubtitles(project);
+  if (existing && options.replace !== true) {
+    throw new VideocutError(
+      "subtitles_exist",
+      "subtitles.json already exists; pass --replace to rebuild it from the transcript",
+      { revision: existing.revision, cueCount: existing.value.cues.length },
+    );
+  }
+  const transcript = await readProjectDocument(project, "transcript.json");
+  const editList = await readOptionalJsonAt(documentPath(project, "edit-list.json"));
+  const document = createSubtitleDocument(
+    project.projectId,
+    transcript.revision,
+    parseTranscriptWords(transcript.value),
+    editList ? parseEditListDocument(editList.value) : null,
+    {
+      ...(options.maxColumns !== undefined ? { maxColumns: options.maxColumns } : {}),
+      ...(options.breakPauseSeconds !== undefined
+        ? { breakPauseSeconds: options.breakPauseSeconds }
+        : {}),
+    },
+  );
+  return writeSubtitles(project, document, {
+    ...(options.actor ? { actor: options.actor } : {}),
+    ...(options.dryRun ? { dryRun: options.dryRun } : {}),
+    ...(existing ? { expectedRevision: existing.revision } : {}),
+  });
 }
 
 export async function patchEditList(

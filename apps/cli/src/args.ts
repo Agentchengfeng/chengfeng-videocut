@@ -28,6 +28,9 @@ export type CliCommand =
   | "cuts.apply"
   | "editList.get"
   | "editList.patch"
+  | "subtitle.get"
+  | "subtitle.build"
+  | "subtitle.set"
   | "workflow.get"
   | "workflow.transition"
   | "render.run";
@@ -63,6 +66,9 @@ export interface ParsedArgs {
   action?: string;
   renderer?: string;
   logLines?: number;
+  replace: boolean;
+  maxColumns?: number;
+  breakPauseSeconds?: number;
 }
 
 const VALUE_OPTIONS = new Set([
@@ -89,12 +95,15 @@ const VALUE_OPTIONS = new Set([
   "--renderer",
   "--lines",
   "--script",
+  "--max-columns",
+  "--break-pause",
 ]);
 
 const BOOLEAN_OPTIONS = new Set([
   "--confirmed",
   "--force-index",
   "--refresh-transcript",
+  "--replace",
 ]);
 
 function usageError(message: string): never {
@@ -190,6 +199,24 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     }
   }
 
+  const columnsValue = values.get("--max-columns");
+  let maxColumns: number | undefined;
+  if (columnsValue !== undefined) {
+    maxColumns = Number(columnsValue);
+    if (!Number.isFinite(maxColumns) || maxColumns < 2 || maxColumns > 80) {
+      usageError("--max-columns must be a number from 2 to 80");
+    }
+  }
+
+  const breakPauseValue = values.get("--break-pause");
+  let breakPauseSeconds: number | undefined;
+  if (breakPauseValue !== undefined) {
+    breakPauseSeconds = Number(breakPauseValue);
+    if (!Number.isFinite(breakPauseSeconds) || breakPauseSeconds < 0 || breakPauseSeconds > 5) {
+      usageError("--break-pause must be a number of seconds from 0 to 5");
+    }
+  }
+
   const common = {
     json,
     dryRun,
@@ -218,6 +245,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     action: values.get("--action"),
     renderer: values.get("--renderer"),
     logLines,
+    replace: booleanValues.has("--replace"),
   };
   if (version) return { command: "version", ...common };
   if (help || positionals.length === 0) return { command: "help", ...common };
@@ -493,6 +521,43 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
       output,
       language: values.get("--language"),
     };
+  }
+  if (positionals[0] === "subtitle" && positionals[1] === "get") {
+    if (positionals.length !== 3) {
+      usageError("Usage: chengfeng-videocut subtitle get <project>");
+    }
+    assertOptions(["--projects-dir", "--output-dir"]);
+    return { ...common, command: "subtitle.get", project: positionals[2] };
+  }
+  if (positionals[0] === "subtitle" && positionals[1] === "build") {
+    if (positionals.length !== 3) {
+      usageError("Usage: chengfeng-videocut subtitle build <project> [--replace]");
+    }
+    assertOptions(
+      ["--max-columns", "--break-pause", "--projects-dir", "--output-dir"],
+      ["--replace"],
+      true,
+    );
+    return {
+      ...common,
+      command: "subtitle.build",
+      project: positionals[2],
+      maxColumns,
+      breakPauseSeconds,
+    };
+  }
+  if (positionals[0] === "subtitle" && positionals[1] === "set") {
+    if (positionals.length !== 3) {
+      usageError("Usage: chengfeng-videocut subtitle set <project> --file <subtitles.json>");
+    }
+    const file = values.get("--file");
+    if (!file) usageError("subtitle set requires --file <subtitles.json>");
+    assertOptions(
+      ["--file", "--expected-revision", "--projects-dir", "--output-dir"],
+      [],
+      true,
+    );
+    return { ...common, command: "subtitle.set", project: positionals[2], file };
   }
   if (positionals[0] === "transcript" && positionals[1] === "playback") {
     if (positionals.length !== 3) {
