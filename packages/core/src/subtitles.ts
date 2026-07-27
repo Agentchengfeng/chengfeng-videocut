@@ -72,6 +72,79 @@ export const DEFAULT_SUBTITLE_STYLE: SubtitleStyle = {
   maxLineWidth: 86,
 };
 
+/**
+ * The styles anyone actually picks.
+ *
+ * The individual fields above are what a renderer needs; they are not what a
+ * person wants to decide. Choosing a font, a size, a weight, two colours, a
+ * stroke width and an offset is eight decisions to get one look, and seven of
+ * them only ever move together. So the surface offers whole looks, and the
+ * fields stay as the thing a look is made of.
+ *
+ * Adding one here is how a new look ships. Nothing computes these.
+ */
+export interface SubtitleStylePreset {
+  id: string;
+  label: string;
+  style: SubtitleStyle;
+}
+
+export const SUBTITLE_STYLE_PRESETS: SubtitleStylePreset[] = [
+  {
+    id: "standard",
+    label: "标准",
+    style: DEFAULT_SUBTITLE_STYLE,
+  },
+  {
+    id: "large",
+    label: "大字",
+    style: {
+      ...DEFAULT_SUBTITLE_STYLE,
+      fontSize: 7.2,
+      fontWeight: 600,
+      strokeWidth: 8,
+      offsetY: 9,
+    },
+  },
+  {
+    id: "highlight",
+    label: "重点",
+    style: {
+      ...DEFAULT_SUBTITLE_STYLE,
+      fontSize: 6.2,
+      fontWeight: 600,
+      color: "#ffd60a",
+      strokeWidth: 8,
+    },
+  },
+  {
+    id: "clean",
+    label: "干净",
+    style: {
+      ...DEFAULT_SUBTITLE_STYLE,
+      fontSize: 4.6,
+      fontWeight: 400,
+      strokeColor: "#000000",
+      strokeWidth: 0,
+      backgroundColor: "rgba(0, 0, 0, 0.55)",
+      offsetY: 6,
+    },
+  },
+];
+
+/**
+ * Which preset a style is, or null when it is none of them.
+ *
+ * Nothing records the choice: a style *is* its fields, and storing "this is the
+ * large one" alongside them creates a second copy that can disagree with the
+ * first. Reading the answer back costs a comparison of eleven values.
+ */
+export function matchSubtitleStylePreset(style: SubtitleStyle): SubtitleStylePreset | null {
+  return SUBTITLE_STYLE_PRESETS.find((preset) => (
+    Object.keys(preset.style) as Array<keyof SubtitleStyle>
+  ).every((key) => preset.style[key] === style[key])) ?? null;
+}
+
 /** One screenful of subtitle. */
 export interface SubtitleCue {
   id: string;

@@ -7,8 +7,13 @@ import {
 import type { EditListActor } from "../components/editListApi";
 import { useProjectCutSelection } from "../components/useProjectCutSelection";
 import { useProjectEditList } from "../components/useProjectEditList";
+import { useProjectSubtitles } from "../components/useProjectSubtitles";
 import { useKouboTranscript } from "../extensions/koubo/useKouboTranscript";
-import { CutFeaturePanel } from "./features/CutFeaturePanel";
+import { CutFeaturePanel, type CutFeatureTab } from "./features/CutFeaturePanel";
+import { CutInspector } from "./inspector/CutInspector";
+import { SubtitlePane } from "./subtitle/SubtitlePane";
+import type { ActiveSubtitle } from "./subtitle/SubtitleOverlay";
+import { SubtitlePlaybackMarker } from "./subtitle/SubtitlePlaybackMarker";
 import { TranscriptPaneResizer, TRANSCRIPT_WIDTH_DEFAULT } from "./layout/TranscriptPaneResizer";
 import { CutPlayer } from "./player/CutPlayer";
 import { useAssembledVideoTransport } from "./player/useAssembledVideoTransport";
@@ -209,6 +214,9 @@ export function CutWorkspace({
   const editList = useProjectEditList(projectId);
   const transcript = useKouboTranscript(projectId);
   const cutSelection = useProjectCutSelection(projectId, transcript.cues);
+  const subtitles = useProjectSubtitles(projectId);
+  const [featureTab, setFeatureTab] = useState<CutFeatureTab>("koubo");
+  const [selectedSubtitleCueId, setSelectedSubtitleCueId] = useState<string | null>(null);
   const artifact = usePreviewArtifact(projectId, editList.revision);
   const artifactSource = artifact.state.source
     ? previewArtifactUrl(projectId, artifact.state.source)
@@ -387,6 +395,25 @@ export function CutWorkspace({
     updateCutWordIdsWithHistory,
   ]);
 
+  // Which line is on screen right now, already resolved to one style. The
+  // player only draws; it is not given the document to interpret. Time comes
+  // from the cut, like every other time in the product.
+  const activeSubtitle = useMemo<ActiveSubtitle | null>(() => {
+    const subtitleDocument = subtitles.document;
+    if (!subtitleDocument) return null;
+    const timing = subtitles.timings.find((candidate) => !candidate.orphaned
+      && transport.timelineTime >= candidate.start
+      && transport.timelineTime < candidate.end);
+    if (!timing) return null;
+    const cue = subtitleDocument.cues.find((candidate) => candidate.id === timing.cueId);
+    if (!cue || !cue.text.trim()) return null;
+    return {
+      cueId: cue.id,
+      text: cue.text,
+      style: { ...subtitleDocument.style, ...(cue.style ?? {}) },
+    };
+  }, [subtitles.document, subtitles.timings, transport.timelineTime]);
+
   const canUndo = undoDepth > 0 && editList.saveState !== "saving" && cutSelection.saveState !== "saving";
   const undoLastChange = useCallback(async () => {
     if (editList.saveState === "saving" || cutSelection.saveState === "saving") return;
@@ -484,6 +511,24 @@ export function CutWorkspace({
         transcript={transcriptForPanel}
         cutSelection={transcriptCutSelection}
         onSeek={seek}
+        activeTab={featureTab}
+        onTabChange={setFeatureTab}
+        subtitleProblemCount={subtitles.stale.length}
+        subtitleContent={
+          <SubtitlePane
+            subtitles={subtitles}
+            transcriptCues={transcript.cues}
+            selectedCueId={selectedSubtitleCueId}
+            onSelectCue={setSelectedSubtitleCueId}
+            onSeek={seek}
+          />
+        }
+      />
+
+      <SubtitlePlaybackMarker
+        projectId={projectId}
+        timings={subtitles.timings}
+        timelineTime={transport.timelineTime}
       />
 
       <KouboTranscriptPlaybackMarker
@@ -507,6 +552,14 @@ export function CutWorkspace({
         artifactPhase={artifact.state.phase}
         artifactProfile={artifact.state.profile}
         onArtifactRetry={artifact.retry}
+        subtitle={activeSubtitle}
+      />
+
+      <CutInspector
+        editList={editList}
+        transport={transport}
+        subtitles={subtitles}
+        selectedSubtitleCueId={featureTab === "subtitle" ? selectedSubtitleCueId : null}
       />
 
       <CutTimeline

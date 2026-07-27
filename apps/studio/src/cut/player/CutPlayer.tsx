@@ -13,6 +13,7 @@ import {
 import type { EdlVideoTransport } from "./useAssembledVideoTransport";
 import type { PreviewArtifactProfile } from "./previewArtifact";
 import { useCutPlaybackShortcuts } from "./useCutPlaybackShortcuts";
+import { SubtitleOverlay, type ActiveSubtitle } from "../subtitle/SubtitleOverlay";
 
 function formatTime(seconds: number): string {
   const safe = Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
@@ -40,6 +41,7 @@ export function CutPlayer({
   artifactPhase = "current",
   artifactProfile = "sharp-canonical-v1",
   onArtifactRetry,
+  subtitle = null,
 }: {
   sourceUrl: string | null;
   transport: EdlVideoTransport;
@@ -47,6 +49,8 @@ export function CutPlayer({
   artifactPhase?: "generating" | "current" | "failed" | "stale";
   artifactProfile?: PreviewArtifactProfile | null;
   onArtifactRetry?: () => void;
+  /** Already resolved: which line, in which style. Null draws nothing. */
+  subtitle?: ActiveSubtitle | null;
 }) {
   const activity = transport.error
     ? transport.error
@@ -203,6 +207,7 @@ export function CutPlayer({
         ) : (
           <div className="cf-cut-player-empty">当前 EDL 没有可播放的单一媒体源</div>
         )}
+        {sourceUrl && <SubtitleOverlay subtitle={subtitle} />}
         {activity && (
           <span className={`cf-cut-player-state ${transport.error ? "is-error" : ""}`}>
             {activity}

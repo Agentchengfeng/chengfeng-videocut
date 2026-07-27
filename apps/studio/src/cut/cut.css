@@ -149,7 +149,9 @@ select:focus-visible,
   grid-template-columns:
     var(--cf-cut-transcript-width, 320px)
     3px
-    minmax(480px, 1fr);
+    minmax(420px, 1fr)
+    3px
+    var(--cf-cut-inspector-width, 264px);
   /* HyperFrames' two-lane canvas is 242px plus a 33px toolbar. Keep the pane
      at or above that source geometry instead of clipping its bottom breathing
      area and making both tracks look pinned to the bottom edge. */
@@ -170,6 +172,11 @@ select:focus-visible,
 
 .cf-cut-workspace > .cf-cut-player {
   grid-column: 3;
+  grid-row: 1;
+}
+
+.cf-cut-workspace > .cf-cut-inspector {
+  grid-column: 5;
   grid-row: 1;
 }
 
@@ -257,8 +264,13 @@ select:focus-visible,
   background: transparent;
   color: var(--text-3);
   cursor: pointer;
-  font-size: 11px;
-  font-weight: 550;
+  font-size: 12px;
+  font-weight: 500;
+  transition: color 120ms ease;
+}
+
+.cf-cut-feature-tab:hover {
+  color: var(--text-1);
 }
 
 .cf-cut-feature-tab::after {
@@ -287,6 +299,15 @@ select:focus-visible,
   min-height: 0;
   flex: 1 1 auto;
   overflow: hidden;
+}
+
+/* The inactive tab panel stays mounted so it keeps its scroll position, and it
+   carries `hidden`. But `hidden` only sets `display: none` in the UA sheet, and
+   the author rule above beats it — without this both panels stack up in the
+   column and the tab strip does nothing. */
+.cf-cut-feature-content[hidden],
+.cf-cut-feature-tabpanel[hidden] {
+  display: none;
 }
 
 .cf-cut-feature-panel .cut-transcript-pane {
@@ -1055,6 +1076,7 @@ select:focus-visible,
   scrollbar-gutter: stable;
 }
 
+.cf-cut-inspector__group,
 .cf-cut-inspector__section,
 .cf-cut-inspector fieldset {
   min-width: 0;
@@ -1064,11 +1086,13 @@ select:focus-visible,
   border-bottom: 1px solid var(--hairline);
 }
 
+.cf-cut-inspector__group:last-child,
 .cf-cut-inspector__section:last-child,
 .cf-cut-inspector fieldset:last-child {
   border-bottom: 0;
 }
 
+.cf-cut-inspector__group-title,
 .cf-cut-inspector__section > h2,
 .cf-cut-inspector__section > h3,
 .cf-cut-inspector legend {
@@ -1211,6 +1235,392 @@ select:focus-visible,
   color: #fca5a5;
   font-size: 10px;
   line-height: 15px;
+}
+
+/* Whole looks, not the fields a look is made of. Each tile shows the result,
+   because that is what the choice is actually about — a label alone would make
+   a person click all four to find out what they mean. */
+.cf-cut-inspector__presets {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.cf-cut-inspector__preset {
+  display: flex;
+  min-height: 54px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 8px 4px;
+  border: 1px solid #232327;
+  border-radius: 6px;
+  background: #08080a;
+  cursor: pointer;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.cf-cut-inspector__preset:hover {
+  border-color: #303036;
+  background: rgb(255 255 255 / 2.5%);
+}
+
+.cf-cut-inspector__preset[aria-checked="true"] {
+  border-color: rgb(60 230 172 / 40%);
+  background: rgb(60 230 172 / 6%);
+}
+
+.cf-cut-inspector__preset-sample {
+  padding: 0 3px;
+  border-radius: 3px;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+
+.cf-cut-inspector__preset-label {
+  color: var(--text-4);
+  font-size: 10px;
+  font-weight: 400;
+}
+
+.cf-cut-inspector__preset[aria-checked="true"] .cf-cut-inspector__preset-label {
+  color: var(--text-2);
+}
+
+.cf-cut-inspector__reset {
+  width: 100%;
+  margin-top: 10px;
+}
+
+/* Subtitles on the video ------------------------------------------ */
+
+/* Matched to the video box, not the stage: same width rule, same padding
+   inset, centred the same way. Everything inside is then measured in cqh/cqw,
+   which is exactly what the document stores — percentages of the frame — so
+   the preview and an export draw the same picture at different sizes. */
+.cf-cut-subtitle-overlay {
+  position: absolute;
+  inset: 8px;
+  width: min(calc(100% - 16px), calc((100vh - 230px) * 4 / 3));
+  margin: auto;
+  container-type: size;
+  pointer-events: none;
+}
+
+/* Absolutely placed rather than padded into position: padding would shrink the
+   container's content box, and every size in the document is measured against
+   it. Padding the offset in made 5.4% of a 564px frame render at 26px instead
+   of 30px — the preview would have been quietly lying about the export. */
+.cf-cut-subtitle-overlay__text {
+  position: absolute;
+  left: 50%;
+  padding: 0.1em 0.3em;
+  border-radius: 0.1em;
+  text-align: center;
+  text-wrap: balance;
+  transform: translateX(-50%);
+}
+
+.cf-cut-subtitle-overlay[data-anchor="bottom"] .cf-cut-subtitle-overlay__text {
+  bottom: var(--cf-subtitle-offset, 8cqh);
+}
+
+.cf-cut-subtitle-overlay[data-anchor="top"] .cf-cut-subtitle-overlay__text {
+  top: var(--cf-subtitle-offset, 8cqh);
+}
+
+.cf-cut-subtitle-overlay[data-anchor="middle"] .cf-cut-subtitle-overlay__text {
+  top: 50%;
+  transform: translate(-50%, -50%);
+}
+
+/* Subtitle pane --------------------------------------------------- */
+
+.cf-subtitle-pane {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
+.cf-subtitle-pane__status,
+.cf-subtitle-pane__hint,
+.cf-subtitle-pane__error {
+  margin: 14px 16px 0;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.cf-subtitle-pane__hint {
+  color: var(--text-4);
+  font-size: 11px;
+  line-height: 17px;
+}
+
+.cf-subtitle-pane__hint code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--panel-input);
+  color: var(--text-2);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.cf-subtitle-pane__error {
+  color: #fca5a5;
+}
+
+/* Meta strip, same voice as the transcript header's counters: 10px mono,
+   quiet gray, one hairline below. */
+.cf-subtitle-pane__header {
+  display: flex;
+  align-items: center;
+  min-height: 32px;
+  flex: 0 0 auto;
+  gap: 10px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--hairline);
+  color: var(--text-4);
+  font: 10px ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.cf-subtitle-pane__jump {
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #fca5a5;
+  cursor: pointer;
+  font-size: 10px;
+  transition: background-color 120ms ease;
+}
+
+.cf-subtitle-pane__jump:hover {
+  background: rgb(239 68 68 / 10%);
+}
+
+.cf-subtitle-pane__save {
+  overflow: hidden;
+  margin-left: auto;
+  color: var(--text-4);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cf-subtitle-pane__save[data-state="error"],
+.cf-subtitle-pane__save[data-state="conflict"] {
+  color: #fca5a5;
+}
+
+.cf-subtitle-pane__list {
+  min-height: 0;
+  flex: 1 1 auto;
+  margin: 0;
+  padding: 0 0 56px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  list-style: none;
+  scrollbar-gutter: stable;
+}
+
+/* One row per screen, cut from the same cloth as .cut-transcript-cue: a flat
+   row, hairline below, a right-aligned mono index gutter on the left. */
+.cf-subtitle-row {
+  display: grid;
+  grid-template-columns: 68px minmax(0, 1fr);
+  column-gap: 8px;
+  padding: 7px 16px 7px 8px;
+  border-bottom: 1px solid var(--hairline);
+  transition: background-color 150ms ease;
+}
+
+.cf-subtitle-row:hover:not([data-selected="true"]):not([data-playing="true"]) {
+  background: rgb(255 255 255 / 2.5%);
+}
+
+.cf-subtitle-row[data-selected="true"] {
+  background: rgb(255 255 255 / 4%);
+}
+
+.cf-subtitle-row[data-playing="true"] {
+  box-shadow: inset 2px 0 rgb(60 230 172 / 70%);
+  background: rgb(60 230 172 / 5%);
+}
+
+.cf-subtitle-row__stamp {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-content: start;
+  align-self: start;
+  column-gap: 5px;
+  padding: 7px 0 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-4);
+  cursor: pointer;
+  font: 10px ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  line-height: 12px;
+  text-align: left;
+}
+
+.cf-subtitle-row__index {
+  color: var(--text-5);
+  text-align: right;
+  user-select: none;
+}
+
+.cf-subtitle-row__time {
+  color: var(--text-3);
+  transition: color 120ms ease;
+}
+
+.cf-subtitle-row__stamp:hover .cf-subtitle-row__time {
+  color: var(--text-1);
+}
+
+.cf-subtitle-row[data-playing="true"] .cf-subtitle-row__time {
+  color: var(--mint);
+}
+
+.cf-subtitle-row__main {
+  min-width: 0;
+}
+
+/* The text edits in place: no box until you touch it. Hover is the 3% wash,
+   focus turns into the app's input surface. field-sizing grows it, so the
+   manual resize handle is dead weight. */
+.cf-subtitle-row__text {
+  display: block;
+  width: 100%;
+  min-height: 28px;
+  padding: 3px 6px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-1);
+  font-size: 13px;
+  line-height: 20px;
+  resize: none;
+  field-sizing: content;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.cf-subtitle-row__text:hover {
+  background: rgb(255 255 255 / 3%);
+}
+
+.cf-subtitle-row__text:focus {
+  border-color: #303036;
+  background: var(--panel-input);
+  outline: none;
+}
+
+/* Same treatment the transcript gives a cut word. */
+.cf-subtitle-row[data-problem="orphaned"] .cf-subtitle-row__text,
+.cf-subtitle-row[data-problem="missing"] .cf-subtitle-row__text {
+  color: var(--text-4);
+  text-decoration: line-through;
+  text-decoration-color: var(--text-3);
+  text-decoration-thickness: 1px;
+}
+
+.cf-subtitle-row__notes {
+  display: flex;
+  margin: 3px 0 0;
+  gap: 10px;
+  padding-left: 7px;
+  flex-wrap: wrap;
+  font-size: 10px;
+  line-height: 15px;
+}
+
+.cf-subtitle-row__notes span {
+  color: var(--text-4);
+}
+
+.cf-subtitle-row__notes span[data-kind="orphaned"],
+.cf-subtitle-row__notes span[data-kind="cut"],
+.cf-subtitle-row__notes span[data-kind="missing"] {
+  color: #fca5a5;
+}
+
+.cf-subtitle-row__notes span[data-kind="fast"],
+.cf-subtitle-row__notes span[data-kind="short"] {
+  color: #fbbf24;
+}
+
+.cf-subtitle-row__tools {
+  margin-top: 8px;
+  padding-left: 7px;
+}
+
+.cf-subtitle-row__words {
+  display: flex;
+  gap: 2px;
+  flex-wrap: wrap;
+}
+
+.cf-subtitle-row__word {
+  padding: 2px 5px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 16px;
+  transition: color 120ms ease, background-color 120ms ease;
+}
+
+.cf-subtitle-row__word:hover:not(:disabled) {
+  background: rgb(60 230 172 / 10%);
+  color: var(--mint);
+}
+
+.cf-subtitle-row__word:disabled {
+  color: var(--text-5);
+  cursor: default;
+}
+
+.cf-subtitle-row__merge {
+  min-height: 24px;
+  margin-top: 8px;
+  padding: 2px 9px;
+  border: 1px solid #303036;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  font-size: 11px;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.cf-subtitle-row__merge:hover:not(:disabled) {
+  border-color: #52525b;
+  background: var(--panel-hover);
+}
+
+.cf-subtitle-row__merge:disabled {
+  color: var(--text-5);
+  cursor: default;
+  opacity: 0.6;
+}
+
+/* A plain red count, not a pill: the number is the signal, the box around it
+   was decoration. Monospace to match every other count in this app. */
+.cf-cut-feature-tab__badge {
+  margin-left: 5px;
+  color: #fca5a5;
+  font: 400 10px ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  vertical-align: 1px;
 }
 
 /* Timeline -------------------------------------------------------- */

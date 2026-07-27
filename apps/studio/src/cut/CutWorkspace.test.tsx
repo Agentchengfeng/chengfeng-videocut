@@ -27,6 +27,7 @@ const harness = vi.hoisted(() => ({
   useProjectCutSelection: vi.fn(),
   usePreviewArtifact: vi.fn(),
   useProjectEditList: vi.fn(),
+  useProjectSubtitles: vi.fn(),
 }));
 
 vi.mock("../components/useProjectEditList", () => ({
@@ -35,6 +36,10 @@ vi.mock("../components/useProjectEditList", () => ({
 
 vi.mock("../components/useProjectCutSelection", () => ({
   useProjectCutSelection: harness.useProjectCutSelection,
+}));
+
+vi.mock("../components/useProjectSubtitles", () => ({
+  useProjectSubtitles: harness.useProjectSubtitles,
 }));
 
 vi.mock("../extensions/koubo/useKouboTranscript", () => ({
@@ -218,6 +223,25 @@ beforeEach(() => {
   harness.useProjectCutSelection.mockReset();
   harness.useAssembledVideoTransport.mockReset();
   harness.usePreviewArtifact.mockReset();
+  harness.useProjectSubtitles.mockReset();
+  harness.useProjectSubtitles.mockReturnValue({
+    projectId: "layout-contract",
+    document: null,
+    revision: "none",
+    timings: [],
+    stale: [],
+    loading: false,
+    ready: true,
+    saveState: "idle",
+    error: null,
+    reload: vi.fn(async () => undefined),
+    save: vi.fn(),
+    setCueText: vi.fn(),
+    setStyle: vi.fn(),
+    setCueStyle: vi.fn(),
+    mergeWithPrevious: vi.fn(),
+    splitAt: vi.fn(),
+  });
   harness.useProjectEditList.mockReturnValue({
     projectId: "layout-contract",
     document: editListDocument,
@@ -1210,7 +1234,7 @@ describe("CutWorkspace single-page layout contract", () => {
     act(() => root.unmount());
   });
 
-  it("keeps transcript, Player, and full-width Timeline under one owner without a default Inspector", () => {
+  it("keeps transcript, Player, properties column, and full-width Timeline under one owner", () => {
     const host = document.createElement("div");
     document.body.append(host);
     const root = createRoot(host);
@@ -1229,14 +1253,22 @@ describe("CutWorkspace single-page layout contract", () => {
       "cut-feature-panel",
       "transcript-width-resizer",
       "cut-player",
+      // One column for "the properties of whatever is selected". Subtitle style
+      // lives here, and so will storyboard and animation parameters; none of
+      // them opens a column of its own.
+      null,
       "cut-timeline",
     ]);
     expect(workspace?.querySelector("[data-testid='transcript-width-resizer']")?.getAttribute("role")).toBe(
       "separator",
     );
-    expect(workspace?.querySelector("[data-testid='cut-inspector'], .cf-cut-inspector")).toBeNull();
+    expect(workspace?.querySelector(".cf-cut-inspector")).not.toBeNull();
     expect(workspace?.querySelector(".cf-cut-program")).toBeNull();
-    expect(workspace?.querySelector('[role="tab"]')?.textContent).toBe("文稿");
+    // Renamed from 文稿: this pane decides what survives, and the tab beside it
+    // is also a script.
+    expect(
+      Array.from(workspace?.querySelectorAll('[role="tab"]') ?? []).map((tab) => tab.textContent),
+    ).toEqual(["剪口播", "字幕"]);
     expect(workspace?.querySelector('[role="tabpanel"] [data-testid="koubo-transcript"]')).not.toBeNull();
     expect(harness.patchOperation).not.toHaveBeenCalled();
 
@@ -1247,7 +1279,8 @@ describe("CutWorkspace single-page layout contract", () => {
   it("keeps the resizer desktop-only while Timeline remains a full-width row", () => {
     const css = readFileSync("src/cut/cut.css", "utf8");
     expect(css).toContain("var(--cf-cut-transcript-width, 320px)");
-    expect(css).toContain("minmax(480px, 1fr)");
+    expect(css).toContain("minmax(420px, 1fr)");
+    expect(css).toContain("var(--cf-cut-inspector-width, 264px)");
     expect(css).toContain("column-gap: 0;");
     expect(css).toContain("row-gap: 3px;");
     expect(css).toContain(".cf-cut-workspace > .cf-cut-timeline");

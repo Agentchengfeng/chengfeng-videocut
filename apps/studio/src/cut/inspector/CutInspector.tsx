@@ -1,6 +1,8 @@
 import { useId } from "react";
 import type { ProjectEditListState } from "../../components/useProjectEditList";
 import type { EdlVideoTransport } from "../player/useAssembledVideoTransport";
+import type { ProjectSubtitles } from "../../components/useProjectSubtitles";
+import { SubtitleStyleSection } from "../subtitle/SubtitleStyleSection";
 
 export type CutInspectorEditList = Pick<
   ProjectEditListState,
@@ -20,6 +22,15 @@ export type CutInspectorTransport = Pick<
 export interface CutInspectorProps {
   editList: CutInspectorEditList;
   transport: CutInspectorTransport;
+  /**
+   * Omitted when the workspace has no subtitle document to describe.
+   *
+   * This column follows the *selection*, not the tab: it holds the properties of
+   * whatever is currently selected, and later surfaces (storyboard, animation)
+   * get their parameters here too rather than opening a column each.
+   */
+  subtitles?: ProjectSubtitles;
+  selectedSubtitleCueId?: string | null;
 }
 
 function formatDuration(seconds: number): string {
@@ -33,7 +44,12 @@ function editModeLabel(mode: "cuts-derived" | "manual"): string {
   return mode === "manual" ? "手动精剪" : "文稿剪辑";
 }
 
-export function CutInspector({ editList, transport }: CutInspectorProps) {
+export function CutInspector({
+  editList,
+  transport,
+  subtitles,
+  selectedSubtitleCueId = null,
+}: CutInspectorProps) {
   const titleId = useId();
   const previewHelpId = useId();
   const volumeId = useId();
@@ -55,13 +71,26 @@ export function CutInspector({ editList, transport }: CutInspectorProps) {
         <h2 id={titleId}>参数</h2>
       </header>
 
+      {/*
+        One column, grouped by what the parameters are *for*. Subtitle is the
+        first group; storyboard and animation join it as those surfaces land,
+        and none of them opens a column of its own. The group is present only
+        when the thing it describes exists.
+      */}
       <div className="cf-cut-inspector__body">
+        {subtitles?.document && (
+          <SubtitleStyleSection
+            subtitles={subtitles}
+            selectedCueId={selectedSubtitleCueId}
+          />
+        )}
+
         <fieldset
-          className="cf-cut-inspector__section cf-cut-inspector__preview"
+          className="cf-cut-inspector__group cf-cut-inspector__preview"
           disabled={unavailable}
           aria-describedby={previewHelpId}
         >
-          <legend>预览设置</legend>
+          <legend className="cf-cut-inspector__group-title">播放</legend>
           <p id={previewHelpId} className="cf-cut-inspector__help">
             仅影响当前预览，不写入项目或成片。
           </p>
@@ -118,8 +147,8 @@ export function CutInspector({ editList, transport }: CutInspectorProps) {
           </div>
         </fieldset>
 
-        <section className="cf-cut-inspector__section" aria-labelledby={`${titleId}-edit-list`}>
-          <h3 id={`${titleId}-edit-list`}>剪辑信息</h3>
+        <section className="cf-cut-inspector__group" aria-labelledby={`${titleId}-edit-list`}>
+          <h3 id={`${titleId}-edit-list`} className="cf-cut-inspector__group-title">剪辑</h3>
           {unavailable ? (
             <p className="cf-cut-inspector__status" role="status" aria-live="polite">
               {editList.loading ? "正在读取剪辑信息…" : "剪辑信息尚未就绪"}
