@@ -28,8 +28,25 @@ import { basename, join } from "node:path";
 const STREAM_DIRECTORY = "preview-stream" as const;
 const FRAGMENTED_SUFFIX = ".frag.mp4" as const;
 const KEYFRAMES_SUFFIX = ".keyframes.json" as const;
+const LOUDNESS_SUFFIX = ".loudness.json" as const;
+/** Resolution of the loudness map, in seconds. Fine enough to find a gap between words. */
+const LOUDNESS_STEP = 0.01;
+/** How far a boundary may move to find silence, in seconds. */
+const QUIET_SEARCH_SECONDS = 0.25;
 /** Keep a few generations so undo lands on a cache hit instead of a re-cut. */
 const RETAINED_CHUNK_GENERATIONS = 240;
+/**
+ * Length of the gain ramp at each end of a retained range, in seconds.
+ *
+ * A cut lands where one sound stops and another was removed; splicing that with a
+ * hard edge is what makes a click. Four independent projects converge on this order
+ * of magnitude — auto-editor 3ms, jumpcutter ~9ms, the MSE spec's own audio splice
+ * 5ms — and auto-editor added it only after shipping without it and hearing pops.
+ *
+ * It is also what makes cutting *past* the end of a word safe: whatever the extra
+ * few milliseconds catch has already been taken to zero.
+ */
+const SEAM_FADE_SECONDS = 0.005;
 
 export interface PreviewStreamSegment {
   /** Project-relative path of the fragment, servable by the preview media route. */
@@ -73,6 +90,21 @@ function roundSeconds(value: number): number {
   return Math.round(value * 1_000_000) / 1_000_000;
 }
 
+async function runBinary(command: string, args: readonly string[]): Promise<Uint8Array> {
+  return await new Promise<Uint8Array>((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const chunks: Buffer[] = [];
+    let stderr = "";
+    child.stdout.on("data", (chunk: Buffer) => { chunks.push(chunk); });
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => { stderr += chunk; });
+    child.on("error", reject);
+    child.on("close", (code) => code === 0
+      ? resolve(new Uint8Array(Buffer.concat(chunks)))
+      : reject(new Error(`${command} exited with ${code}: ${stderr.trim().slice(0, 400)}`)));
+  });
+}
+
 async function run(command: string, args: readonly string[]): Promise<string> {
   return await new Promise<string>((resolve, reject) => {
     const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
@@ -106,11 +138,13 @@ async function exists(path: string): Promise<boolean> {
 async function ensureFragmentedProxy(input: BuildPreviewStreamInput): Promise<{
   fragmented: string;
   keyframes: number[];
+  loudness: { step: number; rms: number[]; quiet: number };
 }> {
   const directory = join(input.projectDir, ".chengfeng-videocut", STREAM_DIRECTORY);
   await mkdir(directory, { recursive: true });
   const fragmented = join(directory, `${input.proxyCacheKey}${FRAGMENTED_SUFFIX}`);
   const indexPath = join(directory, `${input.proxyCacheKey}${KEYFRAMES_SUFFIX}`);
+  const loudnessPath = join(directory, `${input.proxyCacheKey}${LOUDNESS_SUFFIX}`);
   const proxy = join(input.projectDir, input.proxySource);
 
   if (!await exists(fragmented)) {
@@ -152,14 +186,88 @@ async function ensureFragmentedProxy(input: BuildPreviewStreamInput): Promise<{
     const temporary = `${indexPath}.tmp-${process.pid}`;
     await writeFile(temporary, JSON.stringify(keyframes), "utf8");
     await rename(temporary, indexPath);
-    return { fragmented, keyframes };
+    return { fragmented, keyframes, loudness: await ensureLoudness(fragmented, loudnessPath) };
   }
 
   const keyframes = JSON.parse(await readFile(indexPath, "utf8")) as unknown;
   if (!Array.isArray(keyframes) || keyframes.length === 0) {
     throw new Error("Preview proxy keyframe index is unusable");
   }
-  return { fragmented, keyframes: keyframes as number[] };
+  return {
+    fragmented,
+    keyframes: keyframes as number[],
+    loudness: await ensureLoudness(fragmented, loudnessPath),
+  };
+}
+
+/**
+ * Where the audio is quiet, sampled every 10ms.
+ *
+ * Transcription marks where it *recognised* a word, not where the sound stops — a
+ * measured case wrote 40ms for a syllable whose audio ran 180ms. Cutting at the
+ * written boundary therefore cuts through the word itself, and no fixed margin fixes
+ * that: it needs to know where the sound actually stops.
+ *
+ * Computed once per proxy and cached beside the keyframe index. One pass over the
+ * audio of an eight-minute proxy takes about two seconds.
+ */
+async function ensureLoudness(
+  fragmented: string,
+  indexPath: string,
+): Promise<{ step: number; rms: number[]; quiet: number }> {
+  if (await exists(indexPath)) {
+    const stored = JSON.parse(await readFile(indexPath, "utf8")) as
+      { step: number; rms: number[]; quiet: number };
+    if (stored?.rms?.length) return stored;
+  }
+  const raw = await runBinary("ffmpeg", [
+    "-v", "error", "-i", `file:${fragmented}`,
+    "-vn", "-ac", "1", "-ar", "16000", "-f", "s16le", "pipe:1",
+  ]);
+  const samples = new Int16Array(raw.buffer, raw.byteOffset, Math.floor(raw.byteLength / 2));
+  const window = Math.round(16000 * LOUDNESS_STEP);
+  const rms: number[] = [];
+  for (let index = 0; index + window <= samples.length; index += window) {
+    let sum = 0;
+    for (let offset = 0; offset < window; offset += 1) {
+      const value = samples[index + offset]!;
+      sum += value * value;
+    }
+    rms.push(Math.round(Math.sqrt(sum / window)));
+  }
+  if (rms.length === 0) throw new Error("preview proxy has no audio to measure");
+  // The floor is what this recording calls silence — room tone, not zero. Taking a
+  // low percentile rather than the minimum keeps one freak sample from setting it.
+  const sorted = [...rms].sort((left, right) => left - right);
+  const floor = sorted[Math.floor(sorted.length * 0.05)] ?? 0;
+  const map = { step: LOUDNESS_STEP, rms, quiet: Math.max(1, Math.round(floor * 2.5)) };
+  const temporary = `${indexPath}.tmp-${process.pid}`;
+  await writeFile(temporary, JSON.stringify(map), "utf8");
+  await rename(temporary, indexPath);
+  return map;
+}
+
+/**
+ * Move a boundary off the sound and into the silence just past it.
+ *
+ * Later, never earlier: a boundary that lands inside a word must give the whole word
+ * back, and the only direction that does that is outward. It stops at the first quiet
+ * sample, so a boundary already in silence does not move at all, and it gives up
+ * after a quarter second rather than run into whatever comes next.
+ */
+export function quietBoundaryAfter(
+  map: { step: number; rms: number[]; quiet: number },
+  time: number,
+  limitSeconds = QUIET_SEARCH_SECONDS,
+): number {
+  const at = (seconds: number) => map.rms[Math.floor(seconds / map.step)] ?? 0;
+  if (at(time) <= map.quiet) return time;
+  const steps = Math.ceil(limitSeconds / map.step);
+  for (let index = 1; index <= steps; index += 1) {
+    const candidate = time + index * map.step;
+    if (at(candidate) <= map.quiet) return roundSeconds(candidate);
+  }
+  return time;
 }
 
 function keyframeAtOrBefore(keyframes: readonly number[], time: number): number {
@@ -240,30 +348,58 @@ export function mergeContiguousRanges(
 export async function buildPreviewStream(
   input: BuildPreviewStreamInput,
 ): Promise<PreviewStream> {
-  const { fragmented, keyframes } = await ensureFragmentedProxy(input);
+  const { fragmented, keyframes, loudness } = await ensureFragmentedProxy(input);
   const directory = join(input.projectDir, ".chengfeng-videocut", STREAM_DIRECTORY);
   const segments: PreviewStreamSegment[] = [];
   const keep = new Set<string>();
   let out = 0;
 
-  for (const segment of mergeContiguousRanges(input.segments)) {
+  const ranges = mergeContiguousRanges(input.segments);
+  for (const [index, segment] of ranges.entries()) {
     const start = segment.start;
-    const end = segment.end;
+    // Cut after the sound, never through it. A boundary already sitting in silence
+    // does not move; one landing inside a word gives the whole word back.
+    //
+    // Never past where the next kept range begins: the deleted stretch between them
+    // can be shorter than the search window, and running into the next range would
+    // play the same speech twice.
+    const nextStart = ranges[index + 1]?.start;
+    const room = nextStart === undefined
+      ? QUIET_SEARCH_SECONDS
+      : Math.max(0, Math.min(QUIET_SEARCH_SECONDS, nextStart - segment.end));
+    const end = quietBoundaryAfter(loudness, segment.end, room);
     const duration = end - start;
     if (!(duration > 0)) continue;
     const keyframe = keyframeAtOrBefore(keyframes, start);
     // Keyed by what the fragment contains, not by which edit asked for it, so an
     // unchanged range is never cut twice.
-    const name = `${sha256(`${input.proxyCacheKey}|${keyframe.toFixed(6)}|${end.toFixed(6)}`)}.m4s`;
+    // `start` belongs in the key even though the cut runs from the keyframe: the
+    // fades are placed relative to the range, so two fragments with the same
+    // keyframe and end but different starts are different media.
+    const name = `${sha256(`${input.proxyCacheKey}|${keyframe.toFixed(6)}|${start.toFixed(6)}|${end.toFixed(6)}|f${SEAM_FADE_SECONDS}`)}.m4s`;
     const path = join(directory, name);
     keep.add(name);
     if (!await exists(path)) {
       const temporary = `${path}.tmp-${process.pid}`;
+      // Video is copied; only the audio is touched, and only at the two ends. The
+      // re-encode costs about 50ms per fragment, which is the price of not clicking.
+      const fadeIn = roundSeconds(start - keyframe);
+      const fadeOut = roundSeconds(fadeIn + duration - SEAM_FADE_SECONDS);
+      const audio = duration > SEAM_FADE_SECONDS * 4
+        ? [
+            "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
+            "-af", `afade=t=in:st=${fadeIn.toFixed(6)}:d=${SEAM_FADE_SECONDS},`
+              + `afade=t=out:st=${fadeOut.toFixed(6)}:d=${SEAM_FADE_SECONDS}`,
+          ]
+        // Too short to ramp both ends without them meeting; leave it alone rather
+        // than fade a fragment into and out of itself.
+        : ["-c", "copy"];
       try {
         await run("ffmpeg", [
           "-y", "-v", "error",
           "-ss", keyframe.toFixed(6), "-to", end.toFixed(6),
-          "-i", `file:${fragmented}`, "-c", "copy",
+          "-i", `file:${fragmented}`,
+          ...audio,
           "-movflags", "frag_keyframe+empty_moov+default_base_moof",
           "-f", "mp4", `file:${temporary}`,
         ]);
