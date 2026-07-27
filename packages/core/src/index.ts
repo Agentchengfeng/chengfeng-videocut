@@ -1,3 +1,4 @@
+export * from "./config";
 export * from "./cuts";
 export * from "./editList";
 export * from "./errors";

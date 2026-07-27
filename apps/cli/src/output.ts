@@ -98,6 +98,8 @@ Usage:
   chengfeng-videocut service logs [--lines <1-1000>] [--json]
   chengfeng-videocut service ensure [--open] [--json]
   chengfeng-videocut doctor [--json]
+  chengfeng-videocut config get [--json]
+  chengfeng-videocut config set <transcription.apiKey|transcription.resourceId|transcription.modelName> <value> [--json]
   chengfeng-videocut inspect <project> [--json]
   chengfeng-videocut open <project> [--origin <url>] [--json]
   chengfeng-videocut transcribe <job-dir> --video <task-local-path> --output <task-local-path> [--language <code>] [--json]
@@ -123,6 +125,7 @@ Usage:
 service ensure is the product entry point: it atomically installs or recovers the macOS user LaunchAgent and waits for a matching ready Runtime.
 service stop disables and boots out the LaunchAgent; service start re-enables it. Service commands fail closed on non-macOS systems and never kill an unknown process occupying port 5190.
 start serves the Studio in the foreground on 127.0.0.1:5190 by default. It remains available for development diagnostics and does not open a browser unless --open is provided.
+config stores machine-wide settings in ~/.chengfeng-videocut/config.json at mode 0600, and prints secrets masked. An environment variable of the same name always wins, so one command can be overridden without editing anything. The cloud transcription credential was previously an environment variable and nothing else: required by the product, assumed by the Skills, mentioned in no contract and checked by no command — a shell without it failed at the moment of the call.
 Project may be an absolute directory or an id registered in the Workbench.
 cuts set writes through the running product API; --dry-run performs a local read-only calculation.
 transcript correct fixes what the transcript says without touching when it says it: word ids, word count and every timestamp must come out identical, or the write is refused. A mis-heard proper noun is not surplus speech, so cutting cannot repair it.

@@ -4,6 +4,7 @@ import {
   appendFile,
   lstat,
   mkdir,
+  chmod,
   open as openFile,
   readFile,
   realpath,
@@ -36,6 +37,18 @@ import {
   type EditListDocument,
   type EditListOperation,
 } from "./editList";
+import {
+  CONFIG_FIELDS,
+  PRODUCT_CONFIG_FILE,
+  configField,
+  maskSecret,
+  parseProductConfig,
+  resolveSetting,
+  withSetting,
+  type ConfigFieldPath,
+  type ProductConfig,
+  type ResolvedSetting,
+} from "./config";
 import { VideocutError } from "./errors";
 import {
   assertSubtitleDocument,
@@ -98,6 +111,111 @@ export function sha256(value: string | Uint8Array): string {
 
 export function serializeJson(value: unknown): string {
   return `${JSON.stringify(value, null, 2)}\n`;
+}
+
+/**
+ * The product's own home: `~/.chengfeng-videocut` unless told otherwise.
+ *
+ * `projects/`, `app/`, `logs/` and the config file all live here. It is not the
+ * code repository and not a video project — both of those are shared or
+ * packaged, and a credential in either leaves the machine with them.
+ */
+export function productHomeDir(): string {
+  return resolve(
+    process.env.CHENGFENG_VIDEOCUT_DATA_DIR
+      ?? process.env.CHENGFENG_VIDEOCUT_HOME
+      ?? join(homedir(), ".chengfeng-videocut"),
+  );
+}
+
+export function productConfigPath(): string {
+  return join(productHomeDir(), PRODUCT_CONFIG_FILE);
+}
+
+/** Read the config file, or an empty config when there is not one yet. */
+export async function readProductConfig(): Promise<ProductConfig> {
+  const snapshot = await readOptionalJsonAt(productConfigPath());
+  return snapshot ? parseProductConfig(snapshot.value) : {};
+}
+
+/**
+ * Store one setting, creating the file at `0600` if needed.
+ *
+ * The mode is set on every write, not only on creation: a file that was once
+ * world-readable stays world-readable, and the one thing this file exists to
+ * hold is a secret.
+ */
+export async function writeProductSetting(
+  path: ConfigFieldPath,
+  value: string,
+): Promise<{ path: string; field: ConfigFieldPath; stored: string }> {
+  const field = configField(path);
+  if (!field) {
+    throw new VideocutError("invalid_argument", `Unknown setting: ${path}`, {
+      known: CONFIG_FIELDS.map((item) => item.path),
+    });
+  }
+  const trimmed = value.trim();
+  if (!trimmed) throw new VideocutError("invalid_argument", `${path} cannot be empty`);
+  const target = productConfigPath();
+  await mkdir(dirname(target), { recursive: true });
+  const next = withSetting(await readProductConfig(), path, trimmed);
+  await atomicWriteText(target, serializeJson(next));
+  await chmod(target, 0o600);
+  return {
+    path: target,
+    field: path,
+    stored: field.secret ? maskSecret(trimmed) : trimmed,
+  };
+}
+
+/** Every setting, where its value came from, and what it is — secrets masked. */
+export async function inspectProductConfig(): Promise<Array<{
+  field: ConfigFieldPath;
+  describe: string;
+  env: string;
+  required: boolean;
+  source: ResolvedSetting["source"];
+  value: string | null;
+}>> {
+  const config = await readProductConfig();
+  return CONFIG_FIELDS.map((field) => {
+    const resolved = resolveSetting(field.path, config, process.env);
+    return {
+      field: field.path,
+      describe: field.describe,
+      env: field.env,
+      required: field.required,
+      source: resolved.source,
+      value: resolved.value === undefined
+        ? null
+        : field.secret ? maskSecret(resolved.value) : resolved.value,
+    };
+  });
+}
+
+/**
+ * The credentials a cloud transcription needs, from wherever they are set.
+ *
+ * Callers pass this straight through instead of reading `process.env`
+ * themselves, so there is one answer to "where does the key come from" rather
+ * than one per call site.
+ */
+export async function resolveTranscriptionCredentials(): Promise<{
+  apiKey?: string;
+  resourceId?: string;
+  modelName?: string;
+}> {
+  const config = await readProductConfig();
+  const pick = (path: ConfigFieldPath) => resolveSetting(path, config, process.env).value;
+  const apiKey = pick("transcription.apiKey");
+  const resourceId = pick("transcription.resourceId");
+  const modelName = pick("transcription.modelName");
+  return {
+    ...(apiKey ? { apiKey } : {}),
+    ...(resourceId ? { resourceId } : {}),
+    ...(modelName ? { modelName } : {}),
+  };
 }
 
 export function defaultProjectsDir(): string {
@@ -1658,13 +1776,14 @@ export async function doctor(
   const productRoot = resolve(fileURLToPath(new URL("../../../", import.meta.url)));
   const packagedStudioIndex = fileURLToPath(new URL("./studio/index.html", import.meta.url));
   const sourceStudioPackage = join(productRoot, "apps/studio/package.json");
-  const [ffmpeg, ffprobe, registryExists, studioExists] = await Promise.all([
+  const [ffmpeg, ffprobe, registryExists, studioExists, transcription] = await Promise.all([
     findExecutable("ffmpeg"),
     findExecutable("ffprobe"),
     existingDirectory(projectsDir),
     Promise.all([pathExists(packagedStudioIndex), pathExists(sourceStudioPackage)]).then(
       ([packaged, source]) => packaged || source,
     ),
+    resolveTranscriptionCredentials(),
   ]);
   const bunVersion = (
     globalThis as typeof globalThis & { Bun?: { version?: string } }
@@ -1703,6 +1822,22 @@ export async function doctor(
       ok: Boolean(ffprobe),
       required: true,
       detail: ffprobe ?? "ffprobe was not found on PATH",
+    },
+    {
+      // Documented in four contracts and checked nowhere: a machine without the
+      // credential looked healthy right up to the moment a transcription failed
+      // with "missing adapter", which reads like a product fault. Say it here,
+      // before anything is spent on extracting audio.
+      name: "cloudTranscription",
+      ok: Boolean(transcription.apiKey),
+      // Reported, not enforced. `healthy` gates every Skill's preflight, and a
+      // machine with existing projects needs no credential to open, cut or
+      // subtitle any of them — only to transcribe a new one. Blocking all of
+      // that would trade one clear failure for a much larger one.
+      required: false,
+      detail: transcription.apiKey
+        ? `已配置（${productConfigPath()} 或环境变量）`
+        : `未配置。设置：chengfeng-videocut config set transcription.apiKey <值>`,
     },
   ];
   return {

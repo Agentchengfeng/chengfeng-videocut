@@ -13,6 +13,8 @@ export type CliCommand =
   | "service.logs"
   | "service.ensure"
   | "doctor"
+  | "config.get"
+  | "config.set"
   | "inspect"
   | "open"
   | "transcribe"
@@ -499,6 +501,18 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
       file: correctionsFile,
       ...common,
     };
+  }
+  if (positionals[0] === "config" && positionals[1] === "get") {
+    if (positionals.length !== 2) usageError("Usage: chengfeng-videocut config get [--json]");
+    assertOptions([]);
+    return { ...common, command: "config.get" };
+  }
+  if (positionals[0] === "config" && positionals[1] === "set") {
+    if (positionals.length !== 4) {
+      usageError("Usage: chengfeng-videocut config set <transcription.apiKey|transcription.resourceId|transcription.modelName> <value>");
+    }
+    assertOptions([]);
+    return { ...common, command: "config.set", file: positionals[2], output: positionals[3] };
   }
   if (positionals[0] === "transcript" && positionals[1] === "dictionary") {
     if (positionals.length !== 3) {

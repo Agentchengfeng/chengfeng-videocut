@@ -21,9 +21,14 @@ import {
   subtitleStaleness,
   type SubtitleDocument,
 } from "@video-workbench/core";
+import type { ConfigFieldPath } from "@video-workbench/core";
 import {
   buildPlaybackTranscript,
   buildProjectSubtitles,
+  inspectProductConfig,
+  productConfigPath,
+  resolveTranscriptionCredentials,
+  writeProductSetting,
   correctTranscriptText,
   doctor,
   inspectProject,
@@ -705,6 +710,25 @@ export async function runCli(
       else io.stdout(humanService(data));
       return 0;
     }
+    if (parsed.command === "config.get" || parsed.command === "config.set") {
+      if (parsed.command === "config.set") {
+        await writeProductSetting(parsed.file as ConfigFieldPath, parsed.output as string);
+      }
+      const data = {
+        path: productConfigPath(),
+        settings: await inspectProductConfig(),
+      };
+      if (parsed.json) io.stdout(JSON.stringify(successEnvelope(parsed.command, data)));
+      else {
+        io.stdout(data.path);
+        for (const item of data.settings) {
+          // Secrets are masked here as everywhere: a command that prints its own
+          // configuration is exactly where one would otherwise leak.
+          io.stdout(`  ${item.field}  ${item.value ?? "（未设置）"}  ← ${item.source}`);
+        }
+      }
+      return 0;
+    }
     if (parsed.command === "doctor") {
       const data = await doctor({ projectsDir });
       if (parsed.json) io.stdout(JSON.stringify(successEnvelope(parsed.command, data)));
@@ -766,6 +790,9 @@ export async function runCli(
         ranges,
         output: resolve(cwd, parsed.output as string),
         language: parsed.language,
+        // One place answers "where does the key come from". Reading the
+        // environment at each call site is how it ended up documented nowhere.
+        ...(await resolveTranscriptionCredentials()),
       });
       const data = {
         provider: result.provider,
@@ -788,6 +815,7 @@ export async function runCli(
           video: parsed.video as string,
           output: parsed.output as string,
           language: parsed.language,
+          ...(await resolveTranscriptionCredentials()),
         },
       );
       const data = {
