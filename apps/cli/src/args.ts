@@ -23,6 +23,7 @@ export type CliCommand =
   | "transcript.playback"
   | "transcript.retranscribe"
   | "transcript.align"
+  | "transcript.dictionary"
   | "transcript.correct"
   | "cuts.set"
   | "cuts.apply"
@@ -95,6 +96,7 @@ const VALUE_OPTIONS = new Set([
   "--renderer",
   "--lines",
   "--script",
+  "--dictionary",
   "--max-columns",
   "--break-pause",
 ]);
@@ -496,6 +498,20 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
       project: positionals[2],
       file: correctionsFile,
       ...common,
+    };
+  }
+  if (positionals[0] === "transcript" && positionals[1] === "dictionary") {
+    if (positionals.length !== 3) {
+      usageError("Usage: chengfeng-videocut transcript dictionary <project> --dictionary <file>");
+    }
+    assertOptions(["--dictionary", "--projects-dir", "--output-dir"], [], true);
+    const dictionary = values.get("--dictionary");
+    if (!dictionary) usageError("transcript dictionary requires --dictionary <file>");
+    return {
+      ...common,
+      command: "transcript.dictionary",
+      project: positionals[2],
+      file: dictionary,
     };
   }
   if (positionals[0] === "transcript" && positionals[1] === "align") {

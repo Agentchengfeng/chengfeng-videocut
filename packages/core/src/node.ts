@@ -40,8 +40,10 @@ import { VideocutError } from "./errors";
 import {
   assertSubtitleDocument,
   createSubtitleDocument,
+  respellSubtitles,
   subtitleStaleness,
   type SubtitleDocument,
+  type SubtitleRespellResult,
 } from "./subtitles";
 import { serializeProjectOperation } from "./projectLock";
 export {
@@ -1487,6 +1489,8 @@ export interface CorrectTranscriptTextResult {
   changed: boolean;
   dryRun: boolean;
   applied: Array<{ wordId: string; from: string; to: string }>;
+  /** What the same respelling did to the subtitle screens, if there are any. */
+  subtitles: Pick<SubtitleRespellResult, "updated" | "needsAttention">;
   unchanged: number;
 }
 
@@ -1505,6 +1509,35 @@ export interface CorrectTranscriptTextResult {
  * downstream deletion off its target, so the write refuses rather than adjusts:
  * an unknown id, a changed count, or any attempt to reach a time field fails.
  */
+/**
+ * Write the same respelling into `subtitles.json`, when there is one.
+ *
+ * Best effort by design: correcting a misheard name is worth doing whether or
+ * not subtitles exist yet, and a project with no subtitle document is the
+ * normal case. What must never happen is a *silent* miss, so anything this
+ * cannot rewrite comes back in `needsAttention` rather than being dropped.
+ */
+async function respellProjectSubtitles(
+  project: ResolvedProject,
+  applied: ReadonlyArray<{ wordId: string; from: string; to: string }>,
+  options: { dryRun?: boolean; actor?: ProjectEventActor },
+): Promise<Pick<SubtitleRespellResult, "updated" | "needsAttention">> {
+  if (applied.length === 0) return { updated: [], needsAttention: [] };
+  const current = await readOptionalJsonAt<SubtitleDocument>(
+    documentPath(project, "subtitles.json"),
+  );
+  if (!current) return { updated: [], needsAttention: [] };
+  assertSubtitleDocument(current.value);
+  const result = respellSubtitles(current.value, applied);
+  if (!options.dryRun && result.updated.length > 0) {
+    await atomicWriteText(
+      documentPath(project, "subtitles.json"),
+      serializeJson(result.document),
+    );
+  }
+  return { updated: result.updated, needsAttention: result.needsAttention };
+}
+
 export async function correctTranscriptText(
   project: ResolvedProject,
   corrections: readonly TranscriptTextCorrection[],
@@ -1582,6 +1615,12 @@ export async function correctTranscriptText(
     const content = serializeJson(document);
     const revision = sha256(content);
     const changed = revision !== previous.revision;
+    // Screens showing a respelled word are corrected in the same breath. Doing
+    // it later is not possible: only here are the word ids known, and without
+    // them "which screens went stale" degrades to "something moved".
+    const subtitles = changed
+      ? await respellProjectSubtitles(project, applied, options)
+      : { updated: [], needsAttention: [] };
     if (!options.dryRun && changed) {
       await atomicWriteText(path, content);
       await appendProjectEvent(project, {
@@ -1592,6 +1631,7 @@ export async function correctTranscriptText(
           revision,
           correctedWordCount: applied.length,
           corrections: applied.slice(0, 40),
+          subtitleScreensUpdated: subtitles.updated.length,
         },
       });
     }
@@ -1604,6 +1644,7 @@ export async function correctTranscriptText(
       dryRun: Boolean(options.dryRun),
       applied,
       unchanged,
+      subtitles,
     };
   };
   if (options.dryRun) return apply();

@@ -8,6 +8,8 @@ import {
   putKouboArtifact,
   runKouboRender,
   alignScriptToWords,
+  matchDictionary,
+  parseDictionary,
   transcribeKouboVideo,
   transcribeProjectCut,
   type KouboArtifactType,
@@ -1025,6 +1027,51 @@ export async function runCli(
       else {
         const verb = data.dryRun ? "Would correct" : data.changed ? "Corrected" : "Unchanged";
         io.stdout(`${verb} ${data.applied.length} word(s) in ${data.path}\nRevision: ${data.revision}`);
+      }
+      return 0;
+    }
+    if (parsed.command === "transcript.dictionary") {
+      await assertRegisteredProject({ project, cwd, projectsDir, outputDir: parsed.outputDir });
+      const transcript = await readProjectDocument(project, "transcript.json");
+      const { entries, ignored } = parseDictionary(
+        await readFile(resolve(cwd, parsed.file as string), "utf8"),
+      );
+      const matches = matchDictionary(entries, parseTranscriptWords(transcript.value));
+      // Applied without asking: the dictionary is the operator's own statement
+      // about their own vocabulary, so writing a rule into it *is* the decision.
+      // What it changed is listed in full, which is what makes that safe.
+      const result = matches.length > 0
+        ? await correctTranscriptText(
+          project,
+          matches.map((match) => ({ wordId: match.wordId, text: match.to })),
+          { actor: "cli", ...(parsed.dryRun ? { dryRun: true } : {}) },
+        )
+        : null;
+      const data = {
+        projectId: project.projectId,
+        rules: entries.length,
+        // A line that is not a rule is reported, never skipped in silence: a
+        // typo in the dictionary is otherwise indistinguishable from a name
+        // that simply never came up.
+        unreadableLines: ignored,
+        dryRun: parsed.dryRun,
+        applied: matches.map((match) => ({
+          from: match.from,
+          to: match.to,
+          context: match.context,
+        })),
+        revision: result?.revision ?? transcript.revision,
+        // Screens showing a renamed word are rewritten in the same operation.
+        subtitleScreensUpdated: result?.subtitles.updated.length ?? 0,
+        subtitleScreensNeedingAttention: result?.subtitles.needsAttention ?? [],
+      };
+      if (parsed.json) io.stdout(JSON.stringify(successEnvelope(parsed.command, data)));
+      else {
+        for (const match of data.applied) {
+          io.stdout(`${match.from} -> ${match.to}    ${match.context}`);
+        }
+        io.stdout(`${data.applied.length} 处改写，${data.subtitleScreensUpdated} 屏字幕跟着改了`);
+        for (const line of ignored) io.stdout(`词典第 ${line.line} 行读不懂：${line.text}`);
       }
       return 0;
     }

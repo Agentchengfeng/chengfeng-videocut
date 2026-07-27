@@ -92,3 +92,4 @@ export * from "./artifact";
 export * from "./render";
 export * from "./transcription";
 export * from "./scriptAlign";
+export * from "./dictionary";

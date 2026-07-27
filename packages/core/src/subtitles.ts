@@ -390,6 +390,75 @@ export function subtitleStaleness(
   return stale;
 }
 
+/* ------------------------------------------------- following a respelling */
+
+export interface SubtitleRespelling {
+  wordId: string;
+  from: string;
+  to: string;
+}
+
+export interface SubtitleRespellResult {
+  document: SubtitleDocument;
+  /** Screens whose written text was updated to match, and how. */
+  updated: Array<{ cueId: string; index: number; from: string; to: string }>;
+  /**
+   * Screens that own a respelled word but do not contain the old spelling any
+   * more — somebody rewrote that line. Reported, never guessed at.
+   */
+  needsAttention: Array<{ cueId: string; index: number; text: string; expected: string }>;
+}
+
+/**
+ * Carry a transcript respelling into the screens that show those words.
+ *
+ * The subtitle keeps its own text on purpose, so correcting 「叉」 to 「X」 in
+ * the transcript leaves every screen still saying 「叉」 — and the staleness
+ * check cannot see it, because the word is neither missing nor cut. The
+ * document-level `baseTranscriptRevision` notices, but only well enough to say
+ * "something moved", and a notice like that is exactly what this product is not
+ * allowed to show.
+ *
+ * The fix is to do it at the moment of the change, when the *word ids* are
+ * known. Then the answer is exact: these screens own that word, this is the old
+ * spelling, here is the new one. Rebuilding the whole document instead would
+ * work too, and would throw away every split and every line a person had
+ * rewritten.
+ *
+ * A screen whose text no longer contains the old spelling is not touched. There
+ * is no way to know where the new spelling belongs in a line somebody rewrote,
+ * and a wrong guess would be silent.
+ */
+export function respellSubtitles(
+  document: SubtitleDocument,
+  respellings: readonly SubtitleRespelling[],
+): SubtitleRespellResult {
+  const byWord = new Map<string, SubtitleRespelling>();
+  for (const item of respellings) {
+    if (item.from !== item.to && item.from !== "") byWord.set(item.wordId, item);
+  }
+  if (byWord.size === 0) return { document, updated: [], needsAttention: [] };
+
+  const updated: SubtitleRespellResult["updated"] = [];
+  const needsAttention: SubtitleRespellResult["needsAttention"] = [];
+  const cues = document.cues.map((cue, index) => {
+    const mine = cue.wordIds.map((id) => byWord.get(id)).filter((item) => item !== undefined);
+    if (mine.length === 0) return cue;
+    let text = cue.text;
+    for (const item of mine) {
+      if (!text.includes(item.from)) {
+        needsAttention.push({ cueId: cue.id, index, text: cue.text, expected: item.from });
+        continue;
+      }
+      text = text.split(item.from).join(item.to);
+      updated.push({ cueId: cue.id, index, from: item.from, to: item.to });
+    }
+    return text === cue.text ? cue : { ...cue, text };
+  });
+
+  return { document: { ...document, cues }, updated, needsAttention };
+}
+
 /* ---------------------------------------------------------------- building */
 
 /**

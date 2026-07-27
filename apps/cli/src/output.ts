@@ -110,6 +110,7 @@ Usage:
   chengfeng-videocut transcript playback <project> [--json]
   chengfeng-videocut transcript retranscribe <project> --output <file> [--language <code>] [--json]
   chengfeng-videocut transcript align <project> --script <file> [--json]
+  chengfeng-videocut transcript dictionary <project> --dictionary <file> [--dry-run] [--json]
   chengfeng-videocut transcript correct <project> --file <corrections.json> [--dry-run] [--json]
   chengfeng-videocut cuts get <project> [--api-base <url>] [--json]
   chengfeng-videocut cuts set <project> --file <file> --expected-revision <none|sha256> [--api-base <url>] [--json]
@@ -127,6 +128,7 @@ cuts set writes through the running product API; --dry-run performs a local read
 transcript correct fixes what the transcript says without touching when it says it: word ids, word count and every timestamp must come out identical, or the write is refused. A mis-heard proper noun is not surplus speech, so cutting cannot repair it.
 transcript playback flattens the transcript into what the audience hears, in that order, with removed speech marked. Judging repetition depends on heard adjacency, so this is the only correct input for a semantic pass — assembling it by hand gets it wrong silently.
 transcript retranscribe transcribes the cut itself, without exporting it first: it concatenates only the kept ranges' audio and sends that. The times that come back are already on the cut timeline, because the audio that went in is the cut — nothing maps between timelines. This is what subtitles need.
+transcript dictionary applies the operator's own spellings and reports every one it changed with its context. Unlike align it needs no evidence: within one speaker's work a name is spelled one way, and a rule is that statement. Screens showing a renamed word are rewritten in the same operation, because subtitles keep their own text and the staleness check cannot see a respelling.
 transcript align proposes spellings from the script the speaker wrote, by finding each term's neighbours in both texts. It corrects only what the context singles out and reports the rest as undecided — transcription mishears proper nouns in ways no dictionary derives from the audio, and a wrong name is worse than a misheard one.
 subtitle cues store word ids, never seconds: the cut owns when, the subtitle owns what is written. Timing and staleness are therefore recomputed on every read and never stored, and every subtitle command reports stale as the exact list of broken screens — the product may not say "subtitles may be out of date".
 subtitle build writes a first draft split at deleted speech, at heard pauses, and at the column limit. It refuses to overwrite an existing document without --replace, because splitting and wording are the part a person spent their time on.
