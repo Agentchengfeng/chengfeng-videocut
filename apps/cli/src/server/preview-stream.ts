@@ -207,6 +207,36 @@ async function pruneChunks(directory: string, keep: ReadonlySet<string>): Promis
   }
 }
 
+/**
+ * Join ranges that were never actually cut apart.
+ *
+ * A restore inserts a range rather than growing its neighbour, so undoing a cut
+ * leaves two ranges that are still adjacent in the source — a seam where the
+ * speaker never stopped talking. On one real project that was 11 of 40.
+ *
+ * Every seam is a place where playback can go wrong and a fragment that has to be
+ * cut, so the ones that carry no editorial meaning should not exist. This is the one
+ * change audapolis credits for its crackling fix: it splits render items only where
+ * the source is genuinely discontinuous, not wherever the edit list happens to have
+ * a boundary.
+ */
+export function mergeContiguousRanges(
+  ranges: readonly { start: number; end: number }[],
+): { start: number; end: number }[] {
+  const merged: { start: number; end: number }[] = [];
+  for (const range of ranges) {
+    if (!(range.end > range.start)) continue;
+    const last = merged[merged.length - 1];
+    // A frame is 33ms at 30fps, so a millisecond of slack cannot swallow real content.
+    if (last && Math.abs(range.start - last.end) < 1e-3) {
+      last.end = range.end;
+      continue;
+    }
+    merged.push({ start: range.start, end: range.end });
+  }
+  return merged;
+}
+
 export async function buildPreviewStream(
   input: BuildPreviewStreamInput,
 ): Promise<PreviewStream> {
@@ -216,7 +246,7 @@ export async function buildPreviewStream(
   const keep = new Set<string>();
   let out = 0;
 
-  for (const segment of input.segments) {
+  for (const segment of mergeContiguousRanges(input.segments)) {
     const start = segment.start;
     const end = segment.end;
     const duration = end - start;
