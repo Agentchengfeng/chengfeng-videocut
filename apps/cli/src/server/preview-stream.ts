@@ -242,6 +242,50 @@ async function ensureLoudness(
 }
 
 /**
+ * When the next word starts speaking, in source seconds.
+ *
+ * A boundary may be extended through the silence after the kept speech, but it must
+ * stop before whatever is said next — kept or deleted, it does not matter, because
+ * either way playing it here is wrong. Deleted speech played twice is the bug this
+ * whole design exists to prevent; kept speech played early is just as wrong.
+ */
+async function speechOnsets(projectDir: string): Promise<number[]> {
+  try {
+    const raw = JSON.parse(await readFile(join(projectDir, "transcript.json"), "utf8")) as {
+      cues?: Array<{ words?: Array<{ start?: number; isGap?: boolean }> }>;
+    };
+    const onsets: number[] = [];
+    for (const cue of raw.cues ?? []) {
+      for (const word of cue.words ?? []) {
+        if (word.isGap === true) continue;
+        if (typeof word.start === "number" && Number.isFinite(word.start)) onsets.push(word.start);
+      }
+    }
+    return onsets.sort((left, right) => left - right);
+  } catch {
+    // No transcript to consult: refuse to extend rather than guess where speech is.
+    return [];
+  }
+}
+
+function nextOnsetAfter(onsets: readonly number[], time: number): number | null {
+  let low = 0;
+  let high = onsets.length - 1;
+  let found: number | null = null;
+  while (low <= high) {
+    const middle = (low + high) >> 1;
+    const candidate = onsets[middle]!;
+    if (candidate > time + 1e-6) {
+      found = candidate;
+      high = middle - 1;
+    } else {
+      low = middle + 1;
+    }
+  }
+  return found;
+}
+
+/**
  * Move a boundary off the sound and into the silence just past it.
  *
  * Later, never earlier: a boundary that lands inside a word must give the whole word
@@ -349,6 +393,7 @@ export async function buildPreviewStream(
   let out = 0;
 
   const ranges = mergeContiguousRanges(input.segments);
+  const onsets = await speechOnsets(input.projectDir);
   for (const [index, segment] of ranges.entries()) {
     const start = segment.start;
     // Cut after the sound, never through it. A boundary already sitting in silence
@@ -357,10 +402,18 @@ export async function buildPreviewStream(
     // Never past where the next kept range begins: the deleted stretch between them
     // can be shorter than the search window, and running into the next range would
     // play the same speech twice.
-    const nextStart = ranges[index + 1]?.start;
-    const room = nextStart === undefined
-      ? QUIET_SEARCH_SECONDS
-      : Math.max(0, Math.min(QUIET_SEARCH_SECONDS, nextStart - segment.end));
+    //
+    // The hard stop is whatever is *said* next, not the next kept range. A boundary
+    // sitting at the onset of a deleted word looks exactly like a word still being
+    // spoken — loud — and searching forward for silence walks straight through it.
+    // That shipped once: the boundary after 「Agent」 ran 220ms into the deleted
+    // 「我们」, and the next kept range began with 「我们」 too, so it was said twice.
+    const limits = [
+      QUIET_SEARCH_SECONDS,
+      ranges[index + 1] === undefined ? Infinity : ranges[index + 1]!.start - segment.end,
+      onsets.length === 0 ? 0 : (nextOnsetAfter(onsets, segment.end) ?? Infinity) - segment.end,
+    ];
+    const room = Math.max(0, Math.min(...limits));
     const end = quietBoundaryAfter(loudness, segment.end, room);
     const duration = end - start;
     if (!(duration > 0)) continue;

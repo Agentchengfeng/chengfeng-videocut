@@ -80,3 +80,12 @@ test("a boundary never moves into the next kept range", () => {
   const solid = { step: 0.01, quiet: 100, rms: Array.from({ length: 100 }, () => 900) };
   expect(quietBoundaryAfter(solid, 0.2, 0.02)).toBe(0.2);
 });
+
+test("a boundary never reaches into the next thing said", () => {
+  // The boundary sits exactly where a deleted word starts, so it is loud — and
+  // searching forward for silence would walk straight through that word. This is
+  // what made 「我们」 play twice: the tail ran into a deleted 「我们」 and the next
+  // kept range opened with 「我们」 as well.
+  const speaking = { step: 0.01, quiet: 100, rms: Array.from({ length: 100 }, () => 900) };
+  expect(quietBoundaryAfter(speaking, 0.2, 0)).toBe(0.2);
+});
