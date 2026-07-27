@@ -21,12 +21,23 @@ import { basename, join } from "node:path";
  * jump over: the retained ranges are cut into fragments and assembled into one
  * continuous stream before the player ever sees them.
  *
- * Nothing here re-encodes. Fragments are stream copies, which is why an edit costs
- * milliseconds instead of the twelve seconds a full re-encode took.
+ * Only the audio is re-encoded, and only to place the seam fades; video is copied.
+ *
+ * ## Cut from the proxy itself, not from a rewrapped copy
+ *
+ * An earlier version rewrapped the whole proxy into a fragmented copy first and cut
+ * from that. It cost 96MB of disk and — far worse — **2.4 seconds on the first cut
+ * after any idle period**, because a fragmented file has no index and opening it
+ * pulls the whole thing off the disk. These projects live on an external USB drive,
+ * so every edit after a pause froze the app for over two seconds while ffmpeg's own
+ * work took 0.1s.
+ *
+ * The rewrap was never needed: whether a *fragment* can be appended on its own is
+ * decided by the output flags, not by the input's container. Cutting straight from
+ * the indexed proxy lets ffmpeg seek to the range and read only what it needs.
  */
 
 const STREAM_DIRECTORY = "preview-stream" as const;
-const FRAGMENTED_SUFFIX = ".frag.mp4" as const;
 const KEYFRAMES_SUFFIX = ".keyframes.json" as const;
 const LOUDNESS_SUFFIX = ".loudness.json" as const;
 /** Resolution of the loudness map, in seconds. Fine enough to find a gap between words. */
@@ -77,7 +88,7 @@ export interface BuildPreviewStreamInput {
   projectDir: string;
   /** Project-relative path of the ready preview proxy. */
   proxySource: string;
-  /** Identity of the proxy; a new one invalidates the fragmented copy and the index. */
+  /** Identity of the proxy; a new one invalidates the indexes cached beside it. */
   proxyCacheKey: string;
   segments: readonly { start: number; end: number }[];
 }
@@ -131,38 +142,21 @@ async function exists(path: string): Promise<boolean> {
 }
 
 /**
- * Rewrap the proxy so its fragments can be appended one at a time, and record
- * where its keyframes are. Both are stream copies of an existing file, keyed by the
- * proxy's identity, so this happens once per proxy rather than once per edit.
+ * Record where the proxy's keyframes are and how loud it is, once per proxy.
+ *
+ * Both are read-only passes over a file that already exists, keyed by the proxy's
+ * identity, so this happens once per proxy rather than once per edit.
  */
-async function ensureFragmentedProxy(input: BuildPreviewStreamInput): Promise<{
-  fragmented: string;
+async function ensureProxyIndexes(input: BuildPreviewStreamInput): Promise<{
+  proxy: string;
   keyframes: number[];
   loudness: { step: number; rms: number[]; quiet: number };
 }> {
   const directory = join(input.projectDir, ".chengfeng-videocut", STREAM_DIRECTORY);
   await mkdir(directory, { recursive: true });
-  const fragmented = join(directory, `${input.proxyCacheKey}${FRAGMENTED_SUFFIX}`);
   const indexPath = join(directory, `${input.proxyCacheKey}${KEYFRAMES_SUFFIX}`);
   const loudnessPath = join(directory, `${input.proxyCacheKey}${LOUDNESS_SUFFIX}`);
   const proxy = join(input.projectDir, input.proxySource);
-
-  if (!await exists(fragmented)) {
-    const temporary = `${fragmented}.tmp-${process.pid}`;
-    try {
-      await run("ffmpeg", [
-        "-y", "-v", "error", "-i", `file:${proxy}`, "-c", "copy",
-        "-movflags", "frag_keyframe+empty_moov+default_base_moof",
-        // Named explicitly: the temporary carries a `.tmp-<pid>` suffix so the
-        // container cannot be inferred from the extension.
-        "-f", "mp4", `file:${temporary}`,
-      ]);
-      await rename(temporary, fragmented);
-    } catch (error) {
-      await rm(temporary, { force: true }).catch(() => undefined);
-      throw error;
-    }
-  }
 
   if (!await exists(indexPath)) {
     // Packet flags rather than `-skip_frame nokey`: that option filters frames, not
@@ -170,7 +164,7 @@ async function ensureFragmentedProxy(input: BuildPreviewStreamInput): Promise<{
     const raw = await run("ffprobe", [
       "-v", "error", "-select_streams", "v:0",
       "-show_entries", "packet=pts_time,flags",
-      "-of", "csv=p=0", `file:${fragmented}`,
+      "-of", "csv=p=0", `file:${proxy}`,
     ]);
     const keyframes = raw.split("\n")
       .map((line) => line.trim())
@@ -186,7 +180,7 @@ async function ensureFragmentedProxy(input: BuildPreviewStreamInput): Promise<{
     const temporary = `${indexPath}.tmp-${process.pid}`;
     await writeFile(temporary, JSON.stringify(keyframes), "utf8");
     await rename(temporary, indexPath);
-    return { fragmented, keyframes, loudness: await ensureLoudness(fragmented, loudnessPath) };
+    return { proxy, keyframes, loudness: await ensureLoudness(proxy, loudnessPath) };
   }
 
   const keyframes = JSON.parse(await readFile(indexPath, "utf8")) as unknown;
@@ -194,9 +188,9 @@ async function ensureFragmentedProxy(input: BuildPreviewStreamInput): Promise<{
     throw new Error("Preview proxy keyframe index is unusable");
   }
   return {
-    fragmented,
+    proxy,
     keyframes: keyframes as number[],
-    loudness: await ensureLoudness(fragmented, loudnessPath),
+    loudness: await ensureLoudness(proxy, loudnessPath),
   };
 }
 
@@ -212,7 +206,7 @@ async function ensureFragmentedProxy(input: BuildPreviewStreamInput): Promise<{
  * audio of an eight-minute proxy takes about two seconds.
  */
 async function ensureLoudness(
-  fragmented: string,
+  source: string,
   indexPath: string,
 ): Promise<{ step: number; rms: number[]; quiet: number }> {
   if (await exists(indexPath)) {
@@ -221,7 +215,7 @@ async function ensureLoudness(
     if (stored?.rms?.length) return stored;
   }
   const raw = await runBinary("ffmpeg", [
-    "-v", "error", "-i", `file:${fragmented}`,
+    "-v", "error", "-i", `file:${source}`,
     "-vn", "-ac", "1", "-ar", "16000", "-f", "s16le", "pipe:1",
   ]);
   const samples = new Int16Array(raw.buffer, raw.byteOffset, Math.floor(raw.byteLength / 2));
@@ -348,7 +342,7 @@ export function mergeContiguousRanges(
 export async function buildPreviewStream(
   input: BuildPreviewStreamInput,
 ): Promise<PreviewStream> {
-  const { fragmented, keyframes, loudness } = await ensureFragmentedProxy(input);
+  const { proxy, keyframes, loudness } = await ensureProxyIndexes(input);
   const directory = join(input.projectDir, ".chengfeng-videocut", STREAM_DIRECTORY);
   const segments: PreviewStreamSegment[] = [];
   const keep = new Set<string>();
@@ -398,7 +392,7 @@ export async function buildPreviewStream(
         await run("ffmpeg", [
           "-y", "-v", "error",
           "-ss", keyframe.toFixed(6), "-to", end.toFixed(6),
-          "-i", `file:${fragmented}`,
+          "-i", `file:${proxy}`,
           ...audio,
           "-movflags", "frag_keyframe+empty_moov+default_base_moof",
           "-f", "mp4", `file:${temporary}`,
