@@ -165,27 +165,72 @@ export function expandCutWordIdsAcrossEnclosedGaps(
   return expanded;
 }
 
+/**
+ * How much silence a kept word may borrow back at each edge, in seconds.
+ *
+ * Transcription marks where it *recognised* a word, not where the sound stops. A
+ * real measurement: 「叉」 is written 164.300–164.340 — forty milliseconds, which no
+ * one can say — while the audio runs to 164.42 and is still loud at 164.40. Cutting
+ * at the written end takes the last eighty milliseconds of the word with it, and
+ * what is left sounds like nothing at all.
+ */
+const KEEP_MARGIN_SECONDS = 0.1;
+
+/**
+ * Turn cut words into the ranges actually removed.
+ *
+ * The edges are pulled inward wherever a deletion touches kept speech, so the kept
+ * side keeps a little of the silence next to it — the room a word's tail needs.
+ *
+ * **Only ever borrowed from a pause.** A deletion that begins or ends on real speech
+ * keeps its exact boundary: giving room back there would play the words the user
+ * deleted, and no amount of polish is worth that.
+ *
+ * **A quarter of the pause per side at most**, so at least half of it is still
+ * removed. A deletion that borrowed itself out of existence would leave the word
+ * struck through on screen while it still played — the screen saying one thing and
+ * the ears another is the failure this product refuses.
+ */
 export function buildCutTimeRanges(
   words: readonly TimedWord[],
   cutWordIds: ReadonlySet<string>,
 ): CutTimeRange[] {
-  const ranges: CutTimeRange[] = [];
-  let current: CutTimeRange | null = null;
+  const spans: Array<{ from: number; to: number }> = [];
+  let current: { from: number; to: number } | null = null;
 
-  for (const word of words) {
+  for (const [index, word] of words.entries()) {
     if (!cutWordIds.has(word.id)) {
-      if (current) ranges.push(current);
+      if (current) spans.push(current);
       current = null;
       continue;
     }
-    if (!current) {
-      current = { start: word.start, end: word.end };
-      continue;
-    }
-    current.end = Math.max(current.end, word.end);
+    if (!current) current = { from: index, to: index };
+    else current.to = index;
   }
+  if (current) spans.push(current);
 
-  if (current) ranges.push(current);
+  const ranges: CutTimeRange[] = [];
+  for (const span of spans) {
+    const first = words[span.from]!;
+    const last = words[span.to]!;
+    let start = first.start;
+    let end = start;
+    for (let index = span.from; index <= span.to; index += 1) {
+      end = Math.max(end, words[index]!.end);
+    }
+
+    const previousKept = span.from > 0 && !cutWordIds.has(words[span.from - 1]!.id);
+    const nextKept = span.to + 1 < words.length && !cutWordIds.has(words[span.to + 1]!.id);
+    const borrow = (available: number) => Math.min(KEEP_MARGIN_SECONDS, Math.max(0, available) / 4);
+
+    if (previousKept && first.isGap === true) start += borrow(first.end - first.start);
+    if (nextKept && last.isGap === true) end -= borrow(last.end - last.start);
+
+    // Rounded because these are written to disk and compared for equality; the
+    // arithmetic above leaves the usual binary tails behind.
+    const round = (value: number) => Math.round(value * 1_000_000) / 1_000_000;
+    if (end > start) ranges.push({ start: round(start), end: round(end) });
+  }
   return ranges;
 }
 

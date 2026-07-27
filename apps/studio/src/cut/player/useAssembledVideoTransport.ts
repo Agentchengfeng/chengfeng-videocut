@@ -229,6 +229,24 @@ export function useAssembledVideoTransport(input: {
 
     return () => {
       cancelled = true;
+      // Hand the buffered media back.
+      //
+      // Marking the build cancelled only stops this code; it does not release what
+      // the browser is holding. Every edit rebuilds the stream, so without this the
+      // session accumulates one abandoned MediaSource per edit, each still holding
+      // its buffers and their tens of megabytes. It degrades gradually and a page
+      // reload cures it — which is exactly how it was noticed.
+      try {
+        for (const buffer of Array.from(mediaSource.sourceBuffers)) {
+          if (buffer.updating) buffer.abort();
+          mediaSource.removeSourceBuffer(buffer);
+        }
+        if (mediaSource.readyState === "open") mediaSource.endOfStream();
+      } catch {
+        // Teardown is best-effort: the browser may have torn parts down already,
+        // and failing here must not take the next build down with it.
+      }
+      releaseObjectUrl();
     };
   }, [input.resolveFragmentUrl, target, video]);
 

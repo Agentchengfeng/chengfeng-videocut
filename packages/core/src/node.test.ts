@@ -84,7 +84,9 @@ async function createFixture(): Promise<{
       {
         schemaVersion: 3,
         cutWordIds: ["w-1"],
-        cutRanges: [{ start: 0, end: 1 }],
+        // The pause ends where 「你」 begins, so it gives back the room that word's
+        // onset needs — see buildCutTimeRanges.
+        cutRanges: [{ start: 0, end: 0.9 }],
         initialization: { mode: "delete-or-keep-v1" },
         updatedAt: "2026-07-16T00:00:00.000Z",
       },

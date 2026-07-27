@@ -3,8 +3,7 @@ import {
   buildCutSelectionFromProposal,
   buildCutTimeRanges,
   expandCutWordIdsAcrossEnclosedGaps,
-  parseTranscriptWords,
-} from "./cuts";
+  parseTranscriptWords, type TimedWord } from "./cuts";
 
 const transcript = {
   schemaVersion: 1,
@@ -212,5 +211,44 @@ describe("cut reasons", () => {
         reasons,
       })).toThrow();
     }
+  });
+});
+
+describe("kept words keep the room their sound needs", () => {
+  const words: TimedWord[] = [
+    { id: "w1", text: "连接", start: 0, end: 1, isGap: false },
+    { id: "w2", text: "叉", start: 1, end: 1.04, isGap: false },
+    { id: "gap", text: "", start: 1.04, end: 1.54, isGap: true },
+    { id: "w3", text: "是", start: 1.54, end: 2, isGap: false },
+  ];
+
+  it("a deleted pause gives room back to the kept speech on both sides", () => {
+    // Transcription marks where it recognised 「叉」, not where the sound stops: it
+    // writes 40ms for a word nobody can say that fast. Cutting the pause at its
+    // written start takes the rest of the word with it.
+    expect(buildCutTimeRanges(words, new Set(["gap"])))
+      .toEqual([{ start: 1.14, end: 1.44 }]);
+  });
+
+  it("borrows at most half a pause, so the pause is still visibly removed", () => {
+    const short: TimedWord[] = [
+      { id: "a", text: "甲", start: 0, end: 1, isGap: false },
+      { id: "g", text: "", start: 1, end: 1.08, isGap: true },
+      { id: "b", text: "乙", start: 1.08, end: 2, isGap: false },
+    ];
+    expect(buildCutTimeRanges(short, new Set(["g"])))
+      .toEqual([{ start: 1.02, end: 1.06 }]);
+  });
+
+  it("never borrows from deleted speech", () => {
+    // The neighbour here is a real word the user chose to remove. Giving room back
+    // out of it would play what they deleted, which is the one thing this must not do.
+    expect(buildCutTimeRanges(words, new Set(["w2", "gap"])))
+      .toEqual([{ start: 1, end: 1.44 }]);
+  });
+
+  it("leaves a deletion that touches no kept speech exactly where it is", () => {
+    expect(buildCutTimeRanges(words, new Set(["w1", "w2", "gap", "w3"])))
+      .toEqual([{ start: 0, end: 2 }]);
   });
 });
