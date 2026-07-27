@@ -383,6 +383,40 @@ export function mergeContiguousRanges(
   return merged;
 }
 
+/**
+ * Move each cut off the sound and into the silence just past it.
+ *
+ * Used when the ledger is written, never when it is read: what comes out of here
+ * becomes the record, and everything downstream copies it verbatim.
+ */
+export async function placeCutBoundaries(input: {
+  projectDir: string;
+  proxySource: string;
+  proxyCacheKey: string;
+  ranges: readonly { start: number; end: number }[];
+}): Promise<{ start: number; end: number }[]> {
+  const { loudness } = await ensureProxyIndexes({
+    projectDir: input.projectDir,
+    proxySource: input.proxySource,
+    proxyCacheKey: input.proxyCacheKey,
+    segments: [],
+  });
+  const onsets = await speechOnsets(input.projectDir);
+  const ranges = [...input.ranges];
+  return ranges.map((range, index) => {
+    const limits = [
+      QUIET_SEARCH_SECONDS,
+      ranges[index + 1] === undefined ? Infinity : ranges[index + 1]!.start - range.end,
+      // The hard stop is whatever is *said* next, kept or deleted alike. A boundary
+      // sitting on a deleted word's onset looks exactly like a word still being
+      // spoken, and searching forward for silence walks straight through it.
+      onsets.length === 0 ? 0 : (nextOnsetAfter(onsets, range.end) ?? Infinity) - range.end,
+    ];
+    const room = Math.max(0, Math.min(...limits));
+    return { start: range.start, end: quietBoundaryAfter(loudness, range.end, room) };
+  });
+}
+
 export async function buildPreviewStream(
   input: BuildPreviewStreamInput,
 ): Promise<PreviewStream> {
@@ -393,28 +427,12 @@ export async function buildPreviewStream(
   let out = 0;
 
   const ranges = mergeContiguousRanges(input.segments);
-  const onsets = await speechOnsets(input.projectDir);
-  for (const [index, segment] of ranges.entries()) {
+  for (const segment of ranges) {
     const start = segment.start;
-    // Cut after the sound, never through it. A boundary already sitting in silence
-    // does not move; one landing inside a word gives the whole word back.
-    //
-    // Never past where the next kept range begins: the deleted stretch between them
-    // can be shorter than the search window, and running into the next range would
-    // play the same speech twice.
-    //
-    // The hard stop is whatever is *said* next, not the next kept range. A boundary
-    // sitting at the onset of a deleted word looks exactly like a word still being
-    // spoken — loud — and searching forward for silence walks straight through it.
-    // That shipped once: the boundary after 「Agent」 ran 220ms into the deleted
-    // 「我们」, and the next kept range began with 「我们」 too, so it was said twice.
-    const limits = [
-      QUIET_SEARCH_SECONDS,
-      ranges[index + 1] === undefined ? Infinity : ranges[index + 1]!.start - segment.end,
-      onsets.length === 0 ? 0 : (nextOnsetAfter(onsets, segment.end) ?? Infinity) - segment.end,
-    ];
-    const room = Math.max(0, Math.min(...limits));
-    const end = quietBoundaryAfter(loudness, segment.end, room);
+    // Cut exactly where the ledger says. Placing the boundary is the ledger's job
+    // and only the ledger's — see `placeBoundaries`. Nudging it here as well is how
+    // one seam produced three separate bugs in a day.
+    const end = segment.end;
     const duration = end - start;
     if (!(duration > 0)) continue;
     const keyframe = keyframeAtOrBefore(keyframes, start);

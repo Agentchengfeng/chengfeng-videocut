@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { extname, join, resolve } from "node:path";
+import { extname, join, resolve, basename } from "node:path";
 import { createServer as createNetServer, type AddressInfo } from "node:net";
 import { fileURLToPath } from "node:url";
 import hyperframesRuntimeSource from "@hyperframes/core/runtime" with { type: "text" };
@@ -22,7 +22,9 @@ import { createProductionStudioAdapter } from "./studio-adapter";
 import {
   EditPreviewArtifactManager,
   createEditPreviewArtifactHandler,
+  projectInput,
 } from "./edit-preview-artifact";
+import { placeCutBoundaries } from "./preview-stream";
 import { fetchGuardedStudioApi } from "./studio-mutation-guard";
 import { createVideocutWorkflowHandler } from "./workflow-api";
 import { PRODUCT_VERSION } from "../output";
@@ -445,6 +447,26 @@ export async function startStudioServer(
   const editListApi = createVideocutEditListHandler({
     projectsDir,
     materializeIndex: materializeEditListIndex,
+    // The ledger decides where every cut sits, once, using the audio — and nothing
+    // downstream is allowed to move it afterwards.
+    async placeBoundaries(projectDir, ranges) {
+      // Best effort by design: placing a cut well is an improvement, not a
+      // precondition for editing. A project with no proxy yet, or a proxy that
+      // cannot be read, must still be editable — so anything that goes wrong here
+      // leaves the boundaries exactly as asked rather than refusing the write.
+      try {
+        const input = await projectInput(projectsDir, basename(projectDir));
+        if (!input.previewProxySource) return [...ranges];
+        return await placeCutBoundaries({
+          projectDir,
+          proxySource: input.previewProxySource,
+          proxyCacheKey: input.previewProxyCacheKey,
+          ranges,
+        });
+      } catch {
+        return [...ranges];
+      }
+    },
     onDocumentChanged(change) {
       events.publish("file-change", change);
       editPreviewArtifacts.schedule(change.projectId);

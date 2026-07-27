@@ -27,6 +27,17 @@ export interface VideocutEditListHandlerOptions {
   projectsDir: string;
   materializeIndex?: (change: VideocutEditListChange) => void | Promise<void>;
   onDocumentChanged?: (change: VideocutEditListChange) => void | Promise<void>;
+  /**
+   * Put each cut where the sound actually stops, before the document is written.
+   *
+   * Supplied by the Runtime because it needs the audio. Leave it out and boundaries
+   * are written exactly as asked — the honest fallback, since guessing where speech
+   * ends without listening to it is what put a cut through the middle of a word.
+   */
+  placeBoundaries?: (
+    projectDir: string,
+    ranges: readonly { start: number; end: number }[],
+  ) => Promise<{ start: number; end: number }[]>;
 }
 
 type VideocutEditListHandler = (request: Request) => Promise<Response | null>;
@@ -228,8 +239,34 @@ export function createVideocutEditListHandler(
       }
 
       const body = patchBody(await requestJson(request));
+      const place = options.placeBoundaries;
       const result = await patchEditList(project, body.operation, {
         expectedRevision: body.expectedRevision,
+        ...(place ? { placeBoundaries: async (document) => {
+          const placed = await place(
+            project.directory,
+            document.segments.map((segment) => ({
+              start: segment.sourceStart,
+              end: segment.sourceEnd,
+            })),
+          );
+          if (placed.length !== document.segments.length) return document;
+          // Rebuild the magnetic timeline: a boundary that moved changes where
+          // everything after it plays, and a stale `timelineStart` would put the
+          // playhead and the transcript out of step with the audio.
+          let timelineStart = 0;
+          const segments = document.segments.map((segment, index) => {
+            const next = {
+              ...segment,
+              sourceStart: placed[index]!.start,
+              sourceEnd: placed[index]!.end,
+              timelineStart,
+            };
+            timelineStart += (next.sourceEnd - next.sourceStart) / (next.playbackRate || 1);
+            return next;
+          });
+          return { ...document, segments, duration: timelineStart };
+        } } : {}),
         // Recorded verbatim in the project's event log. Nothing here can verify
         // it, so an absent or unrecognized value stays `unknown` rather than
         // being guessed from the request.

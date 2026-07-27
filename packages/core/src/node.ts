@@ -960,6 +960,16 @@ export interface WriteEditListOptions {
   dryRun?: boolean;
   /** Declared by the caller and recorded verbatim; nothing here can verify it. */
   actor?: ProjectEventActor;
+  /**
+   * Last chance to move a cut, and the only one.
+   *
+   * Transcription marks where it recognised a word, not where the sound stops, so a
+   * boundary taken straight from it can land mid-syllable. Correcting that needs the
+   * audio, which this module cannot read — so the caller does it, here, before the
+   * document is written. Afterwards the boundary is the record: cutting, playback and
+   * export all obey it, and none of them may adjust it again.
+   */
+  placeBoundaries?: (document: EditListDocument) => Promise<EditListDocument>;
 }
 
 export interface WriteEditListResult {
@@ -1089,7 +1099,18 @@ export async function patchEditList(
       );
     }
     const current = parseEditListDocument(previous.value);
-    const next = applyEditListOperation(current, operation);
+    const applied = applyEditListOperation(current, operation);
+    // Put the cut where it belongs *before* it becomes the record.
+    //
+    // Nothing downstream may move a boundary. Three layers each nudging it — the
+    // ledger writing a transcript timestamp, the cutter hunting for silence, the
+    // player seeking — is how the same seam produced three different bugs in one
+    // day, each reasonable on its own. So the boundary is decided once, here, and
+    // what the ledger says is what is cut, what is played, and what is exported.
+    //
+    // The adjustment needs the audio, which core cannot read; the caller supplies
+    // it. Without one the boundaries stand exactly as given — never guessed at.
+    const next = options.placeBoundaries ? await options.placeBoundaries(applied) : applied;
     const result = await commitEditListSnapshot(project, previous, next, options);
     if (result.changed) {
       await appendProjectEvent(project, {
