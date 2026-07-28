@@ -13,7 +13,10 @@ function editList(segments: Array<[number, number, number]>): EditListDocument {
   return {
     schemaVersion: 1,
     projectId: "visual-contract",
-    mode: "keep",
+    sourceDuration: 100,
+    baseCutsRevision: "b".repeat(64),
+    baseTranscriptRevision: "a".repeat(64),
+    mode: "manual",
     duration: segments.reduce((total, [start, end]) => total + (end - start), 0),
     segments: segments.map(([sourceStart, sourceEnd, timelineStart], index) => ({
       id: `seg-${index}`,

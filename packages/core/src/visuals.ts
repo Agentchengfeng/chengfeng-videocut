@@ -132,6 +132,27 @@ export function visualLayerTimings(
   });
 }
 
+/**
+ * Where on the source a moment of the cut came from, or null past the end.
+ *
+ * The inverse of the mapping the timings use. It exists so a person or an Agent
+ * can *look at* the footage a layer will cover before deciding what to draw and
+ * where: every frame-grabbing tool addresses the original file, while
+ * everything a layer knows is expressed on the cut timeline.
+ */
+export function sourceTimeForCutTime(
+  editList: EditListDocument | null,
+  cutTime: number,
+): number | null {
+  for (const segment of orderedSegments(editList)) {
+    const span = (segment.sourceEnd - segment.sourceStart) / segment.playbackRate;
+    if (cutTime >= segment.timelineStart && cutTime < segment.timelineStart + span) {
+      return segment.sourceStart + (cutTime - segment.timelineStart) * segment.playbackRate;
+    }
+  }
+  return null;
+}
+
 /** Which layer is on screen at a moment, or null. Later layers win a tie. */
 export function activeVisualLayer(
   timings: readonly VisualLayerTiming[],

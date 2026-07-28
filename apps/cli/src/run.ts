@@ -1,4 +1,5 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { VideocutError, asVideocutError, parseTranscriptWords } from "@video-workbench/core";
@@ -19,6 +20,7 @@ import {
 } from "@video-workbench/koubo-adapter";
 import {
   createVisualDocument,
+  sourceTimeForCutTime,
   subtitleCueTimings,
   subtitleStaleness,
   visualLayerTimings,
@@ -673,6 +675,36 @@ function projectInput(command: CliCommand, value: string | undefined): string {
   throw new VideocutError("invalid_argument", `${command} requires a project`);
 }
 
+/**
+ * One frame of the original file, written where a person or an Agent can open
+ * it.
+ *
+ * `-ss` before `-i` seeks by keyframe index rather than decoding forward, which
+ * is the difference between milliseconds and a minute on a long file. The cost
+ * is landing on the nearest keyframe; for judging what is in the picture — is
+ * there empty space, where is the content, what would a layer cover — that is
+ * exact enough, and the alternative is a tool nobody waits for.
+ */
+async function extractFrame(source: string, time: number, target: string): Promise<void> {
+  await new Promise<void>((settle, fail) => {
+    const child = spawn("ffmpeg", [
+      "-hide_banner", "-loglevel", "error", "-nostdin",
+      "-ss", time.toFixed(3),
+      "-i", source,
+      "-frames:v", "1",
+      "-q:v", "3",
+      "-y", target,
+    ], { stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+    child.on("error", fail);
+    child.on("close", (code) => {
+      if (code === 0) settle();
+      else fail(new VideocutError("invalid_project", `ffmpeg could not read a frame: ${stderr.trim()}`));
+    });
+  });
+}
+
 export async function runCli(
   argv: readonly string[],
   options: RunCliOptions = {},
@@ -1161,6 +1193,79 @@ export async function runCli(
         }
         if (data.undecided.length > 0) io.stdout(`undecided: ${data.undecided.join(" ")}`);
       }
+      return 0;
+    }
+
+    if (parsed.command === "visual.frame") {
+      await assertRegisteredProject({ project, cwd, projectsDir, outputDir: parsed.outputDir });
+      const [subtitles, transcript, editList] = await Promise.all([
+        readSubtitles(project),
+        readOptionalProjectDocument(project, "transcript.json"),
+        readEditList(project),
+      ]);
+      if (!subtitles) {
+        throw new VideocutError("invalid_visuals", "This project has no subtitles yet");
+      }
+      const byId = new Map(subtitles.value.cues.map((cue) => [cue.id, cue]));
+      const missing = (parsed.cueIds ?? []).filter((id) => !byId.has(id));
+      if (missing.length > 0) {
+        throw new VideocutError("invalid_visuals", "Those subtitle screens are not in this project", {
+          missing,
+        });
+      }
+      const words = transcript ? parseTranscriptWords(transcript.value) : [];
+      // Reuse the layer timing exactly: the frames a person judges by have to be
+      // the frames the layer will actually cover, not an approximation of them.
+      const span = visualLayerTimings(
+        {
+          ...createVisualDocument(project.projectId, transcript?.revision ?? ""),
+          layers: [{
+            id: "probe",
+            wordIds: (parsed.cueIds ?? []).flatMap((id) => byId.get(id)!.wordIds),
+            module: "probe.html",
+          }],
+        },
+        words,
+        editList?.value ?? null,
+      )[0]!;
+      if (span.orphaned) {
+        throw new VideocutError(
+          "invalid_visuals",
+          "Those screens have no words left in the cut, so there is nothing to look at",
+        );
+      }
+      const count = parsed.frameCount ?? 3;
+    const outDir = parsed.outDir
+        ? resolve(cwd, parsed.outDir)
+        : join(project.directory, "review", "frames");
+      await mkdir(outDir, { recursive: true });
+      const inputVideo = (project.project as Record<string, unknown>).inputVideo;
+      if (typeof inputVideo !== "string" || !inputVideo.trim()) {
+        throw new VideocutError("invalid_project", "This project has no inputVideo to sample");
+      }
+      const sourcePath = resolve(project.directory, inputVideo);
+      const frames: Array<{ cutTime: number; sourceTime: number; file: string }> = [];
+      for (let index = 0; index < count; index += 1) {
+        // Sample inside the span, never on its edges: the first and last frames
+        // of a cut are the ones most likely to be a transition smear.
+        const cutTime = span.start + (span.duration * (index + 0.5)) / count;
+        const sourceTime = sourceTimeForCutTime(editList?.value ?? null, cutTime);
+        if (sourceTime === null) continue;
+        const file = join(outDir, `frame-${String(index + 1).padStart(2, "0")}.jpg`);
+        await extractFrame(sourcePath, sourceTime, file);
+        frames.push({ cutTime, sourceTime, file });
+      }
+      const data = {
+        projectId: project.projectId,
+        cueIds: parsed.cueIds ?? [],
+        text: (parsed.cueIds ?? []).map((id) => byId.get(id)!.text).join(""),
+        start: span.start,
+        end: span.end,
+        duration: span.duration,
+        frames,
+      };
+      if (parsed.json) io.stdout(JSON.stringify(successEnvelope(parsed.command, data)));
+      else io.stdout(JSON.stringify(data, null, 2));
       return 0;
     }
 

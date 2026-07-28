@@ -38,6 +38,7 @@ export type CliCommand =
   | "visual.get"
   | "visual.add"
   | "visual.remove"
+  | "visual.frame"
   | "workflow.get"
   | "workflow.transition"
   | "render.run";
@@ -80,6 +81,8 @@ export interface ParsedArgs {
   /** Subtitle screens a visual layer covers. The layer binds their words. */
   cueIds?: string[];
   layerId?: string;
+  frameCount?: number;
+  outDir?: string;
 }
 
 const VALUE_OPTIONS = new Set([
@@ -112,6 +115,8 @@ const VALUE_OPTIONS = new Set([
   "--module",
   "--cues",
   "--id",
+  "--count",
+  "--out",
 ]);
 
 const BOOLEAN_OPTIONS = new Set([
@@ -638,6 +643,29 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
       modulePath,
       cueIds: cues.split(",").map((part) => part.trim()).filter(Boolean),
       layerId: values.get("--id"),
+    };
+  }
+  if (positionals[0] === "visual" && positionals[1] === "frame") {
+    if (positionals.length !== 3) {
+      usageError(
+        "Usage: chengfeng-videocut visual frame <project> --cues <id,id> [--count <n>] [--out <dir>]",
+      );
+    }
+    const cues = values.get("--cues");
+    if (!cues) usageError("visual frame requires --cues <subtitle cue ids>");
+    assertOptions(["--cues", "--count", "--out", "--projects-dir", "--output-dir"], [], true);
+    const rawCount = values.get("--count");
+    const count = rawCount === undefined ? 3 : Number(rawCount);
+    if (!Number.isInteger(count) || count < 1 || count > 12) {
+      usageError("--count must be an integer between 1 and 12");
+    }
+    return {
+      ...common,
+      command: "visual.frame",
+      project: positionals[2],
+      cueIds: cues.split(",").map((part) => part.trim()).filter(Boolean),
+      frameCount: count,
+      outDir: values.get("--out"),
     };
   }
   if (positionals[0] === "visual" && positionals[1] === "remove") {
