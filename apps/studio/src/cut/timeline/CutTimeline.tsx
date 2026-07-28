@@ -32,6 +32,7 @@ import {
   Timeline,
   TimelineToolbar,
   type ProductTimelineSegmentView,
+  type TimelineVisualLayerView,
 } from "./hyperframes-fork";
 import {
   GUTTER,
@@ -120,6 +121,8 @@ export function CutTimeline({
   onSeek,
   canUndo,
   onUndo,
+  visualLayers,
+  onVisualLayerClick,
 }: {
   projectId: string;
   editList: ProjectEditListState;
@@ -127,6 +130,8 @@ export function CutTimeline({
   onSeek: (time: number) => void;
   canUndo: boolean;
   onUndo: () => void;
+  visualLayers?: readonly TimelineVisualLayerView[];
+  onVisualLayerClick?: (layerId: string) => void;
 }) {
   const document = editList.document;
   const trackRef = useRef<HTMLDivElement | null>(null);
@@ -838,6 +843,8 @@ export function CutTimeline({
       <Timeline
         scrollRef={scrollRef}
         segments={timelineSegments}
+        visualLayers={visualLayers}
+        {...(onVisualLayerClick ? { onVisualLayerClick } : {})}
         pixelsPerSecond={pixelsPerSecond}
         displayContentWidth={displayContentWidth}
         rulerDuration={rulerDuration}

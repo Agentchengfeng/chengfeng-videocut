@@ -2373,3 +2373,32 @@ select:focus-visible,
   border: 0;
   background: transparent;
 }
+
+/* The visual lane's clips. Deliberately plainer than an edit-list clip: a layer
+   is placed by naming sentences, not by dragging, so it carries no handles and
+   nothing that invites a drag. */
+.cf-cut-visual-clip {
+  position: absolute;
+  display: flex;
+  overflow: hidden;
+  align-items: center;
+  padding: 0 8px;
+  border: 1px solid rgb(60 230 172 / 45%);
+  border-radius: 5px;
+  background: rgb(60 230 172 / 12%);
+  color: var(--text-1);
+  cursor: pointer;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.cf-cut-visual-clip:hover {
+  border-color: rgb(60 230 172 / 70%);
+  background: rgb(60 230 172 / 18%);
+}
+
+.cf-cut-visual-clip.is-active {
+  border-color: var(--mint);
+  background: rgb(60 230 172 / 26%);
+  color: var(--text-0);
+}

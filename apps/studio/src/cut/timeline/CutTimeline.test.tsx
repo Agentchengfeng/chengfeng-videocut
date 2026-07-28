@@ -314,7 +314,7 @@ describe("CutTimeline HyperFrames-style trim interaction", () => {
     act(() => rendered.root.unmount());
   });
 
-  it("projects every linked A/V segment into one editable group with two decorative lanes", () => {
+  it("projects every linked A/V segment into one editable group, under three lanes", () => {
     const patchOperation = vi.fn(async (_operation: EditListOperation) => editListFixture());
     const rendered = renderTimeline(stateFixture(editListFixture(), patchOperation));
     const timeline = rendered.host.querySelector<HTMLElement>("[data-linked-av-tracks='true']");
@@ -330,7 +330,10 @@ describe("CutTimeline HyperFrames-style trim interaction", () => {
     expect(canvas.dataset.topPadding).toBe("50");
     expect(canvas.dataset.trackHeight).toBe("48");
     expect(canvas.dataset.bottomPadding).toBe("72");
-    expect(canvas.style.height).toBe("242px");
+    // Three rows now: video, audio, and the visual layers drawn over them.
+    // 24 ruler + 50 top pad + 3×48 tracks + 72 bottom pad.
+    expect(canvas.style.height).toBe("290px");
+    expect(rendered.host.querySelector("[data-hyperframes-timeline-lane='visual']")).not.toBeNull();
     expect(groups).toHaveLength(2);
     for (const group of groups) {
       const segmentId = group.dataset.edlSegmentId;
@@ -355,8 +358,9 @@ describe("CutTimeline HyperFrames-style trim interaction", () => {
     expect(lanes.map((lane) => lane.dataset.hyperframesTimelineLane)).toEqual([
       "video",
       "audio",
+      "visual",
     ]);
-    expect(lanes.map((lane) => lane.style.height)).toEqual(["48px", "48px"]);
+    expect(lanes.map((lane) => lane.style.height)).toEqual(["48px", "48px", "48px"]);
 
     const gutter = lanes[0]?.firstElementChild as HTMLElement | null;
     const leftPad = lanes[0]?.children[1] as HTMLElement | undefined;

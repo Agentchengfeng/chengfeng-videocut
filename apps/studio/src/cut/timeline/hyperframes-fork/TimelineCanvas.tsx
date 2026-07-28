@@ -40,8 +40,12 @@ export const TimelineCanvas = memo(function TimelineCanvas({
   onSegmentClick,
   onSegmentFocus,
   onSegmentResizeStart,
+  visualLayers,
+  onVisualLayerClick,
 }: TimelineCanvasProps) {
-  const totalHeight = getTimelineCanvasHeight(2);
+  // Three rows once a project can carry visual layers. The height function has
+  // always taken a track count; only the number passed here changed.
+  const totalHeight = getTimelineCanvasHeight(3);
 
   return (
     <div
@@ -75,6 +79,8 @@ export const TimelineCanvas = memo(function TimelineCanvas({
 
       <TimelineLanes
         segments={segments}
+        visualLayers={visualLayers}
+        {...(onVisualLayerClick ? { onVisualLayerClick } : {})}
         pixelsPerSecond={pixelsPerSecond}
         displayContentWidth={displayContentWidth}
         trackRef={trackRef}

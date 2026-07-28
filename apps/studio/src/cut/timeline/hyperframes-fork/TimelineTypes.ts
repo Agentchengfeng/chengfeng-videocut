@@ -29,8 +29,28 @@ export interface TimelineSegmentView {
   audioContent: ReactNode;
 }
 
+/**
+ * One HTML layer drawn over the footage, as the timeline shows it.
+ *
+ * It is not an edit-list segment and deliberately carries none of a segment's
+ * affordances: a layer is not trimmed or moved on this lane, it is placed by
+ * naming the sentences it covers. The lane exists so a person can see where the
+ * layers are against the speech, which is the thing that was invisible before.
+ */
+export interface TimelineVisualLayerView {
+  id: string;
+  label: string;
+  start: number;
+  duration: number;
+  active: boolean;
+}
+
 export interface TimelineLaneBaseProps {
   segments: readonly TimelineSegmentView[];
+  /** Absent until a project has any. An empty lane still renders, so the row
+      does not appear and disappear as layers come and go. */
+  visualLayers?: readonly TimelineVisualLayerView[];
+  onVisualLayerClick?: (layerId: string) => void;
   pixelsPerSecond: number;
   displayContentWidth: number;
   trackRef: RefObject<HTMLDivElement | null>;

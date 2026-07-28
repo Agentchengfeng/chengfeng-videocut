@@ -186,11 +186,95 @@ function TimelineLane({
   );
 }
 
+/**
+ * The visual layers, on their own row.
+ *
+ * Product-owned: it is not a reduction of anything upstream. It shares the two
+ * lanes' gutter / left-pad / track geometry so the three rows line up under one
+ * ruler, and nothing else — a layer has no trim handles and no drag, because it
+ * is placed by naming the sentences it covers rather than by dropping it at a
+ * time. Showing it here answers the one question the lane exists for: where do
+ * the drawings sit against what is being said.
+ */
+function VisualLane({
+  visualLayers,
+  pixelsPerSecond,
+  displayContentWidth,
+  theme,
+  onVisualLayerClick,
+}: TimelineLaneBaseProps) {
+  return (
+    <div
+      className="relative flex"
+      style={{ height: TRACK_H }}
+      data-hyperframes-timeline-lane="visual"
+    >
+      <div
+        className="sticky left-0 z-[12] flex flex-shrink-0 flex-col items-center justify-center gap-0.5"
+        style={{
+          width: GUTTER,
+          background: theme.gutterBackground,
+          borderRight: `1px solid ${theme.gutterBorder}`,
+          borderBottom: `1px solid ${theme.rowBorder}`,
+          color: "rgba(255,255,255,0.35)",
+        }}
+        aria-label="动效轨"
+        title="动效轨"
+      >
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M3 12.5c2-6 5-8 10-8.5" stroke="currentColor" strokeLinecap="round" />
+          <circle cx="4" cy="12" r="1.6" stroke="currentColor" />
+          <path d="M11 2.5 13.5 4l-2.5 1.5Z" fill="currentColor" />
+        </svg>
+      </div>
+
+      <div
+        aria-hidden="true"
+        className="flex-shrink-0"
+        style={{
+          width: TRACKS_LEFT_PAD,
+          background: theme.rowBackground,
+          borderBottom: `1px solid ${theme.rowBorder}`,
+        }}
+      />
+
+      <div
+        className="cf-cut-track relative flex-shrink-0 is-visual"
+        style={{
+          width: displayContentWidth,
+          height: TRACK_H,
+          background: theme.rowBackground,
+          borderBottom: `1px solid ${theme.rowBorder}`,
+        }}
+      >
+        {(visualLayers ?? []).map((layer) => (
+          <button
+            key={layer.id}
+            type="button"
+            className={`cf-cut-visual-clip${layer.active ? " is-active" : ""}`}
+            style={{
+              left: layer.start * pixelsPerSecond,
+              width: Math.max(2, layer.duration * pixelsPerSecond),
+              top: CLIP_Y,
+              height: TRACK_H - CLIP_Y * 2,
+            }}
+            title={layer.label}
+            onClick={() => onVisualLayerClick?.(layer.id)}
+          >
+            <span>{layer.label}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function TimelineLanes(props: TimelineLaneBaseProps) {
   return (
     <>
       <TimelineLane kind="video" {...props} />
       <TimelineLane kind="audio" {...props} />
+      <VisualLane {...props} />
     </>
   );
 }

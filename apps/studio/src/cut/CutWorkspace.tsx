@@ -445,6 +445,25 @@ export function CutWorkspace({
     subtitles.document, subtitles.timings, transport.timelineTime,
   ]);
 
+  // The layers as the lane draws them. Labelled by the module's folder rather
+  // than by a generated id: what a person recognises is 「daily-pipeline」, not
+  // 「vis-0001」.
+  const timelineVisualLayers = useMemo(() => (
+    visuals.timings
+      .filter((timing) => !timing.orphaned)
+      .map((timing) => {
+        const layer = visuals.document?.layers.find((candidate) => candidate.id === timing.layerId);
+        const folder = layer?.module.split("/").slice(-2, -1)[0] ?? layer?.module ?? timing.layerId;
+        return {
+          id: timing.layerId,
+          label: folder,
+          start: timing.start,
+          duration: timing.duration,
+          active: transport.timelineTime >= timing.start && transport.timelineTime < timing.end,
+        };
+      })
+  ), [visuals.document, visuals.timings, transport.timelineTime]);
+
   const canUndo = undoDepth > 0 && editList.saveState !== "saving" && cutSelection.saveState !== "saving";
   const undoLastChange = useCallback(async () => {
     if (editList.saveState === "saving" || cutSelection.saveState === "saving") return;
@@ -590,6 +609,11 @@ export function CutWorkspace({
       <CutInspector subtitles={subtitles} />
 
       <CutTimeline
+        visualLayers={timelineVisualLayers}
+        onVisualLayerClick={(layerId) => {
+          const timing = visuals.timings.find((candidate) => candidate.layerId === layerId);
+          if (timing && !timing.orphaned) seek(timing.start);
+        }}
         projectId={projectId}
         editList={timelineEditList}
         timelineTime={transport.timelineTime}
