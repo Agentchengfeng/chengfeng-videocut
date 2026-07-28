@@ -112,16 +112,20 @@ export function VisualOverlay({ visual, timelineTime }: VisualOverlayProps) {
     }
     // The picture is centred in the element box; letterbox offsets shift the
     // origin, and the same push-in has to move the same pixels in both frames.
-    const rect = video.getBoundingClientRect();
-    const ox = (rect.width - picture.width) / 2;
-    const oy = (rect.height - picture.height) / 2;
+    // offsetWidth/offsetHeight, not getBoundingClientRect: the previous layer's
+    // transform is still easing out when the next layer lands, and a bounding
+    // rect measured mid-transition is a box inflated 2.5x — every offset
+    // computed from it was garbage. The layout box does not know transforms
+    // exist, which is exactly the box these formulas are about.
+    const ox = (video.offsetWidth - picture.width) / 2;
+    const oy = (video.offsetHeight - picture.height) / 2;
     const rx = ox + (zoom.x / 100) * picture.width;
     const ry = oy + (zoom.y / 100) * picture.height;
     const rw = (zoom.width / 100) * picture.width;
     const rh = (zoom.height / 100) * picture.height;
     const scale = Math.min(picture.width / rw, picture.height / rh);
-    const tx = rect.width / 2 - scale * (rx + rw / 2);
-    const ty = rect.height / 2 - scale * (ry + rh / 2);
+    const tx = video.offsetWidth / 2 - scale * (rx + rw / 2);
+    const ty = video.offsetHeight / 2 - scale * (ry + rh / 2);
     video.style.transformOrigin = "0 0";
     video.style.transform = `translate(${tx.toFixed(2)}px, ${ty.toFixed(2)}px) scale(${scale.toFixed(4)})`;
     // Clip to the source region: clip-path is in local coordinates and travels
@@ -129,7 +133,7 @@ export function VisualOverlay({ visual, timelineTime }: VisualOverlayProps) {
     // keeps the pushed-in footage inside the 4:3 frame. Without this the scaled
     // element spills over the letterbox — the preview shows picture where the
     // export would show frame edge, which is the preview lying again.
-    video.style.clipPath = `inset(${(oy + ry).toFixed(2)}px ${(rect.width - (ox + rx + rw)).toFixed(2)}px ${(rect.height - (oy + ry + rh)).toFixed(2)}px ${(ox + rx).toFixed(2)}px)`;
+    video.style.clipPath = `inset(${(oy + ry).toFixed(2)}px ${(video.offsetWidth - (ox + rx + rw)).toFixed(2)}px ${(video.offsetHeight - (oy + ry + rh)).toFixed(2)}px ${(ox + rx).toFixed(2)}px)`;
     return () => {
       video.style.transform = "";
       video.style.clipPath = "";
