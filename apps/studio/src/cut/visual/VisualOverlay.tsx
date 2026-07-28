@@ -128,24 +128,37 @@ export function VisualOverlay({ visual, timelineTime }: VisualOverlayProps) {
     readyRef.current = false;
   }, [visual?.src]);
 
+  // Driven every frame, not every React tick. The transport's timelineTime
+  // updates a few times a second — enough to pick which layer is up, far too
+  // coarse to animate with: the module only moves when told the time, so at
+  // that rate a GSAP timeline visibly steps. This loop reads the video
+  // element's own clock at requestAnimationFrame rate and forwards it. The
+  // module contract is unchanged — still driven, still deterministic for
+  // scrubbing and export — only the drive rate changed.
   useEffect(() => {
     if (!visual) return;
-    const frame = frameRef.current;
-    const target = frame?.contentWindow;
-    if (!target) return;
-    const localTime = Math.max(0, timelineTime - visual.start);
-    if (!readyRef.current) return;
-    target.postMessage(
-      {
-        type: VISUAL_SEEK_MESSAGE,
-        time: localTime,
-        duration: visual.duration,
-        cues: visual.cues,
-        zoom: visual.zoom ?? null,
-      },
-      "*",
-    );
-  }, [visual, timelineTime]);
+    const video = hostRef.current?.closest(".cf-cut-player-stage")?.querySelector("video");
+    if (!(video instanceof HTMLVideoElement)) return;
+    let raf = 0;
+    const tick = () => {
+      const target = frameRef.current?.contentWindow;
+      if (target && readyRef.current) {
+        target.postMessage(
+          {
+            type: VISUAL_SEEK_MESSAGE,
+            time: Math.max(0, video.currentTime - visual.start),
+            duration: visual.duration,
+            cues: visual.cues,
+            zoom: visual.zoom ?? null,
+          },
+          "*",
+        );
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [visual]);
 
   const onLoad = () => {
     readyRef.current = true;
