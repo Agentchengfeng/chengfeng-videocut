@@ -25,7 +25,7 @@ function previewStyle(style: SubtitleStyle) {
 }
 
 /**
- * The subtitle group of the properties column.
+ * The style group of the properties column's 字幕 tab.
  *
  * Four looks, one of them on. Not eight sliders: eight decisions to reach one
  * result, seven of which only ever moved together. And not a per-screen
@@ -43,7 +43,10 @@ export function SubtitleStyleSection({ subtitles }: SubtitleStyleSectionProps) {
 
   return (
     <div className="cf-cut-inspector__group" aria-labelledby={`${id}-title`}>
-      <h3 id={`${id}-title`} className="cf-cut-inspector__group-title">字幕</h3>
+      {/* 字幕 is the tab above; repeating it here would name the group after
+          the column it already sits in. This says which of 字幕's parameters
+          these are — 位置、时长 can join without either heading moving. */}
+      <h3 id={`${id}-title`} className="cf-cut-inspector__group-title">样式</h3>
 
       <div className="cf-cut-inspector__presets" role="radiogroup" aria-label="字幕样式">
         {SUBTITLE_STYLE_PRESETS.map((preset) => (

@@ -62,12 +62,31 @@ function render(subtitles?: ProjectSubtitles): HTMLElement {
 }
 
 describe("CutInspector", () => {
-  it("groups parameters by what they are for, and shows a group only when it exists", () => {
+  it("navigates by feature, with the same tab strip as the column on the left", () => {
     const element = render(subtitlesFixture(subtitleDocument()));
+    // 参数 is the column's name, not a row inside it: the strip below says
+    // which feature, and the column on the left carries no heading either.
+    expect(element.querySelector<HTMLElement>(".cf-cut-inspector")?.getAttribute("aria-label"))
+      .toBe("参数");
+    expect(element.querySelector("h2")).toBeNull();
+    expect(element.querySelector(".cf-cut-inspector__header")).toBeNull();
+
+    const tablist = element.querySelector<HTMLElement>('[role="tablist"]');
+    expect(tablist?.classList.contains("cf-cut-feature-tabs")).toBe(true);
+    const tabs = Array.from(element.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+    expect(tabs.map((tab) => tab.textContent)).toEqual(["字幕"]);
+    expect(tabs[0]?.className).toBe("cf-cut-feature-tab");
+    expect(tabs[0]?.getAttribute("aria-selected")).toBe("true");
+
+    // The tab names the feature, so the group under it names the parameters
+    // rather than repeating 字幕 one line down.
     const groups = Array.from(element.querySelectorAll(".cf-cut-inspector__group-title"))
       .map((node) => node.textContent);
-    expect(element.querySelector("h2")?.textContent).toBe("参数");
-    expect(groups).toEqual(["字幕"]);
+    expect(groups).toEqual(["样式"]);
+
+    const panel = element.querySelector<HTMLElement>('[role="tabpanel"]');
+    expect(panel?.getAttribute("aria-labelledby")).toBe(tabs[0]?.id);
+    expect(tabs[0]?.getAttribute("aria-controls")).toBe(panel?.id);
   });
 
   it("does not keep a playback group, whose controls already sit under the video", () => {
@@ -115,9 +134,12 @@ describe("CutInspector", () => {
     expect(subtitles.setStyle).toHaveBeenCalledWith(large.style);
   });
 
-  it("says so plainly when there is nothing to adjust", () => {
+  it("says so plainly when there is nothing to adjust, and drops the strip with it", () => {
     const element = render(subtitlesFixture(null));
     expect(element.textContent).toContain("还没有可调的参数");
     expect(element.querySelector('[role="radio"]')).toBeNull();
+    // An empty tab strip is worse than none: it promises a place to go back to.
+    expect(element.querySelector('[role="tablist"]')).toBeNull();
+    expect(element.querySelector('[role="tabpanel"]')).toBeNull();
   });
 });

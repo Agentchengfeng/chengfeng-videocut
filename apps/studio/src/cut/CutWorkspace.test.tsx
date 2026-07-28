@@ -1266,8 +1266,11 @@ describe("CutWorkspace single-page layout contract", () => {
     expect(workspace?.querySelector(".cf-cut-program")).toBeNull();
     // Renamed from 文稿: this pane decides what survives, and the tab beside it
     // is also a script.
+    // Scoped to the left column: the properties column carries a strip of its
+    // own now, and an unscoped query would silently start asserting both.
     expect(
-      Array.from(workspace?.querySelectorAll('[role="tab"]') ?? []).map((tab) => tab.textContent),
+      Array.from(workspace?.querySelectorAll('.cf-cut-feature-panel [role="tab"]') ?? [])
+        .map((tab) => tab.textContent),
     ).toEqual(["剪口播", "字幕"]);
     expect(workspace?.querySelector('[role="tabpanel"] [data-testid="koubo-transcript"]')).not.toBeNull();
     expect(harness.patchOperation).not.toHaveBeenCalled();

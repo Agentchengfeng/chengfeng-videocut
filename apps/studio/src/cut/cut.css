@@ -1051,20 +1051,14 @@ select:focus-visible,
   background: var(--panel);
 }
 
-.cf-cut-inspector__header {
-  display: flex;
-  align-items: center;
-  min-height: 40px;
-  flex: 0 0 40px;
-  padding: 0 14px;
-  border-bottom: 1px solid var(--hairline);
-}
-
-.cf-cut-inspector__header h2 {
-  margin: 0;
-  color: var(--text-0);
-  font-size: 13px;
-  font-weight: 600;
+/* The properties column navigates by feature with the same strip as the column
+   on the left, so it borrows those rules wholesale and changes one thing: 4px
+   here plus the tab's own 10px puts the labels on the same 14px left edge as
+   the controls below. There is no 参数 heading above it — the strip already
+   says what the column holds, and the column on the left has no heading
+   either. */
+.cf-cut-inspector__tabs {
+  padding: 0 4px;
 }
 
 .cf-cut-inspector__body {
@@ -1136,8 +1130,11 @@ select:focus-visible,
   min-width: 0;
 }
 
-.cf-cut-inspector button,
-.cf-cut-inspector select {
+/* Scoped to the body, not the column: the feature tabs above it are buttons
+   too, and this rule was drawing each of them as a bordered, rounded control —
+   a tab strip that looked nothing like the identical strip on the left. */
+.cf-cut-inspector__body button,
+.cf-cut-inspector__body select {
   min-height: 28px;
   border: 1px solid #303036;
   border-radius: 6px;
@@ -1146,7 +1143,7 @@ select:focus-visible,
   font-size: 11px;
 }
 
-.cf-cut-inspector button {
+.cf-cut-inspector__body button {
   padding: 0 9px;
   cursor: pointer;
 }
@@ -1157,15 +1154,15 @@ select:focus-visible,
   color: var(--mint);
 }
 
-.cf-cut-inspector button:hover:not(:disabled),
-.cf-cut-inspector select:hover:not(:disabled) {
+.cf-cut-inspector__body button:hover:not(:disabled),
+.cf-cut-inspector__body select:hover:not(:disabled) {
   border-color: #52525b;
   background: var(--panel-hover);
 }
 
-.cf-cut-inspector button:disabled,
-.cf-cut-inspector select:disabled,
-.cf-cut-inspector input:disabled {
+.cf-cut-inspector__body button:disabled,
+.cf-cut-inspector__body select:disabled,
+.cf-cut-inspector__body input:disabled {
   color: var(--text-5);
   cursor: default;
   opacity: 0.6;
