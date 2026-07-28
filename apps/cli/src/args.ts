@@ -26,6 +26,7 @@ export type CliCommand =
   | "transcript.retranscribe"
   | "transcript.align"
   | "transcript.dictionary"
+  | "transcript.regroup"
   | "transcript.correct"
   | "cuts.set"
   | "cuts.apply"
@@ -513,6 +514,13 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     }
     assertOptions([]);
     return { ...common, command: "config.set", file: positionals[2], output: positionals[3] };
+  }
+  if (positionals[0] === "transcript" && positionals[1] === "regroup") {
+    if (positionals.length !== 3) {
+      usageError("Usage: chengfeng-videocut transcript regroup <project> [--dry-run]");
+    }
+    assertOptions(["--projects-dir", "--output-dir"], [], true);
+    return { ...common, command: "transcript.regroup", project: positionals[2] };
   }
   if (positionals[0] === "transcript" && positionals[1] === "dictionary") {
     if (positionals.length !== 3) {

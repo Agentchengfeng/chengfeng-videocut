@@ -559,20 +559,25 @@ const MINIMUM_SCREEN_COLUMNS = 4;
 /**
  * The shortest silence that makes a transcript cue boundary a sentence end.
  *
- * Transcription groups words into utterances, and after the cut those groups
- * mostly are sentences — but not reliably, because streaming recognition also
- * closes a cue when it revises its hypothesis, and that happens mid-word with
- * no silence at all. Measured on a real recording:
+ * A cue here is **this product's own paragraph**, not the provider's utterance
+ * — an earlier version of this comment confused the two and libelled the
+ * provider for a boundary we drew ourselves. Paragraphs break at a 0.5s pause,
+ * at a full stop, or at a 24-word cap, and that last one lands wherever it
+ * lands. Measured on a real recording:
  *
  * ```text
  * 每天早上Codex都会调用Grok │ 查询最新信息再筛选…   0.88s   a sentence
- * 我看一眼就能看到他和我现在正 │ 在做的事情有什么关系  0.00s   a revision, splitting 正/在
+ * 我看一眼就能看到他和我现在正 │ 在做的事情有什么关系  0.00s   the 24-word cap, splitting 正/在
  * ```
  *
- * So neither signal is enough alone: the pause says "something ended", the cue
- * boundary says "the recogniser thought so too". Requiring both is what tells a
- * sentence from an artefact, and it is why this threshold can be far below the
- * one a pause needs to break a sentence open from the inside.
+ * So neither signal is enough alone: the pause says "something ended", the
+ * paragraph boundary says "something ended here specifically". Requiring both
+ * is what tells a sentence from a word-cap artefact, and it is why this
+ * threshold can be far below the one a pause needs on its own.
+ *
+ * Since punctuation started surviving import this matters much less — a full
+ * stop settles it outright. This stays for the stretches the provider left
+ * unpunctuated.
  */
 const SENTENCE_PAUSE_SECONDS = 0.1;
 

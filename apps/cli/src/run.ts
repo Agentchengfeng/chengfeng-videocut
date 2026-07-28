@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { VideocutError, asVideocutError, parseTranscriptWords } from "@video-workbench/core";
@@ -9,6 +9,7 @@ import {
   runKouboRender,
   alignScriptToWords,
   matchDictionary,
+  regroupKouboTranscript,
   parseDictionary,
   transcribeKouboVideo,
   transcribeProjectCut,
@@ -1056,6 +1057,33 @@ export async function runCli(
         const verb = data.dryRun ? "Would correct" : data.changed ? "Corrected" : "Unchanged";
         io.stdout(`${verb} ${data.applied.length} word(s) in ${data.path}\nRevision: ${data.revision}`);
       }
+      return 0;
+    }
+    if (parsed.command === "transcript.regroup") {
+      await assertRegisteredProject({ project, cwd, projectsDir, outputDir: parsed.outputDir });
+      const before = await readProjectDocument(project, "transcript.json");
+      // Words, ids and times come out identical — the function refuses otherwise.
+      // Only the paragraph boundaries move, which is what makes this safe on a
+      // project that has already been cut and subtitled.
+      const after = regroupKouboTranscript(before.value);
+      const countCues = (value: unknown) =>
+        Array.isArray((value as { cues?: unknown[] })?.cues)
+          ? ((value as { cues: unknown[] }).cues.length)
+          : 0;
+      const data = {
+        projectId: project.projectId,
+        path: join(project.directory, "transcript.json"),
+        dryRun: parsed.dryRun,
+        cuesBefore: countCues(before.value),
+        cuesAfter: after.cues.length,
+        sentenceEnds: after.cues.filter((cue) =>
+          /[。！？!?]/.test(cue.words.at(-1)?.punctuation ?? "")).length,
+      };
+      if (!parsed.dryRun && data.cuesBefore !== data.cuesAfter) {
+        await writeFile(data.path, `${JSON.stringify(after, null, 2)}\n`, "utf8");
+      }
+      if (parsed.json) io.stdout(JSON.stringify(successEnvelope(parsed.command, data)));
+      else io.stdout(`段落 ${data.cuesBefore} -> ${data.cuesAfter}，其中 ${data.sentenceEnds} 段以句号结尾`);
       return 0;
     }
     if (parsed.command === "transcript.dictionary") {

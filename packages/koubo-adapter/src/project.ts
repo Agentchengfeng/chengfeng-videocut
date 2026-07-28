@@ -48,6 +48,8 @@ export interface KouboTranscriptWord {
   start: number;
   end: number;
   isGap: boolean;
+  /** Punctuation following this word, when transcription supplied it. */
+  punctuation?: string;
   suggestion?: "silence" | "filler" | "repeat" | "stutter" | "incomplete";
 }
 
@@ -448,15 +450,20 @@ function normalizeWord(
     isGap,
     end - start,
   );
+  const punctuation = typeof value.punctuation === "string" ? value.punctuation.trim() : "";
   return {
     id: String(value.id ?? value.wordId ?? `w-${String(index + 1).padStart(6, "0")}`),
     text,
     start,
     end,
     isGap,
+    ...(punctuation ? { punctuation } : {}),
     ...(suggestion ? { suggestion } : {}),
   };
 }
+
+/** Marks that end a sentence, in Chinese and in English. */
+const SENTENCE_END = /[。！？!?]$/u;
 
 function groupWords(words: KouboTranscriptWord[]): KouboTranscriptCue[] {
   const cues: KouboTranscriptCue[] = [];
@@ -474,7 +481,12 @@ function groupWords(words: KouboTranscriptWord[]): KouboTranscriptCue[] {
   for (const word of words) {
     current.push(word);
     const longGap = word.isGap && word.end - word.start >= 0.5;
-    const sentenceEnd = !word.isGap && /[。！？!?]$/.test(word.text);
+    // This test has been here since the pane was written and never once fired:
+    // it reads punctuation off `text`, and punctuation was discarded upstream
+    // before any transcript reached this function. Paragraphs fell through to
+    // the 24-word cap, which is why the pane read as one wall of text.
+    const sentenceEnd = !word.isGap
+      && (SENTENCE_END.test(word.punctuation ?? "") || SENTENCE_END.test(word.text));
     if (longGap || sentenceEnd || current.length >= 24) flush();
   }
   flush();
@@ -522,6 +534,39 @@ function transcriptFromSrt(content: string): KouboTranscript {
     }
   }
   return { schemaVersion: 1, cues };
+}
+
+/**
+ * Re-cut an existing transcript into paragraphs, changing nothing else.
+ *
+ * `normalizeKouboTranscript` keeps whatever cue structure it is handed, so a
+ * transcript imported under an older paragraph rule keeps those paragraphs
+ * forever. That mattered the day the rule started working: the pane has always
+ * meant to break at sentence ends, but the test read punctuation off `text`
+ * and punctuation was discarded at import, so every transcript ever written
+ * fell through to "a 0.5s pause, or 24 words". Existing projects need a way to
+ * pick up the rule without being re-transcribed.
+ *
+ * Only the grouping moves. Word ids, order, times and text come out identical —
+ * which is what makes this safe to run on a project that has already been cut:
+ * `cut-selection.json` and `subtitles.json` both point at word ids.
+ */
+export function regroupKouboTranscript(payload: unknown): KouboTranscript {
+  const before = normalizeKouboTranscript(payload);
+  const words = before.cues.flatMap((cue) => cue.words);
+  const after = normalizeKouboTranscript(words);
+  const flat = after.cues.flatMap((cue) => cue.words);
+  if (flat.length !== words.length) {
+    throw new Error("Re-grouping changed the word count");
+  }
+  for (const [index, word] of words.entries()) {
+    const next = flat[index] as KouboTranscriptWord;
+    if (next.id !== word.id || next.start !== word.start || next.end !== word.end
+      || next.text !== word.text || next.isGap !== word.isGap) {
+      throw new Error(`Re-grouping changed word ${word.id}`);
+    }
+  }
+  return after;
 }
 
 export function normalizeKouboTranscript(payload: unknown): KouboTranscript {
