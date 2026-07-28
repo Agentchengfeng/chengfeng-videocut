@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import type { SubtitleStyle } from "@video-workbench/core";
+import { subtitleTextCss } from "./subtitleCss";
 
 export interface ActiveSubtitle {
   cueId: string;
@@ -18,26 +19,11 @@ export interface SubtitleOverlayProps {
  * pixel, so the same document renders identically at preview size and at export
  * size. `cqh`/`cqw` is that contract expressed directly: the overlay declares
  * itself a size container matched to the picture, and the percentages become
- * the units.
+ * the units. Everything attached to the type — outline, shadow, plate, tracking
+ * — is a percentage of the font size instead, which `em` already means.
  */
 function overlayTextStyle(style: SubtitleStyle): CSSProperties {
-  return {
-    fontFamily: style.fontFamily,
-    fontSize: `${style.fontSize}cqh`,
-    fontWeight: style.fontWeight,
-    color: style.color,
-    lineHeight: style.lineHeight,
-    maxWidth: `${style.maxLineWidth}cqw`,
-    background: style.backgroundColor || "transparent",
-    ...(style.strokeWidth > 0
-      ? {
-        WebkitTextStroke: `${(style.strokeWidth / 100).toFixed(3)}em ${style.strokeColor}`,
-        // Without this the stroke is painted over the glyph and eats the
-        // counters of dense Han characters at subtitle sizes.
-        paintOrder: "stroke fill",
-      }
-      : {}),
-  };
+  return subtitleTextCss(style, `${style.fontSize}cqh`, `${style.maxLineWidth}cqw`);
 }
 
 /**

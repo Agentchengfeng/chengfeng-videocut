@@ -1,27 +1,26 @@
-import { useId } from "react";
+import { useId, type CSSProperties } from "react";
 import {
   matchSubtitleStylePreset,
   SUBTITLE_STYLE_PRESETS,
   type SubtitleStyle,
 } from "@video-workbench/core";
 import type { ProjectSubtitles } from "../../components/useProjectSubtitles";
+import { subtitleTextCss } from "./subtitleCss";
 
 export interface SubtitleStyleSectionProps {
   subtitles: ProjectSubtitles;
 }
 
-/** A miniature of the look, drawn with the look itself. */
-function previewStyle(style: SubtitleStyle) {
-  const stroke = style.strokeWidth > 0
-    ? `${(style.strokeWidth / 100).toFixed(2)}em ${style.strokeColor}`
-    : undefined;
-  return {
-    color: style.color,
-    fontWeight: style.fontWeight,
-    fontSize: `${(style.fontSize * 2.1).toFixed(1)}px`,
-    background: style.backgroundColor || "transparent",
-    ...(stroke ? { WebkitTextStroke: stroke, paintOrder: "stroke fill" } : {}),
-  } as const;
+/**
+ * A miniature of the look, drawn with the look itself.
+ *
+ * Same generator as the frame, so the swatch cannot drift from what picking it
+ * produces — which it had: the swatch carried its own plate padding and a 3px
+ * radius while the frame drew 0.1em, and the capsule you chose arrived square.
+ * Only the unit differs: `px` here, `cqh` of the picture there.
+ */
+function previewStyle(style: SubtitleStyle): CSSProperties {
+  return subtitleTextCss(style, `${(style.fontSize * 2.1).toFixed(1)}px`);
 }
 
 /**

@@ -53,6 +53,7 @@ import { VideocutError } from "./errors";
 import {
   assertSubtitleDocument,
   createSubtitleDocument,
+  normalizeSubtitleStyle,
   respellSubtitles,
   subtitleStaleness,
   type SubtitleDocument,
@@ -1224,7 +1225,14 @@ export async function readSubtitles(
   const snapshot = await readOptionalProjectDocument(project, "subtitles.json");
   if (!snapshot) return null;
   assertSubtitleDocument(snapshot.value);
-  return { ...snapshot, value: snapshot.value };
+  // Styles gained fields — a shadow, a plate's corners, tracking — and the
+  // outline changed from a centred stroke to an outward one. Filling that in
+  // here means one answer for every reader, and none of them has to know that
+  // documents written before today exist. The revision is deliberately left
+  // alone: normalising is not an edit, and bumping it would make every project
+  // look dirty the first time it is opened.
+  const style = normalizeSubtitleStyle(snapshot.value.style);
+  return { ...snapshot, value: { ...snapshot.value, style } };
 }
 
 /**

@@ -39,16 +39,49 @@ export const SUBTITLE_SCHEMA_VERSION = 1 as const;
  * survives being rendered at a different resolution than it was designed at.
  */
 export interface SubtitleStyle {
+  /**
+   * A CSS font stack, used by the preview. Ordered best-available-first: the
+   * open licensed face we may ship, then the heavy face macOS already has, then
+   * the one every Mac has.
+   */
   fontFamily: string;
-  /** Cap height as a percentage of frame height. */
+  /**
+   * The single face the export names. A font stack is a browser idea; libass
+   * takes one name, and the PostScript name is the only spelling both accept.
+   * Stored per look rather than derived, because the mapping from a stack plus
+   * a weight to a face is exactly what differs between the two renderers.
+   */
+  fontPostScriptName: string;
+  /** CSS font size — the em box, not the cap height — as a percentage of frame height. */
   fontSize: number;
   fontWeight: number;
   color: string;
-  /** Outline drawn behind the glyphs. Width is a percentage of font size. */
+  /**
+   * Outline grown *outward* from the glyph. Width is a percentage of font size,
+   * and all of it lands outside the letter.
+   *
+   * It used to be drawn with `-webkit-text-stroke`, which centres the stroke:
+   * half of every nominal width sat inside the glyph, so "6" produced three
+   * percent of visible outline and ate the counters of dense Han characters
+   * from the inside. ASS grows its outline outward, so the old preview could
+   * never have matched an export either.
+   */
   strokeColor: string;
   strokeWidth: number;
+  /** CSS colour, or "" for no shadow. */
+  shadowColor: string;
+  /** Shadow offset and blur, each a percentage of font size. */
+  shadowOffsetX: number;
+  shadowOffsetY: number;
+  shadowBlur: number;
   /** CSS colour, or "" for no plate behind the text. */
   backgroundColor: string;
+  /** Plate padding and corner radius, each a percentage of font size. */
+  backgroundPaddingX: number;
+  backgroundPaddingY: number;
+  backgroundRadius: number;
+  /** Tracking as a percentage of font size. Negative tightens. */
+  letterSpacing: number;
   anchor: "bottom" | "middle" | "top";
   /** Distance from the anchored edge, as a percentage of frame height. */
   offsetY: number;
@@ -58,18 +91,43 @@ export interface SubtitleStyle {
   maxLineWidth: number;
 }
 
+/**
+ * The heavy stack.
+ *
+ * `font-weight: 700` on PingFang is a lie — the family stops at Semibold, and
+ * measured in a browser its 600, 700 and 900 render the identical glyphs. So a
+ * look that wants a heavy face has to name one. Source Han Sans is the face we
+ * would ship (SIL OFL, so it may travel with an export renderer); 兰亭黑 is
+ * already on every Mac and its 700 is a genuine 特黑, a third more ink than
+ * PingFang can produce. PingFang stays last so nothing ever falls past it.
+ */
+const HEAVY_STACK =
+  '"Source Han Sans SC", "Noto Sans CJK SC", "Lantinghei SC", "PingFang SC", sans-serif';
+
+/** The system stack, for looks that want a normal weight rather than a heavy one. */
+const TEXT_STACK = '"PingFang SC", "Noto Sans CJK SC", sans-serif';
+
 export const DEFAULT_SUBTITLE_STYLE: SubtitleStyle = {
-  fontFamily: "PingFang SC, Noto Sans CJK SC, sans-serif",
-  fontSize: 5.4,
-  fontWeight: 500,
+  fontFamily: HEAVY_STACK,
+  fontPostScriptName: "SourceHanSansSC-Bold",
+  fontSize: 6,
+  fontWeight: 700,
   color: "#ffffff",
   strokeColor: "#000000",
-  strokeWidth: 6,
+  strokeWidth: 7,
+  shadowColor: "rgba(0, 0, 0, 0.75)",
+  shadowOffsetX: 3,
+  shadowOffsetY: 3,
+  shadowBlur: 6,
   backgroundColor: "",
+  backgroundPaddingX: 30,
+  backgroundPaddingY: 12,
+  backgroundRadius: 20,
+  letterSpacing: 0,
   anchor: "bottom",
-  offsetY: 8,
-  lineHeight: 1.3,
-  maxLineWidth: 86,
+  offsetY: 9,
+  lineHeight: 1.25,
+  maxLineWidth: 84,
 };
 
 /**
@@ -100,10 +158,17 @@ export const SUBTITLE_STYLE_PRESETS: SubtitleStylePreset[] = [
     label: "大字",
     style: {
       ...DEFAULT_SUBTITLE_STYLE,
-      fontSize: 7.2,
-      fontWeight: 600,
+      fontPostScriptName: "SourceHanSansSC-Heavy",
+      fontSize: 7.6,
       strokeWidth: 8,
-      offsetY: 9,
+      shadowColor: "rgba(0, 0, 0, 0.8)",
+      shadowBlur: 8,
+      // Heavy Han characters at this size run into each other; a percent of
+      // negative tracking reads as one block of text rather than a queue.
+      letterSpacing: -1,
+      offsetY: 10,
+      lineHeight: 1.2,
+      maxLineWidth: 88,
     },
   },
   {
@@ -111,26 +176,170 @@ export const SUBTITLE_STYLE_PRESETS: SubtitleStylePreset[] = [
     label: "重点",
     style: {
       ...DEFAULT_SUBTITLE_STYLE,
-      fontSize: 6.2,
-      fontWeight: 600,
+      fontSize: 6.4,
       color: "#ffd60a",
-      strokeWidth: 8,
+      // Yellow on a bright frame has less contrast than white does, so this one
+      // carries more outline than 标准 rather than less.
+      strokeWidth: 9,
+      shadowColor: "rgba(0, 0, 0, 0.85)",
+      shadowBlur: 8,
+      maxLineWidth: 82,
     },
   },
   {
-    id: "clean",
-    label: "干净",
+    id: "plate",
+    label: "胶囊",
     style: {
       ...DEFAULT_SUBTITLE_STYLE,
-      fontSize: 4.6,
-      fontWeight: 400,
-      strokeColor: "#000000",
+      fontFamily: TEXT_STACK,
+      fontPostScriptName: "PingFangSC-Semibold",
+      fontSize: 5,
+      fontWeight: 600,
+      // A plate already separates the text from the frame. Outlining it as well
+      // is two solutions to one problem, and the second one only adds weight.
       strokeWidth: 0,
-      backgroundColor: "rgba(0, 0, 0, 0.55)",
-      offsetY: 6,
+      shadowColor: "",
+      shadowOffsetX: 0,
+      shadowOffsetY: 0,
+      shadowBlur: 0,
+      backgroundColor: "rgba(0, 0, 0, 0.62)",
+      backgroundPaddingX: 36,
+      backgroundPaddingY: 16,
+      // Eighty percent of the font size is past half the plate's height, so the
+      // ends are round: a capsule, not a rectangle with the corners filed off.
+      backgroundRadius: 80,
+      letterSpacing: 2,
+      offsetY: 7,
+      maxLineWidth: 78,
+    },
+  },
+  {
+    id: "cinema",
+    label: "沉稳",
+    style: {
+      ...DEFAULT_SUBTITLE_STYLE,
+      fontFamily: TEXT_STACK,
+      fontPostScriptName: "PingFangSC-Medium",
+      fontSize: 5,
+      fontWeight: 500,
+      color: "#f2f2f2",
+      strokeWidth: 0,
+      // No outline at all: the whole look is one soft shadow directly below.
+      // It reads well over footage and disappears over a bright screen
+      // recording — that is the trade this preset is, not a fault in it.
+      shadowColor: "rgba(0, 0, 0, 0.65)",
+      shadowOffsetX: 0,
+      shadowOffsetY: 4,
+      shadowBlur: 14,
+      letterSpacing: 3,
+      offsetY: 10,
+      lineHeight: 1.35,
+      maxLineWidth: 72,
+    },
+  },
+  {
+    id: "banner",
+    label: "亮条",
+    style: {
+      ...DEFAULT_SUBTITLE_STYLE,
+      fontSize: 5.4,
+      color: "#111111",
+      strokeWidth: 0,
+      shadowColor: "rgba(0, 0, 0, 0.45)",
+      shadowOffsetX: 0,
+      shadowOffsetY: 4,
+      shadowBlur: 10,
+      backgroundColor: "#ffd60a",
+      backgroundPaddingX: 36,
+      backgroundPaddingY: 16,
+      backgroundRadius: 80,
+      offsetY: 8,
+      maxLineWidth: 76,
     },
   },
 ];
+
+/**
+ * The four looks this product shipped before outlines grew outward.
+ *
+ * They are kept as data because a stored document holds a style, not the name
+ * of one — so the only way to recognise "this project is on the old 标准" and
+ * move it to the new one is to compare against what the old one literally was.
+ * Nothing else reads this table, and nothing new should be added to it.
+ */
+const LEGACY_STYLE_MIGRATIONS: Array<{ legacy: Record<string, unknown>; to: string }> = [
+  {
+    legacy: {
+      fontSize: 5.4, fontWeight: 500, color: "#ffffff",
+      strokeColor: "#000000", strokeWidth: 6, backgroundColor: "", offsetY: 8,
+    },
+    to: "standard",
+  },
+  {
+    legacy: {
+      fontSize: 7.2, fontWeight: 600, color: "#ffffff",
+      strokeColor: "#000000", strokeWidth: 8, backgroundColor: "", offsetY: 9,
+    },
+    to: "large",
+  },
+  {
+    legacy: {
+      fontSize: 6.2, fontWeight: 600, color: "#ffd60a",
+      strokeColor: "#000000", strokeWidth: 8, backgroundColor: "", offsetY: 8,
+    },
+    to: "highlight",
+  },
+  {
+    legacy: {
+      fontSize: 4.6, fontWeight: 400, color: "#ffffff",
+      strokeColor: "#000000", strokeWidth: 0,
+      backgroundColor: "rgba(0, 0, 0, 0.55)", offsetY: 6,
+    },
+    to: "plate",
+  },
+];
+
+/**
+ * Make a stored style whole.
+ *
+ * Documents written before a field existed simply lack it, and every reader
+ * downstream would otherwise have to decide for itself what a missing shadow
+ * means. One answer, applied once at the boundary.
+ *
+ * A style that is recognisably one of the four old presets is replaced by its
+ * successor outright rather than patched field by field. Patching would leave
+ * it with the old outline number under the new outward-growing rule — twice the
+ * outline it was drawn with — which is not what anyone chose. 干净 becomes
+ * 胶囊: same idea, a plate instead of an outline, now with corners.
+ */
+export function normalizeSubtitleStyle(style: unknown): SubtitleStyle {
+  if (!isObject(style)) return DEFAULT_SUBTITLE_STYLE;
+
+  const legacy = LEGACY_STYLE_MIGRATIONS.find((entry) => (
+    Object.keys(entry.legacy).every((key) => entry.legacy[key] === style[key])
+  ));
+  if (legacy) {
+    const preset = SUBTITLE_STYLE_PRESETS.find((candidate) => candidate.id === legacy.to);
+    if (preset) return preset.style;
+  }
+
+  const filled = { ...DEFAULT_SUBTITLE_STYLE };
+  for (const key of Object.keys(DEFAULT_SUBTITLE_STYLE) as Array<keyof SubtitleStyle>) {
+    const value = style[key];
+    // `anchor` is the one field whose type does not pin its values, and a
+    // stored "botom" would place the text nowhere at all.
+    if (key === "anchor") {
+      if (value === "bottom" || value === "middle" || value === "top") filled.anchor = value;
+      continue;
+    }
+    if (typeof value === typeof DEFAULT_SUBTITLE_STYLE[key] && Number.isFinite(
+      typeof value === "number" ? value : 0,
+    )) {
+      (filled as Record<string, unknown>)[key] = value;
+    }
+  }
+  return filled;
+}
 
 /**
  * Which preset a style is, or null when it is none of them.

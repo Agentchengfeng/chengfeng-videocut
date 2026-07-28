@@ -1269,10 +1269,10 @@ select:focus-visible,
   background: rgb(60 230 172 / 6%);
 }
 
+/* Padding, radius and line height come from the style being sampled — the same
+   generator the frame uses. A rule here would be a second opinion about the
+   look, and the two had already disagreed. */
 .cf-cut-inspector__preset-sample {
-  padding: 0 3px;
-  border-radius: 3px;
-  line-height: 1.25;
   white-space: nowrap;
 }
 
@@ -1317,14 +1317,15 @@ select:focus-visible,
 /* Full-width band, shrink-to-fit box centred in it. Centring with `left: 50%`
    instead capped the box's automatic width at the half-frame to its right, so
    a line that fits across the frame wrapped to three lines at half width. */
+/* Padding and radius are the style's, not this rule's: they size the plate, and
+   a plate whose corners are decided in a stylesheet cannot be a capsule in one
+   preset and a rectangle in another. */
 .cf-cut-subtitle-overlay__text {
   position: absolute;
   right: 0;
   left: 0;
   width: fit-content;
   margin: 0 auto;
-  padding: 0.1em 0.3em;
-  border-radius: 0.1em;
   text-align: center;
   text-wrap: balance;
 }

@@ -8,10 +8,14 @@ import {
   DEFAULT_SUBTITLE_STYLE,
   displayColumns,
   joinWordText,
+  matchSubtitleStylePreset,
+  normalizeSubtitleStyle,
   subtitleCueTimings,
   subtitleStaleness,
   SUBTITLE_SCHEMA_VERSION,
+  SUBTITLE_STYLE_PRESETS,
   type SubtitleDocument,
+  type SubtitleStyle,
 } from "./subtitles";
 
 /** Everything retained, one segment, timeline time == source time. */
@@ -446,5 +450,76 @@ describe("assertSubtitleDocument", () => {
   it("rejects an unknown schema version", () => {
     expect(() => assertSubtitleDocument({ ...base, schemaVersion: 2 }))
       .toThrow(/Unsupported subtitle schema/);
+  });
+});
+
+describe("subtitle styles", () => {
+  it("offers looks that differ in more than size", () => {
+    // The complaint that started this: four presets that were one look at four
+    // volumes. Every preset must differ from 标准 somewhere other than the
+    // three fields a volume knob would move.
+    const [standard, ...rest] = SUBTITLE_STYLE_PRESETS;
+    expect(standard).toBeDefined();
+    const volume: Array<keyof SubtitleStyle> = ["fontSize", "fontWeight", "strokeWidth"];
+    for (const preset of rest) {
+      const different = (Object.keys(preset.style) as Array<keyof SubtitleStyle>)
+        .filter((key) => preset.style[key] !== standard!.style[key])
+        .filter((key) => !volume.includes(key));
+      expect(different.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("names a real face for export rather than handing libass a font stack", () => {
+    for (const preset of SUBTITLE_STYLE_PRESETS) {
+      expect(preset.style.fontFamily).toContain(",");
+      expect(preset.style.fontPostScriptName).not.toContain(",");
+      expect(preset.style.fontPostScriptName.trim()).not.toBe("");
+    }
+  });
+
+  it("moves a document off a retired preset instead of patching it", () => {
+    // 6 meant three percent of visible outline under the old centred stroke.
+    // Kept as a number under the outward rule it would be twice the outline the
+    // person picked, so the whole look is replaced.
+    const old = {
+      fontFamily: "PingFang SC, Noto Sans CJK SC, sans-serif",
+      fontSize: 5.4,
+      fontWeight: 500,
+      color: "#ffffff",
+      strokeColor: "#000000",
+      strokeWidth: 6,
+      backgroundColor: "",
+      anchor: "bottom",
+      offsetY: 8,
+      lineHeight: 1.3,
+      maxLineWidth: 86,
+    };
+    expect(normalizeSubtitleStyle(old)).toEqual(DEFAULT_SUBTITLE_STYLE);
+    expect(matchSubtitleStylePreset(normalizeSubtitleStyle(old))?.id).toBe("standard");
+
+    // 干净 was a plate without corners; 胶囊 is the same idea done properly.
+    const clean = { ...old, fontSize: 4.6, fontWeight: 400, strokeWidth: 0,
+      backgroundColor: "rgba(0, 0, 0, 0.55)", offsetY: 6 };
+    expect(matchSubtitleStylePreset(normalizeSubtitleStyle(clean))?.id).toBe("plate");
+  });
+
+  it("fills what a document is missing without touching what it has", () => {
+    const custom = { ...DEFAULT_SUBTITLE_STYLE, color: "#00ff00", fontSize: 9.1 } as
+      Record<string, unknown>;
+    delete custom.shadowBlur;
+    delete custom.letterSpacing;
+    const filled = normalizeSubtitleStyle(custom);
+    expect(filled.color).toBe("#00ff00");
+    expect(filled.fontSize).toBe(9.1);
+    expect(filled.shadowBlur).toBe(DEFAULT_SUBTITLE_STYLE.shadowBlur);
+    expect(filled.letterSpacing).toBe(DEFAULT_SUBTITLE_STYLE.letterSpacing);
+  });
+
+  it("refuses values that would place the text nowhere", () => {
+    expect(normalizeSubtitleStyle({ ...DEFAULT_SUBTITLE_STYLE, anchor: "botom" }).anchor)
+      .toBe("bottom");
+    expect(normalizeSubtitleStyle({ ...DEFAULT_SUBTITLE_STYLE, fontSize: Number.NaN }).fontSize)
+      .toBe(DEFAULT_SUBTITLE_STYLE.fontSize);
+    expect(normalizeSubtitleStyle(null)).toEqual(DEFAULT_SUBTITLE_STYLE);
   });
 });
