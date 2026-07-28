@@ -413,38 +413,45 @@ export function CutWorkspace({
     return { cueId: cue.id, text: cue.text, style: subtitleDocument.style };
   }, [subtitles.document, subtitles.timings, transport.timelineTime]);
 
-  // Which module is on screen right now, already resolved to a URL. The player
-  // only draws; it is not given the document to interpret. Time comes from the
-  // cut, like every other time in the product.
+  // Every layer resolved once and held stable across playback: the overlay
+  // keeps them all mounted so a boundary is a visibility flip, not an iframe
+  // load — a frame mounted at its own start spent ~0.1s parsing before first
+  // paint, and with hard cuts that gap flashed raw footage at every boundary.
   const visuals = useProjectVisuals(projectId);
+  const overlayLayers = useMemo<ActiveVisual[]>(() => (
+    visuals.timings
+      .filter((timing) => !timing.orphaned)
+      .map((timing) => {
+        const layer = visuals.document?.layers.find((candidate) => candidate.id === timing.layerId);
+        if (!layer) return null;
+        // The script under the layer, moved onto the layer's own clock — same
+        // timings the subtitles draw from, so a module and a caption can never
+        // disagree about when a sentence is said.
+        const cues = subtitles.timings
+          .filter((candidate) => !candidate.orphaned
+            && candidate.end > timing.start && candidate.start < timing.end)
+          .map((candidate) => ({
+            text: subtitles.document?.cues.find((cue) => cue.id === candidate.cueId)?.text ?? "",
+            start: candidate.start - timing.start,
+            end: candidate.end - timing.start,
+          }));
+        return {
+          layerId: layer.id,
+          src: visuals.moduleUrl(layer.module),
+          start: timing.start,
+          duration: timing.duration,
+          ...(layer.zoom ? { zoom: layer.zoom } : {}),
+          cues,
+        };
+      })
+      .filter((layer): layer is ActiveVisual => layer !== null)
+  ), [visuals.document, visuals.timings, visuals.moduleUrl, subtitles.document, subtitles.timings]);
+
   const activeVisual = useMemo<ActiveVisual | null>(() => {
     const timing = activeVisualLayer(visuals.timings, transport.timelineTime);
     if (!timing) return null;
-    const layer = visuals.document?.layers.find((candidate) => candidate.id === timing.layerId);
-    if (!layer) return null;
-    // The script under the layer, moved onto the layer's own clock. Computed
-    // from the same timings the subtitles draw from, so a module and a caption
-    // can never disagree about when a sentence is said.
-    const cues = subtitles.timings
-      .filter((candidate) => !candidate.orphaned
-        && candidate.end > timing.start && candidate.start < timing.end)
-      .map((candidate) => ({
-        text: subtitles.document?.cues.find((cue) => cue.id === candidate.cueId)?.text ?? "",
-        start: candidate.start - timing.start,
-        end: candidate.end - timing.start,
-      }));
-    return {
-      layerId: layer.id,
-      src: visuals.moduleUrl(layer.module),
-      start: timing.start,
-      duration: timing.duration,
-      ...(layer.zoom ? { zoom: layer.zoom } : {}),
-      cues,
-    };
-  }, [
-    visuals.document, visuals.timings, visuals.moduleUrl,
-    subtitles.document, subtitles.timings, transport.timelineTime,
-  ]);
+    return overlayLayers.find((layer) => layer.layerId === timing.layerId) ?? null;
+  }, [visuals.timings, overlayLayers, transport.timelineTime]);
 
   // The layers as the lane draws them. Labelled by the module's folder rather
   // than by a generated id: what a person recognises is 「daily-pipeline」, not
@@ -606,7 +613,8 @@ export function CutWorkspace({
         artifactProfile={artifact.state.profile}
         onArtifactRetry={artifact.retry}
         subtitle={activeSubtitle}
-        visual={activeVisual}
+        visualLayers={overlayLayers}
+        activeVisualLayerId={activeVisual?.layerId ?? null}
       />
 
       <CutInspector subtitles={subtitles} />

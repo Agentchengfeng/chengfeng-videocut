@@ -43,7 +43,8 @@ export function CutPlayer({
   artifactProfile = "sharp-canonical-v1",
   onArtifactRetry,
   subtitle = null,
-  visual = null,
+  visualLayers = [],
+  activeVisualLayerId = null,
 }: {
   sourceUrl: string | null;
   transport: EdlVideoTransport;
@@ -53,7 +54,8 @@ export function CutPlayer({
   onArtifactRetry?: () => void;
   /** Already resolved: which line, in which style. Null draws nothing. */
   subtitle?: ActiveSubtitle | null;
-  visual?: ActiveVisual | null;
+  visualLayers?: readonly ActiveVisual[];
+  activeVisualLayerId?: string | null;
 }) {
   const activity = transport.error
     ? transport.error
@@ -211,7 +213,11 @@ export function CutPlayer({
           <div className="cf-cut-player-empty">当前 EDL 没有可播放的单一媒体源</div>
         )}
         {sourceUrl && (
-          <VisualOverlay visual={visual} timelineTime={transport.timelineTime} />
+          <VisualOverlay
+            layers={visualLayers}
+            activeLayerId={activeVisualLayerId}
+            timelineTime={transport.timelineTime}
+          />
         )}
         {/* After the visual: a caption is read over whatever is on screen,
             including a module that covers the footage. */}

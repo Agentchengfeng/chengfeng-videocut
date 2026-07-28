@@ -33,7 +33,10 @@ export interface ActiveVisual {
 }
 
 export interface VisualOverlayProps {
-  visual: ActiveVisual | null;
+  /** Every layer of the project, resolved and stable across playback. */
+  layers: readonly ActiveVisual[];
+  /** Which one is on screen, or null between layers. */
+  activeLayerId: string | null;
   /** Current position on the cut timeline, in seconds. */
   timelineTime: number;
 }
@@ -71,33 +74,35 @@ export const VISUAL_SEEK_MESSAGE = "videocut:seek" as const;
  *
  * It never intercepts a click: the video underneath is the play/pause target.
  */
-export function VisualOverlay({ visual, timelineTime }: VisualOverlayProps) {
+export function VisualOverlay({ layers, activeLayerId, timelineTime }: VisualOverlayProps) {
   const hostRef = useRef<HTMLDivElement>(null);
-  const frameRef = useRef<HTMLIFrameElement>(null);
+  const frameRefs = useRef(new Map<string, HTMLIFrameElement>());
+  const readyIds = useRef(new Set<string>());
   const picture = useContainedPicture(hostRef);
-  const readyRef = useRef(false);
+  const active = layers.find((layer) => layer.layerId === activeLayerId) ?? null;
+
+  // Every layer's frame is mounted up front and only visibility changes.
+  // A frame mounted at the moment its layer begins spends ~a tenth of a second
+  // fetching and parsing before it first paints — with hard cuts that gap
+  // showed as a flash of raw footage at every boundary into an animation.
+  // Eleven idle frames with paused timelines cost nothing measurable; a flash
+  // at every cut cost the film its credibility.
 
   // The zoom is applied to the video element imperatively: the element belongs
-  // to the player, not to this overlay, so a declarative binding has no owner
-  // here. The overlay itself gets the same transform in its style below, which
-  // is what keeps a module's coordinates true on a pushed-in picture. The
-  // subtitle overlay is a sibling and stays untransformed on purpose — captions
-  // sit on the output frame, not on the footage.
+  // to the player, not to this overlay. The subtitle overlay is a sibling and
+  // stays untransformed on purpose — captions sit on the output frame, not on
+  // the footage.
   useEffect(() => {
     const video = hostRef.current?.closest(".cf-cut-player-stage")?.querySelector("video");
     if (!(video instanceof HTMLVideoElement)) return;
-    const zoom = visual?.zoom;
+    const zoom = active?.zoom;
     if (!zoom || !picture) {
       video.style.transform = "";
+      video.style.clipPath = "";
       return;
     }
-    // The picture is centred in the element box; letterbox offsets shift the
-    // origin, and the same push-in has to move the same pixels in both frames.
-    // offsetWidth/offsetHeight, not getBoundingClientRect: the previous layer's
-    // transform is still easing out when the next layer lands, and a bounding
-    // rect measured mid-transition is a box inflated 2.5x — every offset
-    // computed from it was garbage. The layout box does not know transforms
-    // exist, which is exactly the box these formulas are about.
+    // offsetWidth/offsetHeight, not getBoundingClientRect: a rect measured
+    // mid-transition was a box inflated 2.5x and every offset from it garbage.
     const ox = (video.offsetWidth - picture.width) / 2;
     const oy = (video.offsetHeight - picture.height) / 2;
     const rx = ox + (zoom.x / 100) * picture.width;
@@ -109,47 +114,31 @@ export function VisualOverlay({ visual, timelineTime }: VisualOverlayProps) {
     const ty = video.offsetHeight / 2 - scale * (ry + rh / 2);
     video.style.transformOrigin = "0 0";
     video.style.transform = `translate(${tx.toFixed(2)}px, ${ty.toFixed(2)}px) scale(${scale.toFixed(4)})`;
-    // Clip to the source region: clip-path is in local coordinates and travels
-    // with the transform, so clipping the region that maps onto the picture box
-    // keeps the pushed-in footage inside the 4:3 frame. Without this the scaled
-    // element spills over the letterbox — the preview shows picture where the
-    // export would show frame edge, which is the preview lying again.
     video.style.clipPath = `inset(${(oy + ry).toFixed(2)}px ${(video.offsetWidth - (ox + rx + rw)).toFixed(2)}px ${(video.offsetHeight - (oy + ry + rh)).toFixed(2)}px ${(ox + rx).toFixed(2)}px)`;
     return () => {
       video.style.transform = "";
       video.style.clipPath = "";
     };
-  }, [visual?.zoom, picture]);
+  }, [active?.zoom, picture]);
 
-  // A module can only be addressed once its document exists. Until then the
-  // messages would land nowhere and the module would open at zero while the
-  // film is at forty seconds.
+  // Driven every frame from the video element's own clock — the transport's
+  // React tick is a few updates a second, enough to pick a layer, far too
+  // coarse to animate with.
   useEffect(() => {
-    readyRef.current = false;
-  }, [visual?.src]);
-
-  // Driven every frame, not every React tick. The transport's timelineTime
-  // updates a few times a second — enough to pick which layer is up, far too
-  // coarse to animate with: the module only moves when told the time, so at
-  // that rate a GSAP timeline visibly steps. This loop reads the video
-  // element's own clock at requestAnimationFrame rate and forwards it. The
-  // module contract is unchanged — still driven, still deterministic for
-  // scrubbing and export — only the drive rate changed.
-  useEffect(() => {
-    if (!visual) return;
+    if (!active) return;
     const video = hostRef.current?.closest(".cf-cut-player-stage")?.querySelector("video");
     if (!(video instanceof HTMLVideoElement)) return;
     let raf = 0;
     const tick = () => {
-      const target = frameRef.current?.contentWindow;
-      if (target && readyRef.current) {
+      const target = frameRefs.current.get(active.layerId)?.contentWindow;
+      if (target && readyIds.current.has(active.layerId)) {
         target.postMessage(
           {
             type: VISUAL_SEEK_MESSAGE,
-            time: Math.max(0, video.currentTime - visual.start),
-            duration: visual.duration,
-            cues: visual.cues,
-            zoom: visual.zoom ?? null,
+            time: Math.max(0, video.currentTime - active.start),
+            duration: active.duration,
+            cues: active.cues,
+            zoom: active.zoom ?? null,
           },
           "*",
         );
@@ -158,23 +147,7 @@ export function VisualOverlay({ visual, timelineTime }: VisualOverlayProps) {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [visual]);
-
-  const onLoad = () => {
-    readyRef.current = true;
-    const target = frameRef.current?.contentWindow;
-    if (!target || !visual) return;
-    target.postMessage(
-      {
-        type: VISUAL_SEEK_MESSAGE,
-        time: Math.max(0, timelineTime - visual.start),
-        duration: visual.duration,
-        cues: visual.cues,
-        zoom: visual.zoom ?? null,
-      },
-      "*",
-    );
-  };
+  }, [active]);
 
   return (
     <div
@@ -183,24 +156,24 @@ export function VisualOverlay({ visual, timelineTime }: VisualOverlayProps) {
       style={picture ? { width: `${picture.width}px`, height: `${picture.height}px` } : undefined}
       aria-hidden="true"
     >
-      {visual && (
+      {layers.map((layer) => (
         <iframe
-          ref={frameRef}
-          // Remounting per layer is deliberate: a module carries its own
-          // timeline state, and reusing one frame for the next layer would show
-          // the previous module's last frame until the new one painted.
-          key={visual.layerId}
+          key={layer.layerId}
+          ref={(node) => {
+            if (node) frameRefs.current.set(layer.layerId, node);
+            else frameRefs.current.delete(layer.layerId);
+          }}
           className="cf-cut-visual-overlay__frame"
-          src={visual.src}
-          onLoad={onLoad}
+          style={layer.layerId === activeLayerId ? undefined : { visibility: "hidden" }}
+          src={layer.src}
+          onLoad={() => readyIds.current.add(layer.layerId)}
           title="画面"
-          // The module is project content authored by an Agent, not a document
-          // the person is browsing. It gets scripts — it is an animation — and
-          // nothing else.
+          // Project content authored by an Agent: it gets scripts — it is an
+          // animation — and nothing else.
           sandbox="allow-scripts"
           scrolling="no"
         />
-      )}
+      ))}
     </div>
   );
 }
