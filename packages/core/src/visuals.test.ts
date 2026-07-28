@@ -97,3 +97,25 @@ describe("visual layers", () => {
     expect(() => assertVisualDocument({ ...document, animationStyle: "" })).toThrow(/animationStyle/);
   });
 });
+
+describe("layer gap absorption", () => {
+  it("carries a layer through the breath before the next one", () => {
+    const document: VisualDocument = {
+      ...createVisualDocument("visual-contract", "a".repeat(64)),
+      layers: [
+        { id: "vis-0001", wordIds: ["w-1"], module: "a/index.html" },
+        { id: "vis-0002", wordIds: ["w-3"], module: "b/index.html" },
+      ],
+    };
+    // A 0.4s breath between the sentences, well inside the absorb window.
+    const paced: TimedWord[] = [
+      { id: "w-1", text: "前", start: 0, end: 1 },
+      { id: "w-3", text: "后", start: 1.4, end: 2.4 },
+    ];
+    const timings = visualLayerTimings(document, paced, editList([[0, 4, 0]]));
+    // The first layer holds until the second begins…
+    expect(timings[0]!.end).toBeCloseTo(1.4, 5);
+    // …and the second is untouched.
+    expect(timings[1]!.start).toBeCloseTo(1.4, 5);
+  });
+});

@@ -130,6 +130,17 @@ export function createVisualDocument(
  * This is the same computation the subtitles use, on the same helpers, because
  * "when do these words play" has exactly one answer in this product.
  */
+/**
+ * A pause this short between two layers is a seam, not a scene.
+ *
+ * A layer's words end where speech ends, and the next layer's words begin
+ * after the breath between sentences — so back-to-back layers left a
+ * tenth-of-a-second hole where the module unmounted and one frame of raw
+ * footage flashed through. The subtitles already solved this exact thing for
+ * screens: the small gap between words belongs to what came before.
+ */
+const LAYER_GAP_ABSORB_SECONDS = 0.75;
+
 export function visualLayerTimings(
   document: VisualDocument,
   words: readonly TimedWord[],
@@ -137,7 +148,7 @@ export function visualLayerTimings(
 ): VisualLayerTiming[] {
   const segments = orderedSegments(editList);
   const byId = new Map(words.map((word) => [word.id, word]));
-  return document.layers.map((layer) => {
+  const timings = document.layers.map((layer) => {
     const times: number[] = [];
     for (const wordId of layer.wordIds) {
       const word = byId.get(wordId);
@@ -154,6 +165,20 @@ export function visualLayerTimings(
     const end = Math.max(...times);
     return { layerId: layer.id, start, end, duration: Math.max(0, end - start), orphaned: false };
   });
+
+  const ordered = timings
+    .filter((timing) => !timing.orphaned)
+    .sort((left, right) => left.start - right.start);
+  for (let index = 0; index < ordered.length - 1; index += 1) {
+    const current = ordered[index]!;
+    const next = ordered[index + 1]!;
+    const gap = next.start - current.end;
+    if (gap > 0 && gap <= LAYER_GAP_ABSORB_SECONDS) {
+      current.end = next.start;
+      current.duration = Math.max(0, current.end - current.start);
+    }
+  }
+  return timings;
 }
 
 /**
