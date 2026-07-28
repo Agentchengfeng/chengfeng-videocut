@@ -48,6 +48,12 @@ export const VISUAL_SEEK_MESSAGE = "videocut:seek" as const;
  * the subtitles use, so both land in one coordinate space and an export can
  * reproduce what the preview showed.
  *
+ * The frame is never CSS-transformed, on a lesson: a sandboxed iframe under a
+ * scale transform composites as an opaque white sheet in Chromium, which blanked
+ * every pushed-in layer. The push-in reaches the module as data instead — the
+ * zoom rect rides the seek message, and the module points its SVG viewBox at
+ * that region, which lands its drawing on the zoomed picture exactly.
+ *
  * **The module is driven, not played.** Every time the playhead moves the frame
  * is told the current moment and renders exactly that instant. It never runs on
  * its own clock. Two things fall out of that, and both are the point:
@@ -65,31 +71,6 @@ export const VISUAL_SEEK_MESSAGE = "videocut:seek" as const;
  *
  * It never intercepts a click: the video underneath is the play/pause target.
  */
-/**
- * The transform that fills the picture with a region of it.
- *
- * Contain semantics: the region is scaled until it touches the frame on its
- * longer side and centred, so nothing the author asked for is cropped away.
- * Returned as translate+scale from origin 0,0 — the one form where the export
- * can reproduce it as a crop+scale with no further geometry.
- */
-function zoomStyle(zoom: VisualZoom, width: number, height: number): CSSProperties {
-  const rx = (zoom.x / 100) * width;
-  const ry = (zoom.y / 100) * height;
-  const rw = (zoom.width / 100) * width;
-  const rh = (zoom.height / 100) * height;
-  const scale = Math.min(width / rw, height / rh);
-  const tx = width / 2 - scale * (rx + rw / 2);
-  const ty = height / 2 - scale * (ry + rh / 2);
-  return {
-    transformOrigin: "0 0",
-    transform: `translate(${tx.toFixed(2)}px, ${ty.toFixed(2)}px) scale(${scale.toFixed(4)})`,
-    // Same clipping as the footage, for the same reason: a module drawn near
-    // the region's edge must stop at the frame, not ride the overflow.
-    clipPath: `inset(${ry.toFixed(2)}px ${(width - rx - rw).toFixed(2)}px ${(height - ry - rh).toFixed(2)}px ${rx.toFixed(2)}px)`,
-  };
-}
-
 export function VisualOverlay({ visual, timelineTime }: VisualOverlayProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const frameRef = useRef<HTMLIFrameElement>(null);
@@ -155,7 +136,13 @@ export function VisualOverlay({ visual, timelineTime }: VisualOverlayProps) {
     const localTime = Math.max(0, timelineTime - visual.start);
     if (!readyRef.current) return;
     target.postMessage(
-      { type: VISUAL_SEEK_MESSAGE, time: localTime, duration: visual.duration, cues: visual.cues },
+      {
+        type: VISUAL_SEEK_MESSAGE,
+        time: localTime,
+        duration: visual.duration,
+        cues: visual.cues,
+        zoom: visual.zoom ?? null,
+      },
       "*",
     );
   }, [visual, timelineTime]);
@@ -170,6 +157,7 @@ export function VisualOverlay({ visual, timelineTime }: VisualOverlayProps) {
         time: Math.max(0, timelineTime - visual.start),
         duration: visual.duration,
         cues: visual.cues,
+        zoom: visual.zoom ?? null,
       },
       "*",
     );
@@ -179,10 +167,7 @@ export function VisualOverlay({ visual, timelineTime }: VisualOverlayProps) {
     <div
       ref={hostRef}
       className="cf-cut-visual-overlay"
-      style={{
-        ...(picture ? { width: `${picture.width}px`, height: `${picture.height}px` } : {}),
-        ...(picture && visual?.zoom ? zoomStyle(visual.zoom, picture.width, picture.height) : {}),
-      } as CSSProperties}
+      style={picture ? { width: `${picture.width}px`, height: `${picture.height}px` } : undefined}
       aria-hidden="true"
     >
       {visual && (
