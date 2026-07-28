@@ -13,7 +13,7 @@ import {
   stat,
   symlink,
 } from "node:fs/promises";
-import { constants as fsConstants } from "node:fs";
+import { constants as fsConstants, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -59,6 +59,7 @@ import {
   type SubtitleDocument,
   type SubtitleRespellResult,
 } from "./subtitles";
+import { assertVisualDocument, type VisualDocument } from "./visuals";
 import { serializeProjectOperation } from "./projectLock";
 export {
   PROJECT_OPERATION_LOCK_NAME,
@@ -73,6 +74,10 @@ export const PROJECT_DOCUMENT_NAMES = [
   "cut-selection.json",
   "edit-list.json",
   "subtitles.json",
+  // The layers drawn over the footage. Not to be confused with `visual-plan.json`
+  // below, which is the retired pipeline's storyboard artifact — nothing has
+  // ever parsed that one's contents, and it is on the way out.
+  "visuals.json",
   "visual-plan.json",
   "workbench.json",
 ] as const;
@@ -1303,6 +1308,130 @@ export async function writeSubtitles(
           previousRevision: result.previousRevision,
           revision: result.revision,
           cueCount: document.cues.length,
+        },
+      });
+    }
+    return result;
+  };
+  if (options.dryRun) return commit();
+  return serializeProjectOperation(project.directory, commit);
+}
+
+/* --------------------------------------------------------------- visuals */
+
+export interface WriteVisualsOptions {
+  expectedRevision?: string;
+  dryRun?: boolean;
+  actor?: ProjectEventActor;
+}
+
+export interface WriteVisualsResult {
+  projectId: string;
+  path: string;
+  previousRevision: string | null;
+  revision: string;
+  changed: boolean;
+  dryRun: boolean;
+  document: VisualDocument;
+}
+
+export async function readVisuals(
+  project: ResolvedProject,
+): Promise<JsonDocument<VisualDocument> | null> {
+  const snapshot = await readOptionalProjectDocument(project, "visuals.json");
+  if (!snapshot) return null;
+  assertVisualDocument(snapshot.value);
+  return { ...snapshot, value: snapshot.value };
+}
+
+/**
+ * Write `visuals.json`.
+ *
+ * Same model as the subtitles: a whole-document write under a revision check.
+ * The document is small and every change to it is a person placing or removing
+ * one layer, so an operation reducer would be machinery without a payer. CAS is
+ * what stops two open tabs from silently overwriting each other.
+ */
+export async function writeVisuals(
+  project: ResolvedProject,
+  proposal: unknown,
+  options: WriteVisualsOptions = {},
+): Promise<WriteVisualsResult> {
+  const commit = async (): Promise<WriteVisualsResult> => {
+    const targetPath = documentPath(project, "visuals.json");
+    const previous = await readOptionalJsonAt(targetPath);
+    const currentRevision = previous?.revision ?? null;
+    if (options.expectedRevision !== undefined) {
+      const expectedCurrent = currentRevision ?? "none";
+      if (options.expectedRevision !== expectedCurrent) {
+        throw new VideocutError(
+          "revision_conflict",
+          "visuals.json changed after it was inspected",
+          { expectedRevision: options.expectedRevision, currentRevision },
+        );
+      }
+    }
+    assertVisualDocument(proposal);
+    const document = proposal;
+    if (document.projectId !== project.projectId) {
+      throw new VideocutError(
+        "invalid_visuals",
+        "visuals.json projectId does not match the registered project",
+        { documentProjectId: document.projectId, projectId: project.projectId },
+      );
+    }
+    // A layer names an HTML file that the preview will load. Accepting a path to
+    // something that is not there defers a plain "you have not written that
+    // module yet" into a blank rectangle at playback, which reads as the
+    // product being broken.
+    for (const layer of document.layers) {
+      const modulePath = resolve(project.directory, layer.module);
+      if (!modulePath.startsWith(`${project.directory}/`)) {
+        throw new VideocutError(
+          "invalid_visuals",
+          "A visual layer module must stay inside the project",
+          { layerId: layer.id, module: layer.module },
+        );
+      }
+      if (!existsSync(modulePath)) {
+        throw new VideocutError(
+          "invalid_visuals",
+          `Visual layer ${layer.id} names a module that does not exist`,
+          { layerId: layer.id, module: layer.module },
+        );
+      }
+    }
+    const content = serializeJson(document);
+    const nextRevision = sha256(content);
+    if (previous && previous.revision === nextRevision) {
+      return {
+        projectId: project.projectId,
+        path: targetPath,
+        previousRevision: currentRevision,
+        revision: nextRevision,
+        changed: false,
+        dryRun: Boolean(options.dryRun),
+        document,
+      };
+    }
+    if (!options.dryRun) await atomicWriteText(targetPath, content);
+    const result: WriteVisualsResult = {
+      projectId: project.projectId,
+      path: targetPath,
+      previousRevision: currentRevision,
+      revision: nextRevision,
+      changed: true,
+      dryRun: Boolean(options.dryRun),
+      document,
+    };
+    if (!options.dryRun) {
+      await appendProjectEvent(project, {
+        type: "visuals_written",
+        actor: options.actor,
+        payload: {
+          previousRevision: result.previousRevision,
+          revision: result.revision,
+          layerCount: document.layers.length,
         },
       });
     }

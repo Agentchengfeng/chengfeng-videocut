@@ -7,6 +7,7 @@ export type VideocutErrorCode =
   | "invalid_cut_selection"
   | "invalid_edit_list"
   | "invalid_subtitles"
+  | "invalid_visuals"
   /** A subtitle document exists and rebuilding it would discard hand-editing. */
   | "subtitles_exist"
   | "revision_required"

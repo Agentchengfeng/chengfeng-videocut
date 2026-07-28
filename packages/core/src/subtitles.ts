@@ -391,7 +391,8 @@ export interface SubtitleDocument {
 
 const EPSILON = 0.0005;
 
-function orderedSegments(editList: EditListDocument | null): EditListSegment[] {
+/** Exported for the visual layers, which resolve word ids the same way. */
+export function orderedSegments(editList: EditListDocument | null): EditListSegment[] {
   return [...(editList?.segments ?? [])].sort(
     (left, right) => left.timelineStart - right.timelineStart,
   );

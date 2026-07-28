@@ -2348,3 +2348,28 @@ select:focus-visible,
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Visual layers ---------------------------------------------------- */
+
+/* Sized in JS to the picture inside the video element, exactly like the
+   subtitle overlay — the two have to share one coordinate space or an export
+   cannot reproduce what the preview showed. */
+.cf-cut-visual-overlay {
+  position: absolute;
+  inset: 0;
+  width: 0;
+  height: 0;
+  margin: auto;
+  pointer-events: none;
+}
+
+/* The module fills the picture and nothing else. A transparent module draws on
+   the footage; an opaque one covers it. That is the only difference between
+   「在录屏上圈重点」 and 「整屏动画」, and it lives inside the module. */
+.cf-cut-visual-overlay__frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: transparent;
+}

@@ -1,5 +1,6 @@
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  activeVisualLayer,
   applyEditListOperation,
   type EditListDocument,
   type EditListOperation,
@@ -13,6 +14,8 @@ import { CutFeaturePanel, type CutFeatureTab } from "./features/CutFeaturePanel"
 import { CutInspector } from "./inspector/CutInspector";
 import { SubtitlePane } from "./subtitle/SubtitlePane";
 import type { ActiveSubtitle } from "./subtitle/SubtitleOverlay";
+import type { ActiveVisual } from "./visual/VisualOverlay";
+import { useProjectVisuals } from "./visual/useProjectVisuals";
 import { SubtitlePlaybackMarker } from "./subtitle/SubtitlePlaybackMarker";
 import { TranscriptPaneResizer, TRANSCRIPT_WIDTH_DEFAULT } from "./layout/TranscriptPaneResizer";
 import { CutPlayer } from "./player/CutPlayer";
@@ -410,6 +413,38 @@ export function CutWorkspace({
     return { cueId: cue.id, text: cue.text, style: subtitleDocument.style };
   }, [subtitles.document, subtitles.timings, transport.timelineTime]);
 
+  // Which module is on screen right now, already resolved to a URL. The player
+  // only draws; it is not given the document to interpret. Time comes from the
+  // cut, like every other time in the product.
+  const visuals = useProjectVisuals(projectId);
+  const activeVisual = useMemo<ActiveVisual | null>(() => {
+    const timing = activeVisualLayer(visuals.timings, transport.timelineTime);
+    if (!timing) return null;
+    const layer = visuals.document?.layers.find((candidate) => candidate.id === timing.layerId);
+    if (!layer) return null;
+    // The script under the layer, moved onto the layer's own clock. Computed
+    // from the same timings the subtitles draw from, so a module and a caption
+    // can never disagree about when a sentence is said.
+    const cues = subtitles.timings
+      .filter((candidate) => !candidate.orphaned
+        && candidate.end > timing.start && candidate.start < timing.end)
+      .map((candidate) => ({
+        text: subtitles.document?.cues.find((cue) => cue.id === candidate.cueId)?.text ?? "",
+        start: candidate.start - timing.start,
+        end: candidate.end - timing.start,
+      }));
+    return {
+      layerId: layer.id,
+      src: visuals.moduleUrl(layer.module),
+      start: timing.start,
+      duration: timing.duration,
+      cues,
+    };
+  }, [
+    visuals.document, visuals.timings, visuals.moduleUrl,
+    subtitles.document, subtitles.timings, transport.timelineTime,
+  ]);
+
   const canUndo = undoDepth > 0 && editList.saveState !== "saving" && cutSelection.saveState !== "saving";
   const undoLastChange = useCallback(async () => {
     if (editList.saveState === "saving" || cutSelection.saveState === "saving") return;
@@ -549,6 +584,7 @@ export function CutWorkspace({
         artifactProfile={artifact.state.profile}
         onArtifactRetry={artifact.retry}
         subtitle={activeSubtitle}
+        visual={activeVisual}
       />
 
       <CutInspector subtitles={subtitles} />
