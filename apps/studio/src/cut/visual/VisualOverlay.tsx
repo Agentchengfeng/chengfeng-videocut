@@ -73,7 +73,7 @@ export const VISUAL_SEEK_MESSAGE = "videocut:seek" as const;
  * Returned as translate+scale from origin 0,0 — the one form where the export
  * can reproduce it as a crop+scale with no further geometry.
  */
-function zoomTransform(zoom: VisualZoom, width: number, height: number): string {
+function zoomStyle(zoom: VisualZoom, width: number, height: number): CSSProperties {
   const rx = (zoom.x / 100) * width;
   const ry = (zoom.y / 100) * height;
   const rw = (zoom.width / 100) * width;
@@ -81,7 +81,13 @@ function zoomTransform(zoom: VisualZoom, width: number, height: number): string 
   const scale = Math.min(width / rw, height / rh);
   const tx = width / 2 - scale * (rx + rw / 2);
   const ty = height / 2 - scale * (ry + rh / 2);
-  return `translate(${tx.toFixed(2)}px, ${ty.toFixed(2)}px) scale(${scale.toFixed(4)})`;
+  return {
+    transformOrigin: "0 0",
+    transform: `translate(${tx.toFixed(2)}px, ${ty.toFixed(2)}px) scale(${scale.toFixed(4)})`,
+    // Same clipping as the footage, for the same reason: a module drawn near
+    // the region's edge must stop at the frame, not ride the overflow.
+    clipPath: `inset(${ry.toFixed(2)}px ${(width - rx - rw).toFixed(2)}px ${(height - ry - rh).toFixed(2)}px ${rx.toFixed(2)}px)`,
+  };
 }
 
 export function VisualOverlay({ visual, timelineTime }: VisualOverlayProps) {
@@ -118,8 +124,15 @@ export function VisualOverlay({ visual, timelineTime }: VisualOverlayProps) {
     const ty = rect.height / 2 - scale * (ry + rh / 2);
     video.style.transformOrigin = "0 0";
     video.style.transform = `translate(${tx.toFixed(2)}px, ${ty.toFixed(2)}px) scale(${scale.toFixed(4)})`;
+    // Clip to the source region: clip-path is in local coordinates and travels
+    // with the transform, so clipping the region that maps onto the picture box
+    // keeps the pushed-in footage inside the 4:3 frame. Without this the scaled
+    // element spills over the letterbox — the preview shows picture where the
+    // export would show frame edge, which is the preview lying again.
+    video.style.clipPath = `inset(${(oy + ry).toFixed(2)}px ${(rect.width - (ox + rx + rw)).toFixed(2)}px ${(rect.height - (oy + ry + rh)).toFixed(2)}px ${(ox + rx).toFixed(2)}px)`;
     return () => {
       video.style.transform = "";
+      video.style.clipPath = "";
     };
   }, [visual?.zoom, picture]);
 
@@ -164,12 +177,7 @@ export function VisualOverlay({ visual, timelineTime }: VisualOverlayProps) {
       className="cf-cut-visual-overlay"
       style={{
         ...(picture ? { width: `${picture.width}px`, height: `${picture.height}px` } : {}),
-        ...(picture && visual?.zoom
-          ? {
-            transformOrigin: "0 0",
-            transform: zoomTransform(visual.zoom, picture.width, picture.height),
-          }
-          : {}),
+        ...(picture && visual?.zoom ? zoomStyle(visual.zoom, picture.width, picture.height) : {}),
       } as CSSProperties}
       aria-hidden="true"
     >
