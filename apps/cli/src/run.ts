@@ -18,8 +18,10 @@ import {
   type TranscribeKouboVideoResult,
 } from "@video-workbench/koubo-adapter";
 import {
+  createVisualDocument,
   subtitleCueTimings,
   subtitleStaleness,
+  visualLayerTimings,
   type SubtitleDocument,
 } from "@video-workbench/core";
 import type { ConfigFieldPath } from "@video-workbench/core";
@@ -35,12 +37,16 @@ import {
   inspectProject,
   projectUrl,
   readEditList,
+  readOptionalProjectDocument,
   readProjectDocument,
   readSubtitleState,
+  readSubtitles,
+  readVisuals,
   registerProject,
   resolveProject,
   writeCutSelection,
   writeSubtitles,
+  writeVisuals,
 } from "@video-workbench/core/node";
 import { parseArgs, type CliCommand } from "./args";
 import { openBrowser as defaultOpenBrowser } from "./server/open-browser";
@@ -1155,6 +1161,99 @@ export async function runCli(
         }
         if (data.undecided.length > 0) io.stdout(`undecided: ${data.undecided.join(" ")}`);
       }
+      return 0;
+    }
+
+    if (
+      parsed.command === "visual.get"
+      || parsed.command === "visual.add"
+      || parsed.command === "visual.remove"
+    ) {
+      await assertRegisteredProject({ project, cwd, projectsDir, outputDir: parsed.outputDir });
+      const current = await readVisuals(project);
+      let document = current?.value
+        ?? createVisualDocument(project.projectId, (await readOptionalProjectDocument(
+          project,
+          "transcript.json",
+        ))?.revision ?? "");
+      let revision = current?.revision ?? "none";
+
+      if (parsed.command === "visual.add") {
+        // A layer is placed on screens, not on word ids typed by hand. The
+        // screens are what a person and an Agent both actually reason about,
+        // and going through them means a layer can never name a word nobody
+        // says — the ids come out of the document, they are not supplied.
+        const subtitles = await readSubtitles(project);
+        if (!subtitles) {
+          throw new VideocutError(
+            "invalid_visuals",
+            "This project has no subtitles yet, so there are no screens to place a layer on",
+          );
+        }
+        const byId = new Map(subtitles.value.cues.map((cue) => [cue.id, cue]));
+        const missing = (parsed.cueIds ?? []).filter((id) => !byId.has(id));
+        if (missing.length > 0) {
+          throw new VideocutError("invalid_visuals", "Those subtitle screens are not in this project", {
+            missing,
+          });
+        }
+        const wordIds = (parsed.cueIds ?? []).flatMap((id) => byId.get(id)!.wordIds);
+        const layerId = parsed.layerId
+          ?? `vis-${String(document.layers.length + 1).padStart(4, "0")}`;
+        document = {
+          ...document,
+          layers: [...document.layers, { id: layerId, wordIds, module: parsed.modulePath! }],
+        };
+      }
+
+      if (parsed.command === "visual.remove") {
+        const before = document.layers.length;
+        document = {
+          ...document,
+          layers: document.layers.filter((layer) => layer.id !== parsed.layerId),
+        };
+        if (document.layers.length === before) {
+          throw new VideocutError("invalid_visuals", `No such visual layer: ${parsed.layerId}`, {
+            layerId: parsed.layerId,
+          });
+        }
+      }
+
+      if (parsed.command !== "visual.get") {
+        const result = await writeVisuals(project, document, {
+          actor: "cli",
+          expectedRevision: parsed.expectedRevision ?? revision,
+          ...(parsed.dryRun ? { dryRun: true } : {}),
+        });
+        document = result.document;
+        revision = result.revision;
+      }
+
+      const [transcript, editList] = await Promise.all([
+        readOptionalProjectDocument(project, "transcript.json"),
+        readEditList(project),
+      ]);
+      const words = transcript ? parseTranscriptWords(transcript.value) : [];
+      const timings = visualLayerTimings(document, words, editList?.value ?? null);
+      const data = {
+        projectId: project.projectId,
+        revision,
+        animationStyle: document.animationStyle,
+        layers: document.layers.map((layer) => {
+          const timing = timings.find((candidate) => candidate.layerId === layer.id);
+          return {
+            id: layer.id,
+            module: layer.module,
+            wordCount: layer.wordIds.length,
+            start: timing?.start ?? 0,
+            end: timing?.end ?? 0,
+            duration: timing?.duration ?? 0,
+            orphaned: timing?.orphaned ?? true,
+          };
+        }),
+      };
+      if (parsed.json) io.stdout(JSON.stringify(successEnvelope(parsed.command, data)));
+      else io.stdout(JSON.stringify(data, null, 2));
       return 0;
     }
 

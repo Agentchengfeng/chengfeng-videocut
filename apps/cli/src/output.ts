@@ -121,6 +121,9 @@ Usage:
   chengfeng-videocut subtitle get <project> [--json]
   chengfeng-videocut subtitle build <project> [--replace] [--max-columns <n>] [--break-pause <seconds>] [--dry-run] [--json]
   chengfeng-videocut subtitle set <project> --file <subtitles.json> [--expected-revision <sha256>] [--dry-run] [--json]
+  chengfeng-videocut visual get <project> [--json]
+  chengfeng-videocut visual add <project> --module <project-relative .html> --cues <id,id,...> [--id <layer>] [--expected-revision <sha256>] [--dry-run] [--json]
+  chengfeng-videocut visual remove <project> --id <layer> [--expected-revision <sha256>] [--dry-run] [--json]
 
 service ensure is the product entry point: it atomically installs or recovers the macOS user LaunchAgent and waits for a matching ready Runtime.
 service stop disables and boots out the LaunchAgent; service start re-enables it. Service commands fail closed on non-macOS systems and never kill an unknown process occupying port 5190.
@@ -131,6 +134,8 @@ cuts set writes through the running product API; --dry-run performs a local read
 transcript correct fixes what the transcript says without touching when it says it: word ids, word count and every timestamp must come out identical, or the write is refused. A mis-heard proper noun is not surplus speech, so cutting cannot repair it.
 transcript playback flattens the transcript into what the audience hears, in that order, with removed speech marked. Judging repetition depends on heard adjacency, so this is the only correct input for a semantic pass — assembling it by hand gets it wrong silently.
 transcript retranscribe transcribes the cut itself, without exporting it first: it concatenates only the kept ranges' audio and sends that. The times that come back are already on the cut timeline, because the audio that went in is the cut — nothing maps between timelines. This is what subtitles need.
+visual add places an HTML layer over the footage for the span of the subtitle screens named by --cues. The layer stores those screens' word ids, never seconds, so it moves with the cut instead of drifting off it. The module is a project-relative .html that must already exist; the preview drives it by seeking, so it must render a deterministic frame for any instant rather than playing on its own clock.
+
 transcript dictionary applies the operator's own spellings and reports every one it changed with its context. Unlike align it needs no evidence: within one speaker's work a name is spelled one way, and a rule is that statement. Screens showing a renamed word are rewritten in the same operation, because subtitles keep their own text and the staleness check cannot see a respelling.
 transcript align proposes spellings from the script the speaker wrote, by finding each term's neighbours in both texts. It corrects only what the context singles out and reports the rest as undecided — transcription mishears proper nouns in ways no dictionary derives from the audio, and a wrong name is worse than a misheard one.
 subtitle cues store word ids, never seconds: the cut owns when, the subtitle owns what is written. Timing and staleness are therefore recomputed on every read and never stored, and every subtitle command reports stale as the exact list of broken screens — the product may not say "subtitles may be out of date".

@@ -35,6 +35,9 @@ export type CliCommand =
   | "subtitle.get"
   | "subtitle.build"
   | "subtitle.set"
+  | "visual.get"
+  | "visual.add"
+  | "visual.remove"
   | "workflow.get"
   | "workflow.transition"
   | "render.run";
@@ -73,6 +76,10 @@ export interface ParsedArgs {
   replace: boolean;
   maxColumns?: number;
   breakPauseSeconds?: number;
+  modulePath?: string;
+  /** Subtitle screens a visual layer covers. The layer binds their words. */
+  cueIds?: string[];
+  layerId?: string;
 }
 
 const VALUE_OPTIONS = new Set([
@@ -102,6 +109,9 @@ const VALUE_OPTIONS = new Set([
   "--dictionary",
   "--max-columns",
   "--break-pause",
+  "--module",
+  "--cues",
+  "--id",
 ]);
 
 const BOOLEAN_OPTIONS = new Set([
@@ -596,6 +606,48 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
       true,
     );
     return { ...common, command: "subtitle.set", project: positionals[2], file };
+  }
+  if (positionals[0] === "visual" && positionals[1] === "get") {
+    if (positionals.length !== 3) {
+      usageError("Usage: chengfeng-videocut visual get <project>");
+    }
+    assertOptions(["--projects-dir", "--output-dir"]);
+    return { ...common, command: "visual.get", project: positionals[2] };
+  }
+  if (positionals[0] === "visual" && positionals[1] === "add") {
+    if (positionals.length !== 3) {
+      usageError(
+        "Usage: chengfeng-videocut visual add <project> --module <path> --cues <id,id> [--id <layer>]",
+      );
+    }
+    const modulePath = values.get("--module");
+    if (!modulePath) usageError("visual add requires --module <project-relative .html>");
+    const cues = values.get("--cues");
+    if (!cues) {
+      usageError("visual add requires --cues <subtitle cue ids>, so the layer is bound to speech");
+    }
+    assertOptions(
+      ["--module", "--cues", "--id", "--expected-revision", "--projects-dir", "--output-dir"],
+      [],
+      true,
+    );
+    return {
+      ...common,
+      command: "visual.add",
+      project: positionals[2],
+      modulePath,
+      cueIds: cues.split(",").map((part) => part.trim()).filter(Boolean),
+      layerId: values.get("--id"),
+    };
+  }
+  if (positionals[0] === "visual" && positionals[1] === "remove") {
+    if (positionals.length !== 3) {
+      usageError("Usage: chengfeng-videocut visual remove <project> --id <layer>");
+    }
+    const layerId = values.get("--id");
+    if (!layerId) usageError("visual remove requires --id <layer>");
+    assertOptions(["--id", "--expected-revision", "--projects-dir", "--output-dir"], [], true);
+    return { ...common, command: "visual.remove", project: positionals[2], layerId };
   }
   if (positionals[0] === "transcript" && positionals[1] === "playback") {
     if (positionals.length !== 3) {
