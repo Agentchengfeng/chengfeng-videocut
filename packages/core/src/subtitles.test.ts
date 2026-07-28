@@ -169,21 +169,45 @@ describe("buildSubtitleCues", () => {
     expect(cues.map((cue) => cue.text)).toEqual(["如果你还想继续研究", "什么也可以试试这个方式"]);
   });
 
-  it("lets punctuation decide, not the paragraph boundary that punctuation created", () => {
-    // 剪口播现在按每个逗号分段，所以段落边界和逗号是同一处。规则③（段落边界+停顿）
-    // 若照样在这里硬断，就抢了逗号那条规则的活 —— 而它不看屏够不够长。
-    // 真实项目上量过：在带标点的边界上触发③，40 屏变 43 屏，其中 2 屏停留太短。
+  it("ends a screen at a comma, the same rule the transcript pane uses", () => {
+    // 剪口播一个逗号一段；字幕同一个粒度，两边断在同一处。
     const words: TimedWord[] = [
-      ...speech(0, "前半句", "a").map((word, index, all) => ({
+      ...speech(0, "这是前半句", "a").map((word, index, all) =>
+        index === all.length - 1 ? { ...word, punctuation: "，" } : word),
+      ...speech(1.2, "这是后半句", "b"),
+    ];
+    const cues = buildSubtitleCues(words, fullEditList(3), { maxColumns: 40 });
+    expect(cues.map((cue) => cue.text)).toEqual(["这是前半句", "这是后半句"]);
+  });
+
+  it("does not let the paragraph boundary fire where punctuation already decided", () => {
+    // 段落边界现在就是标点处，两条规则会重复。带标点时只由标点那条管 ——
+    // 真实项目上，让③也在带标点的边界触发，40 屏变 43 屏，2 屏停留太短。
+    const words: TimedWord[] = [
+      ...speech(0, "这是前半句", "a").map((word, index, all) => ({
         ...word,
         cueId: "cue-1",
         ...(index === all.length - 1 ? { punctuation: "，" } : {}),
       })),
-      // 0.15s：够触发③，但这里有逗号，该由逗号那条管
-      ...speech(0.75, "后半句", "b").map((word) => ({ ...word, cueId: "cue-2" })),
+      ...speech(0.75, "这是后半句", "b").map((word) => ({ ...word, cueId: "cue-2" })),
     ];
     const cues = buildSubtitleCues(words, fullEditList(3), { maxColumns: 40 });
-    expect(cues.map((cue) => cue.text)).toEqual(["前半句后半句"]);
+    // 断一次（逗号），不是两次（逗号 + 段落边界）
+    expect(cues).toHaveLength(2);
+  });
+
+  it("merges a stub into the sentence it belongs to, not across a full stop", () => {
+    // 「你看」开启新的一句，不是上一句的尾巴。往前并会得到
+    // 「…调用Grok CLI你看」—— 两句话糊在一起。
+    const words: TimedWord[] = [
+      ...speech(0, "上一句说完了", "a").map((word, index, all) =>
+        index === all.length - 1 ? { ...word, punctuation: "。" } : word),
+      ...speech(1.4, "你看", "b").map((word, index, all) =>
+        index === all.length - 1 ? { ...word, punctuation: "，" } : word),
+      ...speech(2.0, "这才是它要说的", "c"),
+    ];
+    const cues = buildSubtitleCues(words, fullEditList(4), { maxColumns: 40 });
+    expect(cues.map((cue) => cue.text)).toEqual(["上一句说完了", "你看这才是它要说的"]);
   });
 
   it("spreads a long run evenly instead of leaving a stub at the end", () => {

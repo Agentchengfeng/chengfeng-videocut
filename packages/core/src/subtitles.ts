@@ -758,8 +758,14 @@ export function buildSubtitleCues(
     run.gapBefore.push(run.words.length === 0 ? breakPause : gap);
     run.words.push(word);
     if (endOnTimeline !== null) previousEndTimeline = endOnTimeline;
-    // A full stop ends the run here, whatever the timing says.
-    if (word.punctuation && SENTENCE_END.test(word.punctuation)) endRun();
+    // Any mark ends the screen — the same rule the transcript pane uses for
+    // paragraphs, so both surfaces break in the same places. A comma is a clause
+    // boundary the transcriber marked, and a clause is what a person reads in
+    // one glance.
+    if (word.punctuation
+      && (SENTENCE_END.test(word.punctuation) || CLAUSE_END.test(word.punctuation))) {
+      endRun();
+    }
   }
   endRun();
 
@@ -797,31 +803,46 @@ export function buildSubtitleCues(
  * *one* recording and nothing says the next one is spaced the same. Judging the
  * result instead of the signal does not have that problem.
  *
- * Always backwards: a stub is the tail of the phrase before it. Never across a
- * deletion — the screens either side of removed speech have nothing to do with
- * each other, which is the whole reason they were separated.
+ * Backwards by default — a stub is usually the tail of the phrase before it —
+ * but **never across a full stop**. 「你看」 opening a sentence is not the tail
+ * of the previous one; merged backwards it produced 「…调用Grok CLI你看」, two
+ * sentences run together, while forwards it joins the clause it introduces.
+ *
+ * Never across a deletion either: the screens either side of removed speech have
+ * nothing to do with each other, which is the whole reason they were separated.
  */
 function mergeStubScreens(
   screens: ReadonlyArray<{ words: TimedWord[]; afterDeletion: boolean }>,
   maxColumns: number,
 ): TimedWord[][] {
+  const endsSentence = (words: readonly TimedWord[]): boolean =>
+    SENTENCE_END.test(words.at(-1)?.punctuation ?? "");
   const out: Array<{ words: TimedWord[]; afterDeletion: boolean }> = [];
-  for (const screen of screens) {
-    const previous = out.at(-1);
+  const pending: Array<{ words: TimedWord[]; afterDeletion: boolean }> = [];
+  for (const screen of screens) pending.push({ ...screen, words: [...screen.words] });
+
+  for (let index = 0; index < pending.length; index += 1) {
+    const screen = pending[index] as { words: TimedWord[]; afterDeletion: boolean };
     const columns = displayColumns(joinWordText(screen.words));
-    const merged = previous
-      ? displayColumns(joinWordText([...previous.words, ...screen.words]))
-      : 0;
-    if (
-      previous
-      && !screen.afterDeletion
-      && columns < MINIMUM_SCREEN_COLUMNS
-      && merged <= maxColumns
-    ) {
+    if (columns >= MINIMUM_SCREEN_COLUMNS || screen.afterDeletion) {
+      out.push(screen);
+      continue;
+    }
+    const previous = out.at(-1);
+    const fits = (other: readonly TimedWord[]) =>
+      displayColumns(joinWordText([...other, ...screen.words])) <= maxColumns;
+    if (previous && !endsSentence(previous.words) && fits(previous.words)) {
       previous.words = [...previous.words, ...screen.words];
       continue;
     }
-    out.push({ words: [...screen.words], afterDeletion: screen.afterDeletion });
+    // The sentence before it is finished, so this stub belongs to what follows.
+    const next = pending[index + 1];
+    if (next && !next.afterDeletion
+      && displayColumns(joinWordText([...screen.words, ...next.words])) <= maxColumns) {
+      next.words = [...screen.words, ...next.words];
+      continue;
+    }
+    out.push(screen);
   }
   return out.map((screen) => screen.words);
 }
