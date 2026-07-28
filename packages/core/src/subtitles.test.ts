@@ -169,6 +169,23 @@ describe("buildSubtitleCues", () => {
     expect(cues.map((cue) => cue.text)).toEqual(["如果你还想继续研究", "什么也可以试试这个方式"]);
   });
 
+  it("lets punctuation decide, not the paragraph boundary that punctuation created", () => {
+    // 剪口播现在按每个逗号分段，所以段落边界和逗号是同一处。规则③（段落边界+停顿）
+    // 若照样在这里硬断，就抢了逗号那条规则的活 —— 而它不看屏够不够长。
+    // 真实项目上量过：在带标点的边界上触发③，40 屏变 43 屏，其中 2 屏停留太短。
+    const words: TimedWord[] = [
+      ...speech(0, "前半句", "a").map((word, index, all) => ({
+        ...word,
+        cueId: "cue-1",
+        ...(index === all.length - 1 ? { punctuation: "，" } : {}),
+      })),
+      // 0.15s：够触发③，但这里有逗号，该由逗号那条管
+      ...speech(0.75, "后半句", "b").map((word) => ({ ...word, cueId: "cue-2" })),
+    ];
+    const cues = buildSubtitleCues(words, fullEditList(3), { maxColumns: 40 });
+    expect(cues.map((cue) => cue.text)).toEqual(["前半句后半句"]);
+  });
+
   it("spreads a long run evenly instead of leaving a stub at the end", () => {
     // Greedy filling gives 6/6/3 and the last screen flashes past. Fifteen
     // columns over three screens is 5/5/5.

@@ -705,6 +705,7 @@ export function buildSubtitleCues(
   let run: SpeechRun = { words: [], gapBefore: [], afterDeletion: false };
   let previousEndTimeline: number | null = null;
   let previousCueId: string | null = null;
+  let previousPunctuation = false;
   let speechDeletedSinceLastKept = false;
 
   const endRun = (afterDeletion = false) => {
@@ -739,12 +740,20 @@ export function buildSubtitleCues(
     const gap = previousEndTimeline !== null && startOnTimeline !== null
       ? Math.max(0, startOnTimeline - previousEndTimeline)
       : 0;
+    // Only where punctuation is absent. A paragraph boundary is this product's
+    // guess at a sentence end; once the transcriber marks them, the guess is not
+    // just redundant but worse — paragraphs now break at every comma, and taking
+    // each of those as a screen end ignores whether the screen is long enough to
+    // read. Measured: firing it on punctuated boundaries turned 40 screens into
+    // 43, two of them too short to read.
     const sentenceEnded = previousCueId !== null
+      && !previousPunctuation
       && word.cueId !== undefined
       && word.cueId !== previousCueId
       && gap >= SENTENCE_PAUSE_SECONDS;
     if (run.words.length > 0 && (sentenceEnded || gap >= breakPause)) endRun();
     previousCueId = word.cueId ?? previousCueId;
+    previousPunctuation = Boolean(word.punctuation);
 
     run.gapBefore.push(run.words.length === 0 ? breakPause : gap);
     run.words.push(word);
