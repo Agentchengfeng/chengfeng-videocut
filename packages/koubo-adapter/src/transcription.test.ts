@@ -167,3 +167,53 @@ describe("Volcengine Runtime transcription", () => {
   });
 });
 
+
+describe("标点", () => {
+  /** The two views the provider returns of one utterance. */
+  function response(text: string, words: string[]) {
+    return {
+      utterances: [{
+        text,
+        words: words.map((word, index) => ({
+          text: word,
+          start_time: index * 200,
+          end_time: (index + 1) * 200,
+        })),
+      }],
+    };
+  }
+
+  function spokenWords(result: unknown) {
+    return buildVolcengineTranscript({ result, language: "zh-CN", duration: 10 })
+      .cues.flatMap((cue) => cue.words)
+      .filter((word) => word.isGap !== true);
+  }
+
+  it("把标点贴到它跟着的那个词上，而不是并进 text", () => {
+    // 词典按整词匹配、transcript correct 逐词比对 —— 「站」变成「站。」两边都会失配。
+    expect(spokenWords(response("你好，世界。", ["你", "好", "世", "界"]))
+      .map((word) => [word.text, word.punctuation ?? null]))
+      .toEqual([["你", null], ["好", "，"], ["世", null], ["界", "。"]]);
+  });
+
+  it("忽略整句里的空格 —— 中英混排时它会插空格", () => {
+    const words = spokenWords(response("国内外 AI 团队。", ["国", "内", "外", "AI", "团", "队"]));
+    expect(words.at(-1)?.punctuation).toBe("。");
+    expect(words.map((word) => word.text).join("")).toBe("国内外AI团队");
+  });
+
+  it("两边对不上时整句放弃，不把标点滑到碰巧对齐的词上", () => {
+    // ITN 会把「二零二六」重写成「2026」，只重写整句那一边。
+    // 少一个句号只是断行差一点；标错位置会把句尾放进句子中间。
+    expect(spokenWords(response("2026 年。", ["二", "零", "二", "六", "年"]))
+      .every((word) => word.punctuation === undefined)).toBe(true);
+  });
+
+  it("provider 不给整句时，退回原来的行为", () => {
+    const words = spokenWords({
+      utterances: [{ words: [{ text: "你", start_time: 0, end_time: 200 }] }],
+    });
+    expect(words).toHaveLength(1);
+    expect(words[0]?.punctuation).toBeUndefined();
+  });
+});

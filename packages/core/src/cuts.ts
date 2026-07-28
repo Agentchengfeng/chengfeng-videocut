@@ -8,6 +8,14 @@ export interface TimedWord {
   /** Present when the transcript carried one. Timing consumers ignore it. */
   text?: string;
   /**
+   * Punctuation that follows this word, when transcription supplied it.
+   *
+   * Kept out of `text` so whole-word matching (dictionary, script alignment)
+   * and the word-for-word timing check in `correctTranscriptText` keep working.
+   * Cutting ignores it; only subtitle splitting reads it.
+   */
+  punctuation?: string;
+  /**
    * The transcript cue this word came from.
    *
    * Transcription groups words into utterances, and after the cut those groups
@@ -127,6 +135,9 @@ export function parseTranscriptWords(payload: unknown): TimedWord[] {
         end,
         isGap: word.isGap === true,
         ...(typeof word.text === "string" ? { text: word.text } : {}),
+        ...(typeof word.punctuation === "string" && word.punctuation
+          ? { punctuation: word.punctuation }
+          : {}),
         ...(cueId ? { cueId } : {}),
       });
     });

@@ -577,6 +577,18 @@ const MINIMUM_SCREEN_COLUMNS = 4;
 const SENTENCE_PAUSE_SECONDS = 0.1;
 
 /**
+ * Punctuation that ends a screen outright, and punctuation that merely wants to.
+ *
+ * A full stop is a sentence boundary stated by the transcriber — better evidence
+ * than any silence, because a speaker can run two sentences together without
+ * pausing and can pause in the middle of one. A comma is a clause boundary: not
+ * a reason to end a screen on its own, but the best place to break one that is
+ * too long anyway.
+ */
+const SENTENCE_END = /[。！？!?]/u;
+const CLAUSE_END = /[，、；：,;:]/u;
+
+/**
  * Split one run into screens, balancing their lengths and preferring pauses.
  *
  * The obvious approach — fill a screen up to the limit, start a new one — was
@@ -623,7 +635,15 @@ function splitRun(
       // Breaking at the run's own end is free — that boundary is already a pause.
       const gap = end < count ? (gapBefore[end] ?? 0) : breakPause;
       const tightness = breakPause > 0 ? Math.min(gap, breakPause) / breakPause : 1;
-      const cost = slack * slack + (1 - tightness) * tightBreakCost + tail;
+      // A comma is a clause boundary the transcriber marked. Breaking there is
+      // as free as breaking on a pause, and it is available in the stretches
+      // where no pause exists at all — which is exactly where the splitter
+      // used to have nothing left to go on and cut inside a word.
+      const afterClause = end > 0 && end <= count
+        && Boolean(words[end - 1]?.punctuation)
+        && CLAUSE_END.test(words[end - 1]?.punctuation ?? "");
+      const breakPenalty = afterClause ? 0 : (1 - tightness) * tightBreakCost;
+      const cost = slack * slack + breakPenalty + tail;
       if (cost < (best[start] ?? Number.POSITIVE_INFINITY)) {
         best[start] = cost;
         from[start] = end;
@@ -644,16 +664,19 @@ function splitRun(
 /**
  * Cut the retained speech into screens.
  *
- * Three things end a run of speech outright, before any balancing:
+ * Four things end a run of speech outright, before any balancing:
  *
  * 1. **Speech was deleted here.** Two words either side of a removed sentence
  *    are neighbours on the timeline but have nothing to do with each other.
  *    A deleted *silence* is not a break — trimming a pause out of the middle of
  *    a sentence must not split the sentence.
- * 2. **A sentence ended.** The transcript's own cue boundary, but only where
- *    the audience also hears a pause — see `SENTENCE_PAUSE_SECONDS` for why one
- *    without the other is not evidence.
- * 3. **The audience hears a long pause**, anywhere. A break inside what
+ * 2. **A full stop.** Transcription says the sentence ended, which beats any
+ *    timing evidence: a speaker can run two sentences together with no pause and
+ *    can pause in the middle of one.
+ * 3. **A sentence ended, without punctuation to say so.** The transcript's own
+ *    cue boundary, but only where the audience also hears a pause — see
+ *    `SENTENCE_PAUSE_SECONDS` for why one without the other is not evidence.
+ * 4. **The audience hears a long pause**, anywhere. A break inside what
  *    transcription called one utterance needs more silence to justify itself.
  *
  * Whatever is left over is longer than one screen, and `splitRun` divides it.
@@ -721,6 +744,8 @@ export function buildSubtitleCues(
     run.gapBefore.push(run.words.length === 0 ? breakPause : gap);
     run.words.push(word);
     if (endOnTimeline !== null) previousEndTimeline = endOnTimeline;
+    // A full stop ends the run here, whatever the timing says.
+    if (word.punctuation && SENTENCE_END.test(word.punctuation)) endRun();
   }
   endRun();
 

@@ -149,6 +149,26 @@ describe("buildSubtitleCues", () => {
     expect(cues.map((cue) => cue.text)).toEqual(["这是前面一句", "结尾"]);
   });
 
+  it("ends a screen at a full stop, whatever the timing says", () => {
+    // 转录说句子结束了，这比任何时间证据都强：说话人可以两句连着说不喘气，
+    // 也可以在一句中间停顿。
+    const words: TimedWord[] = [
+      ...speech(0, "这是前面一句", "a").map((word, index, all) =>
+        index === all.length - 1 ? { ...word, punctuation: "。" } : word),
+      ...speech(1.2, "这是后面一句", "b"),
+    ];
+    const cues = buildSubtitleCues(words, fullEditList(3), { maxColumns: 40 });
+    expect(cues.map((cue) => cue.text)).toEqual(["这是前面一句", "这是后面一句"]);
+  });
+
+  it("breaks a too-long run at a comma rather than inside a word", () => {
+    // 这一段一个停顿都没有 —— 以前只能靠均摊，于是从词中间下刀。
+    const words: TimedWord[] = [...speech(0, "如果你还想继续研究什么也可以试试这个方式")]
+      .map((word, index) => (index === 8 ? { ...word, punctuation: "，" } : word));
+    const cues = buildSubtitleCues(words, fullEditList(10), { maxColumns: 12 });
+    expect(cues.map((cue) => cue.text)).toEqual(["如果你还想继续研究", "什么也可以试试这个方式"]);
+  });
+
   it("spreads a long run evenly instead of leaving a stub at the end", () => {
     // Greedy filling gives 6/6/3 and the last screen flashes past. Fifteen
     // columns over three screens is 5/5/5.

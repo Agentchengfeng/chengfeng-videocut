@@ -31,6 +31,15 @@ export interface VolcengineTimedWord {
   text: string;
   start: number;
   end: number;
+  /**
+   * The punctuation that follows this word, when transcription supplied any.
+   *
+   * Kept out of `text` on purpose. The dictionary matches whole words, and
+   * `transcript correct` compares word-for-word — a 「站」 that had silently
+   * become 「站。」 would stop matching either. This is a separate answer to a
+   * separate question: not what was said, but where the sentence ended.
+   */
+  punctuation?: string;
 }
 
 /**
@@ -65,6 +74,8 @@ export interface VolcengineTranscriptDocument {
       start: number;
       end: number;
       isGap?: boolean;
+      /** Punctuation following this word. Absent on transcripts written before this existed. */
+      punctuation?: string;
     }>;
   }>;
 }
@@ -241,6 +252,48 @@ async function requestProvider(
   }
 }
 
+/** Marks that end or divide a sentence in Chinese and in English. */
+const PUNCTUATION = /[。！？，、；：,.!?;:]/u;
+
+/**
+ * Attach each utterance's punctuation to the word it follows.
+ *
+ * Transcription returns the same utterance twice over: `words[]` carries the
+ * timings and nothing else, `text` carries the punctuation and no timings. The
+ * product only ever read the first, so every comma and full stop the provider
+ * supplied was discarded at the moment it arrived — and then subtitle screens
+ * had to be split by pause and evenness alone, which breaks lines inside words
+ * because nothing else is left to go on.
+ *
+ * The two views are walked together. Where they stop agreeing — inverse text
+ * normalisation rewrites numbers in `text` but not always in `words[]` — this
+ * gives up on that utterance rather than sliding the punctuation onto whatever
+ * word happens to line up. A missing full stop costs a worse line break; a
+ * misplaced one would put a sentence end in the middle of a sentence.
+ */
+function attachPunctuation(text: string, words: VolcengineTimedWord[]): number {
+  let cursor = 0;
+  let attached = 0;
+  for (const word of words) {
+    while (cursor < text.length && /\s/u.test(text[cursor] as string)) cursor += 1;
+    if (!text.startsWith(word.text, cursor)) return attached;
+    cursor += word.text.length;
+    let marks = "";
+    while (cursor < text.length) {
+      const character = text[cursor] as string;
+      if (/\s/u.test(character)) { cursor += 1; continue; }
+      if (!PUNCTUATION.test(character)) break;
+      marks += character;
+      cursor += 1;
+    }
+    if (marks) {
+      word.punctuation = marks;
+      attached += 1;
+    }
+  }
+  return attached;
+}
+
 function timedWords(payload: unknown): VolcengineTimedWord[] {
   const root = isRecord(payload) ? payload : {};
   const result = isRecord(root.result) ? root.result : root;
@@ -248,6 +301,7 @@ function timedWords(payload: unknown): VolcengineTimedWord[] {
   const words: VolcengineTimedWord[] = [];
   for (const utterance of utterances) {
     if (!isRecord(utterance) || !Array.isArray(utterance.words)) continue;
+    const mine: VolcengineTimedWord[] = [];
     for (const item of utterance.words) {
       if (!isRecord(item)) continue;
       const text = typeof item.text === "string" ? item.text.trim() : "";
@@ -256,8 +310,14 @@ function timedWords(payload: unknown): VolcengineTimedWord[] {
       if (!text || !Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start) {
         continue;
       }
-      words.push({ text, start: start / 1_000, end: end / 1_000 });
+      mine.push({ text, start: start / 1_000, end: end / 1_000 });
     }
+    // `enable_punc` is requested, so this is normally present; a provider that
+    // stops sending it degrades to what this function did before.
+    if (typeof utterance.text === "string" && utterance.text.trim()) {
+      attachPunctuation(utterance.text, mine);
+    }
+    words.push(...mine);
   }
   return words;
 }
@@ -328,6 +388,7 @@ export function buildVolcengineTranscript(input: {
       text: word.text,
       start,
       end,
+      ...(word.punctuation ? { punctuation: word.punctuation } : {}),
     });
     sequence += 1;
     lastEnd = Math.max(lastEnd, word.end);
