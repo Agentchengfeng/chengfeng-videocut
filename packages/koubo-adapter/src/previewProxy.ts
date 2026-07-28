@@ -38,8 +38,8 @@ export const DEFAULT_PREVIEW_PROXY_CONFIG: Readonly<PreviewProxyConfig> = Object
   frameRate: 30,
   maxKeyframeIntervalSeconds: 0.2,
   videoBitrateKbps: 1_300,
-  videoMaxrateKbps: 1_800,
-  videoBufferKbps: 2_600,
+  videoMaxrateKbps: 8_000,
+  videoBufferKbps: 16_000,
   audioBitrateKbps: 96,
   audioSampleRate: 48_000,
   audioChannels: 2,
@@ -381,11 +381,17 @@ export function buildPreviewProxyFfmpegArgs(input: PreviewProxyTranscodeInput): 
     "-af", `aresample=${config.audioSampleRate}:async=1:first_pts=0,` +
       "apad,asetpts=PTS-STARTPTS",
     "-c:v", "libx264",
-    "-preset", "superfast",
-    "-tune", "fastdecode",
+    // Quality-targeted, not bitrate-targeted. This GOP is one keyframe every
+    // 0.2s for snappy scrubbing — an I-frame-heavy stream starved to a fixed
+    // 1.3Mbps turned a page of text into mush, visibly softer than the
+    // original (用户对照剪映一眼看穿：剪映预览的是原片). CRF lets the size
+    // float to whatever the text needs; the maxrate cap is a safety, not a
+    // target. superfast/fastdecode were paying quality for speed nobody
+    // needed at this resolution.
+    "-preset", "faster",
     "-profile:v", "high",
     "-pix_fmt", "yuv420p",
-    "-b:v", `${config.videoBitrateKbps}k`,
+    "-crf", "16",
     "-maxrate", `${config.videoMaxrateKbps}k`,
     "-bufsize", `${config.videoBufferKbps}k`,
     "-g", String(gopFrames),

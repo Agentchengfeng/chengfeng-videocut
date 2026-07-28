@@ -137,9 +137,14 @@ describe("preview proxy contract", () => {
     expect(joined).toContain("scale=w='min(iw,960)':h='min(ih,720)'");
     expect(joined).toContain("fps=30");
     expect(joined).toContain("-c:v libx264");
-    expect(joined).toContain("-preset superfast");
-    expect(joined).toContain("-tune fastdecode");
-    expect(joined).toContain("-b:v 1300k -maxrate 1800k -bufsize 2600k");
+    // Quality mode: the proxy is judged by whether text survives, not by
+    // encode speed. A fixed-bitrate I-frame-heavy stream was visibly mushier
+    // than the original.
+    expect(joined).toContain("-preset faster");
+    expect(joined).toContain("-crf 16");
+    expect(joined).not.toContain("-tune fastdecode");
+    expect(joined).not.toMatch(/-b:v /);
+    expect(joined).toContain("-maxrate 8000k -bufsize 16000k");
     expect(joined).toContain("-g 6 -keyint_min 6 -sc_threshold 0");
     expect(joined).toContain("expr:gte(t,n_forced*0.200000)");
     expect(joined).toContain("-c:a aac -b:a 96k");
