@@ -2403,10 +2403,8 @@ select:focus-visible,
   color: var(--text-0);
 }
 
-/* The push-in eases rather than cuts. Transform only: easing is cosmetic in the
-   preview, and the settled geometry is the deterministic part an export
-   reproduces. */
-.cf-cut-player-stage video,
-.cf-cut-visual-overlay {
-  transition: transform 280ms ease;
-}
+/* The push-in cuts, deliberately. An eased transform was tried and removed:
+   the clip is instant, so for 280ms the picture shrank to a floating patch
+   before filling the frame — read as "the frame changed size" — and an element
+   mid-ease is what poisoned the geometry measurement. The export is a hard cut
+   too, and the preview's one job is to match it. */

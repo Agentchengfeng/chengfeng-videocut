@@ -41,6 +41,7 @@ export const TimelineCanvas = memo(function TimelineCanvas({
   onSegmentFocus,
   onSegmentResizeStart,
   visualLayers,
+  activeVisualLayerId,
   onVisualLayerClick,
 }: TimelineCanvasProps) {
   // Three rows once a project can carry visual layers. The height function has
@@ -80,6 +81,7 @@ export const TimelineCanvas = memo(function TimelineCanvas({
       <TimelineLanes
         segments={segments}
         visualLayers={visualLayers}
+        activeVisualLayerId={activeVisualLayerId ?? null}
         {...(onVisualLayerClick ? { onVisualLayerClick } : {})}
         pixelsPerSecond={pixelsPerSecond}
         displayContentWidth={displayContentWidth}

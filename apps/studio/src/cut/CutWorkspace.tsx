@@ -449,6 +449,9 @@ export function CutWorkspace({
   // The layers as the lane draws them. Labelled by the module's folder rather
   // than by a generated id: what a person recognises is 「daily-pipeline」, not
   // 「vis-0001」.
+  // Stable across playback on purpose: with the active flag inside, this array
+  // was rebuilt sixty times a second and the whole timeline — filmstrips,
+  // waveforms — re-rendered with it. Which layer is live travels as one id.
   const timelineVisualLayers = useMemo(() => (
     visuals.timings
       .filter((timing) => !timing.orphaned)
@@ -460,10 +463,9 @@ export function CutWorkspace({
           label: folder,
           start: timing.start,
           duration: timing.duration,
-          active: transport.timelineTime >= timing.start && transport.timelineTime < timing.end,
         };
       })
-  ), [visuals.document, visuals.timings, transport.timelineTime]);
+  ), [visuals.document, visuals.timings]);
 
   const canUndo = undoDepth > 0 && editList.saveState !== "saving" && cutSelection.saveState !== "saving";
   const undoLastChange = useCallback(async () => {
@@ -611,6 +613,7 @@ export function CutWorkspace({
 
       <CutTimeline
         visualLayers={timelineVisualLayers}
+        activeVisualLayerId={activeVisual?.layerId ?? null}
         onVisualLayerClick={(layerId) => {
           const timing = visuals.timings.find((candidate) => candidate.layerId === layerId);
           if (timing && !timing.orphaned) seek(timing.start);

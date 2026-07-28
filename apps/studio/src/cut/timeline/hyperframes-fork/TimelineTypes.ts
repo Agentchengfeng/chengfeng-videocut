@@ -42,7 +42,6 @@ export interface TimelineVisualLayerView {
   label: string;
   start: number;
   duration: number;
-  active: boolean;
 }
 
 export interface TimelineLaneBaseProps {
@@ -50,6 +49,8 @@ export interface TimelineLaneBaseProps {
   /** Absent until a project has any. An empty lane still renders, so the row
       does not appear and disappear as layers come and go. */
   visualLayers?: readonly TimelineVisualLayerView[];
+  /** Travels separately from the list so the list survives a playhead tick. */
+  activeVisualLayerId?: string | null;
   onVisualLayerClick?: (layerId: string) => void;
   pixelsPerSecond: number;
   displayContentWidth: number;

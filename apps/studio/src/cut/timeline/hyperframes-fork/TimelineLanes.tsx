@@ -198,6 +198,7 @@ function TimelineLane({
  */
 function VisualLane({
   visualLayers,
+  activeVisualLayerId,
   pixelsPerSecond,
   displayContentWidth,
   theme,
@@ -251,7 +252,7 @@ function VisualLane({
           <button
             key={layer.id}
             type="button"
-            className={`cf-cut-visual-clip${layer.active ? " is-active" : ""}`}
+            className={`cf-cut-visual-clip${layer.id === activeVisualLayerId ? " is-active" : ""}`}
             style={{
               left: layer.start * pixelsPerSecond,
               width: Math.max(2, layer.duration * pixelsPerSecond),

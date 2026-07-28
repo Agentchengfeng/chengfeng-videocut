@@ -122,6 +122,7 @@ export function CutTimeline({
   canUndo,
   onUndo,
   visualLayers,
+  activeVisualLayerId,
   onVisualLayerClick,
 }: {
   projectId: string;
@@ -131,6 +132,7 @@ export function CutTimeline({
   canUndo: boolean;
   onUndo: () => void;
   visualLayers?: readonly TimelineVisualLayerView[];
+  activeVisualLayerId?: string | null;
   onVisualLayerClick?: (layerId: string) => void;
 }) {
   const document = editList.document;
@@ -844,6 +846,7 @@ export function CutTimeline({
         scrollRef={scrollRef}
         segments={timelineSegments}
         visualLayers={visualLayers}
+        activeVisualLayerId={activeVisualLayerId ?? null}
         {...(onVisualLayerClick ? { onVisualLayerClick } : {})}
         pixelsPerSecond={pixelsPerSecond}
         displayContentWidth={displayContentWidth}
