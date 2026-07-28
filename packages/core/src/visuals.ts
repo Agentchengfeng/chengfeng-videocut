@@ -32,6 +32,23 @@ import { orderedSegments, timelineTimeForSourceTime, wordPlays } from "./subtitl
 
 export const VISUAL_SCHEMA_VERSION = 1 as const;
 
+/**
+ * The region a layer pushes the picture in on, as percentages of the frame.
+ *
+ * It exists because of a measured fact: the screen recording this product edits
+ * is a page of 8-pixel text. A callout ring can say "look here", but at 1.1% of
+ * frame height there is nothing legible to look at — the only honest fix is to
+ * bring the region up to readable size. Percentages, never pixels, for the same
+ * reason as everywhere else: the preview and the export must compute the same
+ * crop from the same numbers.
+ */
+export interface VisualZoom {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export interface VisualLayer {
   id: string;
   /**
@@ -45,6 +62,13 @@ export interface VisualLayer {
    * document is a path that is wrong on the next one.
    */
   module: string;
+  /**
+   * Push the footage in on this region while the layer is up. The overlay is
+   * transformed with the picture, so a module keeps drawing in original frame
+   * coordinates and never knows the zoom exists. Subtitles are not transformed:
+   * they sit on the output frame, not on the footage.
+   */
+  zoom?: VisualZoom;
 }
 
 export interface VisualDocument {
@@ -232,6 +256,24 @@ export function assertVisualDocument(value: unknown): asserts value is VisualDoc
     if (seenIds.has(id)) invalid(`Visual layer id is not unique: ${id}`);
     seenIds.add(id);
     assertModulePath(layer.module, index);
+    if (layer.zoom !== undefined) {
+      if (!isObject(layer.zoom)) invalid(`layers[${index}].zoom must be an object`);
+      const { x, y, width, height } = layer.zoom as Record<string, unknown>;
+      for (const [name, value] of [["x", x], ["y", y], ["width", width], ["height", height]] as const) {
+        if (typeof value !== "number" || !Number.isFinite(value)) {
+          invalid(`layers[${index}].zoom.${String(name)} must be a number`);
+        }
+      }
+      const zx = x as number, zy = y as number, zw = width as number, zh = height as number;
+      // A region smaller than a tenth of the frame is a magnification past 10x —
+      // at that point the "footage" is a smear of compression blocks, and the
+      // request is almost certainly a typo rather than an intention.
+      if (zw < 10 || zh < 10 || zx < 0 || zy < 0 || zx + zw > 100 || zy + zh > 100) {
+        invalid(`layers[${index}].zoom must be a region inside the frame, at least 10% on each side`, {
+          zoom: layer.zoom,
+        });
+      }
+    }
     if (!Array.isArray(layer.wordIds) || layer.wordIds.length === 0) {
       invalid(`layers[${index}].wordIds must name the words this layer covers`);
     }

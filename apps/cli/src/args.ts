@@ -83,6 +83,7 @@ export interface ParsedArgs {
   layerId?: string;
   frameCount?: number;
   outDir?: string;
+  zoom?: { x: number; y: number; width: number; height: number };
 }
 
 const VALUE_OPTIONS = new Set([
@@ -117,6 +118,7 @@ const VALUE_OPTIONS = new Set([
   "--id",
   "--count",
   "--out",
+  "--zoom",
 ]);
 
 const BOOLEAN_OPTIONS = new Set([
@@ -632,10 +634,19 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
       usageError("visual add requires --cues <subtitle cue ids>, so the layer is bound to speech");
     }
     assertOptions(
-      ["--module", "--cues", "--id", "--expected-revision", "--projects-dir", "--output-dir"],
+      ["--module", "--cues", "--id", "--zoom", "--expected-revision", "--projects-dir", "--output-dir"],
       [],
       true,
     );
+    const rawZoom = values.get("--zoom");
+    let zoom: { x: number; y: number; width: number; height: number } | undefined;
+    if (rawZoom !== undefined) {
+      const parts = rawZoom.split(",").map((part) => Number(part.trim()));
+      if (parts.length !== 4 || parts.some((part) => !Number.isFinite(part))) {
+        usageError("--zoom must be x,y,width,height as frame percentages, e.g. 10,58,42,22");
+      }
+      zoom = { x: parts[0]!, y: parts[1]!, width: parts[2]!, height: parts[3]! };
+    }
     return {
       ...common,
       command: "visual.add",
@@ -643,6 +654,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
       modulePath,
       cueIds: cues.split(",").map((part) => part.trim()).filter(Boolean),
       layerId: values.get("--id"),
+      zoom,
     };
   }
   if (positionals[0] === "visual" && positionals[1] === "frame") {

@@ -438,6 +438,7 @@ export function CutWorkspace({
       src: visuals.moduleUrl(layer.module),
       start: timing.start,
       duration: timing.duration,
+      ...(layer.zoom ? { zoom: layer.zoom } : {}),
       cues,
     };
   }, [

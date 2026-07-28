@@ -2402,3 +2402,11 @@ select:focus-visible,
   background: rgb(60 230 172 / 26%);
   color: var(--text-0);
 }
+
+/* The push-in eases rather than cuts. Transform only: easing is cosmetic in the
+   preview, and the settled geometry is the deterministic part an export
+   reproduces. */
+.cf-cut-player-stage video,
+.cf-cut-visual-overlay {
+  transition: transform 280ms ease;
+}

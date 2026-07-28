@@ -1307,7 +1307,12 @@ export async function runCli(
           ?? `vis-${String(document.layers.length + 1).padStart(4, "0")}`;
         document = {
           ...document,
-          layers: [...document.layers, { id: layerId, wordIds, module: parsed.modulePath! }],
+          layers: [...document.layers, {
+            id: layerId,
+            wordIds,
+            module: parsed.modulePath!,
+            ...(parsed.zoom ? { zoom: parsed.zoom } : {}),
+          }],
         };
       }
 

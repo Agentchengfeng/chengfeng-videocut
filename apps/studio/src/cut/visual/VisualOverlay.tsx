@@ -1,4 +1,5 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type CSSProperties } from "react";
+import type { VisualZoom } from "@video-workbench/core";
 import { useContainedPicture } from "../useContainedPicture";
 
 /** One subtitle screen this layer covers, timed against the layer's own zero. */
@@ -16,6 +17,8 @@ export interface ActiveVisual {
   start: number;
   /** How long the layer is on screen. */
   duration: number;
+  /** Push the footage in on this region while the layer is up. */
+  zoom?: VisualZoom;
   /**
    * What is being said while this layer is up, already timed against the
    * layer's zero.
@@ -62,11 +65,63 @@ export const VISUAL_SEEK_MESSAGE = "videocut:seek" as const;
  *
  * It never intercepts a click: the video underneath is the play/pause target.
  */
+/**
+ * The transform that fills the picture with a region of it.
+ *
+ * Contain semantics: the region is scaled until it touches the frame on its
+ * longer side and centred, so nothing the author asked for is cropped away.
+ * Returned as translate+scale from origin 0,0 — the one form where the export
+ * can reproduce it as a crop+scale with no further geometry.
+ */
+function zoomTransform(zoom: VisualZoom, width: number, height: number): string {
+  const rx = (zoom.x / 100) * width;
+  const ry = (zoom.y / 100) * height;
+  const rw = (zoom.width / 100) * width;
+  const rh = (zoom.height / 100) * height;
+  const scale = Math.min(width / rw, height / rh);
+  const tx = width / 2 - scale * (rx + rw / 2);
+  const ty = height / 2 - scale * (ry + rh / 2);
+  return `translate(${tx.toFixed(2)}px, ${ty.toFixed(2)}px) scale(${scale.toFixed(4)})`;
+}
+
 export function VisualOverlay({ visual, timelineTime }: VisualOverlayProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const frameRef = useRef<HTMLIFrameElement>(null);
   const picture = useContainedPicture(hostRef);
   const readyRef = useRef(false);
+
+  // The zoom is applied to the video element imperatively: the element belongs
+  // to the player, not to this overlay, so a declarative binding has no owner
+  // here. The overlay itself gets the same transform in its style below, which
+  // is what keeps a module's coordinates true on a pushed-in picture. The
+  // subtitle overlay is a sibling and stays untransformed on purpose — captions
+  // sit on the output frame, not on the footage.
+  useEffect(() => {
+    const video = hostRef.current?.closest(".cf-cut-player-stage")?.querySelector("video");
+    if (!(video instanceof HTMLVideoElement)) return;
+    const zoom = visual?.zoom;
+    if (!zoom || !picture) {
+      video.style.transform = "";
+      return;
+    }
+    // The picture is centred in the element box; letterbox offsets shift the
+    // origin, and the same push-in has to move the same pixels in both frames.
+    const rect = video.getBoundingClientRect();
+    const ox = (rect.width - picture.width) / 2;
+    const oy = (rect.height - picture.height) / 2;
+    const rx = ox + (zoom.x / 100) * picture.width;
+    const ry = oy + (zoom.y / 100) * picture.height;
+    const rw = (zoom.width / 100) * picture.width;
+    const rh = (zoom.height / 100) * picture.height;
+    const scale = Math.min(picture.width / rw, picture.height / rh);
+    const tx = rect.width / 2 - scale * (rx + rw / 2);
+    const ty = rect.height / 2 - scale * (ry + rh / 2);
+    video.style.transformOrigin = "0 0";
+    video.style.transform = `translate(${tx.toFixed(2)}px, ${ty.toFixed(2)}px) scale(${scale.toFixed(4)})`;
+    return () => {
+      video.style.transform = "";
+    };
+  }, [visual?.zoom, picture]);
 
   // A module can only be addressed once its document exists. Until then the
   // messages would land nowhere and the module would open at zero while the
@@ -107,7 +162,15 @@ export function VisualOverlay({ visual, timelineTime }: VisualOverlayProps) {
     <div
       ref={hostRef}
       className="cf-cut-visual-overlay"
-      style={picture ? { width: `${picture.width}px`, height: `${picture.height}px` } : undefined}
+      style={{
+        ...(picture ? { width: `${picture.width}px`, height: `${picture.height}px` } : {}),
+        ...(picture && visual?.zoom
+          ? {
+            transformOrigin: "0 0",
+            transform: zoomTransform(visual.zoom, picture.width, picture.height),
+          }
+          : {}),
+      } as CSSProperties}
       aria-hidden="true"
     >
       {visual && (
