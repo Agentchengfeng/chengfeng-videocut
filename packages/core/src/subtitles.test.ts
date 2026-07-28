@@ -182,7 +182,7 @@ describe("buildSubtitleCues", () => {
 
   it("does not let the paragraph boundary fire where punctuation already decided", () => {
     // 段落边界现在就是标点处，两条规则会重复。带标点时只由标点那条管 ——
-    // 真实项目上，让③也在带标点的边界触发，40 屏变 43 屏，2 屏停留太短。
+    // 真实项目上，让③也在带标点的边界触发，40 屏变 43 屏，切出更多碎屏。
     const words: TimedWord[] = [
       ...speech(0, "这是前半句", "a").map((word, index, all) => ({
         ...word,
@@ -352,7 +352,6 @@ describe("subtitleCueTimings", () => {
     };
     const [timing] = subtitleCueTimings(document, words, fullEditList(2));
     expect(timing?.tooFast).toBe(true);
-    expect(timing?.tooShort).toBe(true);
   });
 
   it("reports a screen whose words are all gone rather than placing it at zero", () => {

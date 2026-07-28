@@ -60,7 +60,6 @@ function problems(timing: SubtitleCueTiming | undefined, stale: SubtitleStaleCue
     notes.push({ kind: "missing", label: "转录里已经没有这几个字" });
   }
   if (timing?.tooFast && !timing.orphaned) notes.push({ kind: "fast", label: "读不完" });
-  if (timing?.tooShort && !timing.orphaned) notes.push({ kind: "short", label: "停留太短" });
   return notes;
 }
 

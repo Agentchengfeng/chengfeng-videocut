@@ -1216,8 +1216,6 @@ export async function runCli(
         stale: document ? subtitleStaleness(document, words, editList?.value ?? null) : [],
         tooFast: timings.filter((timing) => timing.tooFast && !timing.orphaned)
           .map((timing) => timing.cueId),
-        tooShort: timings.filter((timing) => timing.tooShort && !timing.orphaned)
-          .map((timing) => timing.cueId),
         transcriptMoved: document !== null
           && state.transcriptRevision !== null
           && document.baseTranscriptRevision !== state.transcriptRevision,

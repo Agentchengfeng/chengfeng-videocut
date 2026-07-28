@@ -226,9 +226,6 @@ export function wordPlays(
  */
 export const COMFORTABLE_COLUMNS_PER_SECOND = 9;
 
-/** A screen shorter than this reads as a flash even when it has few words. */
-export const MINIMUM_SCREEN_SECONDS = 0.7;
-
 /**
  * How wide a character is, as a fraction of a Han character.
  *
@@ -261,10 +258,15 @@ export interface SubtitleCueTiming {
   duration: number;
   columns: number;
   columnsPerSecond: number;
-  /** More text than the duration allows a person to read. */
+  /**
+   * More text than the duration allows a person to read.
+   *
+   * There is deliberately no companion "on screen too briefly" flag. Screens now
+   * break at every clause the transcriber marked, so a short clause — 「每天早上」
+   * at 0.6s — is not a defect, it is what the person said. A warning that fires
+   * on normal speech trains people to ignore warnings.
+   */
   tooFast: boolean;
-  /** On screen so briefly it registers as a flicker. */
-  tooShort: boolean;
   /** Every word of this cue is gone from the edit; it cannot be placed at all. */
   orphaned: boolean;
 }
@@ -304,7 +306,6 @@ export function subtitleCueTimings(
         columns,
         columnsPerSecond: Number.POSITIVE_INFINITY,
         tooFast: true,
-        tooShort: true,
         orphaned: true,
       };
     }
@@ -320,7 +321,6 @@ export function subtitleCueTimings(
       columns,
       columnsPerSecond,
       tooFast: columnsPerSecond > COMFORTABLE_COLUMNS_PER_SECOND,
-      tooShort: duration < MINIMUM_SCREEN_SECONDS,
       orphaned: false,
     };
   });
