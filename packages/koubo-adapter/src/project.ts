@@ -462,8 +462,39 @@ function normalizeWord(
   };
 }
 
-/** Marks that end a sentence, in Chinese and in English. */
-const SENTENCE_END = /[。！？!?]$/u;
+/**
+ * Any mark the transcriber put down, in Chinese or in English.
+ *
+ * A paragraph in this pane breaks at *every* one of them, comma included — not
+ * only at full stops. The pane is for reading the words and deciding which to
+ * cut, and a clause on its own line is the unit a person works in. Volcengine
+ * marks these itself; before punctuation survived import, paragraphs fell
+ * through to a 24-word cap that landed wherever it landed.
+ */
+const PUNCTUATION_MARK = /[。！？!?，、；：,;:]$/u;
+
+/**
+ * How long a paragraph may run when nothing punctuates it.
+ *
+ * A backstop, not a rule. Punctuation decides paragraphs; this only catches a
+ * transcript that has none — one written before punctuation survived import, or
+ * a provider that stops sending it. Without it such a transcript is a single
+ * unbroken wall of text, which is exactly what this pane looked like.
+ *
+ * It was 24, and at 24 it was not a backstop at all: it fired inside clauses the
+ * provider had punctuated correctly, cutting 「…外包给了Codex和」 from 「Grok。」
+ * at exactly the twenty-fourth word. Measured on a real recording, paragraphs
+ * that do not end on a mark:
+ *
+ * ```text
+ * 上限  24    10 处
+ * 上限  40     7 处   <- 从这里起不再变化，一直到无上限
+ * 上限 100     7 处
+ * ```
+ *
+ * The seven that remain end at a heard pause, which is a real boundary.
+ */
+const UNPUNCTUATED_PARAGRAPH_CAP = 40;
 
 function groupWords(words: KouboTranscriptWord[]): KouboTranscriptCue[] {
   const cues: KouboTranscriptCue[] = [];
@@ -485,9 +516,9 @@ function groupWords(words: KouboTranscriptWord[]): KouboTranscriptCue[] {
     // it reads punctuation off `text`, and punctuation was discarded upstream
     // before any transcript reached this function. Paragraphs fell through to
     // the 24-word cap, which is why the pane read as one wall of text.
-    const sentenceEnd = !word.isGap
-      && (SENTENCE_END.test(word.punctuation ?? "") || SENTENCE_END.test(word.text));
-    if (longGap || sentenceEnd || current.length >= 24) flush();
+    const punctuated = !word.isGap
+      && (PUNCTUATION_MARK.test(word.punctuation ?? "") || PUNCTUATION_MARK.test(word.text));
+    if (longGap || punctuated || current.length >= UNPUNCTUATED_PARAGRAPH_CAP) flush();
   }
   flush();
   return cues;
