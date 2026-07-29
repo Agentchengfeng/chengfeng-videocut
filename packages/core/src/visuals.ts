@@ -174,8 +174,25 @@ export function visualLayerTimings(
     const next = ordered[index + 1]!;
     const gap = next.start - current.end;
     if (gap > 0 && gap <= LAYER_GAP_ABSORB_SECONDS) {
-      current.end = next.start;
+      // When the gap contains an edit cut, the cut decides who owns which
+      // side: a hard cut in the footage is where the next shot begins, and
+      // from that instant the picture is the next beat's business. Splitting
+      // anywhere else leaves a sliver of the incoming shot uncovered — a
+      // transparent annotation layer ahead of an opaque animation showed six
+      // frames of stray footage exactly this way, and a viewer reads that as
+      // a glitch, not a pause.
+      let split = next.start;
+      for (const segment of segments) {
+        if (segment.timelineStart > current.end + 0.0005 && segment.timelineStart < next.start - 0.0005) {
+          split = segment.timelineStart;
+        }
+      }
+      current.end = split;
       current.duration = Math.max(0, current.end - current.start);
+      if (split < next.start) {
+        next.start = split;
+        next.duration = Math.max(0, next.end - next.start);
+      }
     }
   }
   return timings;

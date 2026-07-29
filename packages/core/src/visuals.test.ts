@@ -119,3 +119,55 @@ describe("layer gap absorption", () => {
     expect(timings[1]!.start).toBeCloseTo(1.4, 5);
   });
 });
+
+describe("gap absorption at an edit cut", () => {
+  it("hands the part of a gap after a cut to the next layer", () => {
+    // Words: layer A owns w-1 (0..1 on the timeline), layer B owns w-3.
+    // The edit keeps [0,1] and [2,4] of the source, so the timeline is
+    // A's word 0..1, a cut at timeline 1... construct a breath instead:
+    // segments [0,1.2] and [2,4]: cut lands at timeline 1.2, B's word (source
+    // 2.2..3) starts at timeline 1.4. Gap 1.0..1.4 contains the cut at 1.2.
+    const document: VisualDocument = {
+      ...createVisualDocument("visual-contract", "a".repeat(64)),
+      layers: [
+        { id: "vis-a", wordIds: ["w-1"], module: "modules/a/index.html" },
+        { id: "vis-b", wordIds: ["w-3b"], module: "modules/b/index.html" },
+      ],
+    };
+    const cutWords: TimedWord[] = [
+      { id: "w-1", text: "前", start: 0, end: 1 },
+      { id: "w-3b", text: "后", start: 2.2, end: 3 },
+    ];
+    const timings = visualLayerTimings(
+      document,
+      cutWords,
+      editList([[0, 1.2, 0], [2, 4, 1.2]]),
+    );
+    const a = timings.find((timing) => timing.layerId === "vis-a")!;
+    const b = timings.find((timing) => timing.layerId === "vis-b")!;
+    // The cut is at timeline 1.2; B's word starts at 1.4. The 1.0→1.4 gap
+    // splits at the cut instead of all flowing to A.
+    expect(a.end).toBeCloseTo(1.2, 5);
+    expect(b.start).toBeCloseTo(1.2, 5);
+  });
+
+  it("keeps the whole gap with the previous layer when no cut is inside", () => {
+    const document: VisualDocument = {
+      ...createVisualDocument("visual-contract", "a".repeat(64)),
+      layers: [
+        { id: "vis-a", wordIds: ["w-1"], module: "modules/a/index.html" },
+        { id: "vis-b", wordIds: ["w-2"], module: "modules/b/index.html" },
+      ],
+    };
+    const timings = visualLayerTimings(
+      document,
+      [
+        { id: "w-1", text: "前", start: 0, end: 1 },
+        { id: "w-2", text: "后", start: 1.5, end: 2.5 },
+      ],
+      editList([[0, 4, 0]]),
+    );
+    expect(timings[0]!.end).toBeCloseTo(1.5, 5);
+    expect(timings[1]!.start).toBeCloseTo(1.5, 5);
+  });
+});
