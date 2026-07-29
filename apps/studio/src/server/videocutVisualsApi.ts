@@ -23,7 +23,7 @@
  * this route is reachable with any path, not only the ones already stored.
  */
 
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import {
   VideocutError,
@@ -216,6 +216,35 @@ async function derivedTimings(
 }
 
 /**
+ * A cheap identity for each module's entry file, keyed by module path.
+ *
+ * The layers document changes revision when a layer is added or removed, but
+ * rewriting a module's HTML changes nothing the document can see — and the
+ * review loop is exactly that: the Agent edits a module, the person looks
+ * again. The stamp (mtime + size) rides the GET response so the preview can
+ * notice the edit and reload just that frame, instead of asking the person to
+ * refresh the page to find out whether anything happened.
+ */
+async function moduleStamps(
+  projectDirectory: string,
+  document: Awaited<ReturnType<typeof readVisuals>>,
+): Promise<Record<string, string>> {
+  const stamps: Record<string, string> = {};
+  for (const layer of document?.value.layers ?? []) {
+    if (stamps[layer.module]) continue;
+    try {
+      const info = await stat(resolve(projectDirectory, layer.module));
+      stamps[layer.module] = `${Math.round(info.mtimeMs)}-${info.size}`;
+    } catch {
+      // A missing module is already reported where it matters; the stamp only
+      // has to be stable so the preview does not reload a frame for nothing.
+      stamps[layer.module] = "missing";
+    }
+  }
+  return stamps;
+}
+
+/**
  * What a module is allowed to be made of.
  *
  * A module is a small site, not a single file: it carries its own vendored
@@ -322,6 +351,7 @@ export function createVideocutVisualsHandler(
             exists: Boolean(current),
             revision,
             document: current?.value ?? null,
+            moduleStamps: await moduleStamps(project.directory, current),
             ...derived,
           },
           200,
