@@ -1480,6 +1480,14 @@ export interface DoctorCapabilities {
   expectedEditListRevision: true;
   cloudTranscriptionProvider: "volcengine";
   cloudTranscriptionTaskLocalOnly: true;
+  transcriptOperations: readonly [
+    "playback",
+    "retranscribe",
+    "align",
+    "dictionary",
+    "regroup",
+    "correct",
+  ];
 }
 
 async function findExecutable(name: string): Promise<string | null> {
@@ -1855,6 +1863,14 @@ export async function doctor(
       expectedEditListRevision: true,
       cloudTranscriptionProvider: "volcengine",
       cloudTranscriptionTaskLocalOnly: true,
+      transcriptOperations: [
+        "playback",
+        "retranscribe",
+        "align",
+        "dictionary",
+        "regroup",
+        "correct",
+      ],
     },
     checks,
   };

@@ -836,6 +836,28 @@ select:focus-visible,
   color: var(--text-2) !important;
 }
 
+.cut-transcript-help {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding: 7px 16px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--panel-inset);
+  color: var(--text-4);
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.cut-transcript-help kbd {
+  padding: 0 3px;
+  border: 1px solid var(--hairline);
+  border-radius: 3px;
+  background: var(--panel);
+  color: var(--text-2);
+  font: inherit;
+}
+
 .cut-transcript-pane__body {
   min-height: 0;
   flex: 1 1 auto;

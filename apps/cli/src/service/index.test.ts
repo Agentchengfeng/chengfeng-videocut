@@ -81,7 +81,7 @@ function fakeRuntime(homeDir: string, owner: "none" | "managed" | "foreground" |
       return Response.json({
         schemaVersion: 1,
         product: state.owner === "unknown" ? "not-videocut" : "chengfeng-videocut",
-        studioVersion: "0.2.0",
+        studioVersion: "0.2.1",
       });
     }
     if (state.owner === "unknown") {
@@ -91,7 +91,7 @@ function fakeRuntime(homeDir: string, owner: "none" | "managed" | "foreground" |
       schemaVersion: 1,
       ok: true,
       product: "chengfeng-videocut",
-      productVersion: "0.2.0",
+      productVersion: "0.2.1",
       pid: state.owner === "managed" || (state.owner === "foreground" && state.loaded)
         ? state.pid
         : 9999,
@@ -205,12 +205,12 @@ describe("Studio user service", () => {
     expect(first.configured).toBe(true);
     expect(first.healthy).toBe(true);
     expect(first.runtimeMode).toBe("launchd");
-    expect(first.productVersion).toBe("0.2.0");
+    expect(first.productVersion).toBe("0.2.1");
     expect(first.studioBuildId).toBe("test-build");
     expect(first).toMatchObject({
       healthy: true,
       runtimeMode: "launchd",
-      productVersion: "0.2.0",
+      productVersion: "0.2.1",
     });
     expect(second.ready).toBe(true);
     expect(first.pid).toBe(second.pid);
@@ -384,13 +384,13 @@ describe("Studio user service", () => {
     let clock = 0;
     const incompleteFetch = async (input: string | URL | Request) => {
       if (String(input).endsWith("chengfeng-videocut-capabilities.json")) {
-        return Response.json({ product: "chengfeng-videocut", studioVersion: "0.2.0" });
+        return Response.json({ product: "chengfeng-videocut", studioVersion: "0.2.1" });
       }
       return Response.json({
         schemaVersion: 1,
         ok: true,
         product: "chengfeng-videocut",
-        productVersion: "0.2.0",
+        productVersion: "0.2.1",
         studioBuildId: "legacy-build",
       });
     };
