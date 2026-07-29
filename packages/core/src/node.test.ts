@@ -152,6 +152,14 @@ describe("project store", () => {
       serviceCrashRestart: true,
       cloudTranscriptionProvider: "volcengine",
       cloudTranscriptionTaskLocalOnly: true,
+      transcriptOperations: [
+        "playback",
+        "retranscribe",
+        "align",
+        "dictionary",
+        "regroup",
+        "correct",
+      ],
     });
   });
   it("resolves and inspects a legacy project without changing it", async () => {

@@ -30,7 +30,7 @@ async function serverFixture() {
     JSON.stringify({
       schemaVersion: 1,
       product: "chengfeng-videocut",
-      studioVersion: "0.2.0",
+      studioVersion: "0.2.1",
       features: {
         topLevelViews: ["storyboard", "preview", "koubo"],
         legacyWorkbenchPanel: false,
@@ -493,7 +493,7 @@ describe("packaged Studio server", () => {
     expect(await capabilityResponse.json()).toEqual({
       schemaVersion: 1,
       product: "chengfeng-videocut",
-      studioVersion: "0.2.0",
+      studioVersion: "0.2.1",
       features: {
         topLevelViews: ["storyboard", "preview", "koubo"],
         legacyWorkbenchPanel: false,

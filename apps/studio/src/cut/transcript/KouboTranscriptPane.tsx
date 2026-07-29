@@ -621,6 +621,13 @@ export const KouboTranscriptPane = memo(function KouboTranscriptPane({
       {(saveState === "error" || saveState === "conflict") && (
         <div className="cut-transcript-notice is-error" role="alert">{saveStatus}</div>
       )}
+      <div className="cut-transcript-help" aria-label="逐词编辑操作说明">
+        <span>单击定位</span>
+        <span>拖动划选</span>
+        <span><kbd>Shift</kbd> + 单击：删除/恢复</span>
+        <span>键盘：<kbd>Shift</kbd> + <kbd>Enter</kbd>/<kbd>Space</kbd></span>
+        <span>右键无操作</span>
+      </div>
       {/*
         Review passes never speak to the person editing. They are an internal
         staged artifact; when it is stale or malformed there is nothing the

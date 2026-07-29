@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: "If you use chengfeng-videocut, please cite this software."
 title: "chengfeng-videocut"
 type: software
-version: 0.2.0
+version: 0.2.1
 date-released: 2026-07-19
 authors:
   - name: "成峰 / AI产品自由"

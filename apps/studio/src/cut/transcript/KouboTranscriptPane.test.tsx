@@ -113,6 +113,16 @@ afterEach(() => {
 });
 
 describe("KouboTranscriptPane sidebar contract", () => {
+  it("keeps delete and restore controls visible instead of hiding them in a hover title", () => {
+    const rendered = renderPane("cuts-derived");
+    const help = rendered.host.querySelector(".cut-transcript-help");
+    expect(help?.getAttribute("aria-label")).toBe("逐词编辑操作说明");
+    expect(help?.textContent).toContain("Shift");
+    expect(help?.textContent).toContain("删除/恢复");
+    expect(help?.textContent).toContain("右键无操作");
+    act(() => rendered.root.unmount());
+  });
+
   it("uses the borderless full-width cue density contract", () => {
     const css = readFileSync(resolve(process.cwd(), "src/cut/cut.css"), "utf8");
     const cueRule = css.match(/\.cut-transcript-cue \{[\s\S]*?\n\}/)?.[0] ?? "";

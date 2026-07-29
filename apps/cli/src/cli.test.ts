@@ -981,12 +981,12 @@ describe("chengfeng-videocut CLI", () => {
           healthy: true,
           pid: 4321,
           runtimeMode: "launchd",
-          productVersion: "0.2.0",
+          productVersion: "0.2.1",
           studioBuildId: "test-build",
           url: "http://127.0.0.1:5190",
           identity: {
             product: "chengfeng-videocut",
-            productVersion: "0.2.0",
+            productVersion: "0.2.1",
             pid: 4321,
             runtimeMode: "launchd",
             studioBuildId: "test-build",
@@ -1017,7 +1017,7 @@ describe("chengfeng-videocut CLI", () => {
         healthy: true,
         pid: 4321,
         runtimeMode: "launchd",
-        productVersion: "0.2.0",
+        productVersion: "0.2.1",
       },
     });
   });
