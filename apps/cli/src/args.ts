@@ -41,7 +41,8 @@ export type CliCommand =
   | "visual.frame"
   | "workflow.get"
   | "workflow.transition"
-  | "render.run";
+  | "render.run"
+  | "export";
 
 export interface ParsedArgs {
   command: CliCommand;
@@ -83,7 +84,15 @@ export interface ParsedArgs {
   layerId?: string;
   frameCount?: number;
   outDir?: string;
+  /** Where the finished film goes. `export --out`, a file rather than a folder. */
+  outFile?: string;
   zoom?: { x: number; y: number; width: number; height: number };
+  /** Output size as a multiple of the source. Defaults to 2. */
+  scale?: number;
+  /** Output frame rate. Defaults to the source's. */
+  fps?: number;
+  /** Keep the intermediate video and the overlay PNGs for inspection. */
+  keepWork: boolean;
 }
 
 const VALUE_OPTIONS = new Set([
@@ -119,6 +128,8 @@ const VALUE_OPTIONS = new Set([
   "--count",
   "--out",
   "--zoom",
+  "--scale",
+  "--fps",
 ]);
 
 const BOOLEAN_OPTIONS = new Set([
@@ -126,6 +137,7 @@ const BOOLEAN_OPTIONS = new Set([
   "--force-index",
   "--refresh-transcript",
   "--replace",
+  "--keep-work",
 ]);
 
 function usageError(message: string): never {
@@ -268,6 +280,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     renderer: values.get("--renderer"),
     logLines,
     replace: booleanValues.has("--replace"),
+    keepWork: booleanValues.has("--keep-work"),
   };
   if (version) return { command: "version", ...common };
   if (help || positionals.length === 0) return { command: "help", ...common };
@@ -613,6 +626,36 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
       true,
     );
     return { ...common, command: "subtitle.set", project: positionals[2], file };
+  }
+  if (positionals[0] === "export") {
+    if (positionals.length !== 2) {
+      usageError(
+        "Usage: chengfeng-videocut export <project> [--out <file.mp4>] [--scale 2] [--fps 60] [--keep-work]",
+      );
+    }
+    assertOptions(
+      ["--out", "--scale", "--fps", "--projects-dir", "--output-dir"],
+      ["--keep-work"],
+      true,
+    );
+    const rawScale = values.get("--scale");
+    const scale = rawScale === undefined ? undefined : Number(rawScale);
+    if (scale !== undefined && (!Number.isFinite(scale) || scale <= 0 || scale > 4)) {
+      usageError("--scale must be a number between 0 and 4 (1 = the source's own size)");
+    }
+    const rawFps = values.get("--fps");
+    const fps = rawFps === undefined ? undefined : Number(rawFps);
+    if (fps !== undefined && (!Number.isFinite(fps) || fps < 1 || fps > 120)) {
+      usageError("--fps must be a frame rate between 1 and 120");
+    }
+    return {
+      ...common,
+      command: "export",
+      project: positionals[1],
+      outFile: values.get("--out"),
+      scale,
+      fps,
+    };
   }
   if (positionals[0] === "visual" && positionals[1] === "get") {
     if (positionals.length !== 3) {

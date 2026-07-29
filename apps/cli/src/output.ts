@@ -124,6 +124,7 @@ Usage:
   chengfeng-videocut visual get <project> [--json]
   chengfeng-videocut visual add <project> --module <project-relative .html> --cues <id,id,...> [--id <layer>] [--expected-revision <sha256>] [--dry-run] [--json]
   chengfeng-videocut visual remove <project> --id <layer> [--expected-revision <sha256>] [--dry-run] [--json]
+  chengfeng-videocut export <project> [--out <file.mp4>] [--scale <n>] [--fps <n>] [--keep-work] [--dry-run] [--json]
 
 service ensure is the product entry point: it atomically installs or recovers the macOS user LaunchAgent and waits for a matching ready Runtime.
 service stop disables and boots out the LaunchAgent; service start re-enables it. Service commands fail closed on non-macOS systems and never kill an unknown process occupying port 5190.
@@ -134,6 +135,7 @@ cuts set writes through the running product API; --dry-run performs a local read
 transcript correct fixes what the transcript says without touching when it says it: word ids, word count and every timestamp must come out identical, or the write is refused. A mis-heard proper noun is not surplus speech, so cutting cannot repair it.
 transcript playback flattens the transcript into what the audience hears, in that order, with removed speech marked. Judging repetition depends on heard adjacency, so this is the only correct input for a semantic pass — assembling it by hand gets it wrong silently.
 transcript retranscribe transcribes the cut itself, without exporting it first: it concatenates only the kept ranges' audio and sends that. The times that come back are already on the cut timeline, because the audio that went in is the cut — nothing maps between timelines. This is what subtitles need.
+export burns the whole film: the cut, the push-ins, the subtitles and the HTML layers, in one file. Everything before it is annotation and nothing else in the product writes a picture. The overlay is drawn by the same browser engine, from the same CSS and the same modules the preview uses, one frame at a time — so the file is the preview rather than an agreement with it. --scale defaults to 2: the footage gains no detail from an upscale, but the subtitles and modules are redrawn at the output size and those are the parts a viewer reads. --dry-run prints the plan (length, frame count, screens, layers, push-ins) without encoding anything.
 visual add places an HTML layer over the footage for the span of the subtitle screens named by --cues. The layer stores those screens' word ids, never seconds, so it moves with the cut instead of drifting off it. The module is a project-relative .html that must already exist; the preview drives it by seeking, so it must render a deterministic frame for any instant rather than playing on its own clock.
 
 transcript dictionary applies the operator's own spellings and reports every one it changed with its context. Unlike align it needs no evidence: within one speaker's work a name is spelled one way, and a rule is that statement. Screens showing a renamed word are rewritten in the same operation, because subtitles keep their own text and the staleness check cannot see a respelling.

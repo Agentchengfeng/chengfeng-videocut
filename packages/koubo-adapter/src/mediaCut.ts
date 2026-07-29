@@ -189,7 +189,8 @@ function concatFilePath(path: string): string {
   return resolve(path).replaceAll("\\", "\\\\").replaceAll("'", "'\\''");
 }
 
-function orderedSegmentManifest(
+/** Exported for the film export, which assembles the same spans in the same order. */
+export function orderedSegmentManifest(
   source: string,
   segments: readonly MediaCutRange[],
 ): string {

@@ -81,6 +81,7 @@ export function createKouboAdapter(
 }
 
 export * from "./mediaCut";
+export * from "./export";
 export * from "./edlPreviewRuntime";
 export * from "./previewProxy";
 export * from "./naturalPause";

@@ -1,11 +1,13 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { VideocutError, asVideocutError, parseTranscriptWords } from "@video-workbench/core";
 import {
   createKouboProject,
+  exportFilm,
   prepareKouboProject,
+  probeMedia,
   putKouboArtifact,
   runKouboRender,
   alignScriptToWords,
@@ -19,6 +21,7 @@ import {
   type TranscribeKouboVideoResult,
 } from "@video-workbench/koubo-adapter";
 import {
+  buildExportPlan,
   createVisualDocument,
   sourceTimeForCutTime,
   subtitleCueTimings,
@@ -1264,6 +1267,103 @@ export async function runCli(
         duration: span.duration,
         frames,
       };
+      if (parsed.json) io.stdout(JSON.stringify(successEnvelope(parsed.command, data)));
+      else io.stdout(JSON.stringify(data, null, 2));
+      return 0;
+    }
+
+    if (parsed.command === "export") {
+      await assertRegisteredProject({ project, cwd, projectsDir, outputDir: parsed.outputDir });
+      const [subtitles, transcript, editList, visuals] = await Promise.all([
+        readSubtitles(project),
+        readOptionalProjectDocument(project, "transcript.json"),
+        readEditList(project),
+        readVisuals(project),
+      ]);
+      const inputVideo = (project.project as Record<string, unknown>).inputVideo;
+      if (typeof inputVideo !== "string" || !inputVideo.trim()) {
+        throw new VideocutError("invalid_project", "This project has no inputVideo to export");
+      }
+      const sourcePath = resolve(project.directory, inputVideo);
+      const probe = await probeMedia(sourcePath);
+      if (!probe.hasVideo) {
+        throw new VideocutError("invalid_project", "The source is not a readable video", {
+          sourcePath,
+        });
+      }
+      const plan = buildExportPlan({
+        editList: editList?.value ?? null,
+        words: transcript ? parseTranscriptWords(transcript.value) : [],
+        subtitles: subtitles?.value ?? null,
+        visuals: visuals?.value ?? null,
+        source: {
+          width: probe.width,
+          height: probe.height,
+          duration: probe.duration,
+          frameRate: probe.frameRate ?? 30,
+        },
+        scale: parsed.scale,
+        fps: parsed.fps,
+      });
+      const outputPath = parsed.outFile
+        ? resolve(cwd, parsed.outFile)
+        : join(project.directory, "成片.mp4");
+      const summary = {
+        projectId: project.projectId,
+        output: outputPath,
+        duration: plan.duration,
+        fps: plan.fps,
+        frameCount: plan.frameCount,
+        source: plan.source,
+        outputSize: plan.output,
+        cutSegments: plan.spans.length,
+        subtitleScreens: plan.subtitleCues.length,
+        visualLayers: plan.layers.length,
+        zoomSpans: plan.zoomSpans.filter((span) => span.box).length,
+        warnings: plan.warnings,
+      };
+      // A dry run answers the only question worth asking before spending ten
+      // minutes on an encode: is this the film I think it is?
+      if (parsed.dryRun) {
+        if (parsed.json) io.stdout(JSON.stringify(successEnvelope(parsed.command, summary)));
+        else io.stdout(JSON.stringify(summary, null, 2));
+        return 0;
+      }
+      const workDirectory = join(project.directory, ".chengfeng-videocut", "export");
+      await rm(workDirectory, { recursive: true, force: true });
+      let lastReport = 0;
+      const result = await exportFilm({
+        projectDirectory: project.directory,
+        sourcePath,
+        plan,
+        outputPath,
+        workDirectory,
+        keepWork: parsed.keepWork,
+        onProgress: (stage, done, total) => {
+          if (parsed.json) return;
+          const now = Date.now();
+          if (done !== total && now - lastReport < 1000) return;
+          lastReport = now;
+          io.stderr(`${stage} ${done}/${total}`);
+        },
+      });
+      const data = {
+        ...summary,
+        width: result.probe.width,
+        height: result.probe.height,
+        actualDuration: result.probe.duration,
+        hasAudio: result.probe.hasAudio,
+        renderedFrames: result.frameCount,
+        problems: result.problems,
+      };
+      // A file that does not match its own plan is not a delivery, and the
+      // product may not report it as one. The file is left on disk and named
+      // in the details — it is evidence, not a result.
+      if (result.problems.length > 0) {
+        throw new VideocutError("readback_mismatch", "成片和导出计划对不上", {
+          ...data,
+        });
+      }
       if (parsed.json) io.stdout(JSON.stringify(successEnvelope(parsed.command, data)));
       else io.stdout(JSON.stringify(data, null, 2));
       return 0;
