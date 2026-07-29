@@ -36,6 +36,26 @@ export const OVERLAY_PAGE_NAME = "__videocut-export-overlay.html";
 /** What a module is told, verbatim what the preview sends. */
 export const VISUAL_SEEK_MESSAGE = "videocut:seek";
 
+/**
+ * Rows above the picture reserved for the frame marker, cropped off by ffmpeg.
+ *
+ * Every seek paints its own number into this strip as a colour, and the
+ * renderer refuses any capture whose strip does not name the frame it asked
+ * for. This is the only reliable answer we found to one question: *is this
+ * screenshot of this seek?* Everything indirect — a plain capture, rAF waits,
+ * counted flushes, capture-until-identical — was a guess about a compositor
+ * that presents on its own schedule, and each guess failed a boundary. The
+ * marker is not a guess; the picture itself testifies.
+ *
+ * The strip also hosts a permanently spinning square: continuous damage keeps
+ * headless producing frames, so a pending commit always lands within a few
+ * captures instead of waiting for one.
+ */
+export const MARKER_STRIP_HEIGHT = 8;
+
+/** The blue channel that marks a strip colour as a frame token. */
+export const MARKER_MAGIC_BLUE = 199;
+
 function escapeHtml(value: string): string {
   return value
     .replaceAll("&", "&amp;")
@@ -104,12 +124,36 @@ export function renderOverlayPage(plan: ExportPlan, moduleBase: string): string 
     margin: 0;
     padding: 0;
     width: ${width}px;
-    height: ${height}px;
+    height: ${height + MARKER_STRIP_HEIGHT}px;
     background: transparent;
     overflow: hidden;
   }
-  .ov-stage { position: relative; width: ${width}px; height: ${height}px; }
-  /* Absolutely stacked and permanently mounted — see the file comment. */
+  /* The marker strip lives above the picture and is cropped off by ffmpeg.
+     The film's own rows start at ${MARKER_STRIP_HEIGHT}px. */
+  #ov-marker {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 64px;
+    height: ${MARKER_STRIP_HEIGHT}px;
+  }
+  #ov-pulse {
+    position: absolute;
+    top: 0;
+    left: 72px;
+    width: ${MARKER_STRIP_HEIGHT}px;
+    height: ${MARKER_STRIP_HEIGHT}px;
+    background: #808080;
+    animation: ov-spin 0.12s linear infinite;
+  }
+  @keyframes ov-spin { to { transform: rotate(360deg); } }
+  .ov-stage { position: relative; top: ${MARKER_STRIP_HEIGHT}px; width: ${width}px; height: ${height}px; }
+  /* Absolutely stacked and permanently mounted — see the file comment.
+     Hidden by opacity, never by visibility: a visibility-hidden layer is not
+     painted at all, so unhiding it costs a full re-raster of the frame — close
+     to ten capture cycles at export size, during which every screenshot showed
+     the previous layer. An opacity-0 layer stays rastered and the flip to 1 is
+     a compositor-only change that lands on the next frame. */
   .ov-frame {
     position: absolute;
     inset: 0;
@@ -118,7 +162,7 @@ export function renderOverlayPage(plan: ExportPlan, moduleBase: string): string 
     height: 100%;
     border: 0;
     background: transparent;
-    visibility: hidden;
+    opacity: 0;
   }
   .ov-subs { position: absolute; inset: 0; width: ${width}px; height: ${height}px; }
   /* Full-width band, shrink-to-fit box centred in it. Centring with left: 50%
@@ -146,9 +190,13 @@ ${frames}
     <span class="ov-subs__text" id="ov-text" style="${escapeHtml(subtitleCss)}"></span>
   </div>
 </div>
+<div id="ov-marker"></div>
+<div id="ov-pulse"></div>
 <script>
 const PLAN = ${data};
 const SEEK = ${JSON.stringify(VISUAL_SEEK_MESSAGE)};
+const MARKER_BLUE = ${MARKER_MAGIC_BLUE};
+const marker = document.getElementById("ov-marker");
 const text = document.getElementById("ov-text");
 const frames = new Map();
 const acked = new Map();
@@ -202,20 +250,33 @@ function activeCue(time) {
   return null;
 }
 
-window.__ready = async () => {
+/**
+ * Readiness is a flag the renderer polls, not a promise it awaits: under
+ * begin-frame control a page waiting on fonts needs frames to make progress,
+ * and a renderer blocked inside an evaluate cannot drive them. Poll + drive.
+ */
+window.__isReady = false;
+(async () => {
   await ready;
   if (document.fonts && document.fonts.ready) await document.fonts.ready;
-  return true;
-};
+  window.__isReady = true;
+})();
 
 /**
- * Put the page at one instant of the film and resolve once it is there.
+ * Put the page at one instant of the film and resolve once it is applied,
+ * with this seek's number painted into the marker strip.
  *
- * Resolving early is the failure that matters: the screenshot would then be of
- * the previous frame, and a whole export can be one frame behind without ever
- * looking broken.
+ * Applied is not captured: the module acknowledging a seek proves its code
+ * ran, not that pixels came out. The renderer keeps capturing until the strip
+ * in the picture names this seek — the marker changes in the same commit as
+ * everything else here, so a capture that carries it carries the rest.
+ *
+ * Returns the token the caller must find in the strip.
  */
 window.__seek = async (time) => {
+  const mine = ++token;
+  marker.style.backgroundColor = "rgb(" + (mine & 255) + "," + ((mine >> 8) & 255) + "," + MARKER_BLUE + ")";
+
   const cue = activeCue(time);
   if (cue) {
     text.textContent = cue.text;
@@ -227,12 +288,11 @@ window.__seek = async (time) => {
 
   const layer = activeLayer(time);
   for (const [id, frame] of frames) {
-    frame.style.visibility = layer && layer.layerId === id ? "visible" : "hidden";
+    frame.style.opacity = layer && layer.layerId === id ? "1" : "0";
   }
-  if (!layer) return "empty";
+  if (!layer) return mine;
 
   const frame = frames.get(layer.layerId);
-  const mine = ++token;
   frame.contentWindow.postMessage({
     type: SEEK,
     time: Math.max(0, time - layer.start),
@@ -247,7 +307,7 @@ window.__seek = async (time) => {
     if (performance.now() > deadline) throw new Error("module did not answer a seek: " + layer.layerId);
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
-  return layer.layerId;
+  return mine;
 };
 </script>
 </body>

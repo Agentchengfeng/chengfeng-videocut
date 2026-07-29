@@ -26,6 +26,7 @@ import { dirname, join } from "node:path";
 import type { ExportPlan } from "@video-workbench/core";
 import { cropRectForBox } from "@video-workbench/core";
 import { orderedSegmentManifest, probeMedia, type MediaProbe } from "../mediaCut";
+import { MARKER_STRIP_HEIGHT } from "./overlayPage";
 
 /**
  * How hard the final encoder tries.
@@ -210,7 +211,9 @@ export async function composeFilm(input: {
       "-filter_complex", (input.framePattern
         ? [
             `[0:v]${steps.join(",")}[base]`,
-            "[1:v]format=rgba,setsar=1[ovl]",
+            // The top rows are the renderer's frame-marker strip — the
+            // capture-verification channel, never part of the picture.
+            `[1:v]crop=${plan.output.width}:${plan.output.height}:0:${MARKER_STRIP_HEIGHT},format=rgba,setsar=1[ovl]`,
             // `eof_action=pass` so a missing tail frame leaves the footage
             // alone rather than ending the span early.
             "[base][ovl]overlay=x=0:y=0:format=auto:eof_action=pass[outv]",

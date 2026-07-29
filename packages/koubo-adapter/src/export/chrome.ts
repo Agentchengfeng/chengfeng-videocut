@@ -245,6 +245,7 @@ export class ChromePage {
     return Buffer.from(String(result.data), "base64");
   }
 
+
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
