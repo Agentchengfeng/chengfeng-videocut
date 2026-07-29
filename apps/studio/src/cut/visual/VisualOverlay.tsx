@@ -114,7 +114,11 @@ export function VisualOverlay({ layers, activeLayerId, timelineTime }: VisualOve
     const ty = video.offsetHeight / 2 - scale * (ry + rh / 2);
     video.style.transformOrigin = "0 0";
     video.style.transform = `translate(${tx.toFixed(2)}px, ${ty.toFixed(2)}px) scale(${scale.toFixed(4)})`;
-    video.style.clipPath = `inset(${(oy + ry).toFixed(2)}px ${(video.offsetWidth - (ox + rx + rw)).toFixed(2)}px ${(video.offsetHeight - (oy + ry + rh)).toFixed(2)}px ${(ox + rx).toFixed(2)}px)`;
+    // rx/ry are already element coordinates (the letterbox offset is inside
+    // them). Adding ox/oy again shifted the clip by a whole letterbox — a bug
+    // that hid on layouts whose letterbox happened to be zero and moved the
+    // picture 65 source-pixels on everyone else's.
+    video.style.clipPath = `inset(${ry.toFixed(2)}px ${(video.offsetWidth - (rx + rw)).toFixed(2)}px ${(video.offsetHeight - (ry + rh)).toFixed(2)}px ${rx.toFixed(2)}px)`;
     return () => {
       video.style.transform = "";
       video.style.clipPath = "";
