@@ -2367,6 +2367,13 @@ select:focus-visible,
    the footage; an opaque one covers it. That is the only difference between
    「在录屏上圈重点」 and 「整屏动画」, and it lives inside the module. */
 .cf-cut-visual-overlay__frame {
+  /* Absolutely stacked: every layer's frame stays mounted, and eleven in-flow
+     block iframes queue vertically — only the first child lands inside the
+     picture box, the rest render one picture-height lower and get clipped by
+     the stage. Visibility flips looked right while the visible frame was
+     physically out of frame. */
+  position: absolute;
+  inset: 0;
   display: block;
   width: 100%;
   height: 100%;
