@@ -16,12 +16,19 @@ export interface PictureSize {
  * this is measured.
  */
 export function containedPicture(video: HTMLVideoElement): PictureSize | null {
-  const rect = video.getBoundingClientRect();
+  // offsetWidth/offsetHeight, never getBoundingClientRect: the push-in
+  // transforms this element, and a rect measured while a zoom is up is
+  // inflated by the zoom scale. That exact mistake was fixed once inside the
+  // zoom math and survived here — it stayed invisible until the preview
+  // stream attached while the playhead sat inside a pushed-in layer, at which
+  // point every overlay grew 1.6x and the picture slid off its frame.
+  const width = video.offsetWidth;
+  const height = video.offsetHeight;
   const aspect = video.videoWidth / video.videoHeight;
-  if (!Number.isFinite(aspect) || aspect <= 0 || rect.width <= 0 || rect.height <= 0) return null;
-  return rect.width / rect.height > aspect
-    ? { width: rect.height * aspect, height: rect.height }
-    : { width: rect.width, height: rect.width / aspect };
+  if (!Number.isFinite(aspect) || aspect <= 0 || width <= 0 || height <= 0) return null;
+  return width / height > aspect
+    ? { width: height * aspect, height }
+    : { width, height: width / aspect };
 }
 
 /**
