@@ -9,6 +9,7 @@ import {
   type CommandRunner,
   type StudioServiceDependencies,
 } from "./index";
+import { PRODUCT_VERSION } from "../output";
 
 const cleanup: string[] = [];
 
@@ -81,7 +82,7 @@ function fakeRuntime(homeDir: string, owner: "none" | "managed" | "foreground" |
       return Response.json({
         schemaVersion: 1,
         product: state.owner === "unknown" ? "not-videocut" : "chengfeng-videocut",
-        studioVersion: "0.2.0",
+        studioVersion: PRODUCT_VERSION,
       });
     }
     if (state.owner === "unknown") {
@@ -91,7 +92,7 @@ function fakeRuntime(homeDir: string, owner: "none" | "managed" | "foreground" |
       schemaVersion: 1,
       ok: true,
       product: "chengfeng-videocut",
-      productVersion: "0.2.0",
+      productVersion: PRODUCT_VERSION,
       pid: state.owner === "managed" || (state.owner === "foreground" && state.loaded)
         ? state.pid
         : 9999,
@@ -205,12 +206,12 @@ describe("Studio user service", () => {
     expect(first.configured).toBe(true);
     expect(first.healthy).toBe(true);
     expect(first.runtimeMode).toBe("launchd");
-    expect(first.productVersion).toBe("0.2.0");
+    expect(first.productVersion).toBe(PRODUCT_VERSION);
     expect(first.studioBuildId).toBe("test-build");
     expect(first).toMatchObject({
       healthy: true,
       runtimeMode: "launchd",
-      productVersion: "0.2.0",
+      productVersion: PRODUCT_VERSION,
     });
     expect(second.ready).toBe(true);
     expect(first.pid).toBe(second.pid);
@@ -384,13 +385,13 @@ describe("Studio user service", () => {
     let clock = 0;
     const incompleteFetch = async (input: string | URL | Request) => {
       if (String(input).endsWith("chengfeng-videocut-capabilities.json")) {
-        return Response.json({ product: "chengfeng-videocut", studioVersion: "0.2.0" });
+        return Response.json({ product: "chengfeng-videocut", studioVersion: PRODUCT_VERSION });
       }
       return Response.json({
         schemaVersion: 1,
         ok: true,
         product: "chengfeng-videocut",
-        productVersion: "0.2.0",
+        productVersion: PRODUCT_VERSION,
         studioBuildId: "legacy-build",
       });
     };

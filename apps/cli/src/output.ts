@@ -5,7 +5,7 @@ export const CLI_SCHEMA_VERSION = 1;
 export const PRODUCT_NAME = "chengfeng-videocut";
 export const BRAND_NAME = PRODUCT_NAME;
 export const PACKAGE_NAME = "chengfeng-videocut";
-export const PRODUCT_VERSION = "0.2.0";
+export const PRODUCT_VERSION = "0.3.0";
 
 export interface SuccessEnvelope {
   schemaVersion: number;
