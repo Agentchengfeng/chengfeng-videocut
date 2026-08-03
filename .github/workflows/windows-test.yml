@@ -18,10 +18,19 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
-      - name: 安装 ffmpeg（部分测试需要；带缓存，不依赖 choco 源可用性）
-        uses: FedericoCarboni/setup-ffmpeg@v3
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: 安装 ffmpeg（直接下载静态构建，带重试，不依赖任何目录 API）
+        shell: pwsh
+        run: |
+          $url = 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip'
+          $ok = $false
+          foreach ($i in 1..3) {
+            try { Invoke-WebRequest $url -OutFile ff.zip -TimeoutSec 120; $ok = $true; break }
+            catch { Start-Sleep -Seconds (10 * $i) }
+          }
+          if (-not $ok) { throw 'ffmpeg download failed after retries' }
+          Expand-Archive ff.zip -DestinationPath $env:RUNNER_TEMP\ff
+          $bin = Get-ChildItem -Directory $env:RUNNER_TEMP\ff | Select-Object -First 1
+          Add-Content $env:GITHUB_PATH (Join-Path $bin.FullName 'bin')
       - name: 安装依赖
         run: bun install --frozen-lockfile
       - name: 全量单测
