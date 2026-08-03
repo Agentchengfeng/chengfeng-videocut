@@ -4,6 +4,7 @@ import { join } from "node:path";
 export function requiredReleaseAssetNames(version: string): string[] {
   return [
     "install.sh",
+    "install.cjs",
     `chengfeng-videocut-${version}-portable.tar.gz`,
     "chengfeng-videocut-portable.tar.gz",
     `chengfeng-videocut-${version}.tgz`,
@@ -23,6 +24,7 @@ export async function writeReleaseChecksums(options: {
 
   await mkdir(releaseDir, { recursive: true });
   await copyFile(join(rootDir, "install.sh"), join(releaseDir, "install.sh"));
+  await copyFile(join(rootDir, "install.cjs"), join(releaseDir, "install.cjs"));
 
   const requiredNames = requiredReleaseAssetNames(version);
   const optionalNames = [`chengfeng-videocut-${version}-source.tar.gz`];

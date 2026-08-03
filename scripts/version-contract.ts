@@ -64,6 +64,17 @@ export async function checkVersionContract(rootDir = defaultRootDir): Promise<st
     "install.sh must download the exact versioned GitHub Release",
   );
 
+  const nodeInstaller = await readFile(join(rootDir, "install.cjs"), "utf8");
+  check(
+    captureVersion(nodeInstaller, /^const VERSION = "([^"]+)";$/m, "install.cjs") === PRODUCT_VERSION,
+    `install.cjs version does not match ${PRODUCT_VERSION}`,
+  );
+  check(
+    nodeInstaller.includes("releases/download/v${VERSION}") &&
+      !nodeInstaller.includes("releases/latest/download"),
+    "install.cjs must download the exact versioned GitHub Release",
+  );
+
   const citation = await readFile(join(rootDir, "CITATION.cff"), "utf8");
   check(
     captureVersion(citation, /^version:\s*([^\s]+)$/m, "CITATION.cff") === PRODUCT_VERSION,

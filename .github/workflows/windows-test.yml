@@ -24,3 +24,33 @@ jobs:
         run: bun install --frozen-lockfile
       - name: 全量单测
         run: bun test packages apps/cli/src
+
+  # W1 验收：真实 Windows 上装得上、跑得出版本号。这个 job 是硬门禁。
+  install-smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: 构建便携包
+        run: |
+          bun install --frozen-lockfile
+          bun run package:build
+          bun scripts/package-portable.ts
+      - name: 组装本地 release 夹具并安装
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force local-release | Out-Null
+          Copy-Item release/chengfeng-videocut-portable.tar.gz local-release/
+          Copy-Item install.cjs local-release/
+          node -e "const{createHash}=require('crypto');const fs=require('fs');const p='local-release/chengfeng-videocut-portable.tar.gz';const h=createHash('sha256').update(fs.readFileSync(p)).digest('hex');fs.writeFileSync('local-release/SHA256SUMS.txt',h+'  chengfeng-videocut-portable.tar.gz\n');"
+          $env:CHENGFENG_VIDEOCUT_HOME = Join-Path $env:RUNNER_TEMP 'vc-home'
+          $env:CHENGFENG_VIDEOCUT_DOWNLOAD_BASE = ([uri](Join-Path $PWD 'local-release')).AbsoluteUri
+          node local-release/install.cjs
+          $version = & (Join-Path $env:CHENGFENG_VIDEOCUT_HOME 'bin\chengfeng-videocut.cmd') --version
+          Write-Host "launcher reports: $version"
+          if ($version -notmatch '\d+\.\d+\.\d+') { exit 1 }
