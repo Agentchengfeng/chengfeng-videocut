@@ -37,9 +37,10 @@ describe("release contract", () => {
     const releaseDir = join(fixtureRoot, "release");
     await mkdir(releaseDir, { recursive: true });
     await Bun.write(join(fixtureRoot, "install.sh"), "#!/bin/sh\nVERSION=fixture\n");
+    await Bun.write(join(fixtureRoot, "install.cjs"), 'const VERSION = "fixture";\n');
 
     const assetNames = requiredReleaseAssetNames(PRODUCT_VERSION).filter(
-      (name) => name !== "install.sh",
+      (name) => name !== "install.sh" && name !== "install.cjs",
     );
     for (const name of assetNames) {
       await Bun.write(join(releaseDir, name), `fixture:${name}\n`);
@@ -51,7 +52,7 @@ describe("release contract", () => {
       version: PRODUCT_VERSION,
     });
     const sums = await readFile(result.checksumPath, "utf8");
-    expect(result.lines).toHaveLength(5);
+    expect(result.lines).toHaveLength(6);
     for (const name of requiredReleaseAssetNames(PRODUCT_VERSION)) {
       expect(sums).toContain(`  ${name}\n`);
     }
@@ -67,6 +68,7 @@ describe("release contract", () => {
     cleanupPaths.push(fixtureRoot);
     const releaseDir = join(fixtureRoot, "release");
     await writeFile(join(fixtureRoot, "install.sh"), "#!/bin/sh\n");
+    await writeFile(join(fixtureRoot, "install.cjs"), 'const VERSION = "fixture";\n');
     await expect(
       writeReleaseChecksums({ rootDir: fixtureRoot, releaseDir, version: PRODUCT_VERSION }),
     ).rejects.toThrow("Missing chengfeng-videocut");

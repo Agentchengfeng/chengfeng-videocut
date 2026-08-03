@@ -243,7 +243,7 @@ async function main() {
   if (IS_WINDOWS) {
     // junction 需要绝对目标，且普通用户免权限；.cmd 是真实文件而非链接。
     replaceLink(CURRENT_LINK, TARGET_DIR, "junction");
-    writeFileSync(BIN_LINK, WINDOWS_LAUNCHER);
+    writeFileSync(BIN_LINK, WINDOWS_LAUNCHER.replaceAll("\n", "\r\n"));
   } else {
     replaceLink(CURRENT_LINK, VERSION, "dir");
     replaceLink(BIN_LINK, path.join("..", "app", "current", "chengfeng-videocut"), "file");
