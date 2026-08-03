@@ -60,6 +60,7 @@ export interface StudioServiceDependencies {
   isPortOccupied?: () => Promise<boolean>;
   getPortOwnerPid?: () => Promise<number | null>;
   isProcessAlive?: (pid: number) => boolean;
+  killProcess?: (pid: number) => void;
   readyTimeoutMs?: number;
   lockTimeoutMs?: number;
 }
@@ -78,7 +79,7 @@ export interface StudioServiceIdentity {
   product: string;
   productVersion: string;
   pid: number;
-  runtimeMode: "launchd";
+  runtimeMode: "launchd" | "windows-task";
   studioBuildId: string;
 }
 
@@ -92,7 +93,7 @@ export interface StudioServiceStatus {
   ready: boolean;
   healthy: boolean;
   pid: number | null;
-  runtimeMode: "launchd" | null;
+  runtimeMode: "launchd" | "windows-task" | null;
   productVersion: string | null;
   studioBuildId: string | null;
   url: string;
@@ -111,11 +112,12 @@ export interface StudioServiceCommandResult extends StudioServiceStatus {
   };
 }
 
-interface LaunchdStatus {
+export interface ManagedJobStatus {
   loaded: boolean;
   pid: number | null;
   raw: string;
 }
+type LaunchdStatus = ManagedJobStatus;
 
 interface HealthProbe {
   reachable: boolean;
@@ -128,7 +130,7 @@ interface HealthProbe {
   detail?: string;
 }
 
-interface ResolvedDependencies {
+export interface ResolvedServiceDependencies {
   platform: string;
   homeDir: string;
   dataDir: string;
@@ -142,11 +144,12 @@ interface ResolvedDependencies {
   isPortOccupied: () => Promise<boolean>;
   getPortOwnerPid: () => Promise<number | null>;
   isProcessAlive: (pid: number) => boolean;
+  killProcess: (pid: number) => void;
   readyTimeoutMs: number;
   lockTimeoutMs: number;
 }
 
-class StudioServiceError extends Error {
+export class StudioServiceError extends Error {
   readonly code: string;
   readonly details?: Record<string, unknown>;
 
@@ -221,15 +224,33 @@ async function defaultPortOwnerPid(runCommand: CommandRunner): Promise<number | 
   return pids.length === 1 ? pids[0] : null;
 }
 
+async function defaultWindowsPortOwnerPid(runCommand: CommandRunner): Promise<number | null> {
+  let result: CommandResult;
+  try {
+    result = await runCommand("netstat", ["-ano", "-p", "TCP"]);
+  } catch {
+    return null;
+  }
+  if (result.code !== 0) return null;
+  const pids = new Set<number>();
+  for (const line of result.stdout.split(/\r?\n/)) {
+    if (!/LISTENING/i.test(line) || !/[:.]5190\s/.test(line)) continue;
+    const pid = Number(line.trim().split(/\s+/).at(-1));
+    if (Number.isInteger(pid) && pid > 0) pids.add(pid);
+  }
+  return pids.size === 1 ? [...pids][0] : null;
+}
+
 function managedRootFromExecutable(executable: string | undefined): string | null {
   if (!executable || !isAbsolute(executable)) return null;
   const absolute = resolve(executable);
   const binDir = dirname(absolute);
-  if (basename(absolute) !== "chengfeng-videocut" || basename(binDir) !== "bin") return null;
+  const name = basename(absolute);
+  if ((name !== "chengfeng-videocut" && name !== "chengfeng-videocut.cmd") || basename(binDir) !== "bin") return null;
   return dirname(binDir);
 }
 
-function resolveDependencies(input: StudioServiceDependencies): ResolvedDependencies {
+function resolveDependencies(input: StudioServiceDependencies): ResolvedServiceDependencies {
   const homeDir = input.homeDir ?? homedir();
   const injectedHome = input.homeDir !== undefined;
   const environmentExecutable = injectedHome
@@ -249,7 +270,15 @@ function resolveDependencies(input: StudioServiceDependencies): ResolvedDependen
     dataDir,
     launcherPath: resolve(
       input.launcherPath ??
-      (executableRoot && environmentExecutable ? environmentExecutable : join(dataDir, "bin", "chengfeng-videocut")),
+      (executableRoot && environmentExecutable
+        ? environmentExecutable
+        : join(
+            dataDir,
+            "bin",
+            (input.platform ?? process.platform) === "win32"
+              ? "chengfeng-videocut.cmd"
+              : "chengfeng-videocut",
+          )),
     ),
     uid: input.uid ?? process.getuid?.() ?? -1,
     pid: input.pid ?? process.pid,
@@ -258,7 +287,11 @@ function resolveDependencies(input: StudioServiceDependencies): ResolvedDependen
     runCommand,
     fetch: input.fetch ?? globalThis.fetch,
     isPortOccupied: input.isPortOccupied ?? defaultPortOccupied,
-    getPortOwnerPid: input.getPortOwnerPid ?? (() => defaultPortOwnerPid(runCommand)),
+    getPortOwnerPid: input.getPortOwnerPid ?? (
+      (input.platform ?? process.platform) === "win32"
+        ? () => defaultWindowsPortOwnerPid(runCommand)
+        : () => defaultPortOwnerPid(runCommand)
+    ),
     isProcessAlive: input.isProcessAlive ?? ((pid) => {
       try {
         process.kill(pid, 0);
@@ -266,6 +299,9 @@ function resolveDependencies(input: StudioServiceDependencies): ResolvedDependen
       } catch {
         return false;
       }
+    }),
+    killProcess: input.killProcess ?? ((pid) => {
+      process.kill(pid);
     }),
     readyTimeoutMs: input.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS,
     lockTimeoutMs: input.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS,
@@ -275,38 +311,47 @@ function resolveDependencies(input: StudioServiceDependencies): ResolvedDependen
 export function studioServicePaths(
   homeDir = homedir(),
   dataDir = join(homeDir, ".chengfeng-videocut"),
-  launcherPath = join(dataDir, "bin", "chengfeng-videocut"),
+  launcherPath = join(
+    dataDir,
+    "bin",
+    process.platform === "win32" ? "chengfeng-videocut.cmd" : "chengfeng-videocut",
+  ),
+  platform: string = process.platform,
 ): StudioServicePaths {
   return {
     homeDir,
     dataDir: resolve(dataDir),
     launcherPath: resolve(launcherPath),
-    plistPath: join(homeDir, "Library", "LaunchAgents", `${STUDIO_SERVICE_LABEL}.plist`),
+    // 服务定义文件：darwin 是 LaunchAgent plist，win32 是计划任务 XML。
+    plistPath: platform === "win32"
+      ? join(dataDir, "service", "studio-task.xml")
+      : join(homeDir, "Library", "LaunchAgents", `${STUDIO_SERVICE_LABEL}.plist`),
     stdoutLogPath: join(dataDir, "logs", "studio.stdout.log"),
     stderrLogPath: join(dataDir, "logs", "studio.stderr.log"),
     operationLockPath: join(dataDir, "service-operation.lock"),
   };
 }
 
-function requireDarwin(deps: ResolvedDependencies): void {
+function requireManagedPlatform(deps: ResolvedServiceDependencies): void {
+  if (deps.platform === "win32") return;
   if (deps.platform !== "darwin" || deps.uid < 0) {
     throw new StudioServiceError(
       "service_unsupported",
-      "Managed Studio service is currently supported only for macOS user sessions",
+      "Managed Studio service is supported only for macOS user sessions and Windows logon sessions",
       { platform: deps.platform },
     );
   }
 }
 
-function launchdTarget(deps: ResolvedDependencies): string {
+function launchdTarget(deps: ResolvedServiceDependencies): string {
   return `gui/${deps.uid}/${STUDIO_SERVICE_LABEL}`;
 }
 
-function launchdDomain(deps: ResolvedDependencies): string {
+function launchdDomain(deps: ResolvedServiceDependencies): string {
   return `gui/${deps.uid}`;
 }
 
-function xmlEscape(value: string): string {
+export function xmlEscape(value: string): string {
   return value
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
@@ -366,7 +411,7 @@ ${args.map((argument) => `    <string>${xmlEscape(argument)}</string>`).join("\n
 `;
 }
 
-async function pathExists(path: string): Promise<boolean> {
+export async function pathExists(path: string): Promise<boolean> {
   try {
     await access(path);
     return true;
@@ -375,9 +420,12 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
-async function requireLauncher(paths: StudioServicePaths): Promise<void> {
+export async function requireLauncher(paths: StudioServicePaths): Promise<void> {
   try {
-    await access(paths.launcherPath, fsConstants.X_OK);
+    await access(
+      paths.launcherPath,
+      process.platform === "win32" ? fsConstants.F_OK : fsConstants.X_OK,
+    );
   } catch {
     throw new StudioServiceError(
       "service_launcher_missing",
@@ -387,7 +435,7 @@ async function requireLauncher(paths: StudioServicePaths): Promise<void> {
   }
 }
 
-async function atomicWrite(path: string, content: string, mode: number): Promise<void> {
+export async function atomicWrite(path: string, content: string, mode: number): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
   try {
@@ -410,7 +458,7 @@ async function launchAgentConfigurationCurrent(paths: StudioServicePaths): Promi
   }
 }
 
-async function launchdStatus(deps: ResolvedDependencies): Promise<LaunchdStatus> {
+async function launchdStatus(deps: ResolvedServiceDependencies): Promise<LaunchdStatus> {
   const result = await deps.runCommand("/bin/launchctl", ["print", launchdTarget(deps)]);
   if (result.code !== 0) {
     const raw = result.stderr || result.stdout;
@@ -432,7 +480,7 @@ async function launchdStatus(deps: ResolvedDependencies): Promise<LaunchdStatus>
   };
 }
 
-async function probeHealth(deps: ResolvedDependencies): Promise<HealthProbe> {
+export async function probeHealth(deps: ResolvedServiceDependencies): Promise<HealthProbe> {
   let response: Response;
   try {
     response = await deps.fetch(`${STUDIO_SERVICE_URL}/api/health`, {
@@ -512,7 +560,11 @@ async function probeHealth(deps: ResolvedDependencies): Promise<HealthProbe> {
   };
 }
 
-function assertNoPortConflict(launchd: LaunchdStatus, health: HealthProbe): void {
+export function assertNoPortConflict(
+  launchd: ManagedJobStatus,
+  health: HealthProbe,
+  expectedMode: "launchd" | "windows-task" = "launchd",
+): void {
   if (!health.reachable) return;
   if (health.product !== PRODUCT_NAME) {
     throw new StudioServiceError(
@@ -546,32 +598,33 @@ function assertNoPortConflict(launchd: LaunchdStatus, health: HealthProbe): void
       { url: STUDIO_SERVICE_URL, runtimeMode: health.reportedRuntimeMode ?? "foreground" },
     );
   }
-  if (health.reportedRuntimeMode !== "launchd") {
+  if (health.reportedRuntimeMode !== expectedMode) {
     throw new StudioServiceError(
       "service_port_conflict",
-      `Studio reports runtimeMode=${health.reportedRuntimeMode ?? "missing"}; managed service requires launchd`,
+      `Studio reports runtimeMode=${health.reportedRuntimeMode ?? "missing"}; managed service requires ${expectedMode}`,
       { url: STUDIO_SERVICE_URL, runtimeMode: health.reportedRuntimeMode ?? null },
     );
   }
   if (health.reportedPid !== launchd.pid) {
     throw new StudioServiceError(
       "service_port_conflict",
-      "Studio health PID does not match the managed LaunchAgent PID; no process was stopped",
+      "Studio health PID does not match the managed service PID; no process was stopped",
       { url: STUDIO_SERVICE_URL, healthPid: health.reportedPid, launchdPid: launchd.pid },
     );
   }
 }
 
-function isProductProcessOwnedByLaunchAgent(
-  launchd: LaunchdStatus,
+export function isProductProcessOwnedByManagedJob(
+  launchd: ManagedJobStatus,
   health: HealthProbe,
+  expectedMode: "launchd" | "windows-task" = "launchd",
 ): boolean {
   return health.reachable &&
     health.product === PRODUCT_NAME &&
     Boolean(health.productVersion) &&
     health.reportedPid !== null &&
     health.reportedPid === launchd.pid &&
-    health.reportedRuntimeMode === "launchd" &&
+    health.reportedRuntimeMode === expectedMode &&
     Boolean(health.studioBuildId) &&
     launchd.loaded &&
     launchd.pid !== null;
@@ -584,36 +637,37 @@ function assertPortAvailableOrManagedJobLoaded(
   // A loaded label is not proof of port ownership: the job may be crash-looping
   // while an unrelated process owns 5190. Only an exact Product health PID may
   // be restarted; every other occupied-port shape fails before launchctl writes.
-  if (isProductProcessOwnedByLaunchAgent(launchd, health)) return;
+  if (isProductProcessOwnedByManagedJob(launchd, health)) return;
   assertNoPortConflict(launchd, health);
 }
 
-async function ensureServiceDirectories(paths: StudioServicePaths): Promise<void> {
+export async function ensureServiceDirectories(paths: StudioServicePaths): Promise<void> {
   await mkdir(join(paths.dataDir, "logs"), { recursive: true });
 }
 
-function compatibleIdentity(
-  launchd: LaunchdStatus,
+export function compatibleIdentity(
+  launchd: ManagedJobStatus,
   health: HealthProbe,
+  expectedMode: "launchd" | "windows-task" = "launchd",
 ): StudioServiceIdentity | null {
   if (!health.reachable || health.product !== PRODUCT_NAME || !launchd.loaded || !launchd.pid) {
     return null;
   }
   if (health.productVersion !== PRODUCT_VERSION) return null;
-  if (health.reportedRuntimeMode !== "launchd") return null;
+  if (health.reportedRuntimeMode !== expectedMode) return null;
   if (health.reportedPid !== launchd.pid) return null;
   if (!health.studioBuildId) return null;
   return {
     product: PRODUCT_NAME,
     productVersion: PRODUCT_VERSION,
     pid: launchd.pid,
-    runtimeMode: "launchd",
+    runtimeMode: expectedMode,
     studioBuildId: health.studioBuildId,
   };
 }
 
 async function inspectStatus(
-  deps: ResolvedDependencies,
+  deps: ResolvedServiceDependencies,
   paths: StudioServicePaths,
 ): Promise<StudioServiceStatus> {
   const [installed, configured, launchd, health] = await Promise.all([
@@ -662,7 +716,7 @@ async function inspectStatus(
 }
 
 async function waitUntilReady(
-  deps: ResolvedDependencies,
+  deps: ResolvedServiceDependencies,
   paths: StudioServicePaths,
   previousPid: number | null = null,
 ): Promise<StudioServiceStatus> {
@@ -699,7 +753,7 @@ async function waitUntilReady(
 }
 
 async function waitUntilUnloaded(
-  deps: ResolvedDependencies,
+  deps: ResolvedServiceDependencies,
   previousPid: number | null,
 ): Promise<void> {
   const deadline = deps.now() + Math.min(10_000, deps.readyTimeoutMs);
@@ -721,7 +775,7 @@ async function waitUntilUnloaded(
 }
 
 async function runLaunchctlOrThrow(
-  deps: ResolvedDependencies,
+  deps: ResolvedServiceDependencies,
   args: readonly string[],
   operation: string,
 ): Promise<void> {
@@ -736,7 +790,7 @@ async function runLaunchctlOrThrow(
 }
 
 async function startUnlocked(
-  deps: ResolvedDependencies,
+  deps: ResolvedServiceDependencies,
   paths: StudioServicePaths,
 ): Promise<StudioServiceStatus> {
   if (!(await pathExists(paths.plistPath))) {
@@ -767,7 +821,7 @@ async function startUnlocked(
 }
 
 async function installUnlocked(
-  deps: ResolvedDependencies,
+  deps: ResolvedServiceDependencies,
   paths: StudioServicePaths,
 ): Promise<StudioServiceStatus> {
   await requireLauncher(paths);
@@ -791,7 +845,7 @@ async function installUnlocked(
 }
 
 async function stopUnlocked(
-  deps: ResolvedDependencies,
+  deps: ResolvedServiceDependencies,
   paths: StudioServicePaths,
 ): Promise<StudioServiceStatus> {
   const launchd = await launchdStatus(deps);
@@ -810,7 +864,7 @@ async function stopUnlocked(
 }
 
 async function restartUnlocked(
-  deps: ResolvedDependencies,
+  deps: ResolvedServiceDependencies,
   paths: StudioServicePaths,
 ): Promise<StudioServiceStatus> {
   if (!(await pathExists(paths.plistPath))) {
@@ -836,7 +890,7 @@ async function restartUnlocked(
 }
 
 async function ensureUnlocked(
-  deps: ResolvedDependencies,
+  deps: ResolvedServiceDependencies,
   paths: StudioServicePaths,
 ): Promise<{ status: StudioServiceStatus; changed: boolean }> {
   const before = await inspectStatus(deps, paths);
@@ -845,7 +899,7 @@ async function ensureUnlocked(
     const launchd = await launchdStatus(deps);
     const health = await probeHealth(deps);
     const staleOwnedConfiguration = !configurationCurrent &&
-      isProductProcessOwnedByLaunchAgent(launchd, health);
+      isProductProcessOwnedByManagedJob(launchd, health);
     if (!staleOwnedConfiguration) assertPortAvailableOrManagedJobLoaded(launchd, health);
   }
   if (!configurationCurrent) {
@@ -861,8 +915,8 @@ async function ensureUnlocked(
   return { status: await restartUnlocked(deps, paths), changed: true };
 }
 
-async function acquireServiceLock(
-  deps: ResolvedDependencies,
+export async function acquireServiceLock(
+  deps: ResolvedServiceDependencies,
   paths: StudioServicePaths,
 ): Promise<() => Promise<void>> {
   await mkdir(paths.dataDir, { recursive: true });
@@ -929,7 +983,7 @@ async function acquireServiceLock(
   }
 }
 
-async function readTail(path: string, requestedLines: number): Promise<string> {
+export async function readTail(path: string, requestedLines: number): Promise<string> {
   const lines = Math.min(MAX_LOG_LINES, Math.max(1, requestedLines));
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
@@ -965,8 +1019,13 @@ export async function runStudioServiceCommand(
   dependencies: StudioServiceDependencies = {},
 ): Promise<StudioServiceCommandResult> {
   const deps = resolveDependencies(dependencies);
-  requireDarwin(deps);
-  const paths = studioServicePaths(deps.homeDir, deps.dataDir, deps.launcherPath);
+  requireManagedPlatform(deps);
+  const paths = studioServicePaths(deps.homeDir, deps.dataDir, deps.launcherPath, deps.platform);
+  if (deps.platform === "win32") {
+    // 动态引入避免 index/windows 循环依赖在模块初始化期互咬。
+    const { runWindowsStudioServiceCommand } = await import("./windows");
+    return runWindowsStudioServiceCommand(action, options, deps, paths);
+  }
   if (action === "status") {
     return { action, changed: false, ...await inspectStatus(deps, paths) };
   }

@@ -38,7 +38,7 @@ curl -fsSL https://raw.githubusercontent.com/Agentchengfeng/chengfeng-videocut/m
 
 安装器只安装 Runtime 和稳定启动器，不自动注册、加载或启动 LaunchAgent。用户首次显式调用 `chengfeng-videocut service ensure`，或业务 Skill 进入需要 Runtime 的阶段时，才由产品注册并启动用户级服务。
 
-本版 `service` 契约只支持 macOS LaunchAgent；其他平台必须 fail-closed 返回 `service_unsupported`，不得用临时 `nohup` 伪装常驻服务。
+本版 `service` 契约支持 macOS LaunchAgent 与 Windows 计划任务（`windows-task`：登录任务 + 产品自带 supervisor 看门狗）；其余平台必须 fail-closed 返回 `service_unsupported`，不得用临时 `nohup` 伪装常驻服务。
 
 手动安装用户应把同一 Release 的 `install.sh`、`chengfeng-videocut-portable.tar.gz` 与 `SHA256SUMS.txt` 下载到同一目录，校验后通过本地 Release 目录安装：
 

@@ -35,7 +35,7 @@ const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 5190;
 const STUDIO_SERVER_IDLE_TIMEOUT_SECONDS = 60;
 
-type StudioRuntimeMode = "launchd" | "foreground";
+type StudioRuntimeMode = "launchd" | "windows-task" | "foreground";
 
 export interface StudioServerApiContext {
   projectsDir: string;
@@ -410,7 +410,10 @@ export async function startStudioServer(
   // Capture it once at startup so health describes this process rather than a
   // later mutation of process.env by embedding code or tests.
   const runtimeMode: StudioRuntimeMode =
-    process.env.CHENGFENG_VIDEOCUT_SERVICE === "launchd" ? "launchd" : "foreground";
+    process.env.CHENGFENG_VIDEOCUT_SERVICE === "launchd" ||
+    process.env.CHENGFENG_VIDEOCUT_SERVICE === "windows-task"
+      ? process.env.CHENGFENG_VIDEOCUT_SERVICE
+      : "foreground";
   const listenPort = await resolveListenPort(host, requestedPort);
   await Promise.all([
     mkdir(dataDir, { recursive: true }),

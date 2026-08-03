@@ -12,6 +12,7 @@ export type CliCommand =
   | "service.status"
   | "service.logs"
   | "service.ensure"
+  | "service.supervise"
   | "doctor"
   | "config.get"
   | "config.set"
@@ -316,7 +317,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
   if (positionals[0] === "service") {
     const action = positionals[1];
     if (positionals.length !== 2 || ![
-      "install", "start", "stop", "restart", "status", "logs", "ensure",
+      "install", "start", "stop", "restart", "status", "logs", "ensure", "supervise",
     ].includes(action ?? "")) {
       usageError(
         "Usage: chengfeng-videocut service <install|start|stop|restart|status|logs|ensure>",

@@ -740,6 +740,11 @@ export async function runCli(
       }
       return 0;
     }
+    if (parsed.command === "service.supervise") {
+      const { runStudioSupervisor } = await import("./service/windows");
+      const { studioServicePaths } = await import("./service/index");
+      return runStudioSupervisor(studioServicePaths());
+    }
     if (parsed.command.startsWith("service.")) {
       const action = parsed.command.slice("service.".length) as StudioServiceAction;
       const data = await (options.runServiceCommand ?? defaultRunStudioServiceCommand)(action, {
