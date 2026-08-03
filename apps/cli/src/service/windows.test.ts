@@ -136,7 +136,8 @@ describe("Windows scheduled-task service", () => {
     expect(result.ready).toBe(true);
     expect(result.pid).toBe(state.serverPid);
     expect(result.identity?.runtimeMode).toBe("windows-task");
-    expect(await readFile(paths.plistPath, "utf8")).toBe(renderStudioScheduledTask(paths));
+    // 任务定义按 UTF-16LE + BOM 落盘（schtasks /XML 的硬要求）。
+    expect(await readFile(paths.plistPath, "utf16le")).toBe(`\ufeff${renderStudioScheduledTask(paths)}`);
     const verbs = state.commands
       .filter(([executable]) => executable === "schtasks")
       .map(([, verb]) => verb);
@@ -156,7 +157,7 @@ describe("Windows scheduled-task service", () => {
 
   it("treats a launchd-mode runtime on Windows as a conflict, not an identity", async () => {
     const { paths, state, deps } = await makeFixture({ registered: true });
-    await writeFile(paths.plistPath, renderStudioScheduledTask(paths));
+    await writeFile(paths.plistPath, Buffer.from(`\ufeff${renderStudioScheduledTask(paths)}`, "utf16le"));
     state.started = true;
     state.alive.add(state.serverPid);
     state.healthRuntimeMode = "launchd";
@@ -167,7 +168,7 @@ describe("Windows scheduled-task service", () => {
 
   it("stop disables the task and terminates the supervised processes", async () => {
     const { paths, state, deps } = await makeFixture({ registered: true });
-    await writeFile(paths.plistPath, renderStudioScheduledTask(paths));
+    await writeFile(paths.plistPath, Buffer.from(`\ufeff${renderStudioScheduledTask(paths)}`, "utf16le"));
     state.started = true;
     state.alive.add(state.serverPid);
     state.alive.add(state.serverPid - 1);

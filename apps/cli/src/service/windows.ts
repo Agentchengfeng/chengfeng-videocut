@@ -1,7 +1,7 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { openSync } from "node:fs";
-import { mkdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { PRODUCT_NAME } from "../output";
 import {
   STUDIO_SERVICE_LABEL,
@@ -31,6 +31,20 @@ import {
 // 自带的 supervisor（service supervise）完成——Task Scheduler 原生重启最小间隔
 // 一分钟，远弱于 launchd 的 5 秒节流，所以看门狗必须自持。
 export const WINDOWS_TASK_NAME = "chengfeng-videocut-studio";
+
+// 任务的 UserId：工作组机器上 DOMAIN\user 形式会被拒（"No mapping between account
+// names and security IDs"，2026-08-03 真机实测），SID 在域/工作组都成立。
+function currentUserId(): string {
+  const sid = spawnSync(
+    "powershell",
+    ["-NoProfile", "-Command", "[Security.Principal.WindowsIdentity]::GetCurrent().User.Value"],
+    { encoding: "utf8" },
+  );
+  const value = (sid.stdout || "").trim();
+  if (/^S-1-[0-9-]+$/.test(value)) return value;
+  const name = process.env.USERNAME || process.env.USER || "";
+  return name ? `${process.env.COMPUTERNAME || "."}\\${name}` : name;
+}
 const RESPAWN_THROTTLE_MS = 5_000;
 
 const MAX_LOG_LINES = 1_000;
@@ -45,11 +59,10 @@ export function windowsSupervisorStatePath(paths: StudioServicePaths): string {
   return join(paths.dataDir, "service", "supervisor.json");
 }
 
-export function renderStudioScheduledTask(paths: StudioServicePaths): string {
-  const userDomain = process.env.USERDOMAIN;
-  const userName = process.env.USERNAME || process.env.USER || "";
-  const userId = userDomain && userName ? `${userDomain}\\${userName}` : userName;
-  return `<?xml version="1.0" encoding="UTF-8"?>
+export function renderStudioScheduledTask(paths: StudioServicePaths, userId = currentUserId()): string {
+  // 声明必须与落盘编码一致：文件按 UTF-16LE+BOM 写（schtasks /XML 的要求），
+  // 若这里仍写 UTF-8，解析器报「无法切换编码」——2026-08-03 真机实测。
+  return `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
     <Description>${xmlEscape(`${PRODUCT_NAME} Studio 常驻服务（${STUDIO_SERVICE_LABEL}）`)}</Description>
@@ -88,9 +101,16 @@ ${userId ? `      <UserId>${xmlEscape(userId)}</UserId>` : ""}
 `;
 }
 
+async function writeTaskDefinition(path: string, content: string): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  const temporary = `${path}.${process.pid}.tmp`;
+  await writeFile(temporary, Buffer.from(`\ufeff${content}`, "utf16le"), { flag: "w", mode: 0o600 });
+  await rename(temporary, path);
+}
+
 async function taskConfigurationCurrent(paths: StudioServicePaths): Promise<boolean> {
   try {
-    return await readFile(paths.plistPath, "utf8") === renderStudioScheduledTask(paths);
+    return await readFile(paths.plistPath, "utf16le") === `\ufeff${renderStudioScheduledTask(paths)}`;
   } catch (error) {
     const code = error && typeof error === "object" && "code" in error
       ? String((error as { code?: unknown }).code)
@@ -178,7 +198,9 @@ async function inspectWindowsStatus(
   else if (identity) state = "unhealthy";
   else if (!installed && !job.loaded) state = "uninstalled";
   else if (!job.loaded) state = "stopped";
-  else if (!health.reachable && job.loaded) state = job.pid ? "starting" : "unhealthy";
+  // 任务仍启用但进程不在、端口也没人应答 = 干净的停止态（stop 之后正是这样）；
+  // 只有「有 PID 却答不上健康」才是真的不健康。2026-08-03 真机 stop 实测修正。
+  else if (!health.reachable) state = job.pid ? "starting" : "stopped";
   else state = "unhealthy";
   return {
     serviceApiVersion: SERVICE_API_VERSION,
@@ -275,7 +297,9 @@ async function installWindowsUnlocked(
     assertNoPortConflict(job, health, "windows-task");
   }
 
-  await atomicWrite(paths.plistPath, renderStudioScheduledTask(paths), 0o600);
+  // schtasks 的 /XML 解析器只接受 UTF-16LE + BOM 的任务定义（即便 XML 声明写着
+  // UTF-8）；2026-08-03 Windows 真机首次点火实测：无 BOM 报「无法切换编码」。
+  await writeTaskDefinition(paths.plistPath, renderStudioScheduledTask(paths));
   await runSchtasksOrThrow(
     deps,
     ["/Create", "/TN", WINDOWS_TASK_NAME, "/XML", paths.plistPath, "/F"],
