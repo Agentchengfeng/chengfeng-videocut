@@ -322,7 +322,7 @@ describe("videocut workflow API", () => {
       project: { status: "codex_continue_required", codexContinue: { stage: "subtitle_rebuild" } },
     });
     expect(relative(projectDir, join(projectDir, "剪口播/3_审核/cut_done.json")))
-      .toBe("剪口播/3_审核/cut_done.json");
+      .toBe(join("剪口播", "3_审核", "cut_done.json"));
     expect(JSON.parse(await readFile(join(projectDir, "剪口播/3_审核/cut_done.json"), "utf8")))
       .toMatchObject({ hasAudio: true, nextStep: "subtitle_rebuild" });
   });

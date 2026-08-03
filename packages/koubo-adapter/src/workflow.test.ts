@@ -347,7 +347,7 @@ describe("Koubo workflow snapshot and cut application", () => {
       sourceCut: "剪口播/3_审核/source_cut.mp4",
       cutDone: "剪口播/3_审核/cut_done.json",
     });
-    expect(await readlink(join(job, "source_cut.mp4"))).toBe("剪口播/3_审核/source_cut.mp4");
+    expect((await readlink(join(job, "source_cut.mp4"))).replaceAll("\\", "/")).toBe("剪口播/3_审核/source_cut.mp4");
     expect((await lstat(join(job, "source_cut.mp4"))).isSymbolicLink()).toBe(true);
     const done = JSON.parse(await readFile(result.cutDonePath, "utf8"));
     expect(done).toMatchObject({
@@ -560,7 +560,7 @@ describe("Koubo workflow snapshot and cut application", () => {
       },
     })).rejects.toMatchObject({ code: "workflow_failed" });
 
-    expect(await readlink(join(job, "source_cut.mp4"))).toBe("legacy/previous.mp4");
+    expect((await readlink(join(job, "source_cut.mp4"))).replaceAll("\\", "/")).toBe("legacy/previous.mp4");
     expect(await readCurrentCutPair(job)).toEqual(previous);
   });
 

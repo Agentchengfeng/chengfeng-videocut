@@ -11,7 +11,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { serializeProjectOperation } from "@video-workbench/core/node";
 import { runCli, type CliIo } from "./run";
 import { startStudioServer } from "./server/start";
@@ -135,7 +135,7 @@ describe("chengfeng-videocut CLI", () => {
 
     expect(code, capture.stdout.join(" | ")).toBe(0);
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.jobDir).toBe("/tmp/task-01");
+    expect(calls[0]?.jobDir).toBe(resolve("/tmp/task-01"));
     // Not an exact match any more: the CLI now also passes whatever credentials
     // are configured on this machine, and a test that pinned the whole options
     // object would pass or fail depending on whether the developer running it
@@ -801,7 +801,7 @@ describe("chengfeng-videocut CLI", () => {
         rendererPath: renderer,
       },
     });
-    expect(calls[0].directory).toEndWith("/demo");
+    expect(calls[0].directory).toEndWith(`${sep}demo`);
     expect(payload).toMatchObject({
       schemaVersion: 1,
       product: "chengfeng-videocut",
@@ -1101,7 +1101,7 @@ describe("chengfeng-videocut CLI", () => {
     expect(seen).not.toBeNull();
     // Exactly the kept ranges, in the order they are heard — not the whole source.
     expect(seen!.ranges).toEqual([{ start: 2, end: 3 }, { start: 6, end: 8 }]);
-    expect(seen!.source.endsWith("input/source.mp4")).toBe(true);
+    expect(seen!.source.endsWith(join("input", "source.mp4"))).toBe(true);
     const payload = JSON.parse(capture.stdout.join("")) as { data: { duration: number; keptRanges: number } };
     expect(payload.data.keptRanges).toBe(2);
     expect(payload.data.duration).toBe(3);
