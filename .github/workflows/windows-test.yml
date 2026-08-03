@@ -1,0 +1,27 @@
+name: windows-test
+
+# Windows 移植的靶机（产品侧）：在真实 x64 Windows 上跑全量单测。
+# 红名单就是移植工作清单；随各批次落地逐步翻绿。
+# continue-on-error 期间它是情报源，不是门禁；全绿后改为强制。
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: 安装 ffmpeg（部分测试需要）
+        run: choco install ffmpeg -y --no-progress
+        shell: pwsh
+      - name: 安装依赖
+        run: bun install --frozen-lockfile
+      - name: 全量单测
+        run: bun test packages apps/cli/src

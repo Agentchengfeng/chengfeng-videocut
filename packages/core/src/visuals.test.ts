@@ -83,7 +83,7 @@ describe("visual layers", () => {
 
   it("refuses a module path that leaves the project", () => {
     const document = createVisualDocument("visual-contract", "a".repeat(64));
-    for (const module of ["/etc/passwd.html", "../../secrets.html", "https://x/y.html"]) {
+    for (const module of ["/etc/passwd.html", "../../secrets.html", "https://x/y.html", "..\\..\\secrets.html", "modules\\evil.html"]) {
       expect(() => assertVisualDocument({
         ...document,
         layers: [{ id: "vis-0001", wordIds: ["w-1"], module }],

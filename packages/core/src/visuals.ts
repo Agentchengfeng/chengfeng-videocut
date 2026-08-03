@@ -259,6 +259,11 @@ function assertModulePath(value: unknown, index: number): string {
   if (path.split("/").some((part) => part === "..")) {
     invalid(`layers[${index}].module must stay inside the project`, { path });
   }
+  if (path.includes("\\")) {
+    // The module path contract is URL-style: forward slashes only. Backslashes
+    // would bypass the ".." check above and break overlay URL assembly.
+    invalid(`layers[${index}].module must use forward slashes`, { path });
+  }
   if (!path.toLowerCase().endsWith(".html")) {
     invalid(`layers[${index}].module must be an HTML module`, { path });
   }

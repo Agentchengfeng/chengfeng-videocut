@@ -15,7 +15,7 @@ import {
 } from "node:fs/promises";
 import { constants as fsConstants, existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, relative as relativePath, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isKnownNaturalPausePolicyVersion } from "@video-workbench/contracts";
 import {
@@ -1386,7 +1386,8 @@ export async function writeVisuals(
     // product being broken.
     for (const layer of document.layers) {
       const modulePath = resolve(project.directory, layer.module);
-      if (!modulePath.startsWith(`${project.directory}/`)) {
+      const relativeToProject = relativePath(project.directory, modulePath);
+      if (relativeToProject.startsWith("..") || isAbsolute(relativeToProject)) {
         throw new VideocutError(
           "invalid_visuals",
           "A visual layer module must stay inside the project",
@@ -1621,13 +1622,22 @@ export interface DoctorCapabilities {
 
 async function findExecutable(name: string): Promise<string | null> {
   const pathEntries = (process.env.PATH ?? "").split(delimiter).filter(Boolean);
+  // Windows executables carry PATHEXT suffixes (ffmpeg.exe), and X_OK is
+  // meaningless there — without this, doctor reports a perfectly working
+  // ffmpeg as missing and the whole Skill chain gates itself shut.
+  const suffixes = process.platform === "win32"
+    ? (process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean).map((s) => s.toLowerCase())
+    : [""];
+  const accessMode = process.platform === "win32" ? fsConstants.F_OK : fsConstants.X_OK;
   for (const pathEntry of pathEntries) {
-    const candidate = join(pathEntry, name);
-    try {
-      await access(candidate, fsConstants.X_OK);
-      return candidate;
-    } catch {
-      // Continue searching PATH.
+    for (const suffix of suffixes) {
+      const candidate = join(pathEntry, name + suffix);
+      try {
+        await access(candidate, accessMode);
+        return candidate;
+      } catch {
+        // Continue searching PATH.
+      }
     }
   }
   return null;

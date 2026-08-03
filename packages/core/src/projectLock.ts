@@ -205,10 +205,15 @@ async function acquireProjectLock(
       return { path: lockPath, owner, heartbeat };
     } catch (error) {
       // Publishing by rename reports an occupied lock differently per platform:
-      // EEXIST on macOS, ENOTEMPTY on Linux when the target directory is not
-      // empty. Both mean somebody else holds it; anything else is a real fault.
+      // EEXIST on macOS, ENOTEMPTY on Linux, EPERM/EACCES on Windows when the
+      // target directory already exists. All mean somebody else holds it;
+      // anything else is a real fault. The Windows codes stay platform-gated so
+      // a real POSIX permission fault is never misread as an occupied lock.
       const code = errorCode(error);
-      if (code !== "EEXIST" && code !== "ENOTEMPTY") throw error;
+      const occupied = process.platform === "win32"
+        ? ["EEXIST", "ENOTEMPTY", "EPERM", "EACCES"]
+        : ["EEXIST", "ENOTEMPTY"];
+      if (!occupied.includes(code ?? "")) throw error;
     }
 
     if (await recoverStaleLock(lockPath, staleMs)) continue;
