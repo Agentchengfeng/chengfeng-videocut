@@ -9,6 +9,7 @@
 const { createHash } = require("node:crypto");
 const {
   copyFileSync,
+  cpSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -226,7 +227,9 @@ async function main() {
   const backupDir = path.join(APP_ROOT, `.${VERSION}.backup.${process.pid}`);
   rmSync(newDir, { recursive: true, force: true });
   rmSync(backupDir, { recursive: true, force: true });
-  renameSync(packageDir, newDir);
+  // 临时目录与安装根可能不在同一卷（Windows 上 C:\Temp → D:\），rename 会 EXDEV；
+  // 与 install.sh 的 cp -R 同语义，复制进同卷暂存名后再原子 rename。
+  cpSync(packageDir, newDir, { recursive: true });
 
   if (existsSync(TARGET_DIR)) renameSync(TARGET_DIR, backupDir);
   try {

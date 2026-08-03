@@ -51,6 +51,7 @@ jobs:
           $env:CHENGFENG_VIDEOCUT_HOME = Join-Path $env:RUNNER_TEMP 'vc-home'
           $env:CHENGFENG_VIDEOCUT_DOWNLOAD_BASE = ([uri](Join-Path $PWD 'local-release')).AbsoluteUri
           node local-release/install.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $version = & (Join-Path $env:CHENGFENG_VIDEOCUT_HOME 'bin\chengfeng-videocut.cmd') --version
           Write-Host "launcher reports: $version"
           if ($version -notmatch '\d+\.\d+\.\d+') { exit 1 }
