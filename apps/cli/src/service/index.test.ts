@@ -20,7 +20,7 @@ afterEach(async () => {
 async function testHome(): Promise<string> {
   const home = await mkdtemp(join(tmpdir(), "videocut-service-"));
   cleanup.push(home);
-  const paths = studioServicePaths(home);
+  const paths = studioServicePaths(home, undefined, undefined, "darwin");
   await mkdir(join(paths.dataDir, "bin"), { recursive: true });
   await writeFile(paths.launcherPath, "#!/bin/sh\nexit 0\n");
   await chmod(paths.launcherPath, 0o755);
@@ -131,7 +131,7 @@ function fakeRuntime(homeDir: string, owner: "none" | "managed" | "foreground" |
 describe("Studio user service", () => {
   it("renders a stable, throttled LaunchAgent contract without a source path", async () => {
     const home = await testHome();
-    const paths = studioServicePaths(home);
+    const paths = studioServicePaths(home, undefined, undefined, "darwin");
     const plist = renderStudioLaunchAgent(paths);
     expect(plist).toContain("com.chengfeng.videocut.studio");
     expect(plist).toContain(paths.launcherPath);
@@ -179,7 +179,7 @@ describe("Studio user service", () => {
     const home = await testHome();
     const { dependencies } = fakeRuntime(home);
     const customRoot = join(home, "custom-videocut-home");
-    const customPaths = studioServicePaths(home, customRoot);
+    const customPaths = studioServicePaths(home, customRoot, undefined, "darwin");
     await mkdir(join(customRoot, "bin"), { recursive: true });
     await writeFile(customPaths.launcherPath, "#!/bin/sh\nexit 0\n");
     await chmod(customPaths.launcherPath, 0o755);
@@ -216,8 +216,8 @@ describe("Studio user service", () => {
     expect(second.ready).toBe(true);
     expect(first.pid).toBe(second.pid);
     expect(state.operations.filter((operation) => operation.startsWith("bootstrap "))).toHaveLength(1);
-    expect(await readFile(studioServicePaths(home).plistPath, "utf8"))
-      .toContain(studioServicePaths(home).launcherPath);
+    expect(await readFile(studioServicePaths(home, undefined, undefined, "darwin").plistPath, "utf8"))
+      .toContain(studioServicePaths(home, undefined, undefined, "darwin").launcherPath);
     expect((await readdir(join(home, "Library", "LaunchAgents")))
       .filter((name) => name.includes(".tmp"))).toEqual([]);
 
@@ -233,7 +233,7 @@ describe("Studio user service", () => {
   it("reconciles a stale or damaged LaunchAgent before starting", async () => {
     const home = await testHome();
     const { state, dependencies } = fakeRuntime(home);
-    const paths = studioServicePaths(home);
+    const paths = studioServicePaths(home, undefined, undefined, "darwin");
     await mkdir(join(home, "Library", "LaunchAgents"), { recursive: true });
     await writeFile(paths.plistPath, "STALE-PLIST\n");
 
@@ -247,7 +247,7 @@ describe("Studio user service", () => {
   it("reconciles a loaded stale LaunchAgent whose PID still owns Product health", async () => {
     const home = await testHome();
     const { state, dependencies } = fakeRuntime(home, "managed");
-    const paths = studioServicePaths(home);
+    const paths = studioServicePaths(home, undefined, undefined, "darwin");
     await mkdir(join(home, "Library", "LaunchAgents"), { recursive: true });
     await writeFile(paths.plistPath, "STALE-PLIST-WITHOUT-SERVICE-MODE\n");
     state.loaded = true;
@@ -264,7 +264,7 @@ describe("Studio user service", () => {
   it("fails closed when a loaded job owns the port but health cannot prove Product identity", async () => {
     const home = await testHome();
     const { state, dependencies } = fakeRuntime(home, "managed");
-    const paths = studioServicePaths(home);
+    const paths = studioServicePaths(home, undefined, undefined, "darwin");
     await mkdir(join(home, "Library", "LaunchAgents"), { recursive: true });
     await writeFile(paths.plistPath, renderStudioLaunchAgent(paths));
     state.loaded = true;
@@ -301,7 +301,7 @@ describe("Studio user service", () => {
   it("recreates deleted log directories before starting an installed service", async () => {
     const home = await testHome();
     const { dependencies } = fakeRuntime(home);
-    const paths = studioServicePaths(home);
+    const paths = studioServicePaths(home, undefined, undefined, "darwin");
     await mkdir(join(home, "Library", "LaunchAgents"), { recursive: true });
     await writeFile(paths.plistPath, renderStudioLaunchAgent(paths));
     await rm(join(paths.dataDir, "logs"), { recursive: true, force: true });
@@ -465,7 +465,7 @@ describe("Studio user service", () => {
   it("reads only a bounded tail of each persistent log", async () => {
     const home = await testHome();
     const { dependencies } = fakeRuntime(home);
-    const paths = studioServicePaths(home);
+    const paths = studioServicePaths(home, undefined, undefined, "darwin");
     await mkdir(join(paths.dataDir, "logs"), { recursive: true });
     await writeFile(paths.stdoutLogPath, `${Array.from({ length: 30 }, (_, index) => `out-${index}`).join("\n")}\n`);
     await writeFile(paths.stderrLogPath, `${Array.from({ length: 30 }, (_, index) => `err-${index}`).join("\n")}\n`);
@@ -477,7 +477,7 @@ describe("Studio user service", () => {
   it("recovers an abandoned stale operation lock without removing a live lock", async () => {
     const home = await testHome();
     const { dependencies } = fakeRuntime(home);
-    const paths = studioServicePaths(home);
+    const paths = studioServicePaths(home, undefined, undefined, "darwin");
     await mkdir(paths.operationLockPath, { recursive: true });
     await writeFile(join(paths.operationLockPath, "owner.json"), JSON.stringify({
       pid: 7777,

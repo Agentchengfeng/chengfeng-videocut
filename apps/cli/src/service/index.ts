@@ -311,17 +311,16 @@ function resolveDependencies(input: StudioServiceDependencies): ResolvedServiceD
 export function studioServicePaths(
   homeDir = homedir(),
   dataDir = join(homeDir, ".chengfeng-videocut"),
-  launcherPath = join(
-    dataDir,
-    "bin",
-    process.platform === "win32" ? "chengfeng-videocut.cmd" : "chengfeng-videocut",
-  ),
+  launcherPath?: string,
   platform: string = process.platform,
 ): StudioServicePaths {
   return {
     homeDir,
     dataDir: resolve(dataDir),
-    launcherPath: resolve(launcherPath),
+    launcherPath: resolve(
+      launcherPath ??
+      join(dataDir, "bin", platform === "win32" ? "chengfeng-videocut.cmd" : "chengfeng-videocut"),
+    ),
     // 服务定义文件：darwin 是 LaunchAgent plist，win32 是计划任务 XML。
     plistPath: platform === "win32"
       ? join(dataDir, "service", "studio-task.xml")
