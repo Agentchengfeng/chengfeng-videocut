@@ -104,11 +104,11 @@ function sha256(filePath) {
   return createHash("sha256").update(readFileSync(filePath)).digest("hex");
 }
 
-function runTar(args) {
-  // PATH 里可能是 Git for Windows 的 MSYS tar（在 Git Bash 下必然是），
-  // 它把反斜杠当转义符，收到 C:\Users\... 会报「无法读取」。正斜杠两种 tar 都认。
-  const normalized = args.map((arg) => (typeof arg === "string" ? arg.replaceAll("\\", "/") : arg));
-  const result = spawnSync("tar", normalized, { encoding: "utf8" });
+// PATH 上可能是 Git for Windows 的 GNU tar（Git Bash 下必然是），它把 `C:` 读成
+// rsh 远程主机名（"Cannot connect to C: resolve failed"）。所以一律在归档所在目录
+// 里用相对文件名调用，命令行里不出现盘符——bsdtar 与 GNU tar 都接受这种形式。
+function runTar(args, cwd) {
+  const result = spawnSync("tar", args, { encoding: "utf8", cwd });
   if (result.error) {
     fail(
       "找不到 tar：macOS 系统自带；Windows 10 1803+ 系统自带（C\\\\Windows\\\\System32\\\\tar.exe）。",
@@ -190,7 +190,7 @@ async function main() {
     fail("SHA-256 校验失败；文件可能不完整，安装已停止。");
   }
 
-  const listing = runTar(["-tzf", archivePath]);
+  const listing = runTar(["-tzf", ARCHIVE_NAME], tmpDir);
   if (listing.status !== 0) {
     fail(`安装包无法读取，安装已停止。tar 退出码 ${listing.status}：${(listing.stderr || "").trim().slice(0, 300)}`);
   }
@@ -200,7 +200,7 @@ async function main() {
       fail("安装包包含不安全的路径，安装已停止。");
     }
   }
-  const extraction = runTar(["-xzf", archivePath, "-C", tmpDir]);
+  const extraction = runTar(["-xzf", ARCHIVE_NAME], tmpDir);
   if (extraction.status !== 0) {
     fail(`安装包解压失败，安装已停止。tar 退出码 ${extraction.status}：${(extraction.stderr || "").trim().slice(0, 300)}`);
   }
