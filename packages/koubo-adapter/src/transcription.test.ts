@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseTranscriptWords } from "@video-workbench/core";
-import { buildVolcengineTranscript, transcribeKouboVideo } from "./transcription";
+import { buildCutAudioArgs, buildVolcengineTranscript, transcribeKouboVideo } from "./transcription";
 
 const cleanup: string[] = [];
 
@@ -164,6 +164,55 @@ describe("Volcengine Runtime transcription", () => {
       output: "../outside.json",
       apiKey: "test-key",
     })).rejects.toMatchObject({ code: "invalid_argument" });
+  });
+
+  it("提取音频回退到 wav 档时，ASR 请求声明的 format 跟着变", async () => {
+    // 2026-08-04 Windows 用户真机：他的 ffmpeg 构建连 file:C:/… 正斜杠也推断不出
+    // 输出格式。修法是显式 -f + 档位回退；但回退成 wav 后如果请求里还硬编码
+    // "mp3"，就是骗服务端 —— 格式必须从提取一路传到请求体。
+    const { job } = await fixture();
+    const requests: Array<{ url: string; body: unknown }> = [];
+    await transcribeKouboVideo(job, {
+      video: "uploads/source.mp4",
+      output: "cloud/transcript.json",
+      apiKey: "test-key",
+      pollIntervalMs: 0,
+      maxPollAttempts: 2,
+      dependencies: {
+        probe,
+        extractAudio: async (_input, output) => {
+          await writeFile(output, "fixture-audio");
+          return "wav";
+        },
+        fetch: async (url, init) => {
+          requests.push({ url, body: JSON.parse(String(init.body)) });
+          if (url.endsWith("/submit")) return response({ result: {} });
+          return response({
+            result: { utterances: [{ words: [{ text: "你", start_time: 0, end_time: 200 }] }] },
+          });
+        },
+        sleep: async () => {},
+        uuid: () => "request-id",
+      },
+    });
+    expect(requests[0]?.body).toMatchObject({ audio: { format: "wav" } });
+  });
+});
+
+describe("剪后音频参数", () => {
+  const ranges = [{ start: 0, end: 1 }];
+
+  it("显式写 -f，不让 ffmpeg 从文件名推断输出格式", () => {
+    const args = buildCutAudioArgs("/a/source.mp4", ranges, "/a/audio.mp3");
+    const formatFlag = args.indexOf("-f");
+    expect(formatFlag).toBeGreaterThan(-1);
+    expect(args[formatFlag + 1]).toBe("mp3");
+  });
+
+  it("wav 档带 16k 单声道重采样，与 ASR 声明的 rate/bits/channel 一致", () => {
+    const wav = { format: "wav", codec: "pcm_s16le", extraArgs: ["-ar", "16000", "-ac", "1"] };
+    const args = buildCutAudioArgs("/a/source.mp4", ranges, "/a/audio.mp3", wav);
+    expect(args.join(" ")).toContain("-acodec pcm_s16le -ar 16000 -ac 1 -f wav");
   });
 });
 

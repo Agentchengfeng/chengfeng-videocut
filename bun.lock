@@ -12,7 +12,7 @@
     },
     "apps/cli": {
       "name": "chengfeng-videocut",
-      "version": "0.4.2",
+      "version": "0.4.3",
       "bin": {
         "chengfeng-videocut": "./dist/cli.js",
       },
@@ -26,7 +26,7 @@
     },
     "apps/studio": {
       "name": "@video-workbench/studio",
-      "version": "0.4.2",
+      "version": "0.4.3",
       "dependencies": {
         "@codemirror/autocomplete": "^6.20.1",
         "@codemirror/commands": "^6.10.3",
@@ -73,25 +73,25 @@
     },
     "packages/contracts": {
       "name": "@video-workbench/contracts",
-      "version": "0.4.2",
+      "version": "0.4.3",
     },
     "packages/core": {
       "name": "@video-workbench/core",
-      "version": "0.4.2",
+      "version": "0.4.3",
       "dependencies": {
         "@video-workbench/contracts": "workspace:*",
       },
     },
     "packages/hyperframes-adapter": {
       "name": "@video-workbench/hyperframes-adapter",
-      "version": "0.4.2",
+      "version": "0.4.3",
       "dependencies": {
         "@video-workbench/contracts": "workspace:*",
       },
     },
     "packages/koubo-adapter": {
       "name": "@video-workbench/koubo-adapter",
-      "version": "0.4.2",
+      "version": "0.4.3",
       "dependencies": {
         "@video-workbench/contracts": "workspace:*",
         "@video-workbench/core": "workspace:*",

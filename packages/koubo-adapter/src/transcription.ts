@@ -109,7 +109,8 @@ interface FetchLikeResponse {
 }
 
 interface TranscriptionDependencies {
-  extractAudio: (input: string, output: string) => Promise<void>;
+  // 返回实际用上的 ASR 格式（mp3/wav）；注入的 mock 返回 void 时按 mp3 处理。
+  extractAudio: (input: string, output: string) => Promise<string | void>;
   fetch: (input: string, init: RequestInit) => Promise<FetchLikeResponse>;
   probe: (input: string) => Promise<MediaProbe>;
   sleep: (milliseconds: number) => Promise<void>;
@@ -178,20 +179,61 @@ async function assertNewTaskOutput(root: string, value: string): Promise<string>
   return output;
 }
 
-function runFfmpeg(input: string, output: string): Promise<void> {
+/**
+ * 送去云端 ASR 的音频档位。**永远显式写 `-f`**：ffmpeg 从文件名推断输出格式
+ * 的行为跨版本/跨构建并不一致（2026-08-04 一位 Windows 用户实测：路径合法、
+ * 扩展名也在，仍报 "Unable to choose an output format"），显式指定就没有
+ * 推断这一步。编码器按可用性回退——libmp3lame 是外部库，精简构建里可能没有；
+ * wav/pcm_s16le 内置于任何 ffmpeg，只是文件大。档位只能挑火山 ASR 收的格式
+ * （mp3 / wav / ogg / raw），format 字段会原样写进 ASR 请求。
+ */
+export interface AudioProfile {
+  /** 原样写进 ASR 请求 audio.format 的值，必须是火山收的格式。 */
+  format: string;
+  codec: string;
+  extraArgs: readonly string[];
+}
+
+const AUDIO_PROFILES: readonly AudioProfile[] = [
+  { format: "mp3", codec: "libmp3lame", extraArgs: [] },
+  // wav 档重采样到 16k/单声道，与 ASR 请求里声明的 rate/bits/channel 保持一致。
+  { format: "wav", codec: "pcm_s16le", extraArgs: ["-ar", "16000", "-ac", "1"] },
+];
+
+function runFfmpegOnce(args: readonly string[]): Promise<{ code: number; stderr: string }> {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn("ffmpeg", [
-      "-y", "-v", "error", "-i", ffmpegFileArg(input), "-vn", "-acodec", "libmp3lame", ffmpegFileArg(output),
-    ], { stdio: ["ignore", "ignore", "pipe"] });
+    const child = spawn("ffmpeg", [...args], { stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";
     child.stderr?.setEncoding("utf8");
     child.stderr?.on("data", (chunk: string) => { stderr += chunk; });
     child.on("error", reject);
-    child.on("close", (code) => {
-      if (code === 0) resolvePromise();
-      else reject(new Error(`ffmpeg audio extraction failed (${code ?? "signal"}): ${stderr.trim().slice(-1000)}`));
-    });
+    child.on("close", (code) => resolvePromise({ code: code ?? 1, stderr }));
   });
+}
+
+/** 该错误说明这台机器的 ffmpeg 缺这个档位的容器或编码器，换下一档还有救。 */
+function looksLikeUnsupportedProfile(stderr: string): boolean {
+  return /Unknown encoder|Unable to choose an output format|Requested output format .* is not|Unknown output format|Encoder .* not found/i
+    .test(stderr);
+}
+
+async function runFfmpeg(input: string, output: string): Promise<string> {
+  const failures: string[] = [];
+  for (const profile of AUDIO_PROFILES) {
+    const result = await runFfmpegOnce([
+      "-y", "-v", "error", "-i", ffmpegFileArg(input),
+      "-vn", "-acodec", profile.codec, ...profile.extraArgs,
+      "-f", profile.format, ffmpegFileArg(output),
+    ]);
+    if (result.code === 0) return profile.format;
+    failures.push(`${profile.format}/${profile.codec}: ${result.stderr.trim().slice(-400)}`);
+    if (!looksLikeUnsupportedProfile(result.stderr)) break;
+  }
+  throw new Error(
+    `ffmpeg audio extraction failed. 这台机器的 ffmpeg 没有可用的音频档位；` +
+    `请确认 ffmpeg 完整安装（Windows: winget install Gyan.FFmpeg；macOS: brew install ffmpeg），` +
+    `或用 ffmpeg -muxers / -encoders 检查。逐档报错：\n${failures.join("\n")}`,
+  );
 }
 
 function delay(milliseconds: number): Promise<void> {
@@ -408,6 +450,7 @@ export function buildVolcengineTranscript(input: {
 
 async function submitAndPoll(input: {
   audio: string;
+  audioFormat?: string;
   apiKey: string;
   resourceId: string;
   modelName: string;
@@ -432,7 +475,7 @@ async function submitAndPoll(input: {
       user: { uid: "chengfeng-videocut" },
       audio: {
         data: audioData.toString("base64"),
-        format: "mp3",
+        format: input.audioFormat ?? "mp3",
         codec: "raw",
         rate: 16_000,
         bits: 16,
@@ -533,6 +576,7 @@ export function buildCutAudioArgs(
   source: string,
   ranges: readonly { start: number; end: number }[],
   output: string,
+  profile: AudioProfile = AUDIO_PROFILES[0],
 ): string[] {
   const parts = ranges.map((range, index) =>
     `[0:a]atrim=start=${range.start.toFixed(6)}:end=${range.end.toFixed(6)},`
@@ -542,22 +586,25 @@ export function buildCutAudioArgs(
   return [
     "-y", "-v", "error", "-i", ffmpegFileArg(source),
     "-filter_complex", filter, "-map", "[out]",
-    "-acodec", "libmp3lame", ffmpegFileArg(output),
+    // 与 runFfmpeg 同理：显式 -f，不让 ffmpeg 从文件名推断。
+    "-acodec", profile.codec, ...profile.extraArgs,
+    "-f", profile.format, ffmpegFileArg(output),
   ];
 }
 
-function runFfmpegArgs(args: readonly string[]): Promise<void> {
-  return new Promise((resolvePromise, reject) => {
-    const child = spawn("ffmpeg", [...args], { stdio: ["ignore", "ignore", "pipe"] });
-    let stderr = "";
-    child.stderr?.setEncoding("utf8");
-    child.stderr?.on("data", (chunk: string) => { stderr += chunk; });
-    child.on("error", reject);
-    child.on("close", (code) => {
-      if (code === 0) resolvePromise();
-      else reject(new Error(`ffmpeg cut audio failed (${code ?? "signal"}): ${stderr.trim().slice(-1000)}`));
-    });
-  });
+async function runCutAudioWithFallback(
+  source: string,
+  ranges: readonly { start: number; end: number }[],
+  output: string,
+): Promise<string> {
+  const failures: string[] = [];
+  for (const profile of AUDIO_PROFILES) {
+    const result = await runFfmpegOnce(buildCutAudioArgs(source, ranges, output, profile));
+    if (result.code === 0) return profile.format;
+    failures.push(`${profile.format}/${profile.codec}: ${result.stderr.trim().slice(-400)}`);
+    if (!looksLikeUnsupportedProfile(result.stderr)) break;
+  }
+  throw new Error(`ffmpeg cut audio failed. 逐档报错：\n${failures.join("\n")}`);
 }
 
 export interface TranscribeProjectCutOptions {
@@ -574,7 +621,7 @@ export interface TranscribeProjectCutOptions {
   pollIntervalMs?: number;
   maxPollAttempts?: number;
   dependencies?: Partial<TranscriptionDependencies> & {
-    extractCutAudio?: (source: string, ranges: readonly { start: number; end: number }[], output: string) => Promise<void>;
+    extractCutAudio?: (source: string, ranges: readonly { start: number; end: number }[], output: string) => Promise<string | void>;
   };
 }
 
@@ -601,8 +648,7 @@ export async function transcribeProjectCut(
   }
   const dependencies = { ...defaultDependencies(), ...options.dependencies };
   const extractCutAudio = options.dependencies?.extractCutAudio
-    ?? ((source: string, keep: readonly { start: number; end: number }[], output: string) =>
-      runFfmpegArgs(buildCutAudioArgs(source, keep, output)));
+    ?? runCutAudioWithFallback;
   const media = await dependencies.probe(options.source);
   if (!media.hasAudio) {
     throw new VideocutError("media_has_no_audio", "Source video has no audio stream", { source: options.source });
@@ -611,9 +657,10 @@ export async function transcribeProjectCut(
   const temporaryDirectory = await mkdtemp(join(tmpdir(), "chengfeng-videocut-cut-audio-"));
   const audio = join(temporaryDirectory, "audio.mp3");
   try {
-    await extractCutAudio(options.source, ranges, audio);
+    const audioFormat = (await extractCutAudio(options.source, ranges, audio)) ?? "mp3";
     const result = await submitAndPoll({
       audio,
+      audioFormat,
       apiKey,
       resourceId: (options.resourceId ?? process.env.VOLCENGINE_ASR_RESOURCE_ID ?? DEFAULT_RESOURCE_ID).trim(),
       modelName: (options.modelName ?? process.env.VOLCENGINE_ASR_MODEL_NAME ?? DEFAULT_MODEL_NAME).trim(),
@@ -669,9 +716,10 @@ export async function transcribeKouboVideo(
   const temporaryDirectory = await mkdtemp(join(tmpdir(), "chengfeng-videocut-transcribe-"));
   const audio = join(temporaryDirectory, "audio.mp3");
   try {
-    await dependencies.extractAudio(source, audio);
+    const audioFormat = (await dependencies.extractAudio(source, audio)) ?? "mp3";
     const result = await submitAndPoll({
       audio,
+      audioFormat,
       apiKey,
       resourceId: (options.resourceId ?? process.env.VOLCENGINE_ASR_RESOURCE_ID ?? DEFAULT_RESOURCE_ID).trim(),
       modelName: (options.modelName ?? process.env.VOLCENGINE_ASR_MODEL_NAME ?? DEFAULT_MODEL_NAME).trim(),
