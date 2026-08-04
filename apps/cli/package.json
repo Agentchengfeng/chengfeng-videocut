@@ -1,6 +1,6 @@
 {
   "name": "chengfeng-videocut",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "description": "CLI and local Studio server for chengfeng-videocut",
   "type": "module",
   "bin": {

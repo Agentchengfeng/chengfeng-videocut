@@ -1715,7 +1715,27 @@ async function prepareKouboProjectSnapshot(
 
   const visualPlanPath = join(jobDir, "visual-plan.json");
   const config = isObject(project.config) ? project.config : {};
-  const ratio = String(config.aspectRatio ?? previous.aspectRatio ?? "3:4");
+  // 画幅比永远等于源视频的显示比例——产品没有裁切，档案里声明一个与素材
+  // 不符的比例，只会让画布、Sharp 校验和导出计划全部错位（存量项目曾被
+  // 枚举逼着给竖屏视频选 16:9，Sharp 校验因此拦下自己生成的正确预览）。
+  // prepare 是幂等修复点：探测得到显示尺寸就校正档案；探测不了保持原值。
+  let ratio = String(config.aspectRatio ?? previous.aspectRatio ?? "3:4");
+  try {
+    const probed = await probeMedia(videoPath);
+    if (probed.width > 0 && probed.height > 0) {
+      const derived = deriveAspectRatio(probed.width, probed.height);
+      const declared = parseAspectRatio(ratio);
+      const mismatched = !declared ||
+        Math.abs(declared.w / declared.h - probed.width / probed.height) / (probed.width / probed.height) > 0.02;
+      if (mismatched && derived !== ratio) {
+        ratio = derived;
+        config.aspectRatio = derived;
+        project.config = config;
+      }
+    }
+  } catch {
+    // 探测失败（例如测试夹具的假媒体）时沿用档案值，不阻断 prepare。
+  }
   const dimensions = frameDimensions(ratio);
   const videoSource = projectRelativePath(jobDir, videoPath);
   const sourceSha256 = await sha256File(videoPath);

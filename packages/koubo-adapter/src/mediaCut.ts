@@ -83,11 +83,29 @@ function rational(value: unknown): number {
   return finite(text, 0);
 }
 
+/**
+ * 视频流声明的显示旋转（度）。手机竖拍存储为横向帧 + display matrix
+ * （现代文件在 side_data_list.rotation；老文件在 tags.rotate）。
+ */
+function displayRotation(video: Record<string, unknown> | undefined): number {
+  if (!video) return 0;
+  const sideData = Array.isArray(video.side_data_list) ? video.side_data_list : [];
+  for (const entry of sideData) {
+    if (entry && typeof entry === "object" && "rotation" in entry) {
+      const rotation = finite((entry as Record<string, unknown>).rotation);
+      if (rotation !== 0) return rotation;
+    }
+  }
+  const tags = video.tags && typeof video.tags === "object" ? video.tags as Record<string, unknown> : {};
+  return finite(tags.rotate);
+}
+
 export async function probeMedia(path: string): Promise<MediaProbe> {
   const { stdout } = await runCommand("ffprobe", [
     "-v", "error",
     "-show_entries",
-    "format=duration:stream=codec_type,bit_rate,profile,pix_fmt,width,height,r_frame_rate,avg_frame_rate",
+    "format=duration:stream=codec_type,bit_rate,profile,pix_fmt,width,height,r_frame_rate,avg_frame_rate"
+      + ":stream_side_data=rotation:stream_tags=rotate",
     "-of", "json",
     ffmpegFileArg(path),
   ]);
@@ -98,6 +116,13 @@ export async function probeMedia(path: string): Promise<MediaProbe> {
   const streams = Array.isArray(payload.streams) ? payload.streams : [];
   const video = streams.find((stream) => stream.codec_type === "video");
   const audio = streams.find((stream) => stream.codec_type === "audio");
+  // 宽高按**显示方向**报告：ffmpeg 转码时自动应用旋转，播放器渲染时也应用，
+  // 所以存储坐标在整个产品里没有任何消费者。不归一化的话，手机竖拍
+  // （1920×1080 + rotate 90）会推导出横屏画幅、生成横屏期望，再拦下
+  // 自己转出来的竖屏预览——2026-08-04 用户真机 Sharp 校验失败正是这条链。
+  const storedWidth = Math.max(0, finite(video?.width));
+  const storedHeight = Math.max(0, finite(video?.height));
+  const quarterTurned = Math.abs(displayRotation(video)) % 180 === 90;
   return {
     duration: Math.max(0, finite(payload.format?.duration)),
     hasVideo: Boolean(video),
@@ -105,8 +130,8 @@ export async function probeMedia(path: string): Promise<MediaProbe> {
     videoBitrate: Math.max(0, finite(video?.bit_rate)),
     videoProfile: String(video?.profile ?? "high").toLowerCase(),
     pixelFormat: String(video?.pix_fmt ?? "yuv420p"),
-    width: Math.max(0, finite(video?.width)),
-    height: Math.max(0, finite(video?.height)),
+    width: quarterTurned ? storedHeight : storedWidth,
+    height: quarterTurned ? storedWidth : storedHeight,
     frameRate: Math.max(0, rational(video?.avg_frame_rate) || rational(video?.r_frame_rate)),
   };
 }

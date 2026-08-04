@@ -219,3 +219,31 @@ describe("media cut", () => {
     }
   }, 30_000);
 });
+
+describe("probeMedia 旋转归一", () => {
+  it("手机竖拍（横向帧 + display matrix）按显示方向报告宽高", async () => {
+    // 2026-08-04 真机：iPhone 竖拍 1920×1080+rotate90，probe 不读旋转 →
+    // Sharp 校验按横屏期望 1440×810，拦下自己转出来的 608×1080 竖屏预览。
+    const root = await mkdtemp(join(tmpdir(), "chengfeng-videocut-rotate-"));
+    cleanup.push(root);
+    const flat = join(root, "flat.mp4");
+    const rotated = join(root, "rotated.mp4");
+    await command("ffmpeg", [
+      "-y", "-v", "error",
+      "-f", "lavfi", "-i", "testsrc=size=1920x1080:rate=30:duration=1",
+      "-f", "lavfi", "-i", "sine=duration=1",
+      "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", flat,
+    ]);
+    await command("ffmpeg", [
+      "-y", "-v", "error", "-display_rotation", "90", "-i", flat, "-c", "copy", rotated,
+    ]);
+
+    const probe = await probeMedia(rotated);
+    expect(probe.width).toBe(1080);
+    expect(probe.height).toBe(1920);
+    // 无旋转的文件不受影响。
+    const flatProbe = await probeMedia(flat);
+    expect(flatProbe.width).toBe(1920);
+    expect(flatProbe.height).toBe(1080);
+  });
+});
