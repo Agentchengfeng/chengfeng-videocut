@@ -191,7 +191,9 @@ async function main() {
   }
 
   const listing = runTar(["-tzf", archivePath]);
-  if (listing.status !== 0) fail("安装包无法读取，安装已停止。");
+  if (listing.status !== 0) {
+    fail(`安装包无法读取，安装已停止。tar 退出码 ${listing.status}：${(listing.stderr || "").trim().slice(0, 300)}`);
+  }
   for (const entry of listing.stdout.split(/\r?\n/).filter(Boolean)) {
     const normalized = entry.replaceAll("\\", "/");
     if (normalized.startsWith("/") || normalized.split("/").some((part) => part === "..")) {
@@ -199,7 +201,9 @@ async function main() {
     }
   }
   const extraction = runTar(["-xzf", archivePath, "-C", tmpDir]);
-  if (extraction.status !== 0) fail("安装包解压失败，安装已停止。");
+  if (extraction.status !== 0) {
+    fail(`安装包解压失败，安装已停止。tar 退出码 ${extraction.status}：${(extraction.stderr || "").trim().slice(0, 300)}`);
+  }
 
   const packageDir = path.join(tmpDir, `chengfeng-videocut-${VERSION}`);
   for (const [relativePath, label] of [
