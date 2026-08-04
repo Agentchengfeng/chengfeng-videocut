@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "product": "chengfeng-videocut",
-  "studioVersion": "0.4.0",
+  "studioVersion": "0.4.1",
   "features": {
     "topLevelViews": [
       "storyboard",
