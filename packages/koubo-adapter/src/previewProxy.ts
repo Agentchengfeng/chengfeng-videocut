@@ -11,6 +11,7 @@ import {
 } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { ffmpegFileArg, ffmpegOutputArgs } from "@video-workbench/core";
+import { displayRotation } from "./mediaCut";
 
 const CACHE_SCHEMA = "chengfeng-videocut-preview-proxy-v1";
 const MAX_WIDTH = 960;
@@ -296,7 +297,8 @@ export async function probePreviewProxyMedia(
   const { stdout } = await runCommand(ffprobePath, [
     "-v", "error",
     "-show_entries",
-    "format=duration,start_time:stream=codec_type,codec_name,width,height,r_frame_rate,avg_frame_rate,start_time",
+    "format=duration,start_time:stream=codec_type,codec_name,width,height,r_frame_rate,avg_frame_rate,start_time"
+      + ":stream_side_data=rotation:stream_tags=rotate",
     "-of", "json",
     ffmpegFileArg(path),
   ]);
@@ -343,6 +345,14 @@ export async function probePreviewProxyMedia(
     .reduce((largest, value) => (
       Math.abs(value) > Math.abs(largest) ? value : largest
     ), 0);
+  // 与 probeMedia 同一条纪律：宽高按显示方向报告。这个探测器同时喂
+  // validateProxyProbe 的「宽高比不许变」检查与 Sharp 校验的期望尺寸——
+  // 不归一化的话，竖拍源（横向帧 + display matrix）会被自己的校验误杀：
+  // 源报 1.78 横屏、转码产物实际 0.56 竖屏，比例检查必炸，正确的 proxy
+  // 被当损坏删除；Sharp 预览同理被横屏期望拦截（2026-08-04 审计实锤）。
+  const quarterTurned = Math.abs(displayRotation(video)) % 180 === 90;
+  const storedWidth = Math.max(0, finite(video?.width, 0));
+  const storedHeight = Math.max(0, finite(video?.height, 0));
   return {
     duration,
     startTime,
@@ -350,8 +360,8 @@ export async function probePreviewProxyMedia(
     audioStartTime,
     hasVideo: Boolean(video),
     hasAudio: Boolean(audio),
-    width: Math.max(0, finite(video?.width, 0)),
-    height: Math.max(0, finite(video?.height, 0)),
+    width: quarterTurned ? storedHeight : storedWidth,
+    height: quarterTurned ? storedWidth : storedHeight,
     frameRate: Math.max(0, averageFrameRate || rational(video?.r_frame_rate)),
     videoCodec: video ? String(video.codec_name ?? "") : null,
     audioCodec: audio ? String(audio.codec_name ?? "") : null,

@@ -353,3 +353,37 @@ describe("preview proxy contract", () => {
     expect(cached).toMatchObject({ status: "ready", cacheHit: true, proxyPath: result.proxyPath });
   }, 20_000);
 });
+
+describe("竖拍源（旋转元数据）", () => {
+  it("真 ffmpeg：竖拍源的 proxy 不再被「比例被改」误杀", async () => {
+    // 2026-08-04 审计实锤：probePreviewProxyMedia 不读旋转时，竖拍源报横屏
+    // 1.78、转码产物实际竖屏 0.56，validateProxyProbe 的比例检查必炸，
+    // 正确的 proxy 被当损坏删除——竖拍用户永远拿不到预览代理。
+    const { spawn } = await import("node:child_process");
+    const { mkdtemp } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const run = (args: string[]) => new Promise<void>((resolvePromise, reject) => {
+      const child = spawn("ffmpeg", args, { stdio: "ignore" });
+      child.on("error", reject);
+      child.on("close", (code) => code === 0 ? resolvePromise() : reject(new Error(`ffmpeg ${code}`)));
+    });
+    const root = await mkdtemp(join(tmpdir(), "videocut-proxy-rotate-"));
+    const flat = join(root, "flat.mp4");
+    const rotated = join(root, "rotated.mp4");
+    await run(["-y", "-v", "error",
+      "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30:duration=1",
+      "-f", "lavfi", "-i", "sine=duration=1",
+      "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", flat]);
+    await run(["-y", "-v", "error", "-display_rotation", "90", "-i", flat, "-c", "copy", rotated]);
+
+    const result = await ensurePreviewProxy({
+      sourcePath: rotated,
+      cacheDirectory: join(root, "cache"),
+    });
+    expect(result.status).toBe("ready");
+    // 源与产物都按显示方向报告：双双竖屏，比例检查自洽。
+    expect((result.sourceProbe?.height ?? 0) > (result.sourceProbe?.width ?? 0)).toBe(true);
+    expect((result.proxyProbe?.height ?? 0) > (result.proxyProbe?.width ?? 0)).toBe(true);
+  }, 60_000);
+});

@@ -87,7 +87,7 @@ function rational(value: unknown): number {
  * 视频流声明的显示旋转（度）。手机竖拍存储为横向帧 + display matrix
  * （现代文件在 side_data_list.rotation；老文件在 tags.rotate）。
  */
-function displayRotation(video: Record<string, unknown> | undefined): number {
+export function displayRotation(video: Record<string, unknown> | undefined): number {
   if (!video) return 0;
   const sideData = Array.isArray(video.side_data_list) ? video.side_data_list : [];
   for (const entry of sideData) {
