@@ -14,6 +14,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, relative, resolve } from "node:path";
+import { ffmpegFileArg } from "@video-workbench/core";
 
 const API_SCHEMA_VERSION = 1 as const;
 const FRAME_CACHE_VERSION = 1 as const;
@@ -398,7 +399,7 @@ function runFfmpeg(
       "-nostdin",
       "-y",
       "-ss", input.time.toFixed(3),
-      "-i", `file:${input.sourcePath}`,
+      "-i", ffmpegFileArg(input.sourcePath),
       "-map", "0:v:0",
       "-frames:v", "1",
       "-vf", `scale=${input.width}:-2:flags=lanczos`,
@@ -408,7 +409,7 @@ function runFfmpeg(
       "-c:v", "mjpeg",
       "-q:v", "3",
       "-f", "image2",
-      `file:${input.targetPath}`,
+      ffmpegFileArg(input.targetPath),
     ], { stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";
     let settled = false;
@@ -468,7 +469,7 @@ function runWaveformFfmpeg(
       "-hide_banner",
       "-loglevel", "error",
       "-nostdin",
-      "-i", `file:${sourcePath}`,
+      "-i", ffmpegFileArg(sourcePath),
       "-filter_complex",
       `[0:a:0]aformat=channel_layouts=mono,showwavespic=s=${WAVEFORM_WIDTH}x${WAVEFORM_HEIGHT}:colors=white:scale=lin[waveform]`,
       "-map", "[waveform]",

@@ -10,6 +10,7 @@ import {
   stat,
 } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { ffmpegFileArg } from "@video-workbench/core";
 
 const CACHE_SCHEMA = "chengfeng-videocut-preview-proxy-v1";
 const MAX_WIDTH = 960;
@@ -297,7 +298,7 @@ export async function probePreviewProxyMedia(
     "-show_entries",
     "format=duration,start_time:stream=codec_type,codec_name,width,height,r_frame_rate,avg_frame_rate,start_time",
     "-of", "json",
-    `file:${path}`,
+    ffmpegFileArg(path),
   ]);
   const payload = JSON.parse(stdout) as {
     format?: { duration?: string | number; start_time?: string | number };
@@ -315,7 +316,7 @@ export async function probePreviewProxyMedia(
       "-skip_frame", "nokey",
       "-show_entries", "frame=best_effort_timestamp_time",
       "-of", "json",
-      `file:${path}`,
+      ffmpegFileArg(path),
     ]);
     const keyframePayload = JSON.parse(keyframeResult.stdout) as {
       frames?: Array<{ best_effort_timestamp_time?: string | number }>;
@@ -373,7 +374,7 @@ export function buildPreviewProxyFfmpegArgs(input: PreviewProxyTranscodeInput): 
   ].join(",");
   return [
     "-nostdin", "-y", "-v", "error",
-    "-i", `file:${input.sourcePath}`,
+    "-i", ffmpegFileArg(input.sourcePath),
     "-map", "0:v:0",
     "-map", "0:a:0",
     "-sn", "-dn",
@@ -407,7 +408,7 @@ export function buildPreviewProxyFfmpegArgs(input: PreviewProxyTranscodeInput): 
     "-t", sourceProbe.duration.toFixed(6),
     "-movflags", "+faststart",
     "-tag:v", "avc1",
-    `file:${input.temporaryPath}`,
+    ffmpegFileArg(input.temporaryPath),
   ];
 }
 

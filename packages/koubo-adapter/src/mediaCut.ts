@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { EDIT_LIST_MIN_SEGMENT_SECONDS } from "@video-workbench/core";
+import { EDIT_LIST_MIN_SEGMENT_SECONDS, ffmpegFileArg } from "@video-workbench/core";
 
 export interface MediaCutRange {
   start: number;
@@ -89,7 +89,7 @@ export async function probeMedia(path: string): Promise<MediaProbe> {
     "-show_entries",
     "format=duration:stream=codec_type,bit_rate,profile,pix_fmt,width,height,r_frame_rate,avg_frame_rate",
     "-of", "json",
-    `file:${path}`,
+    ffmpegFileArg(path),
   ]);
   const payload = JSON.parse(stdout) as {
     format?: { duration?: string | number };
@@ -268,8 +268,8 @@ async function renderVideoSegments(input: {
       keepSegments[0].end >= sourceProbe.duration - 0.001;
     if (isWholeSource) {
       await runCommand("ffmpeg", [
-        "-y", "-v", "error", "-i", `file:${input.input}`, "-map", "0", "-c", "copy",
-        "-movflags", "+faststart", `file:${temporaryOutput}`,
+        "-y", "-v", "error", "-i", ffmpegFileArg(input.input), "-map", "0", "-c", "copy",
+        "-movflags", "+faststart", ffmpegFileArg(temporaryOutput),
       ]);
     } else {
       const bitrateK = sourceProbe.videoBitrate > 0
@@ -302,7 +302,7 @@ async function renderVideoSegments(input: {
         "-y", "-v", "error",
         "-copyts", "-segment_time_metadata", "1",
         "-f", "concat", "-safe", "0", "-i", concatPath,
-        ...(sourceProbe.hasAudio ? ["-i", `file:${input.input}`] : []),
+        ...(sourceProbe.hasAudio ? ["-i", ffmpegFileArg(input.input)] : []),
         "-filter_complex_script", filterPath,
         "-map", "[outv]",
         ...(sourceProbe.hasAudio ? ["-map", "[outa]"] : []),
@@ -312,7 +312,7 @@ async function renderVideoSegments(input: {
         ...(sourceProbe.hasAudio ? ["-c:a", "aac", "-b:a", "128k"] : []),
         "-t", filterTime(expectedDuration),
         "-movflags", "+faststart",
-        `file:${temporaryOutput}`,
+        ffmpegFileArg(temporaryOutput),
       ]);
     }
     const outputProbe = await probeMedia(temporaryOutput);

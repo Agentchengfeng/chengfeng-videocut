@@ -1,3 +1,4 @@
+export { ffmpegFileArg } from "./ffmpegPath";
 export * from "./config";
 export * from "./cuts";
 export * from "./editList";

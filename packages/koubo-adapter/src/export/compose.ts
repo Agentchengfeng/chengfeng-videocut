@@ -24,7 +24,7 @@ import { spawn } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { ExportPlan } from "@video-workbench/core";
-import { cropRectForBox } from "@video-workbench/core";
+import { cropRectForBox, ffmpegFileArg } from "@video-workbench/core";
 import { orderedSegmentManifest, probeMedia, type MediaProbe } from "../mediaCut";
 import { MARKER_STRIP_HEIGHT } from "./overlayPage";
 
@@ -99,7 +99,7 @@ export async function assembleCut(input: {
     "-y", "-v", "error",
     "-copyts", "-segment_time_metadata", "1",
     "-f", "concat", "-safe", "0", "-i", manifestPath,
-    "-i", `file:${input.source}`,
+    "-i", ffmpegFileArg(input.source),
     "-filter_complex",
     [
       "[0:v:0]select=concatdec_select,setpts=PTS-STARTPTS[outv]",
@@ -114,7 +114,7 @@ export async function assembleCut(input: {
     "-fps_mode", "cfr", "-r", String(plan.fps),
     "-c:a", "flac",
     "-t", seconds(plan.frameCount / plan.fps),
-    `file:${input.output}`,
+    ffmpegFileArg(input.output),
   ], { onLine: input.onLine });
 }
 
@@ -197,7 +197,7 @@ export async function composeFilm(input: {
       "-y", "-v", "error",
       "-ss", seconds(span.startFrame / plan.fps),
       "-t", seconds(count / plan.fps),
-      "-i", `file:${input.assembled}`,
+      "-i", ffmpegFileArg(input.assembled),
       // The overlay frames for exactly this span, addressed by their own
       // numbers — the PNG index *is* the film's frame index, so a span can
       // never be handed the wrong drawings.
@@ -226,7 +226,7 @@ export async function composeFilm(input: {
       // The span must be exactly as long as it was planned to be. One frame of
       // drift here slides every drawing after it off the words it belongs to.
       "-frames:v", String(count),
-      `file:${spanFile}`,
+      ffmpegFileArg(spanFile),
     ], { onLine: input.onLine });
     spanFiles.push(spanFile);
     input.onSpan?.(index + 1, plan.zoomSpans.length);
@@ -244,7 +244,7 @@ export async function composeFilm(input: {
   await runFfmpeg([
     "-y", "-v", "error",
     "-f", "concat", "-safe", "0", "-i", listPath,
-    "-i", `file:${input.assembled}`,
+    "-i", ffmpegFileArg(input.assembled),
     "-map", "0:v:0", "-map", "1:a:0",
     "-c:v", "copy",
     "-c:a", "aac", "-b:a", FINAL_AUDIO_BITRATE,
@@ -254,7 +254,7 @@ export async function composeFilm(input: {
     // Nobody would ever see it; that is exactly why it has to be caught here
     // rather than trusted to stay harmless.
     "-movflags", "+faststart",
-    `file:${input.output}`,
+    ffmpegFileArg(input.output),
   ], { onLine: input.onLine });
 }
 
@@ -297,7 +297,7 @@ async function countVideoFrames(path: string): Promise<number> {
       "-count_frames", "-select_streams", "v:0",
       "-show_entries", "stream=nb_read_frames",
       "-of", "csv=p=0",
-      `file:${path}`,
+      ffmpegFileArg(path),
     ], { stdio: ["ignore", "pipe", "ignore"] });
     let stdout = "";
     child.stdout?.setEncoding("utf8");

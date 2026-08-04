@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
+import { ffmpegFileArg } from "@video-workbench/core";
 
 /**
  * Media for playback that never seeks.
@@ -212,7 +213,7 @@ async function ensureProxyIndexes(input: BuildPreviewStreamInput): Promise<{
     const raw = await run("ffprobe", [
       "-v", "error", "-select_streams", "v:0",
       "-show_entries", "packet=pts_time,flags",
-      "-of", "csv=p=0", `file:${proxy}`,
+      "-of", "csv=p=0", ffmpegFileArg(proxy),
     ]);
     const keyframes = raw.split("\n")
       .map((line) => line.trim())
@@ -272,7 +273,7 @@ async function ensureLoudness(
     }
   }
   const raw = await runBinary("ffmpeg", [
-    "-v", "error", "-i", `file:${source}`,
+    "-v", "error", "-i", ffmpegFileArg(source),
     "-vn", "-ac", "1", "-ar", "16000", "-f", "s16le", "pipe:1",
   ]);
   const samples = new Int16Array(raw.buffer, raw.byteOffset, Math.floor(raw.byteLength / 2));
@@ -677,10 +678,10 @@ export async function buildPreviewStream(
         await run("ffmpeg", [
           "-y", "-v", "error",
           "-ss", keyframe.toFixed(6), "-to", end.toFixed(6),
-          "-i", `file:${proxy}`,
+          "-i", ffmpegFileArg(proxy),
           ...audio,
           "-movflags", "frag_keyframe+empty_moov+default_base_moof",
-          "-f", "mp4", `file:${temporary}`,
+          "-f", "mp4", ffmpegFileArg(temporary),
         ]);
         await rename(temporary, path);
       } catch (error) {

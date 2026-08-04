@@ -21,6 +21,7 @@ import {
   parseEditListDocument,
   type EditListDocument,
   VideocutError,
+  ffmpegFileArg,
 } from "@video-workbench/core";
 import {
   buildNaturalPausePlan,
@@ -1319,7 +1320,7 @@ async function run(command: string, args: string[]): Promise<string> {
 async function probeDuration(path: string): Promise<number> {
   try {
     const output = await run("ffprobe", [
-      "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", `file:${path}`,
+      "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", ffmpegFileArg(path),
     ]);
     return Math.max(0, finite(output.trim()));
   } catch {

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PreviewArtifactStream } from "./previewArtifact";
+import { ffmpegFileArg } from "@video-workbench/core";
 
 /**
  * Playback that never jumps.
@@ -130,7 +131,7 @@ export function useAssembledVideoTransport(input: {
     // order genuinely are the same stream and must not force a rebuild.
     key: input.stream
       ? `stream:${input.stream.segments.map((segment) => `${segment.source}@${segment.out}`).join("|")}`
-      : `file:${input.sourceUrl ?? ""}`,
+      : ffmpegFileArg(input.sourceUrl ?? ""),
     stream: input.stream,
     sourceUrl: input.sourceUrl,
   }), [input.stream, input.sourceUrl]);

@@ -29,7 +29,7 @@ const { spawnSync } = require("node:child_process");
 const { fileURLToPath } = require("node:url");
 
 const REPOSITORY = "Agentchengfeng/chengfeng-videocut";
-const VERSION = "0.4.1";
+const VERSION = "0.4.2";
 const ARCHIVE_NAME = "chengfeng-videocut-portable.tar.gz";
 const CHECKSUM_NAME = "SHA256SUMS.txt";
 const IS_WINDOWS = process.platform === "win32";

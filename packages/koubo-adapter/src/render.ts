@@ -10,6 +10,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { appendKouboEvent, atomicWriteJson } from "./project";
 import { serializeKouboProjectOperation } from "./projectLock";
 import { parseKouboSrt } from "./artifact";
+import { ffmpegFileArg } from "@video-workbench/core";
 import {
   readKouboWorkflow,
   type KouboProjectDocument,
@@ -397,7 +398,7 @@ export async function probeKouboRenderMedia(path: string): Promise<KouboRenderPr
     "-show_entries",
     "format=duration:stream=codec_type,codec_name,width,height,r_frame_rate,avg_frame_rate",
     "-of", "json",
-    `file:${path}`,
+    ffmpegFileArg(path),
   ]);
   const payload = JSON.parse(stdout) as {
     format?: { duration?: string | number };
@@ -426,7 +427,7 @@ export async function extractKouboVerificationFrame(
   await runCommand("ffmpeg", [
     "-y", "-v", "error",
     "-ss", input.time.toFixed(3),
-    "-i", `file:${input.videoPath}`,
+    "-i", ffmpegFileArg(input.videoPath),
     "-frames:v", "1",
     "-f", "image2",
     input.outputPath,

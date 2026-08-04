@@ -5,7 +5,7 @@ import { lstat, readFile, mkdir, mkdtemp, readdir, realpath, rename, rm, stat, w
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { cutVideoBySegments, probeMedia, probePreviewProxyMedia } from "@video-workbench/koubo-adapter";
-import { parseEditListDocument } from "@video-workbench/core";
+import { parseEditListDocument, ffmpegFileArg } from "@video-workbench/core";
 import { serializeProjectOperation as serializeProjectOperationDefault } from "@video-workbench/core/node";
 import { isSafeProjectId } from "./project-media";
 import { buildPreviewStream, type PreviewStream } from "./preview-stream";
@@ -371,7 +371,7 @@ export async function generatePreviewArtifactVideo(input: {
       "-y", "-v", "error",
       "-copyts", "-segment_time_metadata", "1",
       "-f", "concat", "-safe", "0", "-i", concatPath,
-      ...(source.hasAudio ? ["-i", `file:${input.input}`] : []),
+      ...(source.hasAudio ? ["-i", ffmpegFileArg(input.input)] : []),
       "-filter_complex_script", filterPath,
       "-map", "[outv]",
       ...(source.hasAudio ? ["-map", "[outa]"] : []),
@@ -386,7 +386,7 @@ export async function generatePreviewArtifactVideo(input: {
       ...(source.hasAudio ? ["-c:a", "aac", "-b:a", "128k"] : []),
       "-t", filterTime(expectedDuration),
       "-movflags", "+faststart",
-      `file:${temporaryOutput}`,
+      ffmpegFileArg(temporaryOutput),
     ]);
     const media = await probeMedia(temporaryOutput);
     if (!media.hasVideo || (source.hasAudio && !media.hasAudio)) {

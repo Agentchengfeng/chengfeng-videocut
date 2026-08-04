@@ -14,7 +14,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { VideocutError } from "@video-workbench/core";
+import { VideocutError, ffmpegFileArg } from "@video-workbench/core";
 import { probeMedia, type MediaProbe } from "./mediaCut";
 
 const VOLCENGINE_SUBMIT_URL = "https://openspeech.bytedance.com/api/v3/auc/bigmodel/submit";
@@ -181,7 +181,7 @@ async function assertNewTaskOutput(root: string, value: string): Promise<string>
 function runFfmpeg(input: string, output: string): Promise<void> {
   return new Promise((resolvePromise, reject) => {
     const child = spawn("ffmpeg", [
-      "-y", "-v", "error", "-i", `file:${input}`, "-vn", "-acodec", "libmp3lame", `file:${output}`,
+      "-y", "-v", "error", "-i", ffmpegFileArg(input), "-vn", "-acodec", "libmp3lame", ffmpegFileArg(output),
     ], { stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";
     child.stderr?.setEncoding("utf8");
@@ -540,9 +540,9 @@ export function buildCutAudioArgs(
   const inputs = ranges.map((_, index) => `[a${index}]`).join("");
   const filter = `${parts.join(";")};${inputs}concat=n=${ranges.length}:v=0:a=1[out]`;
   return [
-    "-y", "-v", "error", "-i", `file:${source}`,
+    "-y", "-v", "error", "-i", ffmpegFileArg(source),
     "-filter_complex", filter, "-map", "[out]",
-    "-acodec", "libmp3lame", `file:${output}`,
+    "-acodec", "libmp3lame", ffmpegFileArg(output),
   ];
 }
 
