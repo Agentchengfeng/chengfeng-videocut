@@ -115,7 +115,7 @@ Usage:
   chengfeng-videocut transcript dictionary <project> --dictionary <file> [--dry-run] [--json]
   chengfeng-videocut transcript correct <project> --file <corrections.json> [--dry-run] [--json]
   chengfeng-videocut cuts get <project> [--api-base <url>] [--json]
-  chengfeng-videocut cuts set <project> --file <file> --expected-revision <none|sha256> [--api-base <url>] [--json]
+  chengfeng-videocut cuts set <project> --file <file> --expected-revision <none|sha256> [--full-selection] [--api-base <url>] [--json]
   chengfeng-videocut cuts set <project> --file <file> --dry-run [--json]
   chengfeng-videocut cuts apply <project> --expected-revision <sha256> --expected-edit-list-revision <sha256> --confirmed [--api-base <url>] [--json]
   chengfeng-videocut subtitle get <project> [--json]
@@ -143,6 +143,7 @@ transcript align proposes spellings from the script the speaker wrote, by findin
 subtitle cues store word ids, never seconds: the cut owns when, the subtitle owns what is written. Timing and staleness are therefore recomputed on every read and never stored, and every subtitle command reports stale as the exact list of broken screens — the product may not say "subtitles may be out of date".
 subtitle build writes a first draft split at deleted speech, at heard pauses, and at the column limit. It refuses to overwrite an existing document without --replace, because splitting and wording are the part a person spent their time on.
 cuts set reads the result back and reports any previously-cut words it let go of.
+cuts set submits a semantic overlay by default: the natural-pause baseline is merged back in on every write, so a proposal can only add deletions — the right guard for a Skill, and exactly what makes releasing a pause impossible. --full-selection switches to the Studio's own checkbox semantics: what is submitted is all there is, including which pauses stay. Use it when the person wants pauses kept (e.g. short breaths under 0.3s).
 cuts get returns the independent cut-selection revision required by cuts set.
 cutRanges are derived from transcript.json + cutWordIds; supplied cutRanges are ignored.
 cuts apply requires the exact edit-list revision returned to the user at confirmation time; it never substitutes the current latest revision.

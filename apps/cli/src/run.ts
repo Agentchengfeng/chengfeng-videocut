@@ -483,6 +483,7 @@ async function updateCutsThroughApi(options: {
   projectId: string;
   expectedRevision: string;
   cutWordIds: unknown[];
+  mode: "semantic-overlay" | "full-selection";
   reasons?: unknown;
 }): Promise<CutsApiResult> {
   const endpoint = apiEndpoint(options.apiBase, options.projectId);
@@ -494,7 +495,7 @@ async function updateCutsThroughApi(options: {
       body: JSON.stringify({
         expectedRevision: options.expectedRevision,
         cutWordIds: options.cutWordIds,
-        mode: "semantic-overlay",
+        mode: options.mode,
         // Carry the declared reason through. Dropping it here is what left
         // "why was this deleted" unanswerable for every deletion ever made.
         ...(options.reasons === undefined ? {} : { reasons: options.reasons }),
@@ -1640,6 +1641,7 @@ export async function runCli(
       } catch {
         previousCutWordIdList = null;
       }
+      const mode = parsed.fullSelection ? "full-selection" as const : "semantic-overlay" as const;
       const result = parsed.dryRun
         ? await writeCutSelection(project, {
             cutWordIds,
@@ -1647,7 +1649,7 @@ export async function runCli(
           }, {
             expectedRevision: parsed.expectedRevision,
             dryRun: true,
-            mode: "semantic-overlay",
+            mode,
             actor: "cli",
           })
         : await updateCutsThroughApi({
@@ -1655,6 +1657,7 @@ export async function runCli(
             projectId: project.projectId,
             expectedRevision: parsed.expectedRevision as string,
             cutWordIds,
+            mode,
             ...(reasons === undefined ? {} : { reasons }),
           });
       // Two different checks, because the obvious one guards the wrong thing.

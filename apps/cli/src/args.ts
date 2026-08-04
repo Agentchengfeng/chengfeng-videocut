@@ -94,6 +94,15 @@ export interface ParsedArgs {
   fps?: number;
   /** Keep the intermediate video and the overlay PNGs for inspection. */
   keepWork: boolean;
+  /**
+   * `cuts set`: submit the checkbox truth instead of a semantic overlay.
+   *
+   * The overlay mode always merges the natural-pause baseline back in, which
+   * is the right guard for a Skill proposing deletions — and exactly what
+   * makes releasing a pause impossible. Full-selection is the Studio's own
+   * write semantics: what is submitted is all there is.
+   */
+  fullSelection: boolean;
 }
 
 const VALUE_OPTIONS = new Set([
@@ -139,6 +148,7 @@ const BOOLEAN_OPTIONS = new Set([
   "--refresh-transcript",
   "--replace",
   "--keep-work",
+  "--full-selection",
 ]);
 
 function usageError(message: string): never {
@@ -282,6 +292,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     logLines,
     replace: booleanValues.has("--replace"),
     keepWork: booleanValues.has("--keep-work"),
+    fullSelection: booleanValues.has("--full-selection"),
   };
   if (version) return { command: "version", ...common };
   if (help || positionals.length === 0) return { command: "help", ...common };
@@ -770,7 +781,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
         "--output-dir",
         "--api-base",
       ],
-      [],
+      ["--full-selection"],
       true,
     );
     return {
