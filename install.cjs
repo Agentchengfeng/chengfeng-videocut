@@ -105,7 +105,10 @@ function sha256(filePath) {
 }
 
 function runTar(args) {
-  const result = spawnSync("tar", args, { encoding: "utf8" });
+  // PATH 里可能是 Git for Windows 的 MSYS tar（在 Git Bash 下必然是），
+  // 它把反斜杠当转义符，收到 C:\Users\... 会报「无法读取」。正斜杠两种 tar 都认。
+  const normalized = args.map((arg) => (typeof arg === "string" ? arg.replaceAll("\\", "/") : arg));
+  const result = spawnSync("tar", normalized, { encoding: "utf8" });
   if (result.error) {
     fail(
       "找不到 tar：macOS 系统自带；Windows 10 1803+ 系统自带（C\\\\Windows\\\\System32\\\\tar.exe）。",
