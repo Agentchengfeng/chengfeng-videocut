@@ -382,7 +382,7 @@ describe("chengfeng-videocut CLI", () => {
     const payload = JSON.parse(capture.stdout[0]);
 
     expect(code).toBe(0);
-    expect(payload.data.url).toBe("http://localhost:5190/#project/demo");
+    expect(payload.data.url).toBe("http://localhost:5190/?view=koubo#project/demo");
     expect(payload.data.registered).toBe(true);
     expect(await readFile(join(projectDir, "project.json"), "utf8")).toBe(before);
   });

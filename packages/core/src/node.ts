@@ -575,6 +575,9 @@ export function projectUrl(project: ResolvedProject, origin?: string): string {
   } catch {
     throw new VideocutError("invalid_argument", `Invalid Studio origin: ${source}`);
   }
+  // 口播工作台由 ?view=koubo 选择，且必须是真正的 query 参数（# 之前）：
+  // 前端用 searchParams 读它，拼进 hash 里会静默落回上游 Studio 界面。
+  url.searchParams.set("view", "koubo");
   url.hash = `project/${encodeURIComponent(project.projectId)}`;
   return url.toString();
 }

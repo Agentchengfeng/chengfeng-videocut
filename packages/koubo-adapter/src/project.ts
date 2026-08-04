@@ -1845,7 +1845,7 @@ async function prepareKouboProjectSnapshot(
     sha256: sourceSha256,
     immutable: true,
   };
-  project.workbench = { projectId, url: `http://127.0.0.1:5190/#project/${encodeURIComponent(projectId)}` };
+  project.workbench = { projectId, url: `http://127.0.0.1:5190/?view=koubo#project/${encodeURIComponent(projectId)}` };
   project.updatedAt = now.toISOString();
   const event = {
     ts: now.toISOString(),

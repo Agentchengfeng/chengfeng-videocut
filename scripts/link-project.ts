@@ -38,4 +38,4 @@ if (existsSync(linkPath)) {
 
 console.log(`Linked project ${id}`);
 console.log(`Source: ${source}`);
-console.log(`Open: http://localhost:5200/#project/${encodeURIComponent(id)}`);
+console.log(`Open: http://localhost:5200/?view=koubo#project/${encodeURIComponent(id)}`);

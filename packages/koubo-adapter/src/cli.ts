@@ -45,4 +45,4 @@ if (existsSync(linkPath)) {
 
 console.log(`Linked koubo job ${projectId}`);
 console.log(`Source: ${projectDir}`);
-console.log(`Open: http://localhost:5200/#project/${encodeURIComponent(projectId)}`);
+console.log(`Open: http://localhost:5200/?view=koubo#project/${encodeURIComponent(projectId)}`);
