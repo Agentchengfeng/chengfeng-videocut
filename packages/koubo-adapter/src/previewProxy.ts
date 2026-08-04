@@ -10,7 +10,7 @@ import {
   stat,
 } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { ffmpegFileArg } from "@video-workbench/core";
+import { ffmpegFileArg, ffmpegOutputArgs } from "@video-workbench/core";
 
 const CACHE_SCHEMA = "chengfeng-videocut-preview-proxy-v1";
 const MAX_WIDTH = 960;
@@ -408,7 +408,7 @@ export function buildPreviewProxyFfmpegArgs(input: PreviewProxyTranscodeInput): 
     "-t", sourceProbe.duration.toFixed(6),
     "-movflags", "+faststart",
     "-tag:v", "avc1",
-    ffmpegFileArg(input.temporaryPath),
+    ...ffmpegOutputArgs("mp4", input.temporaryPath),
   ];
 }
 

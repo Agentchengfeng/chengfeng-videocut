@@ -887,7 +887,7 @@ export async function runCli(
         {
           video: parsed.video as string,
           transcript: parsed.transcript as string,
-          aspectRatio: parsed.aspectRatio as "3:4" | "4:3" | "16:9",
+          aspectRatio: parsed.aspectRatio,
           finalize: async (prepared) => {
             const project = await resolveProject(prepared.directory, { cwd, projectsDir });
             url = projectUrl(project);

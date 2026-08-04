@@ -5,7 +5,7 @@ import { lstat, readFile, mkdir, mkdtemp, readdir, realpath, rename, rm, stat, w
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { cutVideoBySegments, probeMedia, probePreviewProxyMedia } from "@video-workbench/koubo-adapter";
-import { parseEditListDocument, ffmpegFileArg } from "@video-workbench/core";
+import { parseEditListDocument, ffmpegFileArg, ffmpegOutputArgs } from "@video-workbench/core";
 import { serializeProjectOperation as serializeProjectOperationDefault } from "@video-workbench/core/node";
 import { isSafeProjectId } from "./project-media";
 import { buildPreviewStream, type PreviewStream } from "./preview-stream";
@@ -19,7 +19,7 @@ export const EDIT_PREVIEW_CONFIG = Object.freeze({
   gopSeconds: 0.2,
 });
 
-export type EditPreviewPhase = "generating" | "current" | "failed" | "stale";
+export type EditPreviewPhase = "pending" | "generating" | "current" | "failed" | "stale";
 
 // `ledger-proxy-v1` is not a rendered artifact. It says: play the preview proxy
 // directly and let the player follow the edit list, the way every desktop NLE
@@ -106,6 +106,8 @@ export interface EditPreviewArtifactDependencies {
   serializeProjectOperation?: ProjectOperationSerializer;
   now?: () => number;
   debounceMs?: number;
+  /** ledger 构建的同步预算（毫秒）；测试可调小逼出 generating 路径。 */
+  ledgerSyncBudgetMs?: number;
 }
 
 function sha256(value: string): string {
@@ -386,7 +388,7 @@ export async function generatePreviewArtifactVideo(input: {
       ...(source.hasAudio ? ["-c:a", "aac", "-b:a", "128k"] : []),
       "-t", filterTime(expectedDuration),
       "-movflags", "+faststart",
-      ffmpegFileArg(temporaryOutput),
+      ...ffmpegOutputArgs("mp4", temporaryOutput),
     ]);
     const media = await probeMedia(temporaryOutput);
     if (!media.hasVideo || (source.hasAudio && !media.hasAudio)) {
@@ -674,9 +676,28 @@ async function ledgerProxyState(
   };
 }
 
+/**
+ * 给 Promise 一个同步预算：预算内落定返回结果，预算外返回 null（拒绝会照常抛，
+ * 让路由把错误映射成可读消息）。计时器在落定时清掉，不留悬挂句柄。
+ */
+async function raceWithBudget<T>(promise: Promise<T>, budgetMs: number): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<null>((resolvePromise) => { timer = setTimeout(() => resolvePromise(null), budgetMs); }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 function blankState(projectId: string, editRevision = "none"): EditPreviewArtifactState {
+  // "pending"，不是 "stale"：这个项目从未有过剪后预览，没有东西可以「过期」。
+  // 把这两个状态混为一谈，会让「正在准备」被报告成「已失效」——2026-08-04
+  // Issue #3 的两条误导消息正是这么来的。
   return {
-    schemaVersion: 2, projectId, phase: "stale", editRevision,
+    schemaVersion: 2, projectId, phase: "pending", editRevision,
     artifactRevision: null, cacheKey: null, sourceSha256: null, source: null,
     duration: null, byteLength: null, hasVideo: null, hasAudio: null,
     profile: null, sourceKind: null, sourceFrameRate: null, width: null, height: null, videoBitrate: null,
@@ -739,6 +760,9 @@ export class EditPreviewArtifactManager {
   private readonly scheduleEpochs = new Map<string, number>();
   private readonly publishEpochs = new Map<string, number>();
   private readonly states = new Map<string, EditPreviewArtifactState>();
+  /** ledger 构建的 in-flight 表：同一 revision 只跑一份，轮询共享同一个 Promise。 */
+  private readonly ledgerBuilds = new Map<string, { revision: string; promise: Promise<EditPreviewArtifactState> }>();
+  private readonly ledgerSyncBudgetMs: number;
   private readonly generate: PreviewArtifactGenerate;
   private readonly probe: typeof probeMedia;
   private readonly readProjectInput: (projectsDir: string, projectId: string) => Promise<ProjectInput>;
@@ -752,6 +776,7 @@ export class EditPreviewArtifactManager {
     this.buildStream = dependencies.buildStream ?? buildPreviewStream;
     this.probe = dependencies.probe ?? probeMedia;
     this.readProjectInput = dependencies.readProjectInput ?? projectInput;
+    this.ledgerSyncBudgetMs = dependencies.ledgerSyncBudgetMs ?? 800;
     this.serializeProjectOperation = dependencies.serializeProjectOperation ?? serializeProjectOperationDefault;
     this.now = dependencies.now ?? Date.now;
     this.debounceMs = dependencies.debounceMs ?? 180;
@@ -763,7 +788,54 @@ export class EditPreviewArtifactManager {
       // No artifact, so nothing can be stale and nothing may be scheduled. Drop
       // any state left by the encoded path so a previously rendered artifact can
       // never be reported as the current preview for this revision.
-      const state = await ledgerProxyState(input, new Date(this.now()).toISOString(), this.buildStream);
+      //
+      // 构建是 single-flight 的，并且只给一个同步预算：全缓存命中（毫秒级）
+      // 与从前一样在本次请求内直接返回 current；首次构建（切片 + 响度全解码，
+      // 可达分钟级）不再挂起 HTTP 请求——立即返回 generating，构建在后台
+      // 继续，轮询追平。修订安全不变：结果只对计算它的 editRevision 存储，
+      // 每次 status 都重新读盘、重新走到这里。
+      const reported = this.states.get(projectId);
+      if (
+        reported?.phase === "failed" &&
+        reported.editRevision === input.editRevision &&
+        reported.schemaVersion === 2 &&
+        reported.projectId === projectId
+      ) return reported;
+      const inflight = this.ledgerBuilds.get(projectId);
+      let build: Promise<EditPreviewArtifactState>;
+      if (inflight && inflight.revision === input.editRevision) {
+        build = inflight.promise;
+      } else {
+        build = ledgerProxyState(input, new Date(this.now()).toISOString(), this.buildStream);
+        const entry = { revision: input.editRevision, promise: build };
+        this.ledgerBuilds.set(projectId, entry);
+        build.then(
+          (state) => {
+            if (this.ledgerBuilds.get(projectId) !== entry) return;
+            this.ledgerBuilds.delete(projectId);
+            this.states.set(projectId, state);
+            this.desired.set(projectId, input.editRevision);
+          },
+          (error) => {
+            if (this.ledgerBuilds.get(projectId) !== entry) return;
+            this.ledgerBuilds.delete(projectId);
+            this.states.set(projectId, {
+              ...blankState(projectId, input.editRevision),
+              phase: "failed",
+              error: String(error),
+            });
+          },
+        );
+      }
+      const state = await raceWithBudget(build, this.ledgerSyncBudgetMs);
+      if (!state) {
+        // 还在构建：诚实报告 generating。source 为 null——旧媒体绝不冒充新剪辑。
+        return {
+          ...blankState(projectId, input.editRevision),
+          phase: "generating",
+          sourceSha256: input.sourceSha256,
+        };
+      }
       this.states.set(projectId, state);
       this.desired.set(projectId, input.editRevision);
       const timer = this.timers.get(projectId);
@@ -899,12 +971,13 @@ export class EditPreviewArtifactManager {
 
   retry(projectId: string): void {
     this.states.delete(projectId);
+    this.ledgerBuilds.delete(projectId);
     this.schedule(projectId);
   }
 
   async ensure(projectId: string): Promise<EditPreviewArtifactState> {
     const current = await this.status(projectId);
-    if (current.phase === "stale") this.schedule(projectId);
+    if (current.phase === "stale" || current.phase === "pending") this.schedule(projectId);
     return this.states.get(projectId) ?? current;
   }
 
@@ -1120,7 +1193,18 @@ export function createEditPreviewArtifactHandler(manager: EditPreviewArtifactMan
       const state = await manager.ensure(projectId);
       return Response.json(state, { headers: { "Cache-Control": "no-store" } });
     } catch (error) {
-      return Response.json({ error: "preview_artifact_error", message: String(error) }, { status: 500 });
+      const message = String(error);
+      // 常驻服务的环境变量是进程启动那一刻的快照：ffmpeg 装晚了，服务进程
+      // 就一直看不见它——doctor 在终端里全绿也一样（Issue #3 真机根因）。
+      if (/uv_spawn|ENOENT/.test(message) && /ffmpeg|ffprobe/.test(message)) {
+        return Response.json({
+          error: "media_tools_missing",
+          message: `服务进程找不到 ffmpeg/ffprobe（${message}）。` +
+            `如果终端里 ffmpeg 可用，说明服务是在安装 ffmpeg 之前启动的：` +
+            `运行 chengfeng-videocut service restart 让服务读到新环境。`,
+        }, { status: 500 });
+      }
+      return Response.json({ error: "preview_artifact_error", message }, { status: 500 });
     }
   };
 }

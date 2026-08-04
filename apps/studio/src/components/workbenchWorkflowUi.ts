@@ -101,8 +101,9 @@ export function normalizeWorkbenchFinalConfig(
   config: Record<string, unknown> | null | undefined,
 ): WorkbenchFinalConfig {
   const aspectRatio = readConfigString(config ?? null, "aspectRatio");
+  // 画幅比跟随项目（由视频推导）；只有缺失/坏值才回退历史默认 3:4。
   const validAspectRatio: WorkbenchAspectRatio =
-    aspectRatio === "16:9" || aspectRatio === "4:3" ? aspectRatio : "3:4";
+    /^\d+[:：]\d+$/.test(aspectRatio) ? aspectRatio : "3:4";
   return {
     aspectRatio: validAspectRatio,
     animationStyle: readConfigString(config ?? null, "animationStyle") || "xiaohei",

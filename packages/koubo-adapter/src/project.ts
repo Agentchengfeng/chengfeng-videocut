@@ -23,6 +23,7 @@ import {
   VideocutError,
   ffmpegFileArg,
 } from "@video-workbench/core";
+import { probeMedia } from "./mediaCut";
 import {
   buildNaturalPausePlan,
   DEFAULT_NATURAL_PAUSE_POLICY,
@@ -97,7 +98,10 @@ export interface PreparedKouboProject {
 export interface CreateKouboProjectOptions {
   video: string;
   transcript: string;
-  aspectRatio: "3:4" | "4:3" | "16:9";
+  /** 省略时从视频实际尺寸推导（deriveAspectRatio）。 */
+  aspectRatio?: string;
+  /** 推导画幅比时的探测器，测试注入用；默认真 ffprobe。 */
+  probe?: (path: string) => Promise<{ width: number; height: number }>;
   now?: () => Date;
   /** CLI registration runs here so a registration failure rolls project creation back. */
   finalize?: (prepared: PreparedKouboProject) => void | Promise<void>;
@@ -871,11 +875,37 @@ function buildRanges(
   return ranges;
 }
 
+/**
+ * 解析 `W:H` 画幅比。接受任意正整数比（全角冒号也认），不再限定枚举：
+ * 画幅比由用户的视频说了算，不是产品说了算。
+ */
+export function parseAspectRatio(value: string): { w: number; h: number } | null {
+  const match = /^(\d+)[:：](\d+)$/.exec(String(value).trim());
+  if (!match) return null;
+  const w = Number(match[1]);
+  const h = Number(match[2]);
+  if (!(w > 0) || !(h > 0)) return null;
+  return { w, h };
+}
+
+/** 从视频实际尺寸推导画幅比：最大公约数化简，1080×1920 → 9:16。 */
+export function deriveAspectRatio(width: number, height: number): string {
+  const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b));
+  const divisor = gcd(Math.round(width), Math.round(height)) || 1;
+  return `${Math.round(width) / divisor}:${Math.round(height) / divisor}`;
+}
+
+/**
+ * 画幅比 → 工作台画布像素。统一律：短边 1080，按比例放大，取偶——旧查表
+ * （3:4→1080×1440、4:3→1440×1080、9:16→1080×1920、16:9→1920×1080）全部是
+ * 这条律的特例，任意比例同样适用。解析不了保持旧的 1920×1080 兜底。
+ */
 export function frameDimensions(aspectRatio: string): { width: number; height: number } {
-  if (aspectRatio === "3:4") return { width: 1080, height: 1440 };
-  if (aspectRatio === "4:3") return { width: 1440, height: 1080 };
-  if (aspectRatio === "9:16") return { width: 1080, height: 1920 };
-  return { width: 1920, height: 1080 };
+  const ratio = parseAspectRatio(aspectRatio);
+  if (!ratio) return { width: 1920, height: 1080 };
+  const scale = 1080 / Math.min(ratio.w, ratio.h);
+  const even = (value: number) => Math.round(value * scale / 2) * 2;
+  return { width: even(ratio.w), height: even(ratio.h) };
 }
 
 function escapeHtml(value: unknown): string {
@@ -1893,14 +1923,10 @@ export async function createKouboProject(
   }
   const projectId = basename(jobDir);
   assertNewProjectId(projectId);
-  if (
-    options.aspectRatio !== "3:4" &&
-    options.aspectRatio !== "4:3" &&
-    options.aspectRatio !== "16:9"
-  ) {
+  if (options.aspectRatio !== undefined && !parseAspectRatio(options.aspectRatio)) {
     throw new VideocutError(
       "invalid_argument",
-      "aspectRatio must be one of 3:4, 4:3, or 16:9",
+      "aspectRatio must be a W:H ratio of positive integers (e.g. 3:4, 16:9, 1:1); omit it to derive from the video",
       { aspectRatio: options.aspectRatio },
     );
   }
@@ -1925,6 +1951,34 @@ export async function createKouboProject(
         "invalid_argument",
         `Unsupported task video extension: ${videoExtension || "none"}`,
       );
+    }
+
+    // 画幅比由视频本身定义：显式传入只作覆盖。探测失败时明确报错，
+    // 让调用方改传 --aspect-ratio，而不是塞一个默认值进项目档案。
+    let aspectRatio = options.aspectRatio;
+    if (aspectRatio === undefined) {
+      const probeVideo = options.probe ?? (async (path: string) => {
+        const probed = await probeMedia(path);
+        return { width: probed.width, height: probed.height };
+      });
+      let videoProbe: { width: number; height: number };
+      try {
+        videoProbe = await probeVideo(videoPath);
+      } catch (error) {
+        throw new VideocutError(
+          "invalid_argument",
+          "Cannot derive the aspect ratio from --video; pass --aspect-ratio explicitly",
+          { cause: error instanceof Error ? error.message : String(error) },
+        );
+      }
+      if (!(videoProbe.width > 0) || !(videoProbe.height > 0)) {
+        throw new VideocutError(
+          "invalid_argument",
+          "The video has no readable frame size; pass --aspect-ratio explicitly",
+          { width: videoProbe.width, height: videoProbe.height },
+        );
+      }
+      aspectRatio = deriveAspectRatio(videoProbe.width, videoProbe.height);
     }
     const transcriptExtension = extname(transcriptPath).toLowerCase();
     if (transcriptExtension !== ".json" && transcriptExtension !== ".srt") {
@@ -2001,7 +2055,7 @@ export async function createKouboProject(
         title: projectId,
         status: "cut_review_ready",
         inputVideo: projectRelativePath(jobDir, canonicalVideo),
-        config: { aspectRatio: options.aspectRatio },
+        config: { aspectRatio },
         createdAt: now.toISOString(),
         updatedAt: now.toISOString(),
       }), creationJournal);

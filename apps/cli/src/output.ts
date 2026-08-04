@@ -5,7 +5,7 @@ export const CLI_SCHEMA_VERSION = 1;
 export const PRODUCT_NAME = "chengfeng-videocut";
 export const BRAND_NAME = PRODUCT_NAME;
 export const PACKAGE_NAME = "chengfeng-videocut";
-export const PRODUCT_VERSION = "0.4.3";
+export const PRODUCT_VERSION = "0.4.4";
 
 export interface SuccessEnvelope {
   schemaVersion: number;
@@ -103,7 +103,7 @@ Usage:
   chengfeng-videocut inspect <project> [--json]
   chengfeng-videocut open <project> [--origin <url>] [--json]
   chengfeng-videocut transcribe <job-dir> --video <task-local-path> --output <task-local-path> [--language <code>] [--json]
-  chengfeng-videocut project create <job-dir> --video <task-local-path> --transcript <task-local-path> --aspect-ratio <3:4|4:3|16:9> [--projects-dir <dir>] [--json]
+  chengfeng-videocut project create <job-dir> --video <task-local-path> --transcript <task-local-path> [--aspect-ratio <W:H>] [--projects-dir <dir>] [--json]
   chengfeng-videocut project prepare <job-dir> [--video <task-local-path>] [--transcript <task-local-path>] [--duration <seconds>] [--force-index] [--refresh-transcript] [--json]
   chengfeng-videocut artifact put <project> --type <subtitles|visual-plan|animation-manifest|timeline> --file <file> --expected-project-revision <sha256> --expected-artifact-revision <none|sha256> [--json]
   chengfeng-videocut workflow get <project> [--api-base <url>] [--json]

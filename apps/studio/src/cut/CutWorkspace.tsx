@@ -610,6 +610,7 @@ export function CutWorkspace({
         transport={transport}
         onTimelineTimeCommit={onTimelineTimeCommit}
         artifactPhase={artifact.state.phase}
+        artifactError={artifact.state.error}
         artifactProfile={artifact.state.profile}
         onArtifactRetry={artifact.retry}
         subtitle={activeSubtitle}

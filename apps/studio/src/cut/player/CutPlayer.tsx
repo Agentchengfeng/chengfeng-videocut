@@ -40,6 +40,7 @@ export function CutPlayer({
   transport,
   onTimelineTimeCommit,
   artifactPhase = "current",
+  artifactError = null,
   artifactProfile = "sharp-canonical-v1",
   onArtifactRetry,
   subtitle = null,
@@ -49,7 +50,9 @@ export function CutPlayer({
   sourceUrl: string | null;
   transport: EdlVideoTransport;
   onTimelineTimeCommit: (time: number) => void;
-  artifactPhase?: "generating" | "current" | "failed" | "stale";
+  artifactPhase?: "pending" | "generating" | "current" | "failed" | "stale";
+  /** 服务端报告的失败原文；failed 时展示，别让用户猜。 */
+  artifactError?: string | null;
   artifactProfile?: PreviewArtifactProfile | null;
   onArtifactRetry?: () => void;
   /** Already resolved: which line, in which style. Null draws nothing. */
@@ -210,7 +213,15 @@ export function CutPlayer({
             }}
           />
         ) : (
-          <div className="cf-cut-player-empty">当前 EDL 没有可播放的单一媒体源</div>
+          <div className="cf-cut-player-empty">
+            {/* 没拿到媒体源时，按相位说真话：绝大多数时候是「还在准备」，
+                不是「没有媒体源」——后者只属于确认过的终态（Issue #3 教训）。 */}
+            {artifactPhase === "pending" || artifactPhase === "generating"
+              ? "正在准备剪辑预览…"
+              : artifactPhase === "failed"
+                ? "剪辑预览生成失败，见下方错误信息"
+                : "当前 EDL 没有可播放的单一媒体源"}
+          </div>
         )}
         {sourceUrl && (
           <VisualOverlay
@@ -232,8 +243,9 @@ export function CutPlayer({
             className={`cf-cut-player-state ${artifactPhase === "failed" ? "is-error" : ""} ${artifactRetryVisible ? "has-action" : ""}`}
             role={artifactPhase === "failed" ? "alert" : "status"}
           >
-            {artifactPhase === "generating" ? "正在生成最新高清预览 · 当前画面为上次结果" :
-              artifactPhase === "failed" ? "当前剪辑预览生成失败；旧预览不会冒充最新结果" :
+            {artifactPhase === "pending" ? "正在准备剪辑预览…" :
+              artifactPhase === "generating" ? "正在生成最新高清预览 · 当前画面为上次结果" :
+              artifactPhase === "failed" ? `当前剪辑预览生成失败；旧预览不会冒充最新结果${artifactError ? ` — ${artifactError}` : ""}` :
               "剪辑已变化，连续预览已过期"}
             {artifactRetryVisible ? (
               <button type="button" className="cf-cut-preview-retry" onClick={onArtifactRetry}>

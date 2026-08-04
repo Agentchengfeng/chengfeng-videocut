@@ -45,7 +45,7 @@ interface ActionBody {
   expectedRevision: string;
   expectedEditListRevision?: string;
   config?: {
-    aspectRatio?: "3:4" | "16:9" | "4:3";
+    aspectRatio?: string;
     animationStyle?: string;
     requirements?: string;
   };

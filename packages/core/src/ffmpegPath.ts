@@ -14,3 +14,15 @@
 export function ffmpegFileArg(path: string): string {
   return `file:${path.replaceAll("\\", "/")}`;
 }
+
+/**
+ * ffmpeg 输出参数对：显式 `-f <format>` + file: 路径。
+ *
+ * 输出端**永远**用这个，不要单独用 ffmpegFileArg：ffmpeg 从文件名推断输出
+ * 格式的行为跨构建不一致（2026-08-04 Windows 用户真机实测：路径合法、扩展名
+ * 也对，仍报 "Unable to choose an output format"）。显式 -f 让推断这一步
+ * 彻底不存在。输入端不需要 -f（探测的是内容，不是文件名）。
+ */
+export function ffmpegOutputArgs(format: string, path: string): string[] {
+  return ["-f", format, ffmpegFileArg(path)];
+}

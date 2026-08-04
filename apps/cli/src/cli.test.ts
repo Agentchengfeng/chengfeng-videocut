@@ -97,7 +97,7 @@ describe("chengfeng-videocut CLI", () => {
       "chengfeng-videocut render run <project> --expected-revision <sha256> --confirmed",
     );
     expect(payload.data.text).toContain(
-      "chengfeng-videocut project create <job-dir> --video <task-local-path> --transcript <task-local-path> --aspect-ratio <3:4|4:3|16:9>",
+      "chengfeng-videocut project create <job-dir> --video <task-local-path> --transcript <task-local-path> [--aspect-ratio <W:H>]",
     );
     expect(payload.data.text).toContain(
       "cuts apply <project> --expected-revision <sha256> --expected-edit-list-revision <sha256> --confirmed",

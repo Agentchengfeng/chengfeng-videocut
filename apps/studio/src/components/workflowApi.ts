@@ -5,7 +5,7 @@ export type WorkbenchWorkflowAction =
   | "confirm-animation"
   | "confirm-timeline";
 
-export type WorkbenchAspectRatio = "3:4" | "16:9" | "4:3";
+export type WorkbenchAspectRatio = string;
 
 export interface WorkbenchFinalConfig {
   aspectRatio: WorkbenchAspectRatio;

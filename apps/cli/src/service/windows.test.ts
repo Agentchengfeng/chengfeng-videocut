@@ -101,7 +101,7 @@ async function makeFixture(scenario: Partial<Scenario> = {}) {
         runtimeMode: state.healthRuntimeMode,
         studioBuildId: "build-w2",
       }), { status: 200 });
-    }) as typeof globalThis.fetch,
+    }) as unknown as typeof globalThis.fetch,
     isPortOccupied: async () => state.started && state.alive.has(state.serverPid),
     getPortOwnerPid: async () => null,
     isProcessAlive: (pid: number) => state.alive.has(pid),

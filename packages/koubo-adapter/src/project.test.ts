@@ -5,6 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   createKouboProject,
+  deriveAspectRatio,
+  frameDimensions,
+  parseAspectRatio,
   KOUBO_PROJECTION_RUNTIME_VERSION,
   KOUBO_PROJECTION_SCHEMA_VERSION,
   materializeKouboEditListIndex,
@@ -364,6 +367,75 @@ describe("createKouboProject contract", () => {
       aspectRatio: "3:4",
     })).rejects.toMatchObject({ code: "invalid_project" });
     await expect(readFile(join(demo.job, "project.json"), "utf8")).rejects.toThrow();
+  });
+});
+
+
+describe("画幅比：由视频定义，不再限枚举", () => {
+  it("frameDimensions 统一律：短边 1080 按比例放大取偶（旧查表全是特例）", () => {
+    expect(frameDimensions("3:4")).toEqual({ width: 1080, height: 1440 });
+    expect(frameDimensions("4:3")).toEqual({ width: 1440, height: 1080 });
+    expect(frameDimensions("9:16")).toEqual({ width: 1080, height: 1920 });
+    expect(frameDimensions("16:9")).toEqual({ width: 1920, height: 1080 });
+    expect(frameDimensions("1:1")).toEqual({ width: 1080, height: 1080 });
+    expect(frameDimensions("4:5")).toEqual({ width: 1080, height: 1350 });
+    // 解析不了保持旧兜底，不炸老项目。
+    expect(frameDimensions("")).toEqual({ width: 1920, height: 1080 });
+  });
+
+  it("deriveAspectRatio 用最大公约数化简真实尺寸", () => {
+    expect(deriveAspectRatio(1080, 1920)).toBe("9:16");
+    expect(deriveAspectRatio(810, 1080)).toBe("3:4");
+    expect(deriveAspectRatio(1920, 1080)).toBe("16:9");
+    // 传感器裁边这类非标尺寸照样成立——比例是视频的事实，不是产品的选项。
+    expect(deriveAspectRatio(1088, 1920)).toBe("17:30");
+  });
+
+  it("parseAspectRatio 只认正整数比，全角冒号也认", () => {
+    expect(parseAspectRatio("16：9")).toEqual({ w: 16, h: 9 });
+    expect(parseAspectRatio("abc")).toBeNull();
+    expect(parseAspectRatio("0:4")).toBeNull();
+    expect(parseAspectRatio("3:4:5")).toBeNull();
+  });
+
+  it("省略 aspectRatio 时从视频探测推导写入项目档案", async () => {
+    const fixtureValue = await createFixture("derived-task");
+    const result = await createKouboProject(fixtureValue.job, {
+      video: "uploads/talk.mp4",
+      transcript: "cloud/words.json",
+      probe: async () => ({ width: 1080, height: 1350 }),
+      now: fixedNow,
+    });
+    expect(result.projectId).toBe("derived-task");
+    const project = JSON.parse(await readFile(join(fixtureValue.job, "project.json"), "utf8"));
+    expect(project.config.aspectRatio).toBe("4:5");
+  });
+
+  it("探测失败时明确要求显式传入，不塞默认值", async () => {
+    const fixtureValue = await createFixture("underivable-task");
+    await expect(createKouboProject(fixtureValue.job, {
+      video: "uploads/talk.mp4",
+      transcript: "cloud/words.json",
+      probe: async () => { throw new Error("no decodable stream"); },
+      now: fixedNow,
+    })).rejects.toMatchObject({ code: "invalid_argument" });
+  });
+
+  it("显式比例仍可覆盖，但要合法 W:H", async () => {
+    const fixtureValue = await createFixture("explicit-task");
+    await expect(createKouboProject(fixtureValue.job, {
+      video: "uploads/talk.mp4",
+      transcript: "cloud/words.json",
+      aspectRatio: "wide",
+      now: fixedNow,
+    })).rejects.toMatchObject({ code: "invalid_argument" });
+    const created = await createKouboProject(fixtureValue.job, {
+      video: "uploads/talk.mp4",
+      transcript: "cloud/words.json",
+      aspectRatio: "1:1",
+      now: fixedNow,
+    });
+    expect(created.projectId).toBe("explicit-task");
   });
 });
 

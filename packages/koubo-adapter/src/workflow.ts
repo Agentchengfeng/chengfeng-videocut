@@ -143,7 +143,7 @@ export type KouboWorkflowAction =
   | "request-render";
 
 export interface KouboFinalConfig {
-  aspectRatio: "3:4" | "16:9" | "4:3";
+  aspectRatio: string;
   animationStyle: string;
   requirements: string;
 }
@@ -1263,10 +1263,10 @@ function normalizeFinalConfig(value: unknown): KouboFinalConfig {
   }
   const aspectRatio = String(value.aspectRatio ?? "").trim();
   const animationStyle = String(value.animationStyle ?? "").trim();
-  if (aspectRatio !== "3:4" && aspectRatio !== "16:9" && aspectRatio !== "4:3") {
+  if (!/^\d+[:：]\d+$/.test(aspectRatio)) {
     throw new KouboWorkflowError(
       "invalid_config",
-      "aspectRatio must be one of 3:4, 16:9, or 4:3",
+      "aspectRatio must be a W:H ratio (e.g. 3:4, 16:9, 1:1)",
       { aspectRatio },
     );
   }

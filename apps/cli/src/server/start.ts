@@ -16,7 +16,7 @@ import { createVideocutSubtitlesHandler } from "../../../studio/src/server/video
 import { createVideocutVisualsHandler } from "../../../studio/src/server/videocutVisualsApi";
 import { createVideocutTimelineMediaHandler } from "../../../studio/src/server/videocutTimelineMediaApi";
 import { materializeKouboEditListIndex } from "@video-workbench/koubo-adapter";
-import { serializeProjectOperation } from "@video-workbench/core/node";
+import { findExecutable, serializeProjectOperation } from "@video-workbench/core/node";
 import { StudioEventHub } from "./events";
 import { createProjectMediaHandler } from "./project-media";
 import { watchRegisteredProjects } from "./project-watcher";
@@ -353,6 +353,7 @@ function healthResponse(
   request: Request,
   buildId: string,
   runtimeMode: StudioRuntimeMode,
+  mediaToolsMissing: readonly string[] = [],
 ): Response {
   if (request.method !== "GET" && request.method !== "HEAD") {
     return new Response("Method Not Allowed", {
@@ -368,6 +369,10 @@ function healthResponse(
     pid: process.pid,
     runtimeMode,
     studioBuildId: buildId,
+    // 服务进程自己的环境里媒体工具是否可见——doctor 查的是终端环境，
+    // 两者可以不一致（服务先启动、ffmpeg 后安装）。缺了服务照常跑：
+    // 项目管理与账本都不需要 ffmpeg，只有预览/导出需要，用时会报具体错。
+    ...(mediaToolsMissing.length > 0 ? { mediaToolsMissing } : {}),
   });
   return new Response(request.method === "HEAD" ? null : body, {
     headers: {
@@ -414,6 +419,19 @@ export async function startStudioServer(
     process.env.CHENGFENG_VIDEOCUT_SERVICE === "windows-task"
       ? process.env.CHENGFENG_VIDEOCUT_SERVICE
       : "foreground";
+  // 启动时对本进程环境做一次媒体工具预检。结果进健康报文与启动日志——
+  // 「服务进程找不到 ffmpeg」要在这里被说出来，而不是等到第一个预览请求 500。
+  const mediaToolsMissing: string[] = [];
+  for (const tool of ["ffmpeg", "ffprobe"] as const) {
+    if (!(await findExecutable(tool))) mediaToolsMissing.push(tool);
+  }
+  if (mediaToolsMissing.length > 0) {
+    console.error(
+      `[chengfeng-videocut] 服务进程的 PATH 找不到 ${mediaToolsMissing.join("、")}。` +
+      `预览与导出会失败。如果终端里可用，请运行 chengfeng-videocut service restart ` +
+      `让服务读到安装后的新环境。`,
+    );
+  }
   const listenPort = await resolveListenPort(host, requestedPort);
   await Promise.all([
     mkdir(dataDir, { recursive: true }),
@@ -517,7 +535,7 @@ export async function startStudioServer(
         const vendorAsset = VENDOR_ASSETS.get(url.pathname);
         if (vendorAsset) return vendorAssetResponse(request, vendorAsset);
         if (url.pathname === "/api/health") {
-          return healthResponse(request, staticSnapshot.buildId, runtimeMode);
+          return healthResponse(request, staticSnapshot.buildId, runtimeMode, mediaToolsMissing);
         }
         const mediaResponse = await projectMedia(request);
         if (mediaResponse) return mediaResponse;

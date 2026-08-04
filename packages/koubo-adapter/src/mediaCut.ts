@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { EDIT_LIST_MIN_SEGMENT_SECONDS, ffmpegFileArg } from "@video-workbench/core";
+import { EDIT_LIST_MIN_SEGMENT_SECONDS, ffmpegFileArg, ffmpegOutputArgs } from "@video-workbench/core";
 
 export interface MediaCutRange {
   start: number;
@@ -269,7 +269,7 @@ async function renderVideoSegments(input: {
     if (isWholeSource) {
       await runCommand("ffmpeg", [
         "-y", "-v", "error", "-i", ffmpegFileArg(input.input), "-map", "0", "-c", "copy",
-        "-movflags", "+faststart", ffmpegFileArg(temporaryOutput),
+        "-movflags", "+faststart", ...ffmpegOutputArgs("mp4", temporaryOutput),
       ]);
     } else {
       const bitrateK = sourceProbe.videoBitrate > 0
@@ -312,7 +312,7 @@ async function renderVideoSegments(input: {
         ...(sourceProbe.hasAudio ? ["-c:a", "aac", "-b:a", "128k"] : []),
         "-t", filterTime(expectedDuration),
         "-movflags", "+faststart",
-        ffmpegFileArg(temporaryOutput),
+        ...ffmpegOutputArgs("mp4", temporaryOutput),
       ]);
     }
     const outputProbe = await probeMedia(temporaryOutput);

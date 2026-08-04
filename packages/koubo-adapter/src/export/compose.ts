@@ -24,7 +24,7 @@ import { spawn } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { ExportPlan } from "@video-workbench/core";
-import { cropRectForBox, ffmpegFileArg } from "@video-workbench/core";
+import { cropRectForBox, ffmpegFileArg, ffmpegOutputArgs } from "@video-workbench/core";
 import { orderedSegmentManifest, probeMedia, type MediaProbe } from "../mediaCut";
 import { MARKER_STRIP_HEIGHT } from "./overlayPage";
 
@@ -114,7 +114,7 @@ export async function assembleCut(input: {
     "-fps_mode", "cfr", "-r", String(plan.fps),
     "-c:a", "flac",
     "-t", seconds(plan.frameCount / plan.fps),
-    ffmpegFileArg(input.output),
+    ...ffmpegOutputArgs("matroska", input.output),
   ], { onLine: input.onLine });
 }
 
@@ -226,7 +226,7 @@ export async function composeFilm(input: {
       // The span must be exactly as long as it was planned to be. One frame of
       // drift here slides every drawing after it off the words it belongs to.
       "-frames:v", String(count),
-      ffmpegFileArg(spanFile),
+      ...ffmpegOutputArgs("mp4", spanFile),
     ], { onLine: input.onLine });
     spanFiles.push(spanFile);
     input.onSpan?.(index + 1, plan.zoomSpans.length);
@@ -254,7 +254,7 @@ export async function composeFilm(input: {
     // Nobody would ever see it; that is exactly why it has to be caught here
     // rather than trusted to stay harmless.
     "-movflags", "+faststart",
-    ffmpegFileArg(input.output),
+    ...ffmpegOutputArgs("mp4", input.output),
   ], { onLine: input.onLine });
 }
 

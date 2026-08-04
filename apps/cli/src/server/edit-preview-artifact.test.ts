@@ -983,7 +983,7 @@ test("cached generating and failed states require matching schema version and pr
     generationMs: null,
     error: null,
   });
-  expect((await manager.status(f.projectId)).phase).toBe("stale");
+  expect((await manager.status(f.projectId)).phase).toBe("pending");  // 从未生成 → pending，不再冒充 stale
 
   (manager as any).states.set(f.projectId, {
     schemaVersion: 1,
@@ -1002,7 +1002,7 @@ test("cached generating and failed states require matching schema version and pr
     generationMs: null,
     error: "old",
   });
-  expect((await manager.status(f.projectId)).phase).toBe("stale");
+  expect((await manager.status(f.projectId)).phase).toBe("pending");  // 同上：无可信状态 → pending
   await rm(f.projectsDir, { recursive: true, force: true });
 });
 
@@ -1569,6 +1569,56 @@ test("encoded artifacts are bounded instead of accumulating forever", async () =
   // The three newest survive; anything unrelated in the directory is untouched.
   expect(left.sort()).toEqual(names.slice(-3).sort());
   expect(await readFile(join(artifactDir, "current.json"), "utf8")).toBe("{}");
+
+  await rm(f.projectsDir, { recursive: true, force: true });
+});
+
+test("a slow first ledger build answers generating instead of hanging the request", async () => {
+  // Issue #3 的第二半：首次切片 + 响度解码在慢机器上是分钟级。这个请求
+  // 不许挂着——预算内建不完就先说 generating，构建在后台完成，下一次轮询拿走。
+  const f = await readyProxyFixture();
+  await f.writeEdit(4);
+  let release: (() => void) | undefined;
+  const gate = new Promise<void>((resolvePromise) => { release = resolvePromise; });
+  const manager = new EditPreviewArtifactManager(f.projectsDir, {
+    generate: async () => { throw new Error("must not encode"); },
+    buildStream: async (input) => { await gate; return stubStream(input.segments); },
+    serializeProjectOperation,
+    ledgerSyncBudgetMs: 30,
+  });
+
+  const first = await manager.ensure(f.projectId);
+  expect(first.phase).toBe("generating");
+  expect(first.source).toBeNull();
+
+  release?.();
+  await Bun.sleep(30);
+  const second = await manager.status(f.projectId);
+  expect(second.phase).toBe("current");
+  expect(second.profile).toBe("ledger-proxy-v1");
+
+  await rm(f.projectsDir, { recursive: true, force: true });
+});
+
+test("a failed background ledger build reports failed with the error text", async () => {
+  const f = await readyProxyFixture();
+  await f.writeEdit(4);
+  let rejectBuild: ((error: Error) => void) | undefined;
+  const gate = new Promise<never>((_resolve, rejectPromise) => { rejectBuild = rejectPromise; });
+  const manager = new EditPreviewArtifactManager(f.projectsDir, {
+    generate: async () => { throw new Error("must not encode"); },
+    buildStream: async () => gate,
+    serializeProjectOperation,
+    ledgerSyncBudgetMs: 30,
+  });
+
+  expect((await manager.ensure(f.projectId)).phase).toBe("generating");
+  rejectBuild?.(new Error("ENOENT: no such file or directory, uv_spawn 'ffprobe'"));
+  await Bun.sleep(30);
+  const state = await manager.status(f.projectId);
+  // 失败要带原文暴露给前端，不许退化成裸 pending 把原因吞掉。
+  expect(state.phase).toBe("failed");
+  expect(state.error).toContain("ffprobe");
 
   await rm(f.projectsDir, { recursive: true, force: true });
 });

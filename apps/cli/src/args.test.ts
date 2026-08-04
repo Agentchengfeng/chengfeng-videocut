@@ -137,17 +137,24 @@ describe("start argument parser", () => {
       projectsDir: "/tmp/projects",
       json: true,
     });
-    expect(() => parseArgs([
+    // 画幅比由视频定义：省略即推导，任意合法 W:H 都收，只拒格式垃圾。
+    expect(parseArgs([
       "project", "create", "/tmp/job",
       "--video", "input/source.mp4",
       "--transcript", "words.json",
-    ])).toThrow("--aspect-ratio must be");
-    expect(() => parseArgs([
+    ])).toMatchObject({ command: "project.create", aspectRatio: undefined });
+    expect(parseArgs([
       "project", "create", "/tmp/job",
       "--video", "input/source.mp4",
       "--transcript", "words.json",
       "--aspect-ratio", "9:16",
-    ])).toThrow("must be 3:4, 4:3, or 16:9");
+    ])).toMatchObject({ aspectRatio: "9:16" });
+    expect(() => parseArgs([
+      "project", "create", "/tmp/job",
+      "--video", "input/source.mp4",
+      "--transcript", "words.json",
+      "--aspect-ratio", "wide",
+    ])).toThrow("must be W:H");
 
     expect(parseArgs([
       "project", "prepare", "/tmp/job",

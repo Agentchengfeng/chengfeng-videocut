@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-export type PreviewArtifactPhase = "generating" | "current" | "failed" | "stale";
+export type PreviewArtifactPhase = "pending" | "generating" | "current" | "failed" | "stale";
 
 // `ledger-proxy` is not a rendered artifact: the source is the whole preview
 // proxy and the edit list decides what plays, so there is no generation step and
@@ -53,7 +53,8 @@ export function previewArtifactUrl(projectId: string, source: string): string {
 
 export function usePreviewArtifact(projectId: string, editRevision: string) {
   const [state, setState] = useState<PreviewArtifactState>({
-    phase: "stale", editRevision, artifactRevision: null, source: null, profile: null, sourceKind: null, width: null, height: null, error: null,
+    // 初始态是「还没问过服务端」，不是「预览已过期」。
+    phase: "pending", editRevision, artifactRevision: null, source: null, profile: null, sourceKind: null, width: null, height: null, error: null,
   });
   const [retryToken, setRetryToken] = useState(0);
   const pendingRetryTokenRef = useRef<{

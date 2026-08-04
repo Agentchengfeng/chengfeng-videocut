@@ -65,7 +65,7 @@ export interface ParsedArgs {
   transcript?: string;
   output?: string;
   language?: string;
-  aspectRatio?: "3:4" | "4:3" | "16:9";
+  aspectRatio?: string;
   duration?: number;
   confirmed: boolean;
   forceIndex: boolean;
@@ -374,7 +374,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
   if (positionals[0] === "project" && positionals[1] === "create") {
     if (positionals.length !== 3) {
       usageError(
-        "Usage: chengfeng-videocut project create <job-dir> --video <task-local-path> --transcript <task-local-path> --aspect-ratio <3:4|4:3|16:9>",
+        "Usage: chengfeng-videocut project create <job-dir> --video <task-local-path> --transcript <task-local-path> [--aspect-ratio <W:H>]",
       );
     }
     const video = values.get("--video");
@@ -382,8 +382,8 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     const aspectRatio = values.get("--aspect-ratio");
     if (!video) usageError("project create requires --video <task-local-path>");
     if (!transcript) usageError("project create requires --transcript <task-local-path>");
-    if (aspectRatio !== "3:4" && aspectRatio !== "4:3" && aspectRatio !== "16:9") {
-      usageError("project create --aspect-ratio must be 3:4, 4:3, or 16:9");
+    if (aspectRatio !== undefined && !/^\d+[:：]\d+$/.test(aspectRatio)) {
+      usageError("project create --aspect-ratio must be W:H (e.g. 3:4, 16:9, 1:1); omit it to derive from the video");
     }
     assertOptions(["--video", "--transcript", "--aspect-ratio", "--projects-dir"]);
     return {

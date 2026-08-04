@@ -1620,7 +1620,12 @@ export interface DoctorCapabilities {
   cloudTranscriptionTaskLocalOnly: true;
 }
 
-async function findExecutable(name: string): Promise<string | null> {
+/**
+ * PATH 上找可执行文件（Windows 带 PATHEXT 后缀）。导出给服务启动预检用：
+ * 常驻服务进程的环境是启动那一刻的快照，终端 doctor 全绿不代表服务进程
+ * 找得到 ffmpeg（Issue #3 真机根因），服务必须自己查一遍自己的环境。
+ */
+export async function findExecutable(name: string): Promise<string | null> {
   const pathEntries = (process.env.PATH ?? "").split(delimiter).filter(Boolean);
   // Windows executables carry PATHEXT suffixes (ffmpeg.exe), and X_OK is
   // meaningless there — without this, doctor reports a perfectly working
