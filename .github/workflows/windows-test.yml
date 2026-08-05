@@ -35,9 +35,12 @@ jobs:
         run: bun install --frozen-lockfile
       - name: 全量单测
         # Several suites exercise native Windows watchers and process lifecycle.
-        # Run them serially so unrelated files cannot starve or mutate the same
-        # process-wide environment while those integration paths are observed.
+        # Keep the native watcher in its own fresh Bun process below.
+        env:
+          CHENGFENG_VIDEOCUT_SKIP_NATIVE_WATCHER_TEST: "1"
         run: bun test --max-concurrency=1 packages apps/cli/src apps/studio/src/server/videocutEditListApi.test.ts
+      - name: 原生项目 watcher（独立硬门禁）
+        run: bun test apps/cli/src/server/project-watcher.test.ts
 
   # W1 验收：真实 Windows 上装得上、跑得出版本号。这个 job 是硬门禁。
   install-smoke:

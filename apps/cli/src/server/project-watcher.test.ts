@@ -25,13 +25,16 @@ function delay(milliseconds: number): Promise<void> {
 async function waitFor(
   attempt: () => boolean | Promise<boolean>,
   timeoutMilliseconds = 8_000,
+  diagnostics: () => unknown = () => undefined,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMilliseconds;
   while (Date.now() < deadline) {
     if (await attempt()) return;
     await delay(30);
   }
-  throw new Error("Timed out waiting for project watcher event");
+  throw new Error(
+    `Timed out waiting for project watcher event: ${JSON.stringify(diagnostics())}`,
+  );
 }
 
 interface PublishedEvent {
@@ -52,7 +55,11 @@ function isProjectFileChange(
 }
 
 describe("watchRegisteredProjects", () => {
-  it("discovers new symlink and directory registrations and closes every watcher", async () => {
+  const nativeWatcherTest = process.env.CHENGFENG_VIDEOCUT_SKIP_NATIVE_WATCHER_TEST === "1"
+    ? it.skip
+    : it;
+
+  nativeWatcherTest("discovers new symlink and directory registrations and closes every watcher", async () => {
     const root = await mkdtemp(join(tmpdir(), "chengfeng-videocut-watch-"));
     cleanupPaths.push(root);
     const projectsDir = join(root, "projects");
@@ -76,7 +83,7 @@ describe("watchRegisteredProjects", () => {
       await waitFor(async () => {
         await appendFile(linkedIndex, "\n");
         return isProjectFileChange(published, "linked", linkedIndexRealPath);
-      });
+      }, 8_000, () => ({ linkedIndexRealPath, published }));
 
       const directProject = join(projectsDir, "direct");
       const directData = join(directProject, "project.json");
@@ -87,7 +94,7 @@ describe("watchRegisteredProjects", () => {
       await waitFor(async () => {
         await appendFile(directData, "\n");
         return isProjectFileChange(published, "direct", directDataRealPath);
-      });
+      }, 8_000, () => ({ directDataRealPath, published }));
 
       // Non-editing artifacts must not trigger Studio refresh events.
       await delay(75);
