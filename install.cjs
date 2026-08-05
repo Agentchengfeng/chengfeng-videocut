@@ -1205,13 +1205,17 @@ function stageAndPromoteManagedTools(state, source, transactionId) {
   const target = path.join(TOOLS_ROOT, VERSION);
   const backup = path.join(TOOLS_ROOT, `.${VERSION}.previous.${transactionId}`);
   assertCanonicalManagedDirectory(source, "Desktop 工具外部来源", path.dirname(source));
+  // Persist the pending location before the first managed-root write, so an
+  // interruption during copy has a deterministic cleanup target.
+  state.transaction.toolsPending = pendingRoot;
+  state.transaction.toolsPromotionStarted = false;
+  writeState(state);
   mkdirSync(TOOLS_PENDING_ROOT, { recursive: true, mode: 0o700 });
   if (pathExists(pendingRoot)) removeTreeWithoutFollowingLinks(pendingRoot);
   mkdirSync(pendingRoot, { recursive: true, mode: 0o700 });
   cpSync(source, staged, { recursive: true, force: false });
   const stagedSource = validateExternalToolsSource(staged, { allowManagedRoot: true });
   if (canonicalPath(stagedSource) !== canonicalPath(staged)) fail("工具 pending 复制后路径身份异常。");
-  state.transaction.toolsPending = pendingRoot;
   state.transaction.toolsTarget = target;
   state.transaction.toolsBackup = pathExists(target) ? backup : null;
   state.transaction.toolsCandidate = target;
