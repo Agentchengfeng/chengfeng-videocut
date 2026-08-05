@@ -994,6 +994,7 @@ test("candidate ensure invalid reply still stops the first-run service and rolls
     CHENGFENG_VIDEOCUT_MANAGED_TOOLS_SOURCE_DIR: candidateTools,
     CHENGFENG_VIDEOCUT_TEST_SERVICE_LOG: serviceLog,
     CHENGFENG_VIDEOCUT_TEST_ENSURE_INVALID_AFTER_START: "1",
+    CHENGFENG_VIDEOCUT_TEST_FAIL_TOOLS_CLEANUP_UNTIL_SERVICE_STOPPED: "1",
   });
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /新 Runtime service ensure 失败/);

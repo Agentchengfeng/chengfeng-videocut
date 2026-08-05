@@ -88,6 +88,7 @@ const EXECUTABLE_TERMINATION_GRACE_MS = 1_000;
 // observes the resulting shared service.
 const ENSURE_MANAGED_SERVICE = process.env.CHENGFENG_VIDEOCUT_INSTALLER_ENSURE_SERVICE === "1";
 const MANAGED_TOOLS_SOURCE_DIR = process.env.CHENGFENG_VIDEOCUT_MANAGED_TOOLS_SOURCE_DIR || null;
+let candidateServiceStopAttempted = false;
 
 function fail(message) {
   throw new Error(message);
@@ -1266,10 +1267,16 @@ function restoreManagedToolsVersion(transaction) {
   // planned promotion without a backup is not proof: target is either the old
   // version or a catch-restored old version and must stay untouched.
   const backupExists = Boolean(backup && pathExists(backup));
+  if (
+    process.env.CHENGFENG_VIDEOCUT_TEST_FAIL_TOOLS_CLEANUP_UNTIL_SERVICE_STOPPED === "1" &&
+    !candidateServiceStopAttempted
+  ) {
+    fail("TEST_FAIL_TOOLS_CLEANUP_UNTIL_SERVICE_STOPPED");
+  }
   if (backupExists) {
     if (target && pathExists(target)) removeManagedToolsDirectory(target);
     renameSync(backup, target);
-  } else if (!transaction.toolsTargetExisted && target && pathExists(target)) {
+  } else if (transaction.toolsTargetExisted === false && target && pathExists(target)) {
     // First import has no old target.  Any target that exists here is the
     // candidate and can be removed to restore the original absent state.
     removeManagedToolsDirectory(target);
@@ -1548,6 +1555,7 @@ async function stopCandidateService(candidate, bunExecutable) {
     ),
     "候选 Runtime service stop",
   );
+  candidateServiceStopAttempted = true;
 }
 
 async function restoreService(previous, bunExecutable, serviceBefore) {
@@ -1606,14 +1614,16 @@ async function rollbackActivatedTransaction(state, bunExecutable, { reason = "�
   state.phase = "rolling_back";
   writeState(state);
   try {
+    // Windows Task Scheduler may retain candidate bun.exe.  Stop it while the
+    // candidate tools are still present; only then may rollback remove them.
+    if (state.transaction?.serviceEnsureStarted && candidate) {
+      await stopCandidateService(candidate, bunExecutable);
+    }
     if (old) switchCurrent(old.path, state.transactionId || randomUUID());
     else clearCurrentForFirstInstall(state.transactionId || randomUUID());
     if (state.transaction?.toolsSource || state.transaction?.toolsCandidate || state.transaction?.toolsBefore) {
       restoreManagedToolsVersion(state.transaction);
       restoreManagedTools(state.transaction?.toolsBefore || null, state.transactionId || randomUUID());
-    }
-    if (state.transaction?.serviceEnsureStarted && candidate) {
-      await stopCandidateService(candidate, bunExecutable);
     }
     if (state.transaction?.serviceBefore) {
       await restoreService(old, bunExecutable, state.transaction.serviceBefore);
