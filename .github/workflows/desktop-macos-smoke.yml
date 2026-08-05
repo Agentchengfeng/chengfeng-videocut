@@ -1,0 +1,59 @@
+name: desktop-macos-smoke
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/desktop-macos-smoke.yml"
+      - "apps/desktop/**"
+      - "apps/cli/**"
+      - "apps/studio/**"
+      - "packages/**"
+      - "package.json"
+      - "bun.lock"
+
+permissions:
+  contents: read
+
+jobs:
+  packaged-smoke:
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify native Apple Silicon runner
+        run: test "$(uname -m)" = "arm64"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.5
+      - run: bun install --frozen-lockfile
+      - run: bun run desktop:test
+      - run: bun run desktop:dist:mac
+      - name: Smoke-test application from read-only DMG
+        shell: bash
+        run: |
+          set -euo pipefail
+          dmg="$(find apps/desktop/release -maxdepth 1 -name '*.dmg' -print -quit)"
+          if [[ -z "$dmg" ]]; then
+            echo "macOS DMG artifact was not produced" >&2
+            exit 1
+          fi
+          mount_point="$(mktemp -d)"
+          cleanup() {
+            hdiutil detach "$mount_point" >/dev/null 2>&1 || true
+            rmdir "$mount_point" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mount_point"
+          app="$mount_point/Chengfeng VideoCut.app/Contents/MacOS/Chengfeng VideoCut"
+          CHENGFENG_VIDEOCUT_PACKAGED_APP="$app" \
+            bun run --cwd apps/desktop smoke:packaged
+      - name: Preserve verified macOS installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Chengfeng-VideoCut-macos-arm64
+          path: |
+            apps/desktop/release/Chengfeng-VideoCut-*-mac-arm64.dmg
+            apps/desktop/release/Chengfeng-VideoCut-*-mac-arm64.dmg.blockmap
+          if-no-files-found: error
+          retention-days: 7

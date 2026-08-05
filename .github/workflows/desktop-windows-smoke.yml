@@ -57,3 +57,12 @@ jobs:
               throw "Windows uninstaller exited with $($uninstall.ExitCode)"
             }
           }
+      - name: Preserve verified Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Chengfeng-VideoCut-windows-x64
+          path: |
+            apps/desktop/release/Chengfeng-VideoCut-*-win-x64.exe
+            apps/desktop/release/Chengfeng-VideoCut-*-win-x64.exe.blockmap
+          if-no-files-found: error
+          retention-days: 7
