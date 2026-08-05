@@ -2,7 +2,7 @@
   "name": "@video-workbench/desktop",
   "version": "0.4.7",
   "private": true,
-  "description": "Experimental Electron shell for chengfeng-videocut",
+  "description": "Desktop preview using the shared managed chengfeng-videocut Runtime",
   "author": "成峰 / AI产品自由",
   "type": "module",
   "main": "main.mjs",
@@ -11,14 +11,15 @@
     "build:runtime": "bun run --cwd ../cli build",
     "prepare:resources": "bun prepare-resources.mjs",
     "prepare": "bun run build:runtime && bun run prepare:resources",
-    "typecheck": "node --check main.mjs && node --check runtime.mjs && node --check prepare-resources.mjs && node --check smoke-lib.mjs && node --check smoke.mjs && node --check packaged-smoke.mjs",
-    "test": "node --test runtime.test.mjs",
+    "typecheck": "node --check main.mjs && node --check managed-runtime.mjs && node --check runtime.mjs && node --check prepare-resources.mjs && node --check smoke-lib.mjs && node --check smoke.mjs && node --check packaged-smoke.mjs && node --check managed-packaged-smoke.mjs",
+    "test": "node --test runtime.test.mjs managed-runtime.test.mjs",
     "smoke": "bun run prepare && node smoke.mjs",
     "start": "bun run prepare && electron .",
     "dist:dir": "bun run prepare && electron-builder --config electron-builder.config.mjs --dir --publish never",
     "dist:mac": "bun run prepare && electron-builder --config electron-builder.config.mjs --mac dmg --publish never",
     "dist:win": "bun run prepare && electron-builder --config electron-builder.config.mjs --win nsis --x64 --publish never",
-    "smoke:packaged": "node packaged-smoke.mjs"
+    "smoke:packaged": "node packaged-smoke.mjs",
+    "smoke:managed-packaged": "node managed-packaged-smoke.mjs"
   },
   "devDependencies": {
     "@derhuerst/ffprobe-static": "5.3.0",

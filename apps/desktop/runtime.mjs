@@ -19,17 +19,22 @@ export function resolveDesktopLayout(options) {
     : resolve(options.appRoot, "dist-resources");
   const runtimeDir = join(resourcesRoot, "runtime");
   const toolsDir = join(resourcesRoot, "tools");
+  const installerDir = join(resourcesRoot, "installer");
   const executableSuffix = options.platform === "win32" ? ".exe" : "";
   return {
     resourcesRoot,
     runtimeDir,
     toolsDir,
+    installerDir,
     cliPath: join(runtimeDir, "cli.js"),
     bunPath: options.bunOverride
       ? resolve(options.bunOverride)
       : join(runtimeDir, "bin", `bun${executableSuffix}`),
     ffmpegPath: join(toolsDir, `ffmpeg${executableSuffix}`),
     ffprobePath: join(toolsDir, `ffprobe${executableSuffix}`),
+    installerPath: join(installerDir, "install.cjs"),
+    installerArchivePath: join(installerDir, "chengfeng-videocut-portable.tar.gz"),
+    installerChecksumPath: join(installerDir, "SHA256SUMS.txt"),
     manifestPath: join(resourcesRoot, "resources-manifest.json"),
   };
 }

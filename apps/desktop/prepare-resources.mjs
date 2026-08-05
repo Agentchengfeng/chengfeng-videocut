@@ -10,6 +10,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { constants } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,12 +19,15 @@ import ffmpegPath from "ffmpeg-static";
 import ffprobePath from "@derhuerst/ffprobe-static";
 
 const appRoot = dirname(fileURLToPath(import.meta.url));
+const repositoryRoot = resolve(appRoot, "../..");
 const cliRoot = resolve(appRoot, "../cli");
 const cliDist = join(cliRoot, "dist");
 const resourcesRoot = join(appRoot, "dist-resources");
 const runtimeTarget = join(resourcesRoot, "runtime");
 const runtimeBinTarget = join(runtimeTarget, "bin");
 const toolsTarget = join(resourcesRoot, "tools");
+const installerTarget = join(resourcesRoot, "installer");
+const portableArchive = join(repositoryRoot, "release", "chengfeng-videocut-portable.tar.gz");
 const executableSuffix = process.platform === "win32" ? ".exe" : "";
 const bunTarget = join(runtimeBinTarget, `bun${executableSuffix}`);
 const ffmpegTarget = join(toolsTarget, `ffmpeg${executableSuffix}`);
@@ -49,6 +53,22 @@ function executableVersion(path, args = ["--version"]) {
     );
   }
   return String(result.stdout).trim().split(/\r?\n/, 1)[0];
+}
+
+function runOrThrow(command, args, label) {
+  const result = spawnSync(command, args, {
+    cwd: repositoryRoot,
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 120_000,
+  });
+  if (result.error || result.status !== 0) {
+    throw new Error(
+      `${label} failed: ${
+        result.error?.message ?? result.stderr ?? result.stdout ?? `exit ${result.status}`
+      }`,
+    );
+  }
 }
 
 async function verifyMediaToolContract(ffmpeg, ffprobe) {
@@ -112,19 +132,29 @@ await Promise.all([
   requireFile(bunSource, "Bun executable"),
   requireFile(ffmpegPath, "FFmpeg executable"),
   requireFile(ffprobePath, "FFprobe executable"),
+  requireFile(join(repositoryRoot, "install.cjs"), "Cross-platform Runtime installer"),
+  requireFile(join(repositoryRoot, "scripts/package-portable.ts"), "Portable packager"),
 ]);
 await verifyMediaToolContract(ffmpegPath, ffprobePath);
+runOrThrow(bunSource, [join(repositoryRoot, "scripts/package-portable.ts")], "Portable Runtime packaging");
+await requireFile(portableArchive, "Portable Runtime archive");
 
 await rm(resourcesRoot, { recursive: true, force: true });
 await Promise.all([
   mkdir(runtimeBinTarget, { recursive: true }),
   mkdir(toolsTarget, { recursive: true }),
+  mkdir(installerTarget, { recursive: true }),
 ]);
 await cp(cliDist, runtimeTarget, { recursive: true, force: true });
 await Promise.all([
   copyFile(bunSource, bunTarget),
   copyFile(ffmpegPath, ffmpegTarget),
   copyFile(ffprobePath, ffprobeTarget),
+  copyFile(join(repositoryRoot, "install.cjs"), join(installerTarget, "install.cjs")),
+  copyFile(
+    portableArchive,
+    join(installerTarget, "chengfeng-videocut-portable.tar.gz"),
+  ),
 ]);
 if (process.platform !== "win32") {
   await Promise.all([
@@ -135,6 +165,12 @@ if (process.platform !== "win32") {
 }
 
 const cliPackage = JSON.parse(await readFile(join(cliRoot, "package.json"), "utf8"));
+const archiveBytes = await readFile(portableArchive);
+const archiveSha256 = createHash("sha256").update(archiveBytes).digest("hex");
+await writeFile(
+  join(installerTarget, "SHA256SUMS.txt"),
+  `${archiveSha256}  chengfeng-videocut-portable.tar.gz\n`,
+);
 const manifest = {
   schemaVersion: 1,
   product: "chengfeng-videocut",

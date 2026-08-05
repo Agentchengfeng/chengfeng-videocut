@@ -12,6 +12,7 @@ export default {
   },
   files: [
     "main.mjs",
+    "managed-runtime.mjs",
     "runtime.mjs",
     "package.json",
   ],
@@ -27,6 +28,10 @@ export default {
     {
       from: join(appRoot, "dist-resources/resources-manifest.json"),
       to: "resources-manifest.json",
+    },
+    {
+      from: join(appRoot, "dist-resources/installer"),
+      to: "installer",
     },
   ],
   asar: true,

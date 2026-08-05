@@ -105,6 +105,7 @@ export async function runDesktopSmoke(options) {
     const screenshot = join(root, "desktop.png");
     const success = await runProcess(options.executable, options.args, {
       CHENGFENG_VIDEOCUT_DESKTOP_SMOKE: "1",
+      CHENGFENG_VIDEOCUT_DESKTOP_TRANSIENT: "1",
       CHENGFENG_VIDEOCUT_DESKTOP_PORT: String(successPort),
       CHENGFENG_VIDEOCUT_DESKTOP_DATA_DIR: join(root, "success-data"),
       CHENGFENG_VIDEOCUT_DESKTOP_SMOKE_SCREENSHOT: screenshot,
@@ -126,6 +127,7 @@ export async function runDesktopSmoke(options) {
     const missingBunPort = await allocatePort();
     const missingBun = await runProcess(options.executable, options.args, {
       CHENGFENG_VIDEOCUT_DESKTOP_SMOKE: "1",
+      CHENGFENG_VIDEOCUT_DESKTOP_TRANSIENT: "1",
       CHENGFENG_VIDEOCUT_DESKTOP_PORT: String(missingBunPort),
       CHENGFENG_VIDEOCUT_DESKTOP_DATA_DIR: join(root, "missing-bun-data"),
       CHENGFENG_VIDEOCUT_DESKTOP_BUN: join(root, "does-not-exist", "bun"),
@@ -143,6 +145,7 @@ export async function runDesktopSmoke(options) {
     const conflict = await withConflictServer(conflictPort, () =>
       runProcess(options.executable, options.args, {
         CHENGFENG_VIDEOCUT_DESKTOP_SMOKE: "1",
+        CHENGFENG_VIDEOCUT_DESKTOP_TRANSIENT: "1",
         CHENGFENG_VIDEOCUT_DESKTOP_PORT: String(conflictPort),
         CHENGFENG_VIDEOCUT_DESKTOP_DATA_DIR: join(root, "conflict-data"),
         ELECTRON_DISABLE_SECURITY_WARNINGS: "true",

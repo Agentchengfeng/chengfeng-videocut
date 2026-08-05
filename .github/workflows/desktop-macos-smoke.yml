@@ -9,6 +9,8 @@ on:
       - "apps/cli/**"
       - "apps/studio/**"
       - "packages/**"
+      - "install.cjs"
+      - "scripts/package-portable.ts"
       - "package.json"
       - "bun.lock"
 
@@ -48,6 +50,8 @@ jobs:
           app="$mount_point/Chengfeng VideoCut.app/Contents/MacOS/Chengfeng VideoCut"
           CHENGFENG_VIDEOCUT_PACKAGED_APP="$app" \
             bun run --cwd apps/desktop smoke:packaged
+          CHENGFENG_VIDEOCUT_PACKAGED_APP="$app" \
+            bun run --cwd apps/desktop smoke:managed-packaged
       - name: Preserve verified macOS installer
         uses: actions/upload-artifact@v4
         with:

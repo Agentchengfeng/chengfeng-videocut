@@ -6,15 +6,20 @@ chengfeng-videocut 是一个本地优先的口播视频剪辑产品：浏览器�
 
 ## 下载与安装
 
-正式分发只走 [GitHub Releases](https://github.com/Agentchengfeng/chengfeng-videocut/releases)。不发布 npm 包，不需要 `bunx`，当前也不提供 DMG。
+正式分发只走 [GitHub Releases](https://github.com/Agentchengfeng/chengfeng-videocut/releases)，
+不发布 npm 包，也不需要 `bunx`。0.4.7 同时提供桌面预览包和 CLI 便携包；桌面包在
+完成代码签名、公证与 FFmpeg 再分发复核前只作为预发布测试资产。
 
-运行要求：
+桌面预览包：
 
-- Bun 1.2 或更高版本
-- FFmpeg，并确保 `ffmpeg` 与 `ffprobe` 可在终端中运行
-- macOS，或 Windows 11（Windows 使用便携包 + Node 安装器）
-- Windows 安装阶段另需 Node.js 20 或更高版本来运行 `install.cjs`
-- Linux 可用 foreground `start` 做开发诊断，常驻 `service` 尚不支持
+- macOS Apple Silicon：DMG
+- Windows 10/11 x64：NSIS EXE
+- 随包提供 Runtime、Bun、FFmpeg 与 FFprobe，不要求用户修改系统 PATH
+- 首次启动把这些资产安装到 `~/.chengfeng-videocut`，再通过同一个稳定 CLI 执行
+  `service ensure`；关闭窗口后用户级服务继续运行，Skills 直接复用
+
+纯 CLI / 便携包仍要求 Bun 1.2+ 与 FFmpeg 6+；Windows 的 `install.cjs` 另需
+Node.js 20+。Linux 可用 foreground `start` 做开发诊断，常驻 `service` 尚不支持。
 
 macOS 一行安装：
 
@@ -32,6 +37,10 @@ chengfeng-videocut service logs
 ```
 
 `service ensure` 是正式用户入口：首次使用时在 macOS 注册 LaunchAgent、在 Windows 注册 Task Scheduler 用户任务，后续调用会复用健康进程。安装器本身只安装 Runtime，不会在安装时偷偷注册后台服务。
+
+桌面 App 是这个规则的另一个入口，不是另一套服务：它先在本地安装随包资产，再显式
+执行 `service ensure`。App 与 Skills 都只认 `~/.chengfeng-videocut/bin` 的稳定
+launcher；Electron resources 路径不会成为公开 CLI。
 
 本版常驻服务支持 macOS 与 Windows。其他平台调用 `service` 会明确返回 `service_unsupported`，仍可使用 foreground `start` 进行开发诊断。
 
@@ -128,6 +137,7 @@ Skills 负责判断与编排，例如转录、口误/重复等语义识别、让
 
 - `apps/studio`：编辑器外壳、预览、时间线、字幕与导出界面
 - `apps/cli`：`chengfeng-videocut` 命令和本地服务
+- `apps/desktop`：把同一 Runtime 与依赖装入受管根的 macOS / Windows 桌面壳
 - `packages/core`：项目解析、剪切语义、校验与原子写入
 - `packages/contracts`：与渲染引擎无关的项目和编辑契约
 - `packages/hyperframes-adapter`：HyperFrames 预览与渲染适配

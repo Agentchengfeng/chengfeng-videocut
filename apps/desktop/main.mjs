@@ -14,11 +14,18 @@ import {
   resolveDesktopLayout,
   studioUrl,
 } from "./runtime.mjs";
+import { ensureManagedRuntime } from "./managed-runtime.mjs";
 
 const appRoot = dirname(fileURLToPath(import.meta.url));
 const smokeMode = process.env.CHENGFENG_VIDEOCUT_DESKTOP_SMOKE === "1";
+const transientMode =
+  process.env.CHENGFENG_VIDEOCUT_DESKTOP_TRANSIENT === "1" ||
+  (!app.isPackaged && process.env.CHENGFENG_VIDEOCUT_DESKTOP_MANAGED !== "1");
 const host = DEFAULT_DESKTOP_HOST;
 const port = parseDesktopPort(process.env.CHENGFENG_VIDEOCUT_DESKTOP_PORT);
+if (!transientMode && port !== 5190) {
+  throw new Error("Managed Desktop Runtime must use the canonical port 5190.");
+}
 const baseUrl = `http://${host}:${port}`;
 const projectId = parseDesktopProjectId(
   process.argv.slice(1),
@@ -97,6 +104,9 @@ async function verifyResources() {
     requireExecutable(layout.ffprobePath, "Bundled FFprobe"),
     access(layout.cliPath, constants.R_OK),
     access(join(layout.runtimeDir, "studio", "index.html"), constants.R_OK),
+    access(layout.installerPath, constants.R_OK),
+    access(layout.installerArchivePath, constants.R_OK),
+    access(layout.installerChecksumPath, constants.R_OK),
   ]);
   return manifest;
 }
@@ -184,7 +194,7 @@ async function waitForCompatibleHealth(runtime, timeoutMs = 30_000) {
   );
 }
 
-async function ensureRuntime() {
+async function ensureTransientRuntime() {
   const existingHealth = await fetchHealth();
   const decision = classifyRuntimeHealth(existingHealth, app.getVersion());
   if (decision.action === "reuse") {
@@ -193,6 +203,36 @@ async function ensureRuntime() {
   const runtime = spawnRuntime();
   const ready = await waitForCompatibleHealth(runtime);
   return { owned: true, ...ready };
+}
+
+async function ensureRuntime(resourceManifest) {
+  if (transientMode) return ensureTransientRuntime();
+  const managed = await ensureManagedRuntime({
+    dataDir,
+    version: app.getVersion(),
+    platform: process.platform,
+    manifest: resourceManifest,
+    bundledBunPath: layout.bunPath,
+    bundledFfmpegPath: layout.ffmpegPath,
+    bundledFfprobePath: layout.ffprobePath,
+    installerDir: layout.installerDir,
+    installerPath: layout.installerPath,
+  });
+  const health = await fetchHealth(2_000);
+  const decision = classifyRuntimeHealth(health, app.getVersion());
+  const expectedMode = process.platform === "win32" ? "windows-task" : "launchd";
+  if (decision.action !== "reuse" || decision.runtimeMode !== expectedMode) {
+    throw new Error(
+      `Managed Runtime health did not report ${expectedMode}: ${JSON.stringify(health)}`,
+    );
+  }
+  return {
+    owned: false,
+    managed: true,
+    health,
+    decision,
+    service: managed.envelope.data,
+  };
 }
 
 async function waitForChildExit(runtime, timeoutMs) {
@@ -343,7 +383,7 @@ async function runSmoke(window, runtimeState, resourceManifest) {
 
 async function bootstrap() {
   const resourceManifest = await verifyResources();
-  const runtimeState = await ensureRuntime();
+  const runtimeState = await ensureRuntime(resourceManifest);
   const window = await createMainWindow();
   if (smokeMode) await runSmoke(window, runtimeState, resourceManifest);
 }

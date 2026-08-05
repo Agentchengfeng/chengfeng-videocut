@@ -63,6 +63,17 @@ if [ -z "\${CHENGFENG_VIDEOCUT_DATA_DIR:-}" ]; then
   fi
 fi
 
+# Desktop installs its bundled Bun/FFmpeg/FFprobe here. Keeping this lookup in
+# the stable launcher means the Desktop app and every Skill use the same tools
+# without requiring a system-wide PATH mutation.
+if [ -n "\${CHENGFENG_VIDEOCUT_DATA_DIR:-}" ]; then
+  MANAGED_TOOLS_DIR="$CHENGFENG_VIDEOCUT_DATA_DIR/tools/current"
+  if [ -d "$MANAGED_TOOLS_DIR" ]; then
+    PATH="$MANAGED_TOOLS_DIR\${PATH:+:$PATH}"
+    export PATH
+  fi
+fi
+
 SELF=$0
 while [ -L "$SELF" ]; do
   LINK_DIR=$(CDPATH= cd -- "$(dirname -- "$SELF")" && pwd)
@@ -75,6 +86,11 @@ done
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$SELF")" && pwd)
 
 find_bun() {
+  if [ -n "\${MANAGED_TOOLS_DIR:-}" ] && [ -x "$MANAGED_TOOLS_DIR/bun" ]; then
+    printf '%s\\n' "$MANAGED_TOOLS_DIR/bun"
+    return 0
+  fi
+
   if command -v bun >/dev/null 2>&1; then
     command -v bun
     return 0

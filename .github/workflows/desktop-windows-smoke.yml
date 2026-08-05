@@ -9,6 +9,8 @@ on:
       - "apps/cli/**"
       - "apps/studio/**"
       - "packages/**"
+      - "install.cjs"
+      - "scripts/package-portable.ts"
       - "package.json"
       - "bun.lock"
 
@@ -25,6 +27,7 @@ jobs:
       - run: bun run desktop:test
       - run: bun run desktop:dist:win
       - run: bun run --cwd apps/desktop smoke:packaged
+      - run: bun run --cwd apps/desktop smoke:managed-packaged
       - name: Install NSIS package without elevation
         shell: pwsh
         run: |
@@ -54,7 +57,9 @@ jobs:
           "CHENGFENG_VIDEOCUT_PACKAGED_APP=$installedApp" >> $env:GITHUB_ENV
           "CHENGFENG_VIDEOCUT_INSTALLED_DIR=$installedDir" >> $env:GITHUB_ENV
       - name: Smoke-test installed application
-        run: bun run --cwd apps/desktop smoke:packaged
+        run: |
+          bun run --cwd apps/desktop smoke:packaged
+          bun run --cwd apps/desktop smoke:managed-packaged
       - name: Uninstall test application
         if: always()
         shell: pwsh
