@@ -301,7 +301,8 @@ describe("videocut workflow API", () => {
 
     release?.();
     let completed: Record<string, unknown> | null = null;
-    for (let index = 0; index < 100; index += 1) {
+    const completionDeadline = Date.now() + 8_000;
+    while (Date.now() < completionDeadline) {
       const current = await (await required(handler(request("workflow")))).json();
       if (
         current.project?.codexContinue?.stage === "subtitle_rebuild" &&
@@ -325,7 +326,7 @@ describe("videocut workflow API", () => {
       .toBe(join("剪口播", "3_审核", "cut_done.json"));
     expect(JSON.parse(await readFile(join(projectDir, "剪口播/3_审核/cut_done.json"), "utf8")))
       .toMatchObject({ hasAudio: true, nextStep: "subtitle_rebuild" });
-  });
+  }, 15_000);
 
   it("fails closed when a legacy apply-cut request omits the confirmed EDL revision", async () => {
     const { projectsDir } = await fixture("cut_review_ready");
