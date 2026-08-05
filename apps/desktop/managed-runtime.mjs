@@ -146,6 +146,7 @@ export async function installBundledTools({
   bundledBunPath,
   bundledFfmpegPath,
   bundledFfprobePath,
+  activate = true,
 }) {
   const layout = resolveManagedRuntimeLayout({ dataDir, version, platform });
   await mkdir(layout.toolsRoot, { recursive: true });
@@ -188,7 +189,7 @@ export async function installBundledTools({
       await rm(stagedDir, { recursive: true, force: true });
     }
   }
-  await pointCurrentToolsAt(layout, platform);
+  if (activate) await pointCurrentToolsAt(layout, platform);
   return layout;
 }
 
@@ -248,6 +249,24 @@ function commandFailure(label, result) {
     stderr: result.stderr.trim().slice(-4_000),
   };
   return new Error(`${label} failed: ${JSON.stringify(detail)}`);
+}
+
+async function verifyBundledTools(layout) {
+  for (const [label, command, args] of [
+    ["Bundled Bun", layout.managedBunPath, ["--version"]],
+    ["Bundled FFmpeg", layout.managedFfmpegPath, ["-version"]],
+    ["Bundled FFprobe", layout.managedFfprobePath, ["-version"]],
+  ]) {
+    const result = await runCaptured(command, args, { timeoutMs: 15_000 });
+    if (
+      result.timeout ||
+      result.overflow ||
+      result.error ||
+      result.code !== 0
+    ) {
+      throw commandFailure(`${label} verification`, result);
+    }
+  }
 }
 
 async function installedRuntimeIsCurrent(layout, version, environment) {
@@ -331,52 +350,56 @@ export async function ensureManagedRuntime({
     bundledBunPath,
     bundledFfmpegPath,
     bundledFfprobePath,
+    activate: false,
   });
+  // Keep the previous tools/current live until the shared installer has
+  // verified and activated the Runtime.  The installer receives this version
+  // directory directly; Electron never owns app/current or service rollback.
+  await verifyBundledTools(layout);
   const environment = {
     ...process.env,
-    PATH: prependPath(process.env.PATH ?? "", layout.toolsCurrentDir),
+    PATH: prependPath(process.env.PATH ?? "", layout.toolsVersionDir),
     CHENGFENG_VIDEOCUT_HOME: layout.root,
     CHENGFENG_VIDEOCUT_DATA_DIR: layout.root,
     CHENGFENG_VIDEOCUT_EXECUTABLE: layout.stableLauncherPath,
   };
 
+  const installEnvironment = {
+    ...environment,
+    CHENGFENG_VIDEOCUT_DOWNLOAD_BASE: pathToFileURL(
+      `${resolve(installerDir)}${process.platform === "win32" ? "\\" : "/"}`,
+    ).href.replace(/\/$/, ""),
+    CHENGFENG_VIDEOCUT_INSTALLER_ENSURE_SERVICE: "1",
+  };
+  const installResult = await runCaptured(
+    layout.managedBunPath,
+    [resolve(installerPath)],
+    {
+      cwd: dirname(resolve(installerPath)),
+      env: installEnvironment,
+      timeoutMs: 180_000,
+    },
+  );
+  if (
+    installResult.timeout ||
+    installResult.overflow ||
+    installResult.error ||
+    installResult.code !== 0
+  ) {
+    throw commandFailure("Bundled Runtime installation", installResult);
+  }
   if (!(await installedRuntimeIsCurrent(layout, version, environment))) {
-    const installEnvironment = {
-      ...environment,
-      CHENGFENG_VIDEOCUT_DOWNLOAD_BASE: pathToFileURL(
-        `${resolve(installerDir)}${process.platform === "win32" ? "\\" : "/"}`,
-      ).href.replace(/\/$/, ""),
-    };
-    const installResult = await runCaptured(
-      layout.managedBunPath,
-      [resolve(installerPath)],
-      {
-        cwd: dirname(resolve(installerPath)),
-        env: installEnvironment,
-        timeoutMs: 180_000,
-      },
+    throw new Error(
+      `Bundled Runtime installation completed, but ${version} could not prove itself`,
     );
-    if (
-      installResult.timeout ||
-      installResult.overflow ||
-      installResult.error ||
-      installResult.code !== 0
-    ) {
-      throw commandFailure("Bundled Runtime installation", installResult);
-    }
-    if (!(await installedRuntimeIsCurrent(layout, version, environment))) {
-      throw new Error(
-        `Bundled Runtime installation completed, but ${version} could not prove itself`,
-      );
-    }
   }
 
-  const ensureResult = await runCaptured(
+  const statusResult = await runCaptured(
     layout.managedBunPath,
-    [layout.installedCliPath, "service", "ensure", "--json"],
+    [layout.installedCliPath, "service", "status", "--json"],
     { env: environment, timeoutMs: 120_000 },
   );
-  const envelope = parseJsonEnvelope(ensureResult, "Managed Runtime service ensure");
+  const envelope = parseJsonEnvelope(statusResult, "Managed Runtime service status");
   const expectedMode = platform === "win32" ? "windows-task" : "launchd";
   if (
     envelope?.ok !== true ||
@@ -389,6 +412,7 @@ export async function ensureManagedRuntime({
       `Managed Runtime did not become ready as ${expectedMode}: ${JSON.stringify(envelope)}`,
     );
   }
+  await pointCurrentToolsAt(layout, platform);
   await writeDesktopReceipt(layout, manifest, envelope.data);
   return { layout, envelope, environment };
 }

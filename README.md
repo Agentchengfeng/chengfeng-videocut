@@ -7,7 +7,7 @@ chengfeng-videocut 是一个本地优先的口播视频剪辑产品：浏览器�
 ## 下载与安装
 
 正式分发只走 [GitHub Releases](https://github.com/Agentchengfeng/chengfeng-videocut/releases)，
-不发布 npm 包，也不需要 `bunx`。0.4.7 同时提供桌面预览包和 CLI 便携包；桌面包在
+不发布 npm 包，也不需要 `bunx`。0.4.8 同时提供桌面预览包和 CLI 便携包；桌面包在
 完成代码签名、公证与 FFmpeg 再分发复核前只作为预发布测试资产。
 
 桌面预览包：
