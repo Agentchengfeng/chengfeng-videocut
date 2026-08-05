@@ -3,14 +3,14 @@ import {
   access,
   chmod,
   copyFile,
-  mkdir,
-  readFile,
+  mkdtemp,
   rename,
   rm,
   stat,
   writeFile,
 } from "node:fs/promises";
 import { constants } from "node:fs";
+import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -65,35 +65,7 @@ async function isReadableFile(path, executable = false) {
   }
 }
 
-async function managedToolsAreCurrent(layout, manifest, platform) {
-  let installedManifest;
-  try {
-    installedManifest = JSON.parse(await readFile(layout.toolsManifestPath, "utf8"));
-  } catch {
-    return false;
-  }
-  if (
-    installedManifest?.product !== manifest.product ||
-    installedManifest?.productVersion !== manifest.productVersion ||
-    installedManifest?.platform !== manifest.platform ||
-    installedManifest?.arch !== manifest.arch ||
-    installedManifest?.bun !== manifest.bun ||
-    installedManifest?.ffmpeg !== manifest.ffmpeg ||
-    installedManifest?.ffprobe !== manifest.ffprobe
-  ) {
-    return false;
-  }
-  const executable = platform !== "win32";
-  const checks = await Promise.all([
-    isReadableFile(layout.managedBunPath, executable),
-    isReadableFile(layout.managedFfmpegPath, executable),
-    isReadableFile(layout.managedFfprobePath, executable),
-  ]);
-  return checks.every(Boolean);
-}
-
-export async function installBundledTools({
-  dataDir,
+export async function stageBundledTools({
   version,
   platform,
   manifest,
@@ -101,46 +73,31 @@ export async function installBundledTools({
   bundledFfmpegPath,
   bundledFfprobePath,
 }) {
-  const layout = resolveManagedRuntimeLayout({ dataDir, version, platform });
-  await mkdir(layout.toolsRoot, { recursive: true });
-  if (!(await managedToolsAreCurrent(layout, manifest, platform))) {
-    const stagedDir = join(layout.toolsRoot, `.${version}.new.${process.pid}`);
-    const backupDir = join(layout.toolsRoot, `.${version}.backup.${process.pid}`);
-    await rm(stagedDir, { recursive: true, force: true });
-    await rm(backupDir, { recursive: true, force: true });
-    await mkdir(stagedDir, { recursive: true });
-    const suffix = platform === "win32" ? ".exe" : "";
+  // Desktop must not mutate the shared Product root before install.cjs has
+  // acquired its lock.  This directory is an untrusted external source; the
+  // installer copies and re-validates it inside its own journaled pending area.
+  const root = await mkdtemp(join(tmpdir(), "chengfeng-videocut-desktop-tools-"));
+  const suffix = platform === "win32" ? ".exe" : "";
+  const layout = {
+    root,
+    toolsVersionDir: root,
+    toolsManifestPath: join(root, "resources-manifest.json"),
+    managedBunPath: join(root, `bun${suffix}`),
+    managedFfmpegPath: join(root, `ffmpeg${suffix}`),
+    managedFfprobePath: join(root, `ffprobe${suffix}`),
+  };
+  await Promise.all([
+    copyFile(bundledBunPath, layout.managedBunPath),
+    copyFile(bundledFfmpegPath, layout.managedFfmpegPath),
+    copyFile(bundledFfprobePath, layout.managedFfprobePath),
+    writeFile(layout.toolsManifestPath, `${JSON.stringify(manifest, null, 2)}\n`),
+  ]);
+  if (platform !== "win32") {
     await Promise.all([
-      copyFile(bundledBunPath, join(stagedDir, `bun${suffix}`)),
-      copyFile(bundledFfmpegPath, join(stagedDir, `ffmpeg${suffix}`)),
-      copyFile(bundledFfprobePath, join(stagedDir, `ffprobe${suffix}`)),
-      writeFile(
-        join(stagedDir, "resources-manifest.json"),
-        `${JSON.stringify(manifest, null, 2)}\n`,
-      ),
+      chmod(layout.managedBunPath, 0o755),
+      chmod(layout.managedFfmpegPath, 0o755),
+      chmod(layout.managedFfprobePath, 0o755),
     ]);
-    if (platform !== "win32") {
-      await Promise.all([
-        chmod(join(stagedDir, "bun"), 0o755),
-        chmod(join(stagedDir, "ffmpeg"), 0o755),
-        chmod(join(stagedDir, "ffprobe"), 0o755),
-      ]);
-    }
-
-    const existing = await stat(layout.toolsVersionDir).catch(() => null);
-    if (existing) await rename(layout.toolsVersionDir, backupDir);
-    try {
-      await rename(stagedDir, layout.toolsVersionDir);
-      await rm(backupDir, { recursive: true, force: true });
-    } catch (error) {
-      if (await stat(backupDir).catch(() => null)) {
-        await rm(layout.toolsVersionDir, { recursive: true, force: true });
-        await rename(backupDir, layout.toolsVersionDir);
-      }
-      throw error;
-    } finally {
-      await rm(stagedDir, { recursive: true, force: true });
-    }
   }
   return layout;
 }
@@ -294,23 +251,23 @@ export async function ensureManagedRuntime({
   installerDir,
   installerPath,
 }) {
-  const layout = await installBundledTools({
-    dataDir,
+  const layout = resolveManagedRuntimeLayout({ dataDir, version, platform });
+  const stagedTools = await stageBundledTools({
     version,
     platform,
     manifest,
     bundledBunPath,
     bundledFfmpegPath,
     bundledFfprobePath,
-    activate: false,
   });
   // Keep the previous tools/current live until the shared installer has
   // verified and activated the Runtime.  The installer receives this version
   // directory directly; Electron never owns app/current or service rollback.
-  await verifyBundledTools(layout);
+  try {
+    await verifyBundledTools(stagedTools);
   const environment = {
     ...process.env,
-    PATH: prependPath(process.env.PATH ?? "", layout.toolsVersionDir),
+    PATH: prependPath(process.env.PATH ?? "", stagedTools.toolsVersionDir),
     CHENGFENG_VIDEOCUT_HOME: layout.root,
     CHENGFENG_VIDEOCUT_DATA_DIR: layout.root,
     CHENGFENG_VIDEOCUT_EXECUTABLE: layout.stableLauncherPath,
@@ -322,10 +279,10 @@ export async function ensureManagedRuntime({
       `${resolve(installerDir)}${process.platform === "win32" ? "\\" : "/"}`,
     ).href.replace(/\/$/, ""),
     CHENGFENG_VIDEOCUT_INSTALLER_ENSURE_SERVICE: "1",
-    CHENGFENG_VIDEOCUT_MANAGED_TOOLS_DIR: layout.toolsVersionDir,
+    CHENGFENG_VIDEOCUT_MANAGED_TOOLS_SOURCE_DIR: stagedTools.toolsVersionDir,
   };
   const installResult = await runCaptured(
-    layout.managedBunPath,
+    stagedTools.managedBunPath,
     [resolve(installerPath)],
     {
       cwd: dirname(resolve(installerPath)),
@@ -365,6 +322,9 @@ export async function ensureManagedRuntime({
       `Managed Runtime did not become ready as ${expectedMode}: ${JSON.stringify(envelope)}`,
     );
   }
-  await writeDesktopReceipt(layout, manifest, envelope.data);
-  return { layout, envelope, environment };
+    await writeDesktopReceipt(layout, manifest, envelope.data);
+    return { layout, envelope, environment };
+  } finally {
+    await rm(stagedTools.root, { recursive: true, force: true });
+  }
 }

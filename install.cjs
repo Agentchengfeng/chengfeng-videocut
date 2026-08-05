@@ -53,6 +53,7 @@ const INSTALL_ROOT =
 const APP_ROOT = path.join(INSTALL_ROOT, "app");
 const TOOLS_ROOT = path.join(INSTALL_ROOT, "tools");
 const TOOLS_CURRENT_LINK = path.join(TOOLS_ROOT, "current");
+const TOOLS_PENDING_ROOT = path.join(TOOLS_ROOT, ".pending");
 const BIN_ROOT = path.join(INSTALL_ROOT, "bin");
 const TARGET_DIR = path.join(APP_ROOT, VERSION);
 const CURRENT_LINK = path.join(APP_ROOT, "current");
@@ -86,7 +87,7 @@ const EXECUTABLE_TERMINATION_GRACE_MS = 1_000;
 // an installer concern: Desktop only supplies the local Release payload and
 // observes the resulting shared service.
 const ENSURE_MANAGED_SERVICE = process.env.CHENGFENG_VIDEOCUT_INSTALLER_ENSURE_SERVICE === "1";
-const MANAGED_TOOLS_DIR = process.env.CHENGFENG_VIDEOCUT_MANAGED_TOOLS_DIR || null;
+const MANAGED_TOOLS_SOURCE_DIR = process.env.CHENGFENG_VIDEOCUT_MANAGED_TOOLS_SOURCE_DIR || null;
 
 function fail(message) {
   throw new Error(message);
@@ -211,6 +212,15 @@ function removeManagedDirectory(directory) {
   removeTreeWithoutFollowingLinks(directory);
 }
 
+function removeManagedToolsDirectory(directory) {
+  const metadata = lstatSync(directory);
+  if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+    fail(`工具候选目录不是受管的普通目录：${directory}`);
+  }
+  assertCanonicalInside(directory, TOOLS_ROOT, "工具候选目录");
+  removeTreeWithoutFollowingLinks(directory);
+}
+
 function maybeFailPersistence(phase, operation) {
   if (process.env.CHENGFENG_VIDEOCUT_TEST_FAIL_JOURNAL_AT === `${phase}:${operation}`) {
     const error = new Error(`TEST_FAIL_JOURNAL_AT=${phase}:${operation}`);
@@ -287,18 +297,33 @@ function readManagedToolsTarget() {
   return target;
 }
 
-function validateManagedToolsCandidate(candidate) {
-  if (!candidate) return null;
-  assertCanonicalManagedDirectory(candidate, "Desktop 候选工具", TOOLS_ROOT);
-  if (path.dirname(path.resolve(candidate)) !== path.resolve(TOOLS_ROOT)) {
-    fail("Desktop 候选工具必须是 tools/<version> 目录。");
+function validateExternalToolsSource(source, { allowManagedRoot = false } = {}) {
+  if (!source) return null;
+  const resolved = path.resolve(source);
+  if (!allowManagedRoot && (resolved === INSTALL_ROOT || resolved.startsWith(`${INSTALL_ROOT}${path.sep}`))) {
+    fail("Desktop 工具来源不得位于 Product 受管根；安装器只接受外部暂存目录。");
+  }
+  let sourceReal;
+  try {
+    if (!lstatSync(resolved).isDirectory() || isLink(resolved)) fail("Desktop 工具来源必须是非链接目录。");
+    sourceReal = realpathSync(resolved);
+  } catch (error) {
+    if (error instanceof Error) throw error;
+    fail("Desktop 工具来源无效。");
   }
   const suffix = IS_WINDOWS ? ".exe" : "";
-  for (const name of [`bun${suffix}`, `ffmpeg${suffix}`, `ffprobe${suffix}`]) {
-    const item = path.join(candidate, name);
-    if (!lstatSync(item).isFile()) fail(`Desktop 候选工具缺少 ${name}。`);
+  const required = new Set([`bun${suffix}`, `ffmpeg${suffix}`, `ffprobe${suffix}`, "resources-manifest.json"]);
+  const entries = readdirSync(resolved, { withFileTypes: true });
+  if (entries.length !== required.size) fail("Desktop 工具来源只能包含 Bun、FFmpeg、FFprobe 和资源清单。");
+  for (const entry of entries) {
+    if (!required.has(entry.name) || !entry.isFile() || entry.isSymbolicLink()) {
+      fail("Desktop 工具来源包含非普通文件或未知条目。");
+    }
   }
-  return path.resolve(candidate);
+  for (const name of required) {
+    if (!lstatSync(path.join(resolved, name)).isFile()) fail(`Desktop 工具来源缺少 ${name}。`);
+  }
+  return sourceReal;
 }
 
 function runtimeRefFromPath(
@@ -1173,6 +1198,57 @@ function restoreManagedTools(previous, transactionId) {
   if (pathExists(TOOLS_CURRENT_LINK)) removeLink(TOOLS_CURRENT_LINK);
 }
 
+function stageAndPromoteManagedTools(state, source, transactionId) {
+  if (!source) return null;
+  const pendingRoot = path.join(TOOLS_PENDING_ROOT, transactionId);
+  const staged = path.join(pendingRoot, "tools");
+  const target = path.join(TOOLS_ROOT, VERSION);
+  const backup = path.join(TOOLS_ROOT, `.${VERSION}.previous.${transactionId}`);
+  assertCanonicalManagedDirectory(source, "Desktop 工具外部来源", path.dirname(source));
+  mkdirSync(TOOLS_PENDING_ROOT, { recursive: true, mode: 0o700 });
+  if (pathExists(pendingRoot)) removeTreeWithoutFollowingLinks(pendingRoot);
+  mkdirSync(pendingRoot, { recursive: true, mode: 0o700 });
+  cpSync(source, staged, { recursive: true, force: false });
+  const stagedSource = validateExternalToolsSource(staged, { allowManagedRoot: true });
+  if (canonicalPath(stagedSource) !== canonicalPath(staged)) fail("工具 pending 复制后路径身份异常。");
+  state.transaction.toolsPending = pendingRoot;
+  state.transaction.toolsTarget = target;
+  state.transaction.toolsBackup = pathExists(target) ? backup : null;
+  state.transaction.toolsCandidate = target;
+  state.transaction.toolsPromotionStarted = true;
+  writeState(state);
+  if (pathExists(backup)) removeManagedToolsDirectory(backup);
+  if (pathExists(target)) renameSync(target, backup);
+  try {
+    renameSync(staged, target);
+    state.transaction.toolsPromoted = true;
+    writeState(state);
+    return target;
+  } catch (error) {
+    if (!pathExists(target) && pathExists(backup)) renameSync(backup, target);
+    throw error;
+  }
+}
+
+function restoreManagedToolsVersion(transaction) {
+  if (!transaction?.toolsPromotionStarted) return;
+  const target = transaction.toolsTarget;
+  const backup = transaction.toolsBackup;
+  if (target && pathExists(target) && transaction.toolsPromoted) removeManagedToolsDirectory(target);
+  if (backup && pathExists(backup)) renameSync(backup, target);
+  if (transaction.toolsPending && pathExists(transaction.toolsPending)) {
+    removeTreeWithoutFollowingLinks(transaction.toolsPending);
+  }
+}
+
+function finalizeManagedToolsVersion(transaction) {
+  if (!transaction?.toolsPromotionStarted) return;
+  if (transaction.toolsBackup && pathExists(transaction.toolsBackup)) removeManagedToolsDirectory(transaction.toolsBackup);
+  if (transaction.toolsPending && pathExists(transaction.toolsPending)) {
+    removeTreeWithoutFollowingLinks(transaction.toolsPending);
+  }
+}
+
 function createLauncher() {
   if (IS_WINDOWS) {
     const launcher = `@echo off\r\nsetlocal\r\nset "CHENGFENG_VIDEOCUT_EXECUTABLE=%~f0"\r\nfor %%I in ("%~dp0..") do set "CHENGFENG_VIDEOCUT_DATA_DIR=%%~fI"\r\nset "APP_DIR=%~dp0..\\app\\current"\r\nset "MANAGED_TOOLS=%~dp0..\\tools\\current"\r\nif exist "%MANAGED_TOOLS%" set "PATH=%MANAGED_TOOLS%;%PATH%"\r\nset "BUN_EXE="\r\nif exist "%MANAGED_TOOLS%\\bun.exe" set "BUN_EXE=%MANAGED_TOOLS%\\bun.exe"\r\nfor /f "delims=" %%B in ('where bun.exe 2^>nul') do if not defined BUN_EXE set "BUN_EXE=%%~fB"\r\nif not defined BUN_EXE if exist "%USERPROFILE%\\.bun\\bin\\bun.exe" set "BUN_EXE=%USERPROFILE%\\.bun\\bin\\bun.exe"\r\nfor /f "delims=" %%B in ('where bun.cmd 2^>nul') do if not defined BUN_EXE set "BUN_EXE=%%~fB"\r\nif not defined BUN_EXE (\r\n  echo chengfeng-videocut 需要 Bun 1.2 或更高版本：https://bun.sh/docs/installation 1>&2\r\n  exit /b 127\r\n)\r\n"%BUN_EXE%" "%APP_DIR%\\cli.js" %*\r\nexit /b %ERRORLEVEL%\r\n`;
@@ -1393,9 +1469,10 @@ async function verifyManagedService(
   bunExecutable,
   expectedCapabilities,
   expectedBuildId,
-  onEnsureSucceeded = null,
+  onEnsureStarted = null,
 ) {
   const budget = createServiceVerificationBudget("新 Runtime 服务验证");
+  if (onEnsureStarted) onEnsureStarted();
   const service = parseCliJson(
     await runCliAt(
       candidate,
@@ -1405,7 +1482,6 @@ async function verifyManagedService(
     ),
     "新 Runtime service ensure",
   );
-  if (onEnsureSucceeded) onEnsureSucceeded();
   assertServiceIdentity(service, {
     version: VERSION,
     buildId: expectedBuildId,
@@ -1494,10 +1570,11 @@ async function rollbackActivatedTransaction(state, bunExecutable, { reason = "�
   try {
     if (old) switchCurrent(old.path, state.transactionId || randomUUID());
     else clearCurrentForFirstInstall(state.transactionId || randomUUID());
-    if (state.transaction?.toolsCandidate || state.transaction?.toolsBefore) {
+    if (state.transaction?.toolsSource || state.transaction?.toolsCandidate || state.transaction?.toolsBefore) {
       restoreManagedTools(state.transaction?.toolsBefore || null, state.transactionId || randomUUID());
+      restoreManagedToolsVersion(state.transaction);
     }
-    if (state.transaction?.candidateServiceMayExist && candidate) {
+    if (state.transaction?.serviceEnsureStarted && candidate) {
       await stopCandidateService(candidate, bunExecutable);
     }
     if (state.transaction?.serviceBefore) {
@@ -1527,10 +1604,11 @@ async function activateSameVersionDesktopTools(state, bunExecutable, candidateIn
     oldActive: state.active,
     oldPrevious: state.previous,
     serviceBefore: null,
-    candidateServiceMayExist: false,
+    serviceEnsureStarted: false,
     launcherBefore: captureLauncher(),
     toolsBefore: readManagedToolsTarget(),
-    toolsCandidate: managedTools,
+    toolsSource: managedTools,
+    toolsCandidate: null,
   };
   state.terminationFailure = null;
   writeState(state);
@@ -1540,7 +1618,7 @@ async function activateSameVersionDesktopTools(state, bunExecutable, candidateIn
     createLauncher();
     state.transaction.serviceBefore = await inspectManagedService(state.active, bunExecutable);
     writeState(state);
-    switchManagedTools(managedTools, transactionId);
+    switchManagedTools(stageAndPromoteManagedTools(state, managedTools, transactionId), transactionId);
     if (state.transaction.serviceBefore || ENSURE_MANAGED_SERVICE) {
       await verifyManagedService(
         state.active,
@@ -1548,7 +1626,7 @@ async function activateSameVersionDesktopTools(state, bunExecutable, candidateIn
         candidateInfo.capabilities,
         candidateInfo.buildId,
         () => {
-          state.transaction.candidateServiceMayExist = true;
+          state.transaction.serviceEnsureStarted = true;
           writeState(state);
         },
       );
@@ -1558,6 +1636,7 @@ async function activateSameVersionDesktopTools(state, bunExecutable, candidateIn
     await rollbackActivatedTransaction(state, bunExecutable, { reason: "同版本 Desktop 工具激活自证失败" });
     throw error;
   }
+  finalizeManagedToolsVersion(state.transaction);
   state.pending = null;
   state.phase = "completed";
   writeState(state);
@@ -1653,7 +1732,7 @@ async function main() {
       }
       normalizeCandidatePermissions(extracted, tmpDir);
       const candidateInfo = validateCandidateLayout(extracted);
-      const managedTools = validateManagedToolsCandidate(MANAGED_TOOLS_DIR);
+      const managedTools = validateExternalToolsSource(MANAGED_TOOLS_SOURCE_DIR);
 
       if (state.active?.version === VERSION) {
         if (path.resolve(state.active.path) !== path.resolve(TARGET_DIR)) {
@@ -1741,10 +1820,11 @@ async function main() {
         oldActive: state.active,
         oldPrevious: state.previous,
         serviceBefore: null,
-        candidateServiceMayExist: false,
+        serviceEnsureStarted: false,
         launcherBefore: captureLauncher(),
         toolsBefore: managedTools ? readManagedToolsTarget() : null,
-        toolsCandidate: managedTools,
+        toolsSource: managedTools,
+        toolsCandidate: null,
       };
       state.terminationFailure = null;
       try {
@@ -1825,8 +1905,11 @@ async function main() {
       maybeCrashAt("health_check");
 
       try {
-        if (state.transaction.toolsCandidate) {
-          switchManagedTools(state.transaction.toolsCandidate, transactionId);
+        if (state.transaction.toolsSource) {
+          switchManagedTools(
+            stageAndPromoteManagedTools(state, state.transaction.toolsSource, transactionId),
+            transactionId,
+          );
         }
         if (state.transaction.serviceBefore || ENSURE_MANAGED_SERVICE) {
           await verifyManagedService(
@@ -1835,7 +1918,7 @@ async function main() {
             candidateInfo.capabilities,
             candidateInfo.buildId,
             () => {
-              state.transaction.candidateServiceMayExist = true;
+              state.transaction.serviceEnsureStarted = true;
               writeState(state);
             },
           );
@@ -1846,6 +1929,7 @@ async function main() {
         throw error;
       }
 
+      finalizeManagedToolsVersion(state.transaction);
       state.pending = null;
       state.phase = "completed";
       writeState(state);

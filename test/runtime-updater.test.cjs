@@ -170,6 +170,11 @@ if (args[0] === 'service') {
       studioBuildId,
     },
   };
+  if (!isStatus && action === 'ensure' && ${version === VERSION} &&
+    process.env.CHENGFENG_VIDEOCUT_TEST_ENSURE_INVALID_AFTER_START === '1') {
+    console.log('candidate service started but installer reply is invalid');
+    process.exit(17);
+  }
   console.log(JSON.stringify({ schemaVersion: 1, product: 'chengfeng-videocut', command: 'service.' + action, ok: true, data }));
   process.exit(0);
 }
@@ -500,11 +505,12 @@ function assertProjectPreserved(home) {
 function createManagedTools(home, { oldVersion = "0.4.7", candidateVersion = VERSION } = {}) {
   const toolsRoot = path.join(home, "tools");
   const oldTools = path.join(toolsRoot, oldVersion);
-  const candidateTools = path.join(toolsRoot, candidateVersion);
+  const candidateTools = path.join(path.dirname(home), "desktop-tools-source", candidateVersion);
   const suffix = IS_WINDOWS ? ".exe" : "";
   for (const directory of [oldTools, candidateTools]) {
     mkdirSync(directory, { recursive: true });
     for (const name of ["bun", "ffmpeg", "ffprobe"]) writeFileSync(path.join(directory, `${name}${suffix}`), "tool");
+    writeFileSync(path.join(directory, "resources-manifest.json"), "{}\n");
   }
   symlinkSync(oldVersion, path.join(toolsRoot, "current"));
   return { toolsRoot, oldTools, candidateTools };
@@ -890,22 +896,23 @@ test("same-version Desktop activation promotes an absent or old tools/current th
   assert.equal(first.status, 0, first.stderr);
   const server = await startCapabilityServer(t, root, home);
   const { toolsRoot, oldTools, candidateTools } = createManagedTools(home);
+  const installedCandidateTools = path.join(toolsRoot, VERSION);
   const toolsCurrent = path.join(toolsRoot, "current");
   unlinkSync(toolsCurrent);
   const common = {
     CHENGFENG_VIDEOCUT_INSTALLER_ENSURE_SERVICE: "1",
-    CHENGFENG_VIDEOCUT_MANAGED_TOOLS_DIR: candidateTools,
+    CHENGFENG_VIDEOCUT_MANAGED_TOOLS_SOURCE_DIR: candidateTools,
     CHENGFENG_VIDEOCUT_TEST_SERVICE_URL: server.url,
     CHENGFENG_VIDEOCUT_TEST_SERVICE_PID: String(server.pid),
   };
   const absent = invoke(home, release, common);
   assert.equal(absent.status, 0, absent.stderr);
-  assert.equal(path.resolve(toolsRoot, readlinkSync(toolsCurrent)), candidateTools);
+  assert.equal(path.resolve(toolsRoot, readlinkSync(toolsCurrent)), installedCandidateTools);
   unlinkSync(toolsCurrent);
   symlinkSync(IS_WINDOWS ? oldTools : "0.4.7", toolsCurrent, IS_WINDOWS ? "junction" : "dir");
   const old = invoke(home, release, common);
   assert.equal(old.status, 0, old.stderr);
-  assert.equal(path.resolve(toolsRoot, readlinkSync(toolsCurrent)), candidateTools);
+  assert.equal(path.resolve(toolsRoot, readlinkSync(toolsCurrent)), installedCandidateTools);
   assert.equal(currentTarget(home), path.join(home, "app", VERSION));
   assert.equal(readState(home).phase, "idle");
 });
@@ -920,7 +927,7 @@ test("same-version Desktop service failure restores the old tools link and manag
   const failOnce = path.join(root, "fail-ensure-once");
   const result = invoke(home, release, {
     CHENGFENG_VIDEOCUT_INSTALLER_ENSURE_SERVICE: "1",
-    CHENGFENG_VIDEOCUT_MANAGED_TOOLS_DIR: candidateTools,
+    CHENGFENG_VIDEOCUT_MANAGED_TOOLS_SOURCE_DIR: candidateTools,
     CHENGFENG_VIDEOCUT_TEST_SERVICE_URL: server.url,
     CHENGFENG_VIDEOCUT_TEST_SERVICE_PID: String(server.pid),
     CHENGFENG_VIDEOCUT_TEST_SERVICE_LOG: serviceLog,
@@ -960,7 +967,7 @@ test("Desktop-requested service verification rolls back a stopped legacy Runtime
   const serviceLog = path.join(root, "service-actions.log");
   const result = invoke(home, release, {
     CHENGFENG_VIDEOCUT_INSTALLER_ENSURE_SERVICE: "1",
-    CHENGFENG_VIDEOCUT_MANAGED_TOOLS_DIR: candidateTools,
+    CHENGFENG_VIDEOCUT_MANAGED_TOOLS_SOURCE_DIR: candidateTools,
     CHENGFENG_VIDEOCUT_TEST_SERVICE_LOG: serviceLog,
   });
   assert.notEqual(result.status, 0);
@@ -977,13 +984,61 @@ test("Desktop-requested service verification rolls back a stopped legacy Runtime
   assertProjectPreserved(home);
 });
 
+test("candidate ensure invalid reply still stops the first-run service and rolls back tools", (t) => {
+  const { root, home, release } = fixture(t, { service: "managed" });
+  const { toolsRoot, candidateTools } = createManagedTools(home);
+  unlinkSync(path.join(toolsRoot, "current"));
+  const serviceLog = path.join(root, "service-actions.log");
+  const result = invoke(home, release, {
+    CHENGFENG_VIDEOCUT_INSTALLER_ENSURE_SERVICE: "1",
+    CHENGFENG_VIDEOCUT_MANAGED_TOOLS_SOURCE_DIR: candidateTools,
+    CHENGFENG_VIDEOCUT_TEST_SERVICE_LOG: serviceLog,
+    CHENGFENG_VIDEOCUT_TEST_ENSURE_INVALID_AFTER_START: "1",
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /新 Runtime service ensure 失败/);
+  assert.equal(existsSync(path.join(home, "app", "current")), false);
+  assert.equal(existsSync(path.join(toolsRoot, "current")), false);
+  assert.equal(existsSync(path.join(home, "app", VERSION)), false);
+  assert.deepEqual(readFileSync(serviceLog, "utf8").trim().split("\n"), [
+    `${VERSION}:ensure`,
+    `${VERSION}:stop`,
+  ]);
+});
+
+test("candidate ensure invalid reply stops the candidate and restores an existing service", async (t) => {
+  const { root, home, release } = fixture(t, { service: "managed" });
+  const old = createLegacyRuntime(home, { service: "managed" });
+  const { oldTools, candidateTools, toolsRoot } = createManagedTools(home);
+  const server = await startCapabilityServer(t, root, home);
+  const serviceLog = path.join(root, "service-actions.log");
+  const result = invoke(home, release, {
+    CHENGFENG_VIDEOCUT_INSTALLER_ENSURE_SERVICE: "1",
+    CHENGFENG_VIDEOCUT_MANAGED_TOOLS_SOURCE_DIR: candidateTools,
+    CHENGFENG_VIDEOCUT_TEST_SERVICE_LOG: serviceLog,
+    CHENGFENG_VIDEOCUT_TEST_SERVICE_URL: server.url,
+    CHENGFENG_VIDEOCUT_TEST_SERVICE_PID: String(server.pid),
+    CHENGFENG_VIDEOCUT_TEST_ENSURE_INVALID_AFTER_START: "1",
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /新 Runtime service ensure 失败/);
+  assert.equal(currentTarget(home), old.runtime);
+  assert.equal(path.resolve(toolsRoot, readlinkSync(path.join(toolsRoot, "current"))), oldTools);
+  assert.deepEqual(readFileSync(serviceLog, "utf8").trim().split("\n"), [
+    "0.4.7:status",
+    `${VERSION}:ensure`,
+    `${VERSION}:stop`,
+    "0.4.7:ensure",
+  ]);
+});
+
 test("Desktop tools/current failure after promotion restores the old Runtime and tools links", (t) => {
   const { home, release } = fixture(t);
   const old = createLegacyRuntime(home, { service: "absent" });
   const { toolsRoot, oldTools, candidateTools } = createManagedTools(home);
   const result = invoke(home, release, {
     CHENGFENG_VIDEOCUT_INSTALLER_ENSURE_SERVICE: "1",
-    CHENGFENG_VIDEOCUT_MANAGED_TOOLS_DIR: candidateTools,
+    CHENGFENG_VIDEOCUT_MANAGED_TOOLS_SOURCE_DIR: candidateTools,
     CHENGFENG_VIDEOCUT_TEST_FAIL_TOOLS_PROMOTION: "after_current",
   });
   assert.notEqual(result.status, 0);
@@ -1002,7 +1057,7 @@ test("Windows tools/current failure after old junction backup restores the old l
   const { toolsRoot, oldTools, candidateTools } = createManagedTools(home);
   const result = invoke(home, release, {
     CHENGFENG_VIDEOCUT_INSTALLER_ENSURE_SERVICE: "1",
-    CHENGFENG_VIDEOCUT_MANAGED_TOOLS_DIR: candidateTools,
+    CHENGFENG_VIDEOCUT_MANAGED_TOOLS_SOURCE_DIR: candidateTools,
     CHENGFENG_VIDEOCUT_TEST_FAIL_TOOLS_PROMOTION: "after_backup",
   });
   assert.notEqual(result.status, 0);

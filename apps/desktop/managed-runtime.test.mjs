@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   ensureManagedRuntime,
-  installBundledTools,
+  stageBundledTools,
   resolveManagedRuntimeLayout,
   runCaptured,
 } from "./managed-runtime.mjs";
@@ -32,7 +32,7 @@ test("resolveManagedRuntimeLayout exposes stable shared Product paths", () => {
   assert.equal(layout.installedCliPath, join(layout.root, "app", "current", "cli.js"));
 });
 
-test("installBundledTools stages versioned desktop dependencies without activating tools/current", async () => {
+test("Desktop stages bundled tools outside the Product root before installer activation", async () => {
   const root = await mkdtemp(join(tmpdir(), "chengfeng-managed-tools-"));
   try {
     const source = join(root, "source");
@@ -57,8 +57,7 @@ test("installBundledTools stages versioned desktop dependencies without activati
       ffprobe: "ffprobe 7",
     };
     const dataDir = join(root, "data");
-    const layout = await installBundledTools({
-      dataDir,
+    const layout = await stageBundledTools({
       version: "0.4.7",
       platform: process.platform,
       manifest,
@@ -73,8 +72,7 @@ test("installBundledTools stages versioned desktop dependencies without activati
       manifest,
     );
 
-    await installBundledTools({
-      dataDir,
+    await stageBundledTools({
       version: "0.4.7",
       platform: process.platform,
       manifest,
@@ -82,7 +80,8 @@ test("installBundledTools stages versioned desktop dependencies without activati
       bundledFfmpegPath: ffmpeg,
       bundledFfprobePath: ffprobe,
     });
-    await assert.rejects(realpath(layout.toolsCurrentDir));
+    await assert.rejects(realpath(join(dataDir, "tools", "current")));
+    await assert.rejects(realpath(join(dataDir, "tools", "0.4.7")));
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -96,8 +95,7 @@ test("a failed staged-tool verification leaves the prior shared tools and Runtim
     const source = join(root, "source");
     const dataDir = join(root, "data");
     await mkdir(source);
-    const previous = await installBundledTools({
-      dataDir,
+    const previous = await stageBundledTools({
       version: "0.4.7",
       platform: process.platform,
       manifest: {
@@ -113,7 +111,8 @@ test("a failed staged-tool verification leaves the prior shared tools and Runtim
       bundledFfmpegPath: await writeExecutable(source, "ffmpeg", "#!/bin/sh\nexit 0\n"),
       bundledFfprobePath: await writeExecutable(source, "ffprobe", "#!/bin/sh\nexit 0\n"),
     });
-    await symlink("0.4.7", previous.toolsCurrentDir);
+    await mkdir(join(dataDir, "tools", "0.4.7"), { recursive: true });
+    await symlink("0.4.7", join(dataDir, "tools", "current"));
     const oldRuntime = join(dataDir, "app", "0.4.7");
     await mkdir(oldRuntime, { recursive: true });
     await symlink("0.4.7", join(dataDir, "app", "current"));
@@ -140,7 +139,7 @@ test("a failed staged-tool verification leaves the prior shared tools and Runtim
       }),
       /Bundled Bun verification failed/,
     );
-    assert.equal(await realpath(previous.toolsCurrentDir), await realpath(previous.toolsVersionDir));
+    assert.equal(await realpath(join(dataDir, "tools", "current")), await realpath(join(dataDir, "tools", "0.4.7")));
     assert.equal(await realpath(join(dataDir, "app", "current")), await realpath(oldRuntime));
   } finally {
     await rm(root, { recursive: true, force: true });
