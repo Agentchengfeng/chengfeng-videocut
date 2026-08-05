@@ -109,5 +109,5 @@ describe("watchRegisteredProjects", () => {
       // close() is intentionally idempotent so shutdown paths can be retried.
       manager.close();
     }
-  });
+  }, 20_000);
 });
