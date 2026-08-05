@@ -2,6 +2,8 @@ name: desktop-macos-smoke
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
   pull_request:
     paths:
       - ".github/workflows/desktop-macos-smoke.yml"

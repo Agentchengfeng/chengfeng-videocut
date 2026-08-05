@@ -2,6 +2,8 @@ name: desktop-windows-smoke
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
   pull_request:
     paths:
       - ".github/workflows/desktop-windows-smoke.yml"
