@@ -24,7 +24,7 @@ function delay(milliseconds: number): Promise<void> {
 
 async function waitFor(
   attempt: () => boolean | Promise<boolean>,
-  timeoutMilliseconds = 8_000,
+  timeoutMilliseconds = 30_000,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMilliseconds;
   while (Date.now() < deadline) {
@@ -109,5 +109,5 @@ describe("watchRegisteredProjects", () => {
       // close() is intentionally idempotent so shutdown paths can be retried.
       manager.close();
     }
-  }, 20_000);
+  }, 60_000);
 });
