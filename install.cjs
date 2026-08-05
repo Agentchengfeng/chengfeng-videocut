@@ -1214,6 +1214,7 @@ function stageAndPromoteManagedTools(state, source, transactionId) {
   if (pathExists(pendingRoot)) removeTreeWithoutFollowingLinks(pendingRoot);
   mkdirSync(pendingRoot, { recursive: true, mode: 0o700 });
   cpSync(source, staged, { recursive: true, force: false });
+  maybeCrashAt("tools_copied_pending");
   const stagedSource = validateExternalToolsSource(staged, { allowManagedRoot: true });
   if (canonicalPath(stagedSource) !== canonicalPath(staged)) fail("工具 pending 复制后路径身份异常。");
   state.transaction.toolsTarget = target;
@@ -1225,6 +1226,9 @@ function stageAndPromoteManagedTools(state, source, transactionId) {
   if (pathExists(target)) renameSync(target, backup);
   try {
     renameSync(staged, target);
+    // Deliberately leave toolsPromoted=false until the journal write below.
+    // Recovery must therefore inspect target/backup rather than trusting it.
+    maybeCrashAt("tools_target_renamed");
     state.transaction.toolsPromoted = true;
     writeState(state);
     return target;
@@ -1235,10 +1239,20 @@ function stageAndPromoteManagedTools(state, source, transactionId) {
 }
 
 function restoreManagedToolsVersion(transaction) {
-  if (!transaction?.toolsPromotionStarted) return;
+  if (!transaction) return;
+  if (!transaction.toolsPromotionStarted) {
+    if (transaction.toolsPending && pathExists(transaction.toolsPending)) {
+      removeTreeWithoutFollowingLinks(transaction.toolsPending);
+    }
+    return;
+  }
   const target = transaction.toolsTarget;
   const backup = transaction.toolsBackup;
-  if (target && pathExists(target) && transaction.toolsPromoted) removeManagedToolsDirectory(target);
+  // A crash can happen after staged -> target but before toolsPromoted reaches
+  // the journal.  Filesystem state is authoritative for this compensation:
+  // target + backup means target is the uncommitted candidate and backup is
+  // the old version; remove the candidate before restoring the old name.
+  if (target && pathExists(target)) removeManagedToolsDirectory(target);
   if (backup && pathExists(backup)) renameSync(backup, target);
   if (transaction.toolsPending && pathExists(transaction.toolsPending)) {
     removeTreeWithoutFollowingLinks(transaction.toolsPending);
@@ -1640,10 +1654,11 @@ async function activateSameVersionDesktopTools(state, bunExecutable, candidateIn
     await rollbackActivatedTransaction(state, bunExecutable, { reason: "同版本 Desktop 工具激活自证失败" });
     throw error;
   }
-  finalizeManagedToolsVersion(state.transaction);
   state.pending = null;
   state.phase = "completed";
   writeState(state);
+  maybeCrashAt("tools_committed");
+  finalizeManagedToolsVersion(state.transaction);
   state.phase = "idle";
   state.transactionId = null;
   state.transaction = null;
@@ -1658,6 +1673,7 @@ async function recoverInterruptedTransaction(state, bunExecutable) {
     return state;
   }
   if (state.phase === "completed") {
+    finalizeManagedToolsVersion(state.transaction);
     state.phase = "idle";
     state.pending = null;
     state.transaction = null;
@@ -1933,10 +1949,11 @@ async function main() {
         throw error;
       }
 
-      finalizeManagedToolsVersion(state.transaction);
       state.pending = null;
       state.phase = "completed";
       writeState(state);
+      maybeCrashAt("tools_committed");
+      finalizeManagedToolsVersion(state.transaction);
       maybeCrashAt("completed");
       state.phase = "idle";
       state.transactionId = null;

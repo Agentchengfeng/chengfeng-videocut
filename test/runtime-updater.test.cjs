@@ -1032,6 +1032,69 @@ test("candidate ensure invalid reply stops the candidate and restores an existin
   ]);
 });
 
+test("copying external Desktop tools crashes into pending and recovery removes the partial pending tree", (t) => {
+  const { home, release } = fixture(t);
+  const old = createLegacyRuntime(home, { service: "absent" });
+  const { toolsRoot, oldTools, candidateTools } = createManagedTools(home);
+  const crashed = invoke(home, release, {
+    CHENGFENG_VIDEOCUT_MANAGED_TOOLS_SOURCE_DIR: candidateTools,
+    CHENGFENG_VIDEOCUT_TEST_CRASH_AT_PHASE: "tools_copied_pending",
+  });
+  assert.equal(crashed.status, 86, crashed.stderr);
+  assert.ok(readdirSync(path.join(toolsRoot, ".pending")).length > 0);
+  const recovered = invoke(home, release, {
+    CHENGFENG_VIDEOCUT_DOWNLOAD_BASE: pathToFileURL(path.join(path.dirname(home), "missing-release")).href,
+  });
+  assert.notEqual(recovered.status, 0);
+  assert.equal(currentTarget(home), old.runtime);
+  assert.equal(path.resolve(toolsRoot, readlinkSync(path.join(toolsRoot, "current"))), oldTools);
+  assert.deepEqual(readdirSync(path.join(toolsRoot, ".pending")), []);
+});
+
+test("same-version crash after tools target rename restores old tools without a dangling link", (t) => {
+  const { home, release } = fixture(t);
+  const first = invoke(home, release);
+  assert.equal(first.status, 0, first.stderr);
+  const { toolsRoot, oldTools, candidateTools } = createManagedTools(home);
+  const crashed = invoke(home, release, {
+    CHENGFENG_VIDEOCUT_INSTALLER_ENSURE_SERVICE: "1",
+    CHENGFENG_VIDEOCUT_MANAGED_TOOLS_SOURCE_DIR: candidateTools,
+    CHENGFENG_VIDEOCUT_TEST_CRASH_AT_PHASE: "tools_target_renamed",
+  });
+  assert.equal(crashed.status, 86, crashed.stderr);
+  assert.equal(path.resolve(toolsRoot, readlinkSync(path.join(toolsRoot, "current"))), oldTools);
+  assert.equal(existsSync(path.join(toolsRoot, VERSION)), true);
+  const recovered = invoke(home, release);
+  assert.equal(recovered.status, 0, recovered.stderr);
+  assert.equal(path.resolve(toolsRoot, readlinkSync(path.join(toolsRoot, "current"))), oldTools);
+  assert.equal(existsSync(path.join(toolsRoot, VERSION)), false);
+  assert.equal(currentTarget(home), path.join(home, "app", VERSION));
+});
+
+test("regular upgrade crash after completed journal preserves new tools and cleans its backup", (t) => {
+  const { home, release } = fixture(t);
+  createLegacyRuntime(home, { service: "absent" });
+  const { toolsRoot, candidateTools } = createManagedTools(home);
+  const previousVersion = path.join(toolsRoot, VERSION);
+  mkdirSync(previousVersion, { recursive: true });
+  const suffix = IS_WINDOWS ? ".exe" : "";
+  for (const name of ["bun", "ffmpeg", "ffprobe"]) writeFileSync(path.join(previousVersion, `${name}${suffix}`), "previous");
+  writeFileSync(path.join(previousVersion, "resources-manifest.json"), "{}\n");
+  const crashed = invoke(home, release, {
+    CHENGFENG_VIDEOCUT_MANAGED_TOOLS_SOURCE_DIR: candidateTools,
+    CHENGFENG_VIDEOCUT_TEST_CRASH_AT_PHASE: "tools_committed",
+  });
+  assert.equal(crashed.status, 86, crashed.stderr);
+  assert.equal(currentTarget(home), path.join(home, "app", VERSION));
+  assert.equal(path.resolve(toolsRoot, readlinkSync(path.join(toolsRoot, "current"))), path.join(toolsRoot, VERSION));
+  assert.equal(readdirSync(toolsRoot).filter((name) => name.includes(".previous.")).length, 1);
+  const recovered = invoke(home, release);
+  assert.equal(recovered.status, 0, recovered.stderr);
+  assert.equal(currentTarget(home), path.join(home, "app", VERSION));
+  assert.equal(path.resolve(toolsRoot, readlinkSync(path.join(toolsRoot, "current"))), path.join(toolsRoot, VERSION));
+  assert.equal(readdirSync(toolsRoot).filter((name) => name.includes(".previous.")).length, 0);
+});
+
 test("Desktop tools/current failure after promotion restores the old Runtime and tools links", (t) => {
   const { home, release } = fixture(t);
   const old = createLegacyRuntime(home, { service: "absent" });
