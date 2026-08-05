@@ -29,6 +29,12 @@ describe("release contract", () => {
     expect(portablePackager).toContain("CHENGFENG_VIDEOCUT_EXECUTABLE");
     expect(portablePackager).toContain("CHENGFENG_VIDEOCUT_DATA_DIR");
     expect(portablePackager).toContain('basename -- "$STABLE_BIN_DIR"');
+    expect(portablePackager).toContain('tools/current');
+    expect(portablePackager).toContain('MANAGED_TOOLS_DIR');
+    const installer = await readFile(join(rootDir, "install.cjs"), "utf8");
+    expect(installer).toContain('tools\\\\current');
+    expect(installer).toContain('MANAGED_TOOLS');
+    expect(installer).toContain('CHENGFENG_VIDEOCUT_EXECUTABLE=%~f0');
   });
 
   it("copies install.sh and checksums every required portable/tgz asset", async () => {

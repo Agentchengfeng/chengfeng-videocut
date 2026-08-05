@@ -2,7 +2,7 @@
 set -eu
 
 REPOSITORY="Agentchengfeng/chengfeng-videocut"
-VERSION="0.4.6"
+VERSION="0.4.7"
 ARCHIVE_NAME="chengfeng-videocut-portable.tar.gz"
 CHECKSUM_NAME="SHA256SUMS.txt"
 DOWNLOAD_BASE="${CHENGFENG_VIDEOCUT_DOWNLOAD_BASE:-https://github.com/$REPOSITORY/releases/download/v$VERSION}"

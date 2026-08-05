@@ -1,0 +1,103 @@
+name: desktop-windows-smoke
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/desktop-windows-smoke.yml"
+      - "apps/desktop/**"
+      - "apps/cli/**"
+      - "apps/studio/**"
+      - "packages/**"
+      - "install.cjs"
+      - "scripts/package-portable.ts"
+      - "package.json"
+      - "bun.lock"
+
+jobs:
+  packaged-smoke:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.5
+      - run: bun install --frozen-lockfile
+      - run: bun run desktop:test
+      - run: bun run desktop:dist:win
+      - run: bun run --cwd apps/desktop smoke:packaged
+      - run: bun run --cwd apps/desktop smoke:managed-packaged
+      - name: Install NSIS package without elevation
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem "apps/desktop/release/Chengfeng-VideoCut-*-win-x64.exe" |
+            Select-Object -First 1
+          if (-not $installer) {
+            throw "Windows installer artifact was not produced"
+          }
+          $install = Start-Process -FilePath $installer.FullName -ArgumentList "/S" -Wait -PassThru
+          if ($install.ExitCode -ne 0) {
+            throw "Windows installer exited with $($install.ExitCode)"
+          }
+          $programsDir = Join-Path $env:LOCALAPPDATA "Programs"
+          $installedApps = @(
+            Get-ChildItem $programsDir `
+              -Filter "Chengfeng VideoCut.exe" `
+              -File `
+              -Recurse `
+              -ErrorAction SilentlyContinue
+          )
+          if ($installedApps.Count -ne 1) {
+            $found = ($installedApps | ForEach-Object FullName) -join ", "
+            throw "Expected exactly one installed desktop executable under $programsDir; found $($installedApps.Count): $found"
+          }
+          $installedApp = $installedApps[0].FullName
+          $installedDir = $installedApps[0].DirectoryName
+          "CHENGFENG_VIDEOCUT_PACKAGED_APP=$installedApp" >> $env:GITHUB_ENV
+          "CHENGFENG_VIDEOCUT_INSTALLED_DIR=$installedDir" >> $env:GITHUB_ENV
+      - name: Smoke-test installed application
+        run: |
+          bun run --cwd apps/desktop smoke:packaged
+          bun run --cwd apps/desktop smoke:managed-packaged
+      - name: Uninstall test application
+        if: ${{ always() && env.CHENGFENG_VIDEOCUT_INSTALLED_DIR != '' }}
+        shell: pwsh
+        run: |
+          if (-not $env:CHENGFENG_VIDEOCUT_INSTALLED_DIR) {
+            throw "Installed application directory was not recorded"
+          }
+          $uninstallers = @(
+            Get-ChildItem $env:CHENGFENG_VIDEOCUT_INSTALLED_DIR `
+              -Filter "Uninstall*.exe" `
+              -File `
+              -ErrorAction SilentlyContinue
+          )
+          if ($uninstallers.Count -ne 1) {
+            $found = ($uninstallers | ForEach-Object FullName) -join ", "
+            throw "Expected exactly one uninstaller; found $($uninstallers.Count): $found"
+          }
+          $uninstall = Start-Process `
+            -FilePath $uninstallers[0].FullName `
+            -ArgumentList "/S" `
+            -Wait `
+            -PassThru
+          if ($uninstall.ExitCode -ne 0) {
+            throw "Windows uninstaller exited with $($uninstall.ExitCode)"
+          }
+          foreach ($attempt in 1..20) {
+            if (-not (Test-Path $env:CHENGFENG_VIDEOCUT_PACKAGED_APP)) {
+              exit 0
+            }
+            Start-Sleep -Milliseconds 500
+          }
+          throw "Installed desktop executable still exists after uninstall"
+      - name: Preserve verified Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Chengfeng-VideoCut-windows-x64
+          path: |
+            apps/desktop/release/Chengfeng-VideoCut-*-win-x64.exe
+            apps/desktop/release/Chengfeng-VideoCut-*-win-x64.exe.blockmap
+          if-no-files-found: error
+          retention-days: 7

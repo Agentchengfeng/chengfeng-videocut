@@ -386,10 +386,11 @@ describe("Koubo workflow snapshot and cut application", () => {
       now: fixedNow,
       dependencies: {
         mediaCutter: async (input) => {
-          expect(input.output).toContain(
+          const portableOutput = input.output.replaceAll("\\", "/");
+          expect(portableOutput).toContain(
             `.cut-transactions/${confirmedEditListRevision}-`,
           );
-          expect(input.output).toEndWith("/candidate/source_cut.mp4");
+          expect(portableOutput).toEndWith("/candidate/source_cut.mp4");
           await writeArtifact(job, relative(job, input.output), "new-source-cut");
           return cutResult(input);
         },

@@ -26,3 +26,27 @@ export function ffmpegFileArg(path: string): string {
 export function ffmpegOutputArgs(format: string, path: string): string[] {
   return ["-f", format, ffmpegFileArg(path)];
 }
+
+/**
+ * Runs one FFmpeg command whose complex filter graph lives in a file.
+ *
+ * FFmpeg 7 introduced the generic `-/option file` form and FFmpeg 8 removed
+ * the older `-filter_complex_script` alias. FFmpeg 6 still needs that alias.
+ * Prefer the current form, but retry only when FFmpeg says that exact option
+ * is unknown; encoding and media errors must never be hidden by a retry.
+ */
+export async function runWithFfmpegComplexFilterFile<T>(
+  filterPath: string,
+  run: (filterArgs: readonly [string, string]) => Promise<T>,
+): Promise<T> {
+  try {
+    return await run(["-/filter_complex", filterPath]);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const modernOptionUnsupported =
+      /Unrecognized option ['"]?\/filter_complex['"]?/i.test(message) ||
+      (/\/filter_complex/i.test(message) && /Option not found/i.test(message));
+    if (!modernOptionUnsupported) throw error;
+    return await run(["-filter_complex_script", filterPath]);
+  }
+}

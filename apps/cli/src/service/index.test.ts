@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   renderStudioLaunchAgent,
+  resolveStudioServicePaths,
   runStudioServiceCommand,
   studioServicePaths,
   type CommandRunner,
@@ -129,6 +130,25 @@ function fakeRuntime(homeDir: string, owner: "none" | "managed" | "foreground" |
 }
 
 describe("Studio user service", () => {
+  it("resolves a Windows supervisor to the stable launcher's install root", async () => {
+    const root = await testHome();
+    const launcher = join(root, "bin", "chengfeng-videocut.cmd");
+    const previousExecutable = process.env.CHENGFENG_VIDEOCUT_EXECUTABLE;
+    const previousHome = process.env.CHENGFENG_VIDEOCUT_HOME;
+    try {
+      process.env.CHENGFENG_VIDEOCUT_EXECUTABLE = launcher;
+      delete process.env.CHENGFENG_VIDEOCUT_HOME;
+      const paths = resolveStudioServicePaths({ platform: "win32" });
+      expect(paths.dataDir).toBe(root);
+      expect(paths.launcherPath).toBe(launcher);
+    } finally {
+      if (previousExecutable === undefined) delete process.env.CHENGFENG_VIDEOCUT_EXECUTABLE;
+      else process.env.CHENGFENG_VIDEOCUT_EXECUTABLE = previousExecutable;
+      if (previousHome === undefined) delete process.env.CHENGFENG_VIDEOCUT_HOME;
+      else process.env.CHENGFENG_VIDEOCUT_HOME = previousHome;
+    }
+  });
+
   it("renders a stable, throttled LaunchAgent contract without a source path", async () => {
     const home = await testHome();
     const paths = studioServicePaths(home, undefined, undefined, "darwin");

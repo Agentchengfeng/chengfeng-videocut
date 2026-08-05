@@ -6,15 +6,22 @@ chengfeng-videocut 是一个本地优先的口播视频剪辑产品：浏览器�
 
 ## 下载与安装
 
-正式分发只走 [GitHub Releases](https://github.com/Agentchengfeng/chengfeng-videocut/releases)。不发布 npm 包，不需要 `bunx`，当前也不提供 DMG。
+正式分发只走 [GitHub Releases](https://github.com/Agentchengfeng/chengfeng-videocut/releases)，
+不发布 npm 包，也不需要 `bunx`。0.4.7 同时提供桌面预览包和 CLI 便携包；桌面包在
+完成代码签名、公证与 FFmpeg 再分发复核前只作为预发布测试资产。
 
-运行要求：
+桌面预览包：
 
-- Bun 1.2 或更高版本
-- FFmpeg，并确保 `ffmpeg` 与 `ffprobe` 可在终端中运行
-- macOS 或 Linux；Windows 尚未作为正式支持平台验证
+- macOS Apple Silicon：DMG
+- Windows 10/11 x64：NSIS EXE
+- 随包提供 Runtime、Bun、FFmpeg 与 FFprobe，不要求用户修改系统 PATH
+- 首次启动把这些资产安装到 `~/.chengfeng-videocut`，再通过同一个稳定 CLI 执行
+  `service ensure`；关闭窗口后用户级服务继续运行，Skills 直接复用
 
-一行安装：
+纯 CLI / 便携包仍要求 Bun 1.2+ 与 FFmpeg 6+；Windows 的 `install.cjs` 另需
+Node.js 20+。Linux 可用 foreground `start` 做开发诊断，常驻 `service` 尚不支持。
+
+macOS 一行安装：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Agentchengfeng/chengfeng-videocut/main/install.sh | sh
@@ -29,9 +36,13 @@ chengfeng-videocut service status
 chengfeng-videocut service logs
 ```
 
-`service ensure` 是正式用户入口：首次使用时注册并启动 macOS 用户级服务，后续调用会复用健康进程。安装器本身只安装 Runtime，不会在安装时偷偷注册后台服务。
+`service ensure` 是正式用户入口：首次使用时在 macOS 注册 LaunchAgent、在 Windows 注册 Task Scheduler 用户任务，后续调用会复用健康进程。安装器本身只安装 Runtime，不会在安装时偷偷注册后台服务。
 
-本版常驻服务只支持 macOS。其他平台调用 `service` 会明确返回 `service_unsupported`，仍可使用 foreground `start` 进行开发诊断。
+桌面 App 是这个规则的另一个入口，不是另一套服务：它先在本地安装随包资产，再显式
+执行 `service ensure`。App 与 Skills 都只认 `~/.chengfeng-videocut/bin` 的稳定
+launcher；Electron resources 路径不会成为公开 CLI。
+
+本版常驻服务支持 macOS 与 Windows。其他平台调用 `service` 会明确返回 `service_unsupported`，仍可使用 foreground `start` 进行开发诊断。
 
 若终端暂时找不到命令，请按照安装器最后输出的提示，将 `~/.chengfeng-videocut/bin` 加入 `PATH`。
 
@@ -42,7 +53,15 @@ chengfeng-videocut service logs
 3. 在该目录运行 `CHENGFENG_VIDEOCUT_DOWNLOAD_BASE="file://$PWD" sh ./install.sh`，把 Runtime 落到稳定的 `~/.chengfeng-videocut/bin` 与 `app/current` 布局。
 4. 运行 `~/.chengfeng-videocut/bin/chengfeng-videocut service ensure --open` 启动工作台。
 
-裸解压的便携目录可用于 `./chengfeng-videocut doctor` 或 foreground 诊断，但不会被 LaunchAgent 绑定为永久路径；请勿移动临时目录后继续依赖其中的服务入口。
+Windows PowerShell 使用同一 Release 的 `install.cjs`、便携包与校验清单：
+
+```powershell
+$env:CHENGFENG_VIDEOCUT_DOWNLOAD_BASE = ([uri]$PWD).AbsoluteUri
+node .\install.cjs
+& "$env:USERPROFILE\.chengfeng-videocut\bin\chengfeng-videocut.cmd" service ensure --open
+```
+
+裸解压的便携目录可用于 `doctor` 或 foreground 诊断，但不会被操作系统受管任务绑定为永久路径；请勿移动临时目录后继续依赖其中的服务入口。
 
 版本化资产用于固定版本和回滚；不带版本号的 `chengfeng-videocut-portable.tar.gz` 始终指向该次 Release 的便携包。
 
@@ -118,6 +137,7 @@ Skills 负责判断与编排，例如转录、口误/重复等语义识别、让
 
 - `apps/studio`：编辑器外壳、预览、时间线、字幕与导出界面
 - `apps/cli`：`chengfeng-videocut` 命令和本地服务
+- `apps/desktop`：把同一 Runtime 与依赖装入受管根的 macOS / Windows 桌面壳
 - `packages/core`：项目解析、剪切语义、校验与原子写入
 - `packages/contracts`：与渲染引擎无关的项目和编辑契约
 - `packages/hyperframes-adapter`：HyperFrames 预览与渲染适配

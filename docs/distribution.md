@@ -6,27 +6,53 @@ chengfeng-videocut 的正式二进制分发入口是 GitHub Releases：
 
 https://github.com/Agentchengfeng/chengfeng-videocut/releases
 
-当前不发布 npm 包，不使用 `bunx` 作为用户入口，也不提供 DMG。这样可以避免用户安装时依赖 npm registry，并让下载文件、校验值、版本说明和回滚版本都集中在同一个 Release 中。
+当前不发布 npm 包，也不使用 `bunx` 作为用户入口。Runtime 便携包、macOS DMG 和
+Windows NSIS 都由同一个版本的 GitHub Release / CI 产物承载；桌面包在签名、公证与
+媒体二进制再分发复核完成前只能标为预发布测试资产。
 
-用户仍需自行准备：
+两条用户路径：
 
-- Bun 1.2 或更高版本
-- FFmpeg，包含 `ffmpeg` 和 `ffprobe`
+- 桌面路径：随包 Runtime、Bun、FFmpeg 与 FFprobe；首次启动写入 Product 受管根，
+  不修改系统 PATH
+- 纯 CLI 路径：用户自行准备 Bun 1.2+、FFmpeg 6+；Windows 安装阶段还需要
+  Node.js 20+ 运行 `install.cjs`
 
 ## Release 资产
 
 每个正式版本至少应提供：
 
 - `install.sh`：与该版本绑定的一行安装器副本
+- `install.cjs`：Windows / Node 安装器副本
 - `chengfeng-videocut-<version>-portable.tar.gz`：版本化便携包
 - `chengfeng-videocut-portable.tar.gz`：与本次 Release 内容相同的稳定文件名
 - `chengfeng-videocut-<version>.tgz`：版本化 CLI 包，供诊断或受控安装
 - `chengfeng-videocut.tgz`：与本次 Release 内容相同的稳定 CLI 文件名
-- `SHA256SUMS.txt`：覆盖 `install.sh`、版本化/稳定名 portable 与 tgz 的 SHA-256 校验值
+- `SHA256SUMS.txt`：覆盖 `install.sh`、`install.cjs`、版本化/稳定名 portable 与 tgz 的 SHA-256 校验值
+- `Chengfeng-VideoCut-<version>-mac-arm64.dmg`：macOS 桌面测试包
+- `Chengfeng-VideoCut-<version>-win-x64.exe`：Windows 桌面测试包
 
 稳定文件名便于安装器和 Skills 使用；版本化文件名用于固定版本、审计和回滚。稳定文件名不得跨 Release 静默替换内容。
 
 ## 用户安装路径
+
+### 桌面路径
+
+桌面 App 的 resources 内包含本版本 `install.cjs`、便携 Runtime、独立校验清单、
+Bun、FFmpeg 与 FFprobe。首次启动只写：
+
+```text
+~/.chengfeng-videocut/
+  app/<version> + app/current
+  tools/<version> + tools/current
+  bin/chengfeng-videocut(.cmd)
+```
+
+随后由已安装稳定 CLI 执行 `service ensure`。macOS 使用 launchd，Windows 使用
+Task Scheduler + supervisor；App 退出不停止该服务。所有 Skills 通过同一稳定
+launcher 进入，不读取 `.app/Contents/Resources` 或 `%LOCALAPPDATA%\Programs`。
+隔离 foreground 仅用于 smoke 和开发诊断。
+
+### 纯 CLI 路径
 
 推荐安装命令：
 
@@ -36,7 +62,7 @@ curl -fsSL https://raw.githubusercontent.com/Agentchengfeng/chengfeng-videocut/m
 
 安装器只应从 `Agentchengfeng/chengfeng-videocut` 的 GitHub Release 下载资产，校验 `SHA256SUMS.txt`，并写入产品自己的用户目录。它不得修改用户项目、媒体或其他工具目录。
 
-安装器只安装 Runtime 和稳定启动器，不自动注册、加载或启动 LaunchAgent。用户首次显式调用 `chengfeng-videocut service ensure`，或业务 Skill 进入需要 Runtime 的阶段时，才由产品注册并启动用户级服务。
+安装器只安装 Runtime 和稳定启动器，不自动注册、加载或启动用户级服务。用户首次显式调用 `chengfeng-videocut service ensure`，或业务 Skill 进入需要 Runtime 的阶段时，才由产品在 macOS 注册 LaunchAgent、在 Windows 注册 Task Scheduler 任务。
 
 **Windows 虚拟机试用注意**：Windows 11 24H2+ 默认开启 VBS（基于虚拟化的安全），
 在 QEMU/UTM 等虚拟机里会因嵌套虚拟化而无声死挂；此时需在客户机内执行
@@ -54,7 +80,15 @@ CHENGFENG_VIDEOCUT_DOWNLOAD_BASE="file://$PWD" sh ./install.sh
 ~/.chengfeng-videocut/bin/chengfeng-videocut service logs
 ```
 
-裸解压目录只用于 `doctor` 或 foreground 诊断；LaunchAgent 只绑定安装器建立的稳定 launcher，不能绑定下载目录或临时解压路径。
+Windows 用户把同一 Release 的 `install.cjs`、便携包与校验清单放在同一目录后运行：
+
+```powershell
+$env:CHENGFENG_VIDEOCUT_DOWNLOAD_BASE = ([uri]$PWD).AbsoluteUri
+node .\install.cjs
+& "$env:USERPROFILE\.chengfeng-videocut\bin\chengfeng-videocut.cmd" service ensure --open
+```
+
+裸解压目录只用于 `doctor` 或 foreground 诊断；受管服务只绑定安装器建立的稳定 launcher，不能绑定下载目录或临时解压路径。
 
 正式运行入口是 `service ensure/status/logs`。`start` 保留为当前终端内的 foreground 开发/诊断模式，不应出现在 Skills、`start.command` 或安装完成后的默认指引中。
 
@@ -100,6 +134,10 @@ LaunchAgent 必须执行便携启动器保留的稳定入口 `~/.chengfeng-video
 5. 确认版本号、Release 标签、便携包内版本和 `CITATION.cff` 一致。
 6. 生成最终 `SHA256SUMS.txt` 后再上传，不得在生成校验值后修改资产。
 7. 保留 Apache-2.0 许可、HyperFrames 上游归属和修改说明。
+8. 桌面资产必须额外通过只读 DMG / 无提权 NSIS 安装、App 父进程退出后服务存活、
+   稳定 launcher doctor、显式 stop、端口冲突与卸载验证。
+9. 公开桌面包前完成 macOS 签名/公证、Windows 签名，以及随包 FFmpeg/FFprobe 的
+   GPL 许可、对应源代码提供方式与第三方通知复核；未完成只能保留为测试资产。
 
 ## 许可与品牌
 

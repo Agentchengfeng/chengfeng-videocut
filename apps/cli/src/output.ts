@@ -5,7 +5,7 @@ export const CLI_SCHEMA_VERSION = 1;
 export const PRODUCT_NAME = "chengfeng-videocut";
 export const BRAND_NAME = PRODUCT_NAME;
 export const PACKAGE_NAME = "chengfeng-videocut";
-export const PRODUCT_VERSION = "0.4.6";
+export const PRODUCT_VERSION = "0.4.7";
 
 export interface SuccessEnvelope {
   schemaVersion: number;
@@ -126,8 +126,8 @@ Usage:
   chengfeng-videocut visual remove <project> --id <layer> [--expected-revision <sha256>] [--dry-run] [--json]
   chengfeng-videocut export <project> [--out <file.mp4>] [--scale <n>] [--fps <n>] [--keep-work] [--dry-run] [--json]
 
-service ensure is the product entry point: it atomically installs or recovers the macOS user LaunchAgent and waits for a matching ready Runtime.
-service stop disables and boots out the LaunchAgent; service start re-enables it. Service commands fail closed on non-macOS systems and never kill an unknown process occupying port 5190.
+service ensure is the product entry point: it atomically installs or recovers the managed user service (launchd on macOS, Task Scheduler on Windows) and waits for a matching ready Runtime.
+service stop disables and unloads the managed user service; service start re-enables it. Service commands fail closed on unsupported platforms and never kill an unknown process occupying port 5190.
 start serves the Studio in the foreground on 127.0.0.1:5190 by default. It remains available for development diagnostics and does not open a browser unless --open is provided.
 config stores machine-wide settings in ~/.chengfeng-videocut/config.json at mode 0600, and prints secrets masked. An environment variable of the same name always wins, so one command can be overridden without editing anything. The cloud transcription credential was previously an environment variable and nothing else: required by the product, assumed by the Skills, mentioned in no contract and checked by no command — a shell without it failed at the moment of the call.
 Project may be an absolute directory or an id registered in the Workbench.

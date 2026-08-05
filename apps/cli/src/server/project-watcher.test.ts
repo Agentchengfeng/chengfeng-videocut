@@ -5,6 +5,7 @@ import {
   mkdtemp,
   realpath,
   rm,
+  stat,
   symlink,
   writeFile,
 } from "node:fs/promises";
@@ -24,14 +25,17 @@ function delay(milliseconds: number): Promise<void> {
 
 async function waitFor(
   attempt: () => boolean | Promise<boolean>,
-  timeoutMilliseconds = 3_000,
+  timeoutMilliseconds = 8_000,
+  diagnostics: () => unknown = () => undefined,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMilliseconds;
   while (Date.now() < deadline) {
     if (await attempt()) return;
     await delay(30);
   }
-  throw new Error("Timed out waiting for project watcher event");
+  throw new Error(
+    `Timed out waiting for project watcher event: ${JSON.stringify(diagnostics())}`,
+  );
 }
 
 interface PublishedEvent {
@@ -39,20 +43,32 @@ interface PublishedEvent {
   data: unknown;
 }
 
-function isProjectFileChange(
+async function isProjectFileChange(
   published: PublishedEvent[],
   projectId: string,
   path: string,
-): boolean {
-  return published.some(({ event, data }) => {
-    if (event !== "file-change" || !data || typeof data !== "object") return false;
+): Promise<boolean> {
+  const expected = await stat(path, { bigint: true });
+  for (const { event, data } of published) {
+    if (event !== "file-change" || !data || typeof data !== "object") continue;
     const change = data as { projectId?: unknown; path?: unknown };
-    return change.projectId === projectId && change.path === path;
-  });
+    if (change.projectId !== projectId || typeof change.path !== "string") continue;
+    try {
+      const actual = await stat(change.path, { bigint: true });
+      if (actual.dev === expected.dev && actual.ino === expected.ino) return true;
+    } catch {
+      // A stale or unrelated notification is not the event under test.
+    }
+  }
+  return false;
 }
 
 describe("watchRegisteredProjects", () => {
-  it("discovers new symlink and directory registrations and closes every watcher", async () => {
+  const nativeWatcherTest = process.env.CHENGFENG_VIDEOCUT_SKIP_NATIVE_WATCHER_TEST === "1"
+    ? it.skip
+    : it;
+
+  nativeWatcherTest("discovers new symlink and directory registrations and closes every watcher", async () => {
     const root = await mkdtemp(join(tmpdir(), "chengfeng-videocut-watch-"));
     cleanupPaths.push(root);
     const projectsDir = join(root, "projects");
@@ -75,8 +91,8 @@ describe("watchRegisteredProjects", () => {
 
       await waitFor(async () => {
         await appendFile(linkedIndex, "\n");
-        return isProjectFileChange(published, "linked", linkedIndexRealPath);
-      });
+        return await isProjectFileChange(published, "linked", linkedIndexRealPath);
+      }, 8_000, () => ({ linkedIndexRealPath, published }));
 
       const directProject = join(projectsDir, "direct");
       const directData = join(directProject, "project.json");
@@ -86,8 +102,8 @@ describe("watchRegisteredProjects", () => {
 
       await waitFor(async () => {
         await appendFile(directData, "\n");
-        return isProjectFileChange(published, "direct", directDataRealPath);
-      });
+        return await isProjectFileChange(published, "direct", directDataRealPath);
+      }, 8_000, () => ({ directDataRealPath, published }));
 
       // Non-editing artifacts must not trigger Studio refresh events.
       await delay(75);
@@ -109,5 +125,5 @@ describe("watchRegisteredProjects", () => {
       // close() is intentionally idempotent so shutdown paths can be retried.
       manager.close();
     }
-  });
+  }, 20_000);
 });

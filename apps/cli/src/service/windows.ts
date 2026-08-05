@@ -34,16 +34,25 @@ export const WINDOWS_TASK_NAME = "chengfeng-videocut-studio";
 
 // 任务的 UserId：工作组机器上 DOMAIN\user 形式会被拒（"No mapping between account
 // names and security IDs"，2026-08-03 真机实测），SID 在域/工作组都成立。
+// PowerShell 冷启动在 Windows CI / Defender 扫描时可能超过 1 秒；同一进程的
+// 登录身份不会变化，因此只解析一次，避免 status/ensure 反复启动 PowerShell。
+let cachedCurrentUserId: string | undefined;
+
 function currentUserId(): string {
+  if (cachedCurrentUserId !== undefined) return cachedCurrentUserId;
   const sid = spawnSync(
     "powershell",
     ["-NoProfile", "-Command", "[Security.Principal.WindowsIdentity]::GetCurrent().User.Value"],
     { encoding: "utf8" },
   );
   const value = (sid.stdout || "").trim();
-  if (/^S-1-[0-9-]+$/.test(value)) return value;
+  if (/^S-1-[0-9-]+$/.test(value)) {
+    cachedCurrentUserId = value;
+    return cachedCurrentUserId;
+  }
   const name = process.env.USERNAME || process.env.USER || "";
-  return name ? `${process.env.COMPUTERNAME || "."}\\${name}` : name;
+  cachedCurrentUserId = name ? `${process.env.COMPUTERNAME || "."}\\${name}` : name;
+  return cachedCurrentUserId;
 }
 const RESPAWN_THROTTLE_MS = 5_000;
 
@@ -59,7 +68,29 @@ export function windowsSupervisorStatePath(paths: StudioServicePaths): string {
   return join(paths.dataDir, "service", "supervisor.json");
 }
 
-export function renderStudioScheduledTask(paths: StudioServicePaths, userId = currentUserId()): string {
+function windowsCommandProcessor(): string {
+  const configured = process.env.ComSpec?.trim();
+  if (configured) return configured;
+  const systemRoot = process.env.SystemRoot?.trim();
+  return systemRoot ? join(systemRoot, "System32", "cmd.exe") : "cmd.exe";
+}
+
+function scheduledTaskArguments(launcherPath: string): string {
+  if (/[\0\r\n"]/.test(launcherPath)) {
+    throw new Error("Stable Windows launcher path contains unsafe command characters");
+  }
+  // Task Scheduler ExecAction only starts native executables. The stable
+  // launcher is a .cmd file, so run it through cmd.exe with delayed expansion
+  // disabled and quote the complete /c command using cmd's required outer
+  // quote pair.
+  return `/d /v:off /s /c ""${launcherPath}" service supervise"`;
+}
+
+export function renderStudioScheduledTask(
+  paths: StudioServicePaths,
+  userId = currentUserId(),
+  commandProcessor = windowsCommandProcessor(),
+): string {
   // 声明必须与落盘编码一致：文件按 UTF-16LE+BOM 写（schtasks /XML 的要求），
   // 若这里仍写 UTF-8，解析器报「无法切换编码」——2026-08-03 真机实测。
   return `<?xml version="1.0" encoding="UTF-16"?>
@@ -93,8 +124,8 @@ ${userId ? `      <UserId>${xmlEscape(userId)}</UserId>` : ""}
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>${xmlEscape(paths.launcherPath)}</Command>
-      <Arguments>service supervise</Arguments>
+      <Command>${xmlEscape(commandProcessor)}</Command>
+      <Arguments>${xmlEscape(scheduledTaskArguments(paths.launcherPath))}</Arguments>
     </Exec>
   </Actions>
 </Task>

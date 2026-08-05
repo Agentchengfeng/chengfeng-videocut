@@ -18,6 +18,7 @@ const {
   renameSync,
   rmSync,
   rmdirSync,
+  statSync,
   symlinkSync,
   unlinkSync,
   writeFileSync,
@@ -29,7 +30,7 @@ const { spawnSync } = require("node:child_process");
 const { fileURLToPath } = require("node:url");
 
 const REPOSITORY = "Agentchengfeng/chengfeng-videocut";
-const VERSION = "0.4.6";
+const VERSION = "0.4.7";
 const ARCHIVE_NAME = "chengfeng-videocut-portable.tar.gz";
 const CHECKSUM_NAME = "SHA256SUMS.txt";
 const IS_WINDOWS = process.platform === "win32";
@@ -51,24 +52,79 @@ function fail(message) {
 }
 
 function findBun() {
-  const names = IS_WINDOWS ? ["bun.exe", "bun.cmd"] : ["bun"];
-  for (const entry of (process.env.PATH || "").split(path.delimiter).filter(Boolean)) {
-    for (const name of names) {
-      const candidate = path.join(entry, name);
-      if (existsSync(candidate)) return candidate;
+  const entries = (process.env.PATH || "").split(path.delimiter).filter(Boolean);
+  const isFile = (candidate) => {
+    try {
+      return statSync(candidate).isFile();
+    } catch {
+      return false;
     }
+  };
+  if (IS_WINDOWS) {
+    // A pnpm/npm bin directory can contain only bun.cmd while a real bun.exe
+    // exists later on PATH. Native executables must win globally: Node 20+
+    // intentionally refuses to spawn a .cmd file directly.
+    for (const entry of entries) {
+      const candidate = path.join(entry, "bun.exe");
+      if (isFile(candidate)) return candidate;
+    }
+    const managed = path.join(os.homedir(), ".bun", "bin", "bun.exe");
+    if (isFile(managed)) return managed;
+    for (const entry of entries) {
+      const candidate = path.join(entry, "bun.cmd");
+      if (isFile(candidate)) return candidate;
+    }
+    return null;
   }
-  const fallbacks = IS_WINDOWS
-    ? [path.join(os.homedir(), ".bun", "bin", "bun.exe")]
-    : [
-        path.join(os.homedir(), ".bun", "bin", "bun"),
-        "/opt/homebrew/bin/bun",
-        "/usr/local/bin/bun",
-      ];
+  for (const entry of entries) {
+    const candidate = path.join(entry, "bun");
+    if (isFile(candidate)) return candidate;
+  }
+  const fallbacks = [
+    path.join(os.homedir(), ".bun", "bin", "bun"),
+    "/opt/homebrew/bin/bun",
+    "/usr/local/bin/bun",
+  ];
   for (const candidate of fallbacks) {
-    if (existsSync(candidate)) return candidate;
+    if (isFile(candidate)) return candidate;
   }
   return null;
+}
+
+function quoteCmdArgument(value) {
+  const text = String(value);
+  if (/[\0\r\n"]/.test(text)) throw new Error("unsafe Windows command argument");
+  return `"${text.replaceAll("%", "%%")}"`;
+}
+
+function runExecutable(command, args) {
+  if (IS_WINDOWS && /\.(cmd|bat)$/i.test(command)) {
+    const commandLine = `"${[
+      quoteCmdArgument(command),
+      ...args.map(quoteCmdArgument),
+    ].join(" ")}"`;
+    return spawnSync(
+      process.env.ComSpec || "cmd.exe",
+      ["/d", "/v:off", "/s", "/c", commandLine],
+      {
+        encoding: "utf8",
+        windowsVerbatimArguments: true,
+      },
+    );
+  }
+  return spawnSync(command, args, { encoding: "utf8" });
+}
+
+function probeFailureDetail(probe) {
+  const detail = [];
+  if (probe.error) detail.push(`spawn=${probe.error.code || probe.error.message}`);
+  if (probe.status !== null) detail.push(`exit=${probe.status}`);
+  if (probe.signal) detail.push(`signal=${probe.signal}`);
+  const stderr = String(probe.stderr || "").trim();
+  if (stderr) detail.push(`stderr=${stderr.slice(-1200)}`);
+  const stdout = String(probe.stdout || "").trim();
+  if (stdout) detail.push(`stdout=${stdout.slice(-400)}`);
+  return detail.join("; ") || "子进程没有返回可诊断信息";
 }
 
 async function download(url, destination) {
@@ -153,9 +209,13 @@ setlocal
 set "CHENGFENG_VIDEOCUT_EXECUTABLE=%~f0"
 for %%I in ("%~dp0..") do set "CHENGFENG_VIDEOCUT_DATA_DIR=%%~fI"
 set "APP_DIR=%~dp0..\\app\\current"
+set "MANAGED_TOOLS=%~dp0..\\tools\\current"
+if exist "%MANAGED_TOOLS%" set "PATH=%MANAGED_TOOLS%;%PATH%"
 set "BUN_EXE="
-where bun >nul 2>nul && set "BUN_EXE=bun"
+if exist "%MANAGED_TOOLS%\\bun.exe" set "BUN_EXE=%MANAGED_TOOLS%\\bun.exe"
+for /f "delims=" %%B in ('where bun.exe 2^>nul') do if not defined BUN_EXE set "BUN_EXE=%%~fB"
 if not defined BUN_EXE if exist "%USERPROFILE%\\.bun\\bin\\bun.exe" set "BUN_EXE=%USERPROFILE%\\.bun\\bin\\bun.exe"
+for /f "delims=" %%B in ('where bun.cmd 2^>nul') do if not defined BUN_EXE set "BUN_EXE=%%~fB"
 if not defined BUN_EXE (
   echo chengfeng-videocut 需要 Bun 1.2 或更高版本：https://bun.sh/docs/installation 1>&2
   exit /b 127
@@ -267,10 +327,19 @@ async function main() {
     process.stdout.write('如需直接输入命令，把这一行加入 shell 配置：export PATH="$HOME/.chengfeng-videocut/bin:$PATH"\n');
   }
 
-  const probe = spawnSync(bunExecutable, [path.join(TARGET_DIR, "cli.js"), "--version"], {
-    encoding: "utf8",
-  });
-  if (probe.status !== 0) fail("安装完成但版本自证失败，请上报 Issue。");
+  const probe = runExecutable(
+    bunExecutable,
+    [path.join(TARGET_DIR, "cli.js"), "--version"],
+  );
+  if (probe.status !== 0) {
+    fail(`安装完成但版本自证失败：${probeFailureDetail(probe)}。`);
+  }
+  const reportedVersion = String(probe.stdout || "").match(
+    /(?:^|\s)(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)(?=\s|$)/,
+  )?.[1];
+  if (reportedVersion !== VERSION) {
+    fail(`安装完成但版本自证不一致：期望 ${VERSION}，实际 ${reportedVersion || "无法解析"}。`);
+  }
   process.stdout.write(probe.stdout);
 }
 

@@ -5,7 +5,12 @@ import { lstat, readFile, mkdir, mkdtemp, readdir, realpath, rename, rm, stat, w
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { cutVideoBySegments, probeMedia, probePreviewProxyMedia } from "@video-workbench/koubo-adapter";
-import { parseEditListDocument, ffmpegFileArg, ffmpegOutputArgs } from "@video-workbench/core";
+import {
+  parseEditListDocument,
+  ffmpegFileArg,
+  ffmpegOutputArgs,
+  runWithFfmpegComplexFilterFile,
+} from "@video-workbench/core";
 import { serializeProjectOperation as serializeProjectOperationDefault } from "@video-workbench/core/node";
 import { isSafeProjectId } from "./project-media";
 import { buildPreviewStream, type PreviewStream } from "./preview-stream";
@@ -369,27 +374,28 @@ export async function generatePreviewArtifactVideo(input: {
           "-bufsize", `${bitrateK * 2}k`,
         ]
       : ["-crf", "18"];
-    await runCommand("ffmpeg", [
-      "-y", "-v", "error",
-      "-copyts", "-segment_time_metadata", "1",
-      "-f", "concat", "-safe", "0", "-i", concatPath,
-      ...(source.hasAudio ? ["-i", ffmpegFileArg(input.input)] : []),
-      "-filter_complex_script", filterPath,
-      "-map", "[outv]",
-      ...(source.hasAudio ? ["-map", "[outa]"] : []),
-      "-c:v", "libx264", "-profile:v", x264Profile(source.videoProfile),
-      ...videoArgs,
-      "-pix_fmt", source.pixelFormat,
-      "-r", String(frameRate),
-      "-fps_mode:v", "cfr",
-      "-g", String(keyint),
-      "-keyint_min", String(keyint),
-      "-sc_threshold", "0",
-      ...(source.hasAudio ? ["-c:a", "aac", "-b:a", "128k"] : []),
-      "-t", filterTime(expectedDuration),
-      "-movflags", "+faststart",
-      ...ffmpegOutputArgs("mp4", temporaryOutput),
-    ]);
+    await runWithFfmpegComplexFilterFile(filterPath, (filterArgs) =>
+      runCommand("ffmpeg", [
+        "-y", "-v", "error",
+        "-copyts", "-segment_time_metadata", "1",
+        "-f", "concat", "-safe", "0", "-i", concatPath,
+        ...(source.hasAudio ? ["-i", ffmpegFileArg(input.input)] : []),
+        ...filterArgs,
+        "-map", "[outv]",
+        ...(source.hasAudio ? ["-map", "[outa]"] : []),
+        "-c:v", "libx264", "-profile:v", x264Profile(source.videoProfile),
+        ...videoArgs,
+        "-pix_fmt", source.pixelFormat,
+        "-r", String(frameRate),
+        "-fps_mode:v", "cfr",
+        "-g", String(keyint),
+        "-keyint_min", String(keyint),
+        "-sc_threshold", "0",
+        ...(source.hasAudio ? ["-c:a", "aac", "-b:a", "128k"] : []),
+        "-t", filterTime(expectedDuration),
+        "-movflags", "+faststart",
+        ...ffmpegOutputArgs("mp4", temporaryOutput),
+      ]));
     const media = await probeMedia(temporaryOutput);
     if (!media.hasVideo || (source.hasAudio && !media.hasAudio)) {
       throw new Error("Preview artifact lost required media streams");
