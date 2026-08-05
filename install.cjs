@@ -72,6 +72,10 @@ const CANDIDATE_SELF_TEST_TIMEOUT_MS = positiveMilliseconds(
   process.env.CHENGFENG_VIDEOCUT_TEST_SELF_TEST_TIMEOUT_MS,
   10_000,
 );
+const BUN_VERSION_PROBE_TIMEOUT_MS = positiveMilliseconds(
+  process.env.CHENGFENG_VIDEOCUT_TEST_BUN_VERSION_PROBE_TIMEOUT_MS,
+  10_000,
+);
 const EXECUTABLE_OUTPUT_LIMIT_BYTES = positiveBytes(
   process.env.CHENGFENG_VIDEOCUT_TEST_EXECUTABLE_OUTPUT_LIMIT_BYTES,
   1_048_576,
@@ -534,7 +538,9 @@ function findBun() {
 }
 
 async function assertSupportedBun(bunExecutable) {
-  const probe = await runExecutable(bunExecutable, ["--version"]);
+  const probe = await runExecutable(bunExecutable, ["--version"], {
+    timeout: BUN_VERSION_PROBE_TIMEOUT_MS,
+  });
   if (probe.error || probe.status !== 0) fail(`无法验证 Bun 版本：${probeFailureDetail(probe)}`);
   const match = String(probe.stdout || "").match(/(\d+)\.(\d+)\.(\d+)/);
   if (!match || Number(match[1]) < 1 || (Number(match[1]) === 1 && Number(match[2]) < 2)) {
@@ -1121,14 +1127,25 @@ function switchManagedTools(target, transactionId, { injectFailure = true } = {}
   const backup = path.join(TOOLS_ROOT, `.current.previous.${transactionId}`);
   if (pathExists(next)) removeLink(next);
   if (pathExists(backup)) removeLink(backup);
-  if (injectFailure && process.env.CHENGFENG_VIDEOCUT_TEST_FAIL_TOOLS_PROMOTION === "1") {
-    fail("TEST_FAIL_TOOLS_PROMOTION");
-  }
+  const maybeFailToolsPromotion = (phase) => {
+    const configured = process.env.CHENGFENG_VIDEOCUT_TEST_FAIL_TOOLS_PROMOTION;
+    if (
+      injectFailure && (
+        (configured === "1" && phase === "before_backup") ||
+        configured === phase
+      )
+    ) {
+      fail(`TEST_FAIL_TOOLS_PROMOTION=${phase}`);
+    }
+  };
   if (IS_WINDOWS) {
     symlinkSync(path.resolve(target), next, "junction");
     try {
+      maybeFailToolsPromotion("before_backup");
       if (pathExists(TOOLS_CURRENT_LINK)) renameSync(TOOLS_CURRENT_LINK, backup);
+      maybeFailToolsPromotion("after_backup");
       renameSync(next, TOOLS_CURRENT_LINK);
+      maybeFailToolsPromotion("after_current");
       if (pathExists(backup)) removeLink(backup);
     } catch (error) {
       try {
@@ -1145,6 +1162,7 @@ function switchManagedTools(target, transactionId, { injectFailure = true } = {}
   symlinkSync(path.relative(TOOLS_ROOT, target), next, "dir");
   try {
     renameSync(next, TOOLS_CURRENT_LINK);
+    maybeFailToolsPromotion("after_current");
   } finally {
     if (pathExists(next)) removeLink(next);
   }
@@ -1500,6 +1518,56 @@ async function rollbackActivatedTransaction(state, bunExecutable, { reason = "�
   }
 }
 
+async function activateSameVersionDesktopTools(state, bunExecutable, candidateInfo, managedTools) {
+  const transactionId = randomUUID();
+  state.pending = state.active;
+  state.phase = "health_check";
+  state.transactionId = transactionId;
+  state.transaction = {
+    oldActive: state.active,
+    oldPrevious: state.previous,
+    serviceBefore: null,
+    candidateServiceMayExist: false,
+    launcherBefore: captureLauncher(),
+    toolsBefore: readManagedToolsTarget(),
+    toolsCandidate: managedTools,
+  };
+  state.terminationFailure = null;
+  writeState(state);
+  try {
+    // Even though app/current already names this verified Runtime, the stable
+    // launcher and tools/current are still one Desktop-owned activation unit.
+    createLauncher();
+    state.transaction.serviceBefore = await inspectManagedService(state.active, bunExecutable);
+    writeState(state);
+    switchManagedTools(managedTools, transactionId);
+    if (state.transaction.serviceBefore || ENSURE_MANAGED_SERVICE) {
+      await verifyManagedService(
+        state.active,
+        bunExecutable,
+        candidateInfo.capabilities,
+        candidateInfo.buildId,
+        () => {
+          state.transaction.candidateServiceMayExist = true;
+          writeState(state);
+        },
+      );
+    }
+  } catch (error) {
+    if (hasUnconfirmedProcessTree(error)) throw error;
+    await rollbackActivatedTransaction(state, bunExecutable, { reason: "同版本 Desktop 工具激活自证失败" });
+    throw error;
+  }
+  state.pending = null;
+  state.phase = "completed";
+  writeState(state);
+  state.phase = "idle";
+  state.transactionId = null;
+  state.transaction = null;
+  state.terminationFailure = null;
+  writeState(state);
+}
+
 async function recoverInterruptedTransaction(state, bunExecutable) {
   failIfTerminationRecoveryIsBlocked(state);
   if (state.phase === "idle") {
@@ -1585,6 +1653,7 @@ async function main() {
       }
       normalizeCandidatePermissions(extracted, tmpDir);
       const candidateInfo = validateCandidateLayout(extracted);
+      const managedTools = validateManagedToolsCandidate(MANAGED_TOOLS_DIR);
 
       if (state.active?.version === VERSION) {
         if (path.resolve(state.active.path) !== path.resolve(TARGET_DIR)) {
@@ -1607,7 +1676,9 @@ async function main() {
           fail("当前同版本 Runtime 的完整内容/build/能力身份与已验证 Release 不一致；拒绝继续。");
         }
         await selfTestCandidate(state.active.path, bunExecutable, state.active.buildId);
-        if (ENSURE_MANAGED_SERVICE) {
+        if (managedTools) {
+          await activateSameVersionDesktopTools(state, bunExecutable, candidateInfo, managedTools);
+        } else if (ENSURE_MANAGED_SERVICE) {
           await verifyManagedService(
             state.active,
             bunExecutable,
@@ -1623,7 +1694,6 @@ async function main() {
       }
 
       const transactionId = randomUUID();
-      const managedTools = validateManagedToolsCandidate(MANAGED_TOOLS_DIR);
       const stagedRoot = path.join(PENDING_ROOT, transactionId);
       const stagedCandidate = path.join(stagedRoot, "app");
       assertManagedPath(stagedCandidate, "pending 候选目录");
