@@ -51,6 +51,8 @@ const DOWNLOAD_BASE =
 const INSTALL_ROOT =
   process.env.CHENGFENG_VIDEOCUT_HOME || path.join(os.homedir(), ".chengfeng-videocut");
 const APP_ROOT = path.join(INSTALL_ROOT, "app");
+const TOOLS_ROOT = path.join(INSTALL_ROOT, "tools");
+const TOOLS_CURRENT_LINK = path.join(TOOLS_ROOT, "current");
 const BIN_ROOT = path.join(INSTALL_ROOT, "bin");
 const TARGET_DIR = path.join(APP_ROOT, VERSION);
 const CURRENT_LINK = path.join(APP_ROOT, "current");
@@ -80,6 +82,7 @@ const EXECUTABLE_TERMINATION_GRACE_MS = 1_000;
 // an installer concern: Desktop only supplies the local Release payload and
 // observes the resulting shared service.
 const ENSURE_MANAGED_SERVICE = process.env.CHENGFENG_VIDEOCUT_INSTALLER_ENSURE_SERVICE === "1";
+const MANAGED_TOOLS_DIR = process.env.CHENGFENG_VIDEOCUT_MANAGED_TOOLS_DIR || null;
 
 function fail(message) {
   throw new Error(message);
@@ -270,6 +273,28 @@ function readCurrentTarget() {
   assertManagedPath(target, "current 目标");
   assertCanonicalManagedDirectory(target, "current 目标");
   return target;
+}
+
+function readManagedToolsTarget() {
+  if (!pathExists(TOOLS_CURRENT_LINK)) return null;
+  if (!isLink(TOOLS_CURRENT_LINK)) fail(`${TOOLS_CURRENT_LINK} 已存在且不是链接；安装已停止。`);
+  const target = path.resolve(path.dirname(TOOLS_CURRENT_LINK), readlinkSync(TOOLS_CURRENT_LINK));
+  assertCanonicalManagedDirectory(target, "tools/current 目标", TOOLS_ROOT);
+  return target;
+}
+
+function validateManagedToolsCandidate(candidate) {
+  if (!candidate) return null;
+  assertCanonicalManagedDirectory(candidate, "Desktop 候选工具", TOOLS_ROOT);
+  if (path.dirname(path.resolve(candidate)) !== path.resolve(TOOLS_ROOT)) {
+    fail("Desktop 候选工具必须是 tools/<version> 目录。");
+  }
+  const suffix = IS_WINDOWS ? ".exe" : "";
+  for (const name of [`bun${suffix}`, `ffmpeg${suffix}`, `ffprobe${suffix}`]) {
+    const item = path.join(candidate, name);
+    if (!lstatSync(item).isFile()) fail(`Desktop 候选工具缺少 ${name}。`);
+  }
+  return path.resolve(candidate);
 }
 
 function runtimeRefFromPath(
@@ -506,6 +531,15 @@ function findBun() {
     if (isFile(candidate)) return candidate;
   }
   return null;
+}
+
+async function assertSupportedBun(bunExecutable) {
+  const probe = await runExecutable(bunExecutable, ["--version"]);
+  if (probe.error || probe.status !== 0) fail(`无法验证 Bun 版本：${probeFailureDetail(probe)}`);
+  const match = String(probe.stdout || "").match(/(\d+)\.(\d+)\.(\d+)/);
+  if (!match || Number(match[1]) < 1 || (Number(match[1]) === 1 && Number(match[2]) < 2)) {
+    fail(`需要 Bun 1.2 或更高版本，实际为 ${String(probe.stdout || "").trim() || "无法识别"}。`);
+  }
 }
 
 function quoteCmdArgument(value) {
@@ -1081,9 +1115,49 @@ function clearCurrentForFirstInstall(transactionId) {
   }
 }
 
+function switchManagedTools(target, transactionId, { injectFailure = true } = {}) {
+  assertCanonicalManagedDirectory(target, "候选 Desktop 工具", TOOLS_ROOT);
+  const next = path.join(TOOLS_ROOT, `.current.next.${transactionId}`);
+  const backup = path.join(TOOLS_ROOT, `.current.previous.${transactionId}`);
+  if (pathExists(next)) removeLink(next);
+  if (pathExists(backup)) removeLink(backup);
+  if (injectFailure && process.env.CHENGFENG_VIDEOCUT_TEST_FAIL_TOOLS_PROMOTION === "1") {
+    fail("TEST_FAIL_TOOLS_PROMOTION");
+  }
+  if (IS_WINDOWS) {
+    symlinkSync(path.resolve(target), next, "junction");
+    try {
+      if (pathExists(TOOLS_CURRENT_LINK)) renameSync(TOOLS_CURRENT_LINK, backup);
+      renameSync(next, TOOLS_CURRENT_LINK);
+      if (pathExists(backup)) removeLink(backup);
+    } catch (error) {
+      try {
+        if (!pathExists(TOOLS_CURRENT_LINK) && pathExists(backup)) renameSync(backup, TOOLS_CURRENT_LINK);
+      } catch {
+        // The durable installer journal will retry recovery on the next launch.
+      }
+      throw error;
+    } finally {
+      if (pathExists(next)) removeLink(next);
+    }
+    return;
+  }
+  symlinkSync(path.relative(TOOLS_ROOT, target), next, "dir");
+  try {
+    renameSync(next, TOOLS_CURRENT_LINK);
+  } finally {
+    if (pathExists(next)) removeLink(next);
+  }
+}
+
+function restoreManagedTools(previous, transactionId) {
+  if (previous) return switchManagedTools(previous, transactionId, { injectFailure: false });
+  if (pathExists(TOOLS_CURRENT_LINK)) removeLink(TOOLS_CURRENT_LINK);
+}
+
 function createLauncher() {
   if (IS_WINDOWS) {
-    const launcher = `@echo off\r\nsetlocal\r\nset "CHENGFENG_VIDEOCUT_EXECUTABLE=%~f0"\r\nfor %%I in ("%~dp0..") do set "CHENGFENG_VIDEOCUT_DATA_DIR=%%~fI"\r\nset "APP_DIR=%~dp0..\\app\\current"\r\nset "BUN_EXE="\r\nfor /f "delims=" %%B in ('where bun.exe 2^>nul') do if not defined BUN_EXE set "BUN_EXE=%%~fB"\r\nif not defined BUN_EXE if exist "%USERPROFILE%\\.bun\\bin\\bun.exe" set "BUN_EXE=%USERPROFILE%\\.bun\\bin\\bun.exe"\r\nfor /f "delims=" %%B in ('where bun.cmd 2^>nul') do if not defined BUN_EXE set "BUN_EXE=%%~fB"\r\nif not defined BUN_EXE (\r\n  echo chengfeng-videocut 需要 Bun 1.2 或更高版本：https://bun.sh/docs/installation 1>&2\r\n  exit /b 127\r\n)\r\n"%BUN_EXE%" "%APP_DIR%\\cli.js" %*\r\nexit /b %ERRORLEVEL%\r\n`;
+    const launcher = `@echo off\r\nsetlocal\r\nset "CHENGFENG_VIDEOCUT_EXECUTABLE=%~f0"\r\nfor %%I in ("%~dp0..") do set "CHENGFENG_VIDEOCUT_DATA_DIR=%%~fI"\r\nset "APP_DIR=%~dp0..\\app\\current"\r\nset "MANAGED_TOOLS=%~dp0..\\tools\\current"\r\nif exist "%MANAGED_TOOLS%" set "PATH=%MANAGED_TOOLS%;%PATH%"\r\nset "BUN_EXE="\r\nif exist "%MANAGED_TOOLS%\\bun.exe" set "BUN_EXE=%MANAGED_TOOLS%\\bun.exe"\r\nfor /f "delims=" %%B in ('where bun.exe 2^>nul') do if not defined BUN_EXE set "BUN_EXE=%%~fB"\r\nif not defined BUN_EXE if exist "%USERPROFILE%\\.bun\\bin\\bun.exe" set "BUN_EXE=%USERPROFILE%\\.bun\\bin\\bun.exe"\r\nfor /f "delims=" %%B in ('where bun.cmd 2^>nul') do if not defined BUN_EXE set "BUN_EXE=%%~fB"\r\nif not defined BUN_EXE (\r\n  echo chengfeng-videocut 需要 Bun 1.2 或更高版本：https://bun.sh/docs/installation 1>&2\r\n  exit /b 127\r\n)\r\n"%BUN_EXE%" "%APP_DIR%\\cli.js" %*\r\nexit /b %ERRORLEVEL%\r\n`;
     writeFileSync(BIN_LINK, launcher);
     return;
   }
@@ -1402,6 +1476,9 @@ async function rollbackActivatedTransaction(state, bunExecutable, { reason = "�
   try {
     if (old) switchCurrent(old.path, state.transactionId || randomUUID());
     else clearCurrentForFirstInstall(state.transactionId || randomUUID());
+    if (state.transaction?.toolsCandidate || state.transaction?.toolsBefore) {
+      restoreManagedTools(state.transaction?.toolsBefore || null, state.transactionId || randomUUID());
+    }
     if (state.transaction?.candidateServiceMayExist && candidate) {
       await stopCandidateService(candidate, bunExecutable);
     }
@@ -1476,6 +1553,7 @@ async function main() {
     const hint = IS_WINDOWS ? 'powershell -c "irm bun.sh/install.ps1 | iex"' : "https://bun.sh/docs/installation";
     fail(`需要先安装 Bun 1.2 或更高版本：${hint}`);
   }
+  await assertSupportedBun(bunExecutable);
   mkdirSync(APP_ROOT, { recursive: true });
   mkdirSync(BIN_ROOT, { recursive: true });
   // termination_failed 是人工诊断门禁。第二个安装器在取得或清理任何锁前
@@ -1545,6 +1623,7 @@ async function main() {
       }
 
       const transactionId = randomUUID();
+      const managedTools = validateManagedToolsCandidate(MANAGED_TOOLS_DIR);
       const stagedRoot = path.join(PENDING_ROOT, transactionId);
       const stagedCandidate = path.join(stagedRoot, "app");
       assertManagedPath(stagedCandidate, "pending 候选目录");
@@ -1594,6 +1673,8 @@ async function main() {
         serviceBefore: null,
         candidateServiceMayExist: false,
         launcherBefore: captureLauncher(),
+        toolsBefore: managedTools ? readManagedToolsTarget() : null,
+        toolsCandidate: managedTools,
       };
       state.terminationFailure = null;
       try {
@@ -1674,6 +1755,9 @@ async function main() {
       maybeCrashAt("health_check");
 
       try {
+        if (state.transaction.toolsCandidate) {
+          switchManagedTools(state.transaction.toolsCandidate, transactionId);
+        }
         if (state.transaction.serviceBefore || ENSURE_MANAGED_SERVICE) {
           await verifyManagedService(
             candidate,

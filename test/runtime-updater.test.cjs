@@ -291,13 +291,21 @@ function addInstallerBootstrapAssets(release, { tamperInstaller = false } = {}) 
 function installEnv(home, release, extra = {}) {
   const fakeBin = path.join(path.dirname(home), "fake-bin");
   mkdirSync(fakeBin, { recursive: true });
+  const reportedBunVersion = extra.CHENGFENG_VIDEOCUT_TEST_BUN_VERSION;
   if (IS_WINDOWS) {
     writeFileSync(
       path.join(fakeBin, "bun.cmd"),
-      `@echo off\r\n"${process.execPath}" %*\r\n`,
+      reportedBunVersion
+        ? `@echo off\r\necho ${reportedBunVersion}\r\n`
+        : `@echo off\r\n"${process.execPath}" %*\r\n`,
     );
   } else {
-    writeExecutable(path.join(fakeBin, "bun"), `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} "$@"\n`);
+    writeExecutable(
+      path.join(fakeBin, "bun"),
+      reportedBunVersion
+        ? `#!/bin/sh\necho ${JSON.stringify(reportedBunVersion)}\n`
+        : `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} "$@"\n`,
+    );
   }
   return {
     ...process.env,
@@ -480,6 +488,25 @@ function assertProjectPreserved(home) {
   assert.equal(readFileSync(path.join(home, "projects", "keep-me.txt"), "utf8"), PROJECT_CONTENT);
 }
 
+function createManagedTools(home, { oldVersion = "0.4.7", candidateVersion = VERSION } = {}) {
+  const toolsRoot = path.join(home, "tools");
+  const oldTools = path.join(toolsRoot, oldVersion);
+  const candidateTools = path.join(toolsRoot, candidateVersion);
+  for (const directory of [oldTools, candidateTools]) {
+    mkdirSync(directory, { recursive: true });
+    for (const name of ["bun", "ffmpeg", "ffprobe"]) writeFileSync(path.join(directory, name), "tool");
+  }
+  symlinkSync(oldVersion, path.join(toolsRoot, "current"));
+  return { toolsRoot, oldTools, candidateTools };
+}
+
+test("Windows stable launcher gives managed tools/current Bun priority", () => {
+  const source = readFileSync(INSTALLER, "utf8");
+  assert.match(source, /set "MANAGED_TOOLS=%~dp0\.\.\\\\tools\\\\current"/);
+  assert.match(source, /if exist "%MANAGED_TOOLS%\\\\bun\.exe" set "BUN_EXE=%MANAGED_TOOLS%\\\\bun\.exe"/);
+  assert.match(source, /set "PATH=%MANAGED_TOOLS%;%PATH%"/);
+});
+
 test("macOS shell bootstrap downloads and verifies install.cjs before a real local Release install", {
   skip: IS_WINDOWS,
 }, (t) => {
@@ -543,6 +570,17 @@ test("upgrade validates pending candidate before current, preserves projects, th
   assert.equal(readState(home).active.version, VERSION);
   assert.equal(readState(home).previous.version, "0.4.7");
   assert.equal(existsSync(path.join(home, "app", ".pending")), true);
+});
+
+test("installer rejects Bun older than 1.2 before changing Runtime state", (t) => {
+  const { home, release } = fixture(t);
+  const old = createLegacyRuntime(home);
+  const result = invoke(home, release, { CHENGFENG_VIDEOCUT_TEST_BUN_VERSION: "1.1.35" });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /需要 Bun 1\.2 或更高版本/);
+  assert.equal(currentTarget(home), old.runtime);
+  assert.equal(existsSync(path.join(home, "installer-state.json")), false);
+  assertProjectPreserved(home);
 });
 
 test("candidate self-test failure deletes pending and leaves old current and projects intact", (t) => {
@@ -837,14 +875,17 @@ test("managed service success verifies new version, build, PID identity and serv
 test("Desktop-requested service verification rolls back a stopped legacy Runtime and stops the candidate service", (t) => {
   const { root, home, release } = fixture(t, { service: "fail" });
   const old = createLegacyRuntime(home, { service: "absent" });
+  const { toolsRoot, oldTools, candidateTools } = createManagedTools(home);
   const serviceLog = path.join(root, "service-actions.log");
   const result = invoke(home, release, {
     CHENGFENG_VIDEOCUT_INSTALLER_ENSURE_SERVICE: "1",
+    CHENGFENG_VIDEOCUT_MANAGED_TOOLS_DIR: candidateTools,
     CHENGFENG_VIDEOCUT_TEST_SERVICE_LOG: serviceLog,
   });
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /新 Runtime 服务.*health\/version\/build\/PID\/identity/);
   assert.equal(currentTarget(home), old.runtime);
+  assert.equal(path.resolve(toolsRoot, readlinkSync(path.join(toolsRoot, "current"))), oldTools);
   assert.equal(readState(home).phase, "idle");
   assert.equal(existsSync(path.join(home, "app", VERSION)), false);
   assert.deepEqual(readFileSync(serviceLog, "utf8").trim().split("\n"), [
@@ -852,6 +893,23 @@ test("Desktop-requested service verification rolls back a stopped legacy Runtime
     `${VERSION}:ensure`,
     `${VERSION}:stop`,
   ]);
+  assertProjectPreserved(home);
+});
+
+test("Desktop tools/current promotion failure restores the old Runtime and tools links", (t) => {
+  const { home, release } = fixture(t);
+  const old = createLegacyRuntime(home, { service: "absent" });
+  const { toolsRoot, oldTools, candidateTools } = createManagedTools(home);
+  const result = invoke(home, release, {
+    CHENGFENG_VIDEOCUT_INSTALLER_ENSURE_SERVICE: "1",
+    CHENGFENG_VIDEOCUT_MANAGED_TOOLS_DIR: candidateTools,
+    CHENGFENG_VIDEOCUT_TEST_FAIL_TOOLS_PROMOTION: "1",
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /TEST_FAIL_TOOLS_PROMOTION/);
+  assert.equal(currentTarget(home), old.runtime);
+  assert.equal(path.resolve(toolsRoot, readlinkSync(path.join(toolsRoot, "current"))), oldTools);
+  assert.equal(existsSync(path.join(home, "app", VERSION)), false);
   assertProjectPreserved(home);
 });
 

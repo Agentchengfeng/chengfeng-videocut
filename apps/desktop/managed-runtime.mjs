@@ -3,19 +3,15 @@ import {
   access,
   chmod,
   copyFile,
-  lstat,
   mkdir,
   readFile,
-  realpath,
   rename,
   rm,
   stat,
-  symlink,
-  unlink,
   writeFile,
 } from "node:fs/promises";
 import { constants } from "node:fs";
-import { delimiter, dirname, join, relative, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const MAX_OUTPUT_BYTES = 1024 * 1024;
@@ -96,48 +92,6 @@ async function managedToolsAreCurrent(layout, manifest, platform) {
   return checks.every(Boolean);
 }
 
-async function removeManagedLink(path) {
-  const info = await lstat(path).catch(() => null);
-  if (!info) return;
-  if (!info.isSymbolicLink()) {
-    throw new Error(`${path} exists and is not a managed link`);
-  }
-  await unlink(path);
-}
-
-async function pointCurrentToolsAt(layout, platform) {
-  const currentInfo = await lstat(layout.toolsCurrentDir).catch(() => null);
-  if (currentInfo) {
-    if (!currentInfo.isSymbolicLink()) {
-      throw new Error(
-        `${layout.toolsCurrentDir} exists and is not a managed link; refusing to overwrite it`,
-      );
-    }
-    const [currentTarget, expectedTarget] = await Promise.all([
-      realpath(layout.toolsCurrentDir).catch(() => null),
-      realpath(layout.toolsVersionDir),
-    ]);
-    if (currentTarget === expectedTarget) return;
-  }
-
-  const temporaryLink = join(
-    layout.toolsRoot,
-    `.current.new.${process.pid}.${Date.now()}`,
-  );
-  await removeManagedLink(temporaryLink);
-  await symlink(
-    platform === "win32" ? layout.toolsVersionDir : relative(layout.toolsRoot, layout.toolsVersionDir),
-    temporaryLink,
-    platform === "win32" ? "junction" : "dir",
-  );
-  try {
-    await removeManagedLink(layout.toolsCurrentDir);
-    await rename(temporaryLink, layout.toolsCurrentDir);
-  } finally {
-    await removeManagedLink(temporaryLink).catch(() => undefined);
-  }
-}
-
 export async function installBundledTools({
   dataDir,
   version,
@@ -146,7 +100,6 @@ export async function installBundledTools({
   bundledBunPath,
   bundledFfmpegPath,
   bundledFfprobePath,
-  activate = true,
 }) {
   const layout = resolveManagedRuntimeLayout({ dataDir, version, platform });
   await mkdir(layout.toolsRoot, { recursive: true });
@@ -189,7 +142,6 @@ export async function installBundledTools({
       await rm(stagedDir, { recursive: true, force: true });
     }
   }
-  if (activate) await pointCurrentToolsAt(layout, platform);
   return layout;
 }
 
@@ -370,6 +322,7 @@ export async function ensureManagedRuntime({
       `${resolve(installerDir)}${process.platform === "win32" ? "\\" : "/"}`,
     ).href.replace(/\/$/, ""),
     CHENGFENG_VIDEOCUT_INSTALLER_ENSURE_SERVICE: "1",
+    CHENGFENG_VIDEOCUT_MANAGED_TOOLS_DIR: layout.toolsVersionDir,
   };
   const installResult = await runCaptured(
     layout.managedBunPath,
@@ -412,7 +365,6 @@ export async function ensureManagedRuntime({
       `Managed Runtime did not become ready as ${expectedMode}: ${JSON.stringify(envelope)}`,
     );
   }
-  await pointCurrentToolsAt(layout, platform);
   await writeDesktopReceipt(layout, manifest, envelope.data);
   return { layout, envelope, environment };
 }
