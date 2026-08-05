@@ -34,6 +34,7 @@ describe("release contract", () => {
     const installer = await readFile(join(rootDir, "install.cjs"), "utf8");
     expect(installer).toContain('tools\\\\current');
     expect(installer).toContain('MANAGED_TOOLS');
+    expect(installer).toContain('CHENGFENG_VIDEOCUT_EXECUTABLE=%~f0');
   });
 
   it("copies install.sh and checksums every required portable/tgz asset", async () => {

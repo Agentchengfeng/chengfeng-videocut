@@ -1070,3 +1070,15 @@ export async function runStudioServiceCommand(
     await release();
   }
 }
+
+// `service supervise` is launched by the installed stable launcher rather than
+// through `runStudioServiceCommand`. Keep its data-root resolution identical to
+// every other service verb: in particular a Windows scheduled task must retain
+// the root derived from CHENGFENG_VIDEOCUT_EXECUTABLE instead of silently
+// falling back to the user's default directory.
+export function resolveStudioServicePaths(
+  dependencies: StudioServiceDependencies = {},
+): StudioServicePaths {
+  const deps = resolveDependencies(dependencies);
+  return studioServicePaths(deps.homeDir, deps.dataDir, deps.launcherPath, deps.platform);
+}
