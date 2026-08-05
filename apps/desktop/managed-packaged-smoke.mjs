@@ -53,9 +53,11 @@ async function runProcess(command, args, env, options = {}) {
   let stdout = "";
   let stderr = "";
   child.stdout.on("data", (chunk) => {
+    if (options.trace) process.stdout.write(chunk);
     stdout = `${stdout}${chunk}`.slice(-1024 * 1024);
   });
   child.stderr.on("data", (chunk) => {
+    if (options.trace) process.stderr.write(chunk);
     stderr = `${stderr}${chunk}`.slice(-1024 * 1024);
   });
   const timeoutMs = options.timeoutMs ?? 180_000;
@@ -134,7 +136,10 @@ const appEnvironment = {
 let stopped = false;
 let primaryFailure = null;
 try {
-  const appResult = await runProcess(executable, [], appEnvironment);
+  const appResult = await runProcess(executable, [], appEnvironment, {
+    timeoutMs: 120_000,
+    trace: true,
+  });
   assertSuccess("managed packaged app", appResult, "DESKTOP_SMOKE_OK");
   const smokeLine = appResult.stdout
     .split(/\r?\n/)
@@ -236,20 +241,21 @@ try {
     );
   }
   try {
-    await rm(root, {
-      recursive: true,
-      force: true,
-      maxRetries: platform === "win32" ? 5 : 0,
-      retryDelay: 200,
-    });
+    if (platform === "win32") {
+      // GitHub's ephemeral Windows runner owns this fixture. Defender can keep
+      // several recently executed files open long after every Product PID and
+      // health endpoint are gone, so filesystem deletion is not a lifecycle
+      // assertion on Windows.
+      console.warn(`Managed smoke retained Windows temp fixture: ${root}`);
+    } else {
+      await rm(root, {
+        recursive: true,
+        force: true,
+      });
+    }
   } catch (cleanupError) {
     const detail = cleanupError?.message ?? cleanupError;
-    if (platform === "win32") {
-      // Defender and Task Scheduler can retain an exited executable's file
-      // handle briefly. The runner is ephemeral; service stop + dead health
-      // above are the lifecycle assertion, not deletion of the temp fixture.
-      console.warn(`Managed smoke left a Windows temp fixture: ${detail}`);
-    } else if (!primaryFailure) {
+    if (!primaryFailure) {
       throw cleanupError;
     } else {
       console.error(`Managed smoke cleanup also failed: ${detail}`);
