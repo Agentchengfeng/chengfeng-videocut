@@ -21,6 +21,9 @@ const excludedNames = new Set([
   ".workbench",
   "node_modules",
   "dist",
+  // Electron resource preparation materializes the bundled Runtime, Bun, and
+  // media executables here. It is a local build cache, never source material.
+  "dist-resources",
   "release",
   "logs",
   ".thumbnails",

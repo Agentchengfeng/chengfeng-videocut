@@ -37,6 +37,11 @@ describe("release contract", () => {
     expect(installer).toContain('CHENGFENG_VIDEOCUT_EXECUTABLE=%~f0');
   });
 
+  it("keeps generated Electron resources out of the public source archive", async () => {
+    const sourcePackager = await readFile(join(rootDir, "scripts/pack-source.ts"), "utf8");
+    expect(sourcePackager).toContain('"dist-resources"');
+  });
+
   it("copies install.sh and checksums every required portable/tgz asset", async () => {
     const fixtureRoot = await mkdtemp(join(tmpdir(), "videocut-release-contract-"));
     cleanupPaths.push(fixtureRoot);
