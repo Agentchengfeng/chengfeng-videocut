@@ -53,6 +53,19 @@ async function required(value: Promise<Response | null>): Promise<Response> {
 }
 
 describe("videocut edit-list API", () => {
+  it("rejects an empty POST immediately without reading a body", async () => {
+    const { projectsDir } = await fixture();
+    const handle = createVideocutEditListHandler({ projectsDir });
+
+    const response = await required(handle(new Request(
+      "http://localhost/api/v1/projects/demo/edit-list",
+      { method: "POST" },
+    )));
+
+    expect(response.status).toBe(405);
+    expect(response.headers.get("allow")).toBe("GET, PATCH");
+  });
+
   it("GETs and CAS-patches one magnetic timeline operation", async () => {
     const { projectsDir } = await fixture();
     let materialized = 0;

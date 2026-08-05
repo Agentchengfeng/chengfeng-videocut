@@ -10,7 +10,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import {
   runKouboRender,
   verifyKouboFinal,
@@ -129,7 +129,7 @@ function dependencies(input: {
       await mkdir(dirname(invocation.outputPath), { recursive: true });
       await writeFile(invocation.outputPath, "rendered-final-video");
     }),
-    probe: async (path) => path.endsWith("renders/final.mp4")
+    probe: async (path) => basename(path) === "final.mp4"
       ? probe(input.finalProbe)
       : probe({ width: 1920, height: 1080, ...input.sourceProbe }),
     frameExtractor: async (frame) => {

@@ -155,6 +155,23 @@ describe("transcript media binding", () => {
 });
 
 describe("createKouboProject contract", () => {
+  it("accepts the UTF-8 BOM written by Windows PowerShell", async () => {
+    const fixtureValue = await createFixture("powershell-bom-task");
+    const raw = await readFile(fixtureValue.transcript, "utf8");
+    await writeFile(fixtureValue.transcript, `\ufeff${raw}`, "utf8");
+
+    const result = await createKouboProject(fixtureValue.job, {
+      video: "uploads/talk.mp4",
+      transcript: "cloud/words.json",
+      aspectRatio: "4:3",
+      now: fixedNow,
+    });
+
+    expect(result.projectId).toBe("powershell-bom-task");
+    expect(JSON.parse(await readFile(join(fixtureValue.job, "transcript.json"), "utf8")))
+      .toMatchObject({ schemaVersion: 1 });
+  });
+
   it("creates canonical task inputs and prepares a new project without demo files", async () => {
     const fixtureValue = await createFixture();
     const result = await createKouboProject(fixtureValue.job, {
@@ -451,9 +468,13 @@ describe("prepareKouboProject natural-pause migration", () => {
       "edit-list.json",
       "index.html",
       "剪口播/3_审核/natural_pause_plan.json",
+      "project.json",
+      "workbench.json",
+      "events.jsonl",
     ];
-    const before = await Promise.all(paths.map(async (path) =>
-      digest(await readFile(join(job, path), "utf8"))));
+    const beforeRaw = await Promise.all(paths.map((path) =>
+      readFile(join(job, path), "utf8")));
+    const before = beforeRaw.map(digest);
 
     const secondPrepare = await prepareKouboProject(job, {
       ...options,
@@ -461,9 +482,11 @@ describe("prepareKouboProject natural-pause migration", () => {
       refreshTranscript: true,
     });
     expect(secondPrepare.indexWritten).toBe(false);
-    const after = await Promise.all(paths.map(async (path) =>
-      digest(await readFile(join(job, path), "utf8"))));
+    const afterRaw = await Promise.all(paths.map((path) =>
+      readFile(join(job, path), "utf8")));
+    const after = afterRaw.map(digest);
 
+    expect(JSON.parse(afterRaw[6])).toEqual(JSON.parse(beforeRaw[6]));
     expect(after).toEqual(before);
     const plan = JSON.parse(await readFile(join(job, paths[4]), "utf8"));
     expect(plan.summary).toMatchObject({ pausesDeleted: 1, explicitGapsDeleted: 0 });

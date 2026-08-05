@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { ffmpegFileArg } from "./ffmpegPath";
+import { ffmpegFileArg, runWithFfmpegComplexFilterFile } from "./ffmpegPath";
 
 describe("ffmpeg 文件参数", () => {
   it("给 POSIX 路径加 file: 前缀（macOS 上以 - 开头的文件名不会被当成选项）", () => {
@@ -19,6 +19,47 @@ describe("ffmpeg 文件参数", () => {
 
   it("保留盘符，不让 ffmpeg 把 C: 读成协议名", () => {
     expect(ffmpegFileArg("D:\\video\\a.mp4")).toStartWith("file:D:/");
+  });
+
+  it("FFmpeg 7+ 使用当前 option-file 语法", async () => {
+    const calls: ReadonlyArray<string>[] = [];
+    const result = await runWithFfmpegComplexFilterFile("graph.txt", async (args) => {
+      calls.push(args);
+      return "ok";
+    });
+
+    expect(result).toBe("ok");
+    expect(calls).toEqual([["-/filter_complex", "graph.txt"]]);
+  });
+
+  it("FFmpeg 6 只在当前参数不认识时回退旧别名", async () => {
+    const calls: ReadonlyArray<string>[] = [];
+    const result = await runWithFfmpegComplexFilterFile("graph.txt", async (args) => {
+      calls.push(args);
+      if (args[0] === "-/filter_complex") {
+        throw new Error(
+          "ffmpeg failed (8): Unrecognized option '/filter_complex'. " +
+          "Error splitting the argument list: Option not found",
+        );
+      }
+      return "legacy-ok";
+    });
+
+    expect(result).toBe("legacy-ok");
+    expect(calls).toEqual([
+      ["-/filter_complex", "graph.txt"],
+      ["-filter_complex_script", "graph.txt"],
+    ]);
+  });
+
+  it("不会拿旧版回退掩盖真实编码错误", async () => {
+    const calls: ReadonlyArray<string>[] = [];
+    await expect(runWithFfmpegComplexFilterFile("graph.txt", async (args) => {
+      calls.push(args);
+      throw new Error("ffmpeg failed: Error while opening encoder");
+    })).rejects.toThrow("Error while opening encoder");
+
+    expect(calls).toEqual([["-/filter_complex", "graph.txt"]]);
   });
 });
 
@@ -39,6 +80,35 @@ describe("全库不得再手拼 file: 前缀", () => {
         if (!entry.endsWith(".ts") || entry.includes(".test.")) continue;
         if (path.endsWith(join("core", "src", "ffmpegPath.ts"))) continue;
         if (/`file:\$\{/.test(readFileSync(path, "utf8"))) {
+          offenders.push(path.slice(root.length + 1));
+        }
+      }
+    };
+    for (const workspace of ["packages", "apps"]) walk(join(root, workspace));
+
+    expect(offenders).toEqual([]);
+  });
+
+  it("复杂滤镜文件参数一律走新旧版兼容助手", () => {
+    const root = resolve(import.meta.dir, "../../..");
+    const offenders: string[] = [];
+    const skipDirs = new Set(["node_modules", "dist", ".git", "release", "data"]);
+
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir)) {
+        if (skipDirs.has(entry)) continue;
+        const path = join(dir, entry);
+        if (statSync(path).isDirectory()) {
+          walk(path);
+          continue;
+        }
+        if (!entry.endsWith(".ts") || entry.includes(".test.")) continue;
+        if (path.endsWith(join("core", "src", "ffmpegPath.ts"))) continue;
+        const content = readFileSync(path, "utf8");
+        if (
+          content.includes("-/filter_complex") ||
+          content.includes("-filter_complex_script")
+        ) {
           offenders.push(path.slice(root.length + 1));
         }
       }

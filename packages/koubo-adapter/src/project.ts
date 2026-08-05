@@ -123,8 +123,15 @@ function finite(value: unknown, fallback = 0): number {
   return Number.isFinite(number) ? number : fallback;
 }
 
+function parseJsonText<T = unknown>(content: string): T {
+  // Windows PowerShell 5.1 writes UTF-8 with a BOM by default. JSON.parse does
+  // not treat U+FEFF as whitespace, so strip that one transport marker.
+  const normalized = content.charCodeAt(0) === 0xfeff ? content.slice(1) : content;
+  return JSON.parse(normalized) as T;
+}
+
 async function readJson<T = unknown>(path: string): Promise<T> {
-  return JSON.parse(await readFile(path, "utf8")) as T;
+  return parseJsonText<T>(await readFile(path, "utf8"));
 }
 
 export async function atomicWriteJson(path: string, value: unknown): Promise<void> {
@@ -385,6 +392,20 @@ async function commitProjectFiles(
         rm(write.backup, { force: true }).catch(() => undefined)));
     }
   }
+}
+
+async function changedProjectFileWrites(
+  writes: readonly ProjectFileWrite[],
+): Promise<ProjectFileWrite[]> {
+  const deduplicated = new Map<string, string>();
+  for (const write of writes) deduplicated.set(write.path, write.content);
+  const changed: ProjectFileWrite[] = [];
+  for (const [path, content] of deduplicated) {
+    const currentIdentity = await directoryEntryIdentity(path);
+    const current = currentIdentity ? await readFile(path, "utf8") : null;
+    if (current !== content) changed.push({ path, content });
+  }
+  return changed;
 }
 
 export async function appendKouboEvent(
@@ -693,10 +714,12 @@ async function previewProxyDescriptor(
     profile: "source-timeline-v1",
     status: result.status,
     reason: result.reason,
-    message: result.message,
+    // Some ffprobe builds include a per-process pointer in decoder errors.
+    // Persisting that address makes an otherwise identical prepare look new.
+    message: result.message?.replace(/@\s*(?:0x)?[0-9a-f]+\b/gi, "@ <address>") ??
+      result.message,
     sourceSha256: result.sourceSha256,
     cacheKey: result.cacheKey,
-    cacheHit: result.cacheHit,
     config: result.config,
   };
   if (
@@ -1209,6 +1232,20 @@ function jsonContent(value: unknown): string {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
 
+function preserveUpdatedAtWhenUnchanged(
+  previous: JsonObject,
+  next: JsonObject,
+): void {
+  const { updatedAt: previousUpdatedAt, ...previousContent } = previous;
+  const { updatedAt: _nextUpdatedAt, ...nextContent } = next;
+  if (
+    previousUpdatedAt !== undefined &&
+    JSON.stringify(previousContent) === JSON.stringify(nextContent)
+  ) {
+    next.updatedAt = previousUpdatedAt;
+  }
+}
+
 function resolveEditListCandidate(input: {
   projectId: string;
   videoSource: string;
@@ -1378,7 +1415,7 @@ async function assertTranscriptMatchesVideo(
 ): Promise<void> {
   let raw: unknown;
   try {
-    raw = JSON.parse(await readFile(transcriptPath, "utf8")) as unknown;
+    raw = parseJsonText(await readFile(transcriptPath, "utf8")) as unknown;
   } catch {
     return; // SRT and unparsable inputs are handled by loadTranscript above.
   }
@@ -1553,7 +1590,9 @@ async function prepareKouboProjectSnapshot(
 ): Promise<PreparedKouboProject> {
   const jobDir = await resolveKouboJobDirectory(inputDirectory);
   const projectPath = join(jobDir, "project.json");
-  const project = await readJson<JsonObject>(projectPath);
+  const projectRaw = await readFile(projectPath, "utf8");
+  const originalProject = parseJsonText<JsonObject>(projectRaw);
+  const project = parseJsonText<JsonObject>(projectRaw);
   const metadataPath = join(jobDir, "workbench.json");
   const previous = existsSync(metadataPath) ? await readJson<JsonObject>(metadataPath) : {};
   const videoCandidates = options.video
@@ -1839,6 +1878,7 @@ async function prepareKouboProjectSnapshot(
     createdAt: String(previous.createdAt ?? now.toISOString()),
     updatedAt: now.toISOString(),
   };
+  preserveUpdatedAtWhenUnchanged(previous, metadata);
 
   const artifacts = isObject(project.artifacts) ? { ...project.artifacts } : {};
   Object.assign(artifacts, {
@@ -1867,6 +1907,7 @@ async function prepareKouboProjectSnapshot(
   };
   project.workbench = { projectId, url: `http://127.0.0.1:5190/?view=koubo#project/${encodeURIComponent(projectId)}` };
   project.updatedAt = now.toISOString();
+  preserveUpdatedAtWhenUnchanged(originalProject, project);
   const event = {
     ts: now.toISOString(),
     type: "workbench_project_prepared",
@@ -1896,9 +1937,15 @@ async function prepareKouboProjectSnapshot(
   writes.push(
     { path: metadataPath, content: jsonContent(metadata) },
     { path: projectPath, content: jsonContent(project) },
-    { path: eventsPath, content: `${eventsRaw}${JSON.stringify(event)}\n` },
   );
-  await commitProjectFiles(writes, options.beforeCommitFile, creationJournal);
+  const changedWrites = await changedProjectFileWrites(writes);
+  if (changedWrites.length > 0) {
+    changedWrites.push({
+      path: eventsPath,
+      content: `${eventsRaw}${JSON.stringify(event)}\n`,
+    });
+  }
+  await commitProjectFiles(changedWrites, options.beforeCommitFile, creationJournal);
 
   return { projectId, directory: jobDir, metadata, transcript, cutWordIds, indexWritten };
 }

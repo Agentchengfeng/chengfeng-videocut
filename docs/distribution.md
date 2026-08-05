@@ -12,17 +12,19 @@ https://github.com/Agentchengfeng/chengfeng-videocut/releases
 
 - Bun 1.2 或更高版本
 - FFmpeg，包含 `ffmpeg` 和 `ffprobe`
+- Windows 安装阶段需要 Node.js 20 或更高版本来运行 `install.cjs`
 
 ## Release 资产
 
 每个正式版本至少应提供：
 
 - `install.sh`：与该版本绑定的一行安装器副本
+- `install.cjs`：Windows / Node 安装器副本
 - `chengfeng-videocut-<version>-portable.tar.gz`：版本化便携包
 - `chengfeng-videocut-portable.tar.gz`：与本次 Release 内容相同的稳定文件名
 - `chengfeng-videocut-<version>.tgz`：版本化 CLI 包，供诊断或受控安装
 - `chengfeng-videocut.tgz`：与本次 Release 内容相同的稳定 CLI 文件名
-- `SHA256SUMS.txt`：覆盖 `install.sh`、版本化/稳定名 portable 与 tgz 的 SHA-256 校验值
+- `SHA256SUMS.txt`：覆盖 `install.sh`、`install.cjs`、版本化/稳定名 portable 与 tgz 的 SHA-256 校验值
 
 稳定文件名便于安装器和 Skills 使用；版本化文件名用于固定版本、审计和回滚。稳定文件名不得跨 Release 静默替换内容。
 
@@ -36,7 +38,7 @@ curl -fsSL https://raw.githubusercontent.com/Agentchengfeng/chengfeng-videocut/m
 
 安装器只应从 `Agentchengfeng/chengfeng-videocut` 的 GitHub Release 下载资产，校验 `SHA256SUMS.txt`，并写入产品自己的用户目录。它不得修改用户项目、媒体或其他工具目录。
 
-安装器只安装 Runtime 和稳定启动器，不自动注册、加载或启动 LaunchAgent。用户首次显式调用 `chengfeng-videocut service ensure`，或业务 Skill 进入需要 Runtime 的阶段时，才由产品注册并启动用户级服务。
+安装器只安装 Runtime 和稳定启动器，不自动注册、加载或启动用户级服务。用户首次显式调用 `chengfeng-videocut service ensure`，或业务 Skill 进入需要 Runtime 的阶段时，才由产品在 macOS 注册 LaunchAgent、在 Windows 注册 Task Scheduler 任务。
 
 **Windows 虚拟机试用注意**：Windows 11 24H2+ 默认开启 VBS（基于虚拟化的安全），
 在 QEMU/UTM 等虚拟机里会因嵌套虚拟化而无声死挂；此时需在客户机内执行
@@ -54,7 +56,15 @@ CHENGFENG_VIDEOCUT_DOWNLOAD_BASE="file://$PWD" sh ./install.sh
 ~/.chengfeng-videocut/bin/chengfeng-videocut service logs
 ```
 
-裸解压目录只用于 `doctor` 或 foreground 诊断；LaunchAgent 只绑定安装器建立的稳定 launcher，不能绑定下载目录或临时解压路径。
+Windows 用户把同一 Release 的 `install.cjs`、便携包与校验清单放在同一目录后运行：
+
+```powershell
+$env:CHENGFENG_VIDEOCUT_DOWNLOAD_BASE = ([uri]$PWD).AbsoluteUri
+node .\install.cjs
+& "$env:USERPROFILE\.chengfeng-videocut\bin\chengfeng-videocut.cmd" service ensure --open
+```
+
+裸解压目录只用于 `doctor` 或 foreground 诊断；受管服务只绑定安装器建立的稳定 launcher，不能绑定下载目录或临时解压路径。
 
 正式运行入口是 `service ensure/status/logs`。`start` 保留为当前终端内的 foreground 开发/诊断模式，不应出现在 Skills、`start.command` 或安装完成后的默认指引中。
 

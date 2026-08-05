@@ -1,18 +1,18 @@
 name: windows-test
 
-# Windows 移植的靶机（产品侧）：在真实 x64 Windows 上跑全量单测。
-# 红名单就是移植工作清单；随各批次落地逐步翻绿。
-# continue-on-error 期间它是情报源，不是门禁；全绿后改为强制。
+# Windows 产品检查：PR 与 main 都在真实 x64 Windows 上跑全量单测和安装冒烟。
+# 两个 job 都硬失败；是否阻止合并仍由仓库 required-check 规则决定。
 
 on:
   push:
+    branches: [main]
+  pull_request:
     branches: [main]
   workflow_dispatch:
 
 jobs:
   test:
     runs-on: windows-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -34,7 +34,7 @@ jobs:
       - name: 安装依赖
         run: bun install --frozen-lockfile
       - name: 全量单测
-        run: bun test packages apps/cli/src
+        run: bun test packages apps/cli/src apps/studio/src/server/videocutEditListApi.test.ts
 
   # W1 验收：真实 Windows 上装得上、跑得出版本号。这个 job 是硬门禁。
   install-smoke:
@@ -61,8 +61,22 @@ jobs:
           node -e "const{createHash}=require('crypto');const fs=require('fs');const p='local-release/chengfeng-videocut-portable.tar.gz';const h=createHash('sha256').update(fs.readFileSync(p)).digest('hex');fs.writeFileSync('local-release/SHA256SUMS.txt',h+'  chengfeng-videocut-portable.tar.gz\n');"
           $env:CHENGFENG_VIDEOCUT_HOME = Join-Path $env:RUNNER_TEMP 'vc-home'
           $env:CHENGFENG_VIDEOCUT_DOWNLOAD_BASE = ([uri](Join-Path $PWD 'local-release')).AbsoluteUri
+          $originalPath = $env:PATH
+          $nativeBun = (Get-Command bun.exe -ErrorAction Stop).Source
+          $brokenShimBin = Join-Path $env:RUNNER_TEMP '01-pnpm-bin'
+          $nativeBin = Join-Path $env:RUNNER_TEMP '02-native-bin'
+          New-Item -ItemType Directory -Force $brokenShimBin, $nativeBin | Out-Null
+          [IO.File]::WriteAllText(
+            (Join-Path $brokenShimBin 'bun.cmd'),
+            "@echo off`r`nexit /b 91`r`n",
+            [Text.Encoding]::ASCII
+          )
+          Copy-Item $nativeBun (Join-Path $nativeBin 'bun.exe')
+          $env:PATH = "$brokenShimBin;$nativeBin;$originalPath"
           node local-release/install.cjs
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $installExit = $LASTEXITCODE
+          $env:PATH = $originalPath
+          if ($installExit -ne 0) { exit $installExit }
           $version = & (Join-Path $env:CHENGFENG_VIDEOCUT_HOME 'bin\chengfeng-videocut.cmd') --version
           Write-Host "launcher reports: $version"
           if ($version -notmatch '\d+\.\d+\.\d+') { exit 1 }

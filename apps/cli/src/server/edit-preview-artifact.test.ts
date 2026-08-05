@@ -298,6 +298,8 @@ test("late r17 cannot publish over r18 and same revision hits cache", async () =
   const r17 = await f.writeEdit(3);
   let releaseFirst!: () => void;
   const first = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  let markFirstStarted!: () => void;
+  const firstStarted = new Promise<void>((resolve) => { markFirstStarted = resolve; });
   let calls = 0;
   const frameRates: number[] = [];
   const manager = new EditPreviewArtifactManager(f.projectsDir, {
@@ -305,7 +307,10 @@ test("late r17 cannot publish over r18 and same revision hits cache", async () =
     async generate({ output, frameRate }) {
       calls += 1;
       frameRates.push(frameRate);
-      if (calls === 1) await first;
+      if (calls === 1) {
+        markFirstStarted();
+        await first;
+      }
       await writeFile(output, `artifact-${calls}`);
       return {} as never;
     },
@@ -316,7 +321,7 @@ test("late r17 cannot publish over r18 and same revision hits cache", async () =
     },
   });
   manager.schedule(f.projectId);
-  await Bun.sleep(10);
+  await firstStarted;
   const r18 = await f.writeEdit(4);
   manager.schedule(f.projectId);
   releaseFirst();
@@ -326,8 +331,12 @@ test("late r17 cannot publish over r18 and same revision hits cache", async () =
   expect(current.artifactRevision).not.toBe(r17);
   expect(calls).toBe(2);
   expect(frameRates).toEqual([30, 30]);
-  manager.schedule(f.projectId);
-  await Bun.sleep(20);
+  const cached = await manager.ensure(f.projectId);
+  expect(cached).toMatchObject({
+    phase: "current",
+    editRevision: r18,
+    artifactRevision: r18,
+  });
   expect(calls).toBe(2);
   await rm(f.projectsDir, { recursive: true, force: true });
 });

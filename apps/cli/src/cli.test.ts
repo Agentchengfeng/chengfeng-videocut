@@ -107,6 +107,9 @@ describe("chengfeng-videocut CLI", () => {
     expect(payload.data.text).toContain(
       "Render exit codes: 7 missing renderer, 8 renderer failed, 9 verification failed.",
     );
+    expect(payload.data.text).toContain("Task Scheduler on Windows");
+    expect(payload.data.text).toContain("unsupported platforms");
+    expect(payload.data.text).not.toContain("fail closed on non-macOS");
   });
 
   it("dispatches task-local Volcengine transcription without creating a project", async () => {

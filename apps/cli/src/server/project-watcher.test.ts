@@ -24,7 +24,7 @@ function delay(milliseconds: number): Promise<void> {
 
 async function waitFor(
   attempt: () => boolean | Promise<boolean>,
-  timeoutMilliseconds = 3_000,
+  timeoutMilliseconds = 8_000,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMilliseconds;
   while (Date.now() < deadline) {

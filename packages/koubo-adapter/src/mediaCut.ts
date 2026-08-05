@@ -2,7 +2,12 @@ import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { EDIT_LIST_MIN_SEGMENT_SECONDS, ffmpegFileArg, ffmpegOutputArgs } from "@video-workbench/core";
+import {
+  EDIT_LIST_MIN_SEGMENT_SECONDS,
+  ffmpegFileArg,
+  ffmpegOutputArgs,
+  runWithFfmpegComplexFilterFile,
+} from "@video-workbench/core";
 
 export interface MediaCutRange {
   start: number;
@@ -323,22 +328,23 @@ async function renderVideoSegments(input: {
         (total, segment) => total + segment.end - segment.start,
         0,
       );
-      await runCommand("ffmpeg", [
-        "-y", "-v", "error",
-        "-copyts", "-segment_time_metadata", "1",
-        "-f", "concat", "-safe", "0", "-i", concatPath,
-        ...(sourceProbe.hasAudio ? ["-i", ffmpegFileArg(input.input)] : []),
-        "-filter_complex_script", filterPath,
-        "-map", "[outv]",
-        ...(sourceProbe.hasAudio ? ["-map", "[outa]"] : []),
-        "-c:v", "libx264", "-profile:v", x264Profile(sourceProbe.videoProfile),
-        ...videoArgs,
-        "-pix_fmt", sourceProbe.pixelFormat,
-        ...(sourceProbe.hasAudio ? ["-c:a", "aac", "-b:a", "128k"] : []),
-        "-t", filterTime(expectedDuration),
-        "-movflags", "+faststart",
-        ...ffmpegOutputArgs("mp4", temporaryOutput),
-      ]);
+      await runWithFfmpegComplexFilterFile(filterPath, (filterArgs) =>
+        runCommand("ffmpeg", [
+          "-y", "-v", "error",
+          "-copyts", "-segment_time_metadata", "1",
+          "-f", "concat", "-safe", "0", "-i", concatPath,
+          ...(sourceProbe.hasAudio ? ["-i", ffmpegFileArg(input.input)] : []),
+          ...filterArgs,
+          "-map", "[outv]",
+          ...(sourceProbe.hasAudio ? ["-map", "[outa]"] : []),
+          "-c:v", "libx264", "-profile:v", x264Profile(sourceProbe.videoProfile),
+          ...videoArgs,
+          "-pix_fmt", sourceProbe.pixelFormat,
+          ...(sourceProbe.hasAudio ? ["-c:a", "aac", "-b:a", "128k"] : []),
+          "-t", filterTime(expectedDuration),
+          "-movflags", "+faststart",
+          ...ffmpegOutputArgs("mp4", temporaryOutput),
+        ]));
     }
     const outputProbe = await probeMedia(temporaryOutput);
     if (!outputProbe.hasVideo || !(outputProbe.duration > 0)) {

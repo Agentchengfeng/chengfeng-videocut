@@ -1,4 +1,8 @@
-export { ffmpegFileArg, ffmpegOutputArgs } from "./ffmpegPath";
+export {
+  ffmpegFileArg,
+  ffmpegOutputArgs,
+  runWithFfmpegComplexFilterFile,
+} from "./ffmpegPath";
 export * from "./config";
 export * from "./cuts";
 export * from "./editList";

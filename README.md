@@ -12,9 +12,11 @@ chengfeng-videocut 是一个本地优先的口播视频剪辑产品：浏览器�
 
 - Bun 1.2 或更高版本
 - FFmpeg，并确保 `ffmpeg` 与 `ffprobe` 可在终端中运行
-- macOS 或 Linux；Windows 尚未作为正式支持平台验证
+- macOS，或 Windows 11（Windows 使用便携包 + Node 安装器）
+- Windows 安装阶段另需 Node.js 20 或更高版本来运行 `install.cjs`
+- Linux 可用 foreground `start` 做开发诊断，常驻 `service` 尚不支持
 
-一行安装：
+macOS 一行安装：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Agentchengfeng/chengfeng-videocut/main/install.sh | sh
@@ -29,9 +31,9 @@ chengfeng-videocut service status
 chengfeng-videocut service logs
 ```
 
-`service ensure` 是正式用户入口：首次使用时注册并启动 macOS 用户级服务，后续调用会复用健康进程。安装器本身只安装 Runtime，不会在安装时偷偷注册后台服务。
+`service ensure` 是正式用户入口：首次使用时在 macOS 注册 LaunchAgent、在 Windows 注册 Task Scheduler 用户任务，后续调用会复用健康进程。安装器本身只安装 Runtime，不会在安装时偷偷注册后台服务。
 
-本版常驻服务只支持 macOS。其他平台调用 `service` 会明确返回 `service_unsupported`，仍可使用 foreground `start` 进行开发诊断。
+本版常驻服务支持 macOS 与 Windows。其他平台调用 `service` 会明确返回 `service_unsupported`，仍可使用 foreground `start` 进行开发诊断。
 
 若终端暂时找不到命令，请按照安装器最后输出的提示，将 `~/.chengfeng-videocut/bin` 加入 `PATH`。
 
@@ -42,7 +44,15 @@ chengfeng-videocut service logs
 3. 在该目录运行 `CHENGFENG_VIDEOCUT_DOWNLOAD_BASE="file://$PWD" sh ./install.sh`，把 Runtime 落到稳定的 `~/.chengfeng-videocut/bin` 与 `app/current` 布局。
 4. 运行 `~/.chengfeng-videocut/bin/chengfeng-videocut service ensure --open` 启动工作台。
 
-裸解压的便携目录可用于 `./chengfeng-videocut doctor` 或 foreground 诊断，但不会被 LaunchAgent 绑定为永久路径；请勿移动临时目录后继续依赖其中的服务入口。
+Windows PowerShell 使用同一 Release 的 `install.cjs`、便携包与校验清单：
+
+```powershell
+$env:CHENGFENG_VIDEOCUT_DOWNLOAD_BASE = ([uri]$PWD).AbsoluteUri
+node .\install.cjs
+& "$env:USERPROFILE\.chengfeng-videocut\bin\chengfeng-videocut.cmd" service ensure --open
+```
+
+裸解压的便携目录可用于 `doctor` 或 foreground 诊断，但不会被操作系统受管任务绑定为永久路径；请勿移动临时目录后继续依赖其中的服务入口。
 
 版本化资产用于固定版本和回滚；不带版本号的 `chengfeng-videocut-portable.tar.gz` 始终指向该次 Release 的便携包。
 
