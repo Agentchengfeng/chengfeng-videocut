@@ -34,16 +34,25 @@ export const WINDOWS_TASK_NAME = "chengfeng-videocut-studio";
 
 // 任务的 UserId：工作组机器上 DOMAIN\user 形式会被拒（"No mapping between account
 // names and security IDs"，2026-08-03 真机实测），SID 在域/工作组都成立。
+// PowerShell 冷启动在 Windows CI / Defender 扫描时可能超过 1 秒；同一进程的
+// 登录身份不会变化，因此只解析一次，避免 status/ensure 反复启动 PowerShell。
+let cachedCurrentUserId: string | undefined;
+
 function currentUserId(): string {
+  if (cachedCurrentUserId !== undefined) return cachedCurrentUserId;
   const sid = spawnSync(
     "powershell",
     ["-NoProfile", "-Command", "[Security.Principal.WindowsIdentity]::GetCurrent().User.Value"],
     { encoding: "utf8" },
   );
   const value = (sid.stdout || "").trim();
-  if (/^S-1-[0-9-]+$/.test(value)) return value;
+  if (/^S-1-[0-9-]+$/.test(value)) {
+    cachedCurrentUserId = value;
+    return cachedCurrentUserId;
+  }
   const name = process.env.USERNAME || process.env.USER || "";
-  return name ? `${process.env.COMPUTERNAME || "."}\\${name}` : name;
+  cachedCurrentUserId = name ? `${process.env.COMPUTERNAME || "."}\\${name}` : name;
+  return cachedCurrentUserId;
 }
 const RESPAWN_THROTTLE_MS = 5_000;
 

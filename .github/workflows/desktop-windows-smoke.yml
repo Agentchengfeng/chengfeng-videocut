@@ -37,26 +37,56 @@ jobs:
           if ($install.ExitCode -ne 0) {
             throw "Windows installer exited with $($install.ExitCode)"
           }
-          $installedApp = Join-Path $env:LOCALAPPDATA `
-            "Programs/Chengfeng VideoCut/Chengfeng VideoCut.exe"
-          if (-not (Test-Path $installedApp)) {
-            throw "Installed desktop executable was not found at $installedApp"
+          $programsDir = Join-Path $env:LOCALAPPDATA "Programs"
+          $installedApps = @(
+            Get-ChildItem $programsDir `
+              -Filter "Chengfeng VideoCut.exe" `
+              -File `
+              -Recurse `
+              -ErrorAction SilentlyContinue
+          )
+          if ($installedApps.Count -ne 1) {
+            $found = ($installedApps | ForEach-Object FullName) -join ", "
+            throw "Expected exactly one installed desktop executable under $programsDir; found $($installedApps.Count): $found"
           }
+          $installedApp = $installedApps[0].FullName
+          $installedDir = $installedApps[0].DirectoryName
           "CHENGFENG_VIDEOCUT_PACKAGED_APP=$installedApp" >> $env:GITHUB_ENV
+          "CHENGFENG_VIDEOCUT_INSTALLED_DIR=$installedDir" >> $env:GITHUB_ENV
       - name: Smoke-test installed application
         run: bun run --cwd apps/desktop smoke:packaged
       - name: Uninstall test application
         if: always()
         shell: pwsh
         run: |
-          $uninstaller = Join-Path $env:LOCALAPPDATA `
-            "Programs/Chengfeng VideoCut/Uninstall Chengfeng VideoCut.exe"
-          if (Test-Path $uninstaller) {
-            $uninstall = Start-Process -FilePath $uninstaller -ArgumentList "/S" -Wait -PassThru
-            if ($uninstall.ExitCode -ne 0) {
-              throw "Windows uninstaller exited with $($uninstall.ExitCode)"
-            }
+          if (-not $env:CHENGFENG_VIDEOCUT_INSTALLED_DIR) {
+            throw "Installed application directory was not recorded"
           }
+          $uninstallers = @(
+            Get-ChildItem $env:CHENGFENG_VIDEOCUT_INSTALLED_DIR `
+              -Filter "Uninstall*.exe" `
+              -File `
+              -ErrorAction SilentlyContinue
+          )
+          if ($uninstallers.Count -ne 1) {
+            $found = ($uninstallers | ForEach-Object FullName) -join ", "
+            throw "Expected exactly one uninstaller; found $($uninstallers.Count): $found"
+          }
+          $uninstall = Start-Process `
+            -FilePath $uninstallers[0].FullName `
+            -ArgumentList "/S" `
+            -Wait `
+            -PassThru
+          if ($uninstall.ExitCode -ne 0) {
+            throw "Windows uninstaller exited with $($uninstall.ExitCode)"
+          }
+          foreach ($attempt in 1..20) {
+            if (-not (Test-Path $env:CHENGFENG_VIDEOCUT_PACKAGED_APP)) {
+              exit 0
+            }
+            Start-Sleep -Milliseconds 500
+          }
+          throw "Installed desktop executable still exists after uninstall"
       - name: Preserve verified Windows installer
         uses: actions/upload-artifact@v4
         with:
