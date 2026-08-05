@@ -34,7 +34,10 @@ jobs:
       - name: 安装依赖
         run: bun install --frozen-lockfile
       - name: 全量单测
-        run: bun test packages apps/cli/src apps/studio/src/server/videocutEditListApi.test.ts
+        # Several suites exercise native Windows watchers and process lifecycle.
+        # Run them serially so unrelated files cannot starve or mutate the same
+        # process-wide environment while those integration paths are observed.
+        run: bun test --max-concurrency=1 packages apps/cli/src apps/studio/src/server/videocutEditListApi.test.ts
 
   # W1 验收：真实 Windows 上装得上、跑得出版本号。这个 job 是硬门禁。
   install-smoke:
