@@ -61,7 +61,7 @@ jobs:
           bun run --cwd apps/desktop smoke:packaged
           bun run --cwd apps/desktop smoke:managed-packaged
       - name: Uninstall test application
-        if: always()
+        if: ${{ always() && env.CHENGFENG_VIDEOCUT_INSTALLED_DIR != '' }}
         shell: pwsh
         run: |
           if (-not $env:CHENGFENG_VIDEOCUT_INSTALLED_DIR) {

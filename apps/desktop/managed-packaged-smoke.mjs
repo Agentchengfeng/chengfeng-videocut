@@ -132,6 +132,7 @@ const appEnvironment = {
 };
 
 let stopped = false;
+let primaryFailure = null;
 try {
   const appResult = await runProcess(executable, [], appEnvironment);
   assertSuccess("managed packaged app", appResult, "DESKTOP_SMOKE_OK");
@@ -215,6 +216,9 @@ try {
     runtimeMode: healthAfterParentExit.runtimeMode,
     stableLauncher: launcher,
   }));
+} catch (error) {
+  primaryFailure = error;
+  throw error;
 } finally {
   if (!stopped && existsSync(launcher)) {
     const stopCommand = stableCommand(launcher, ["service", "stop", "--json"]);
@@ -227,6 +231,21 @@ try {
         timeoutMs: 30_000,
       },
     ).catch(() => undefined);
+    await waitForHealth((health) => health === null, 10_000).catch(
+      () => undefined,
+    );
   }
-  await rm(root, { recursive: true, force: true });
+  try {
+    await rm(root, {
+      recursive: true,
+      force: true,
+      maxRetries: platform === "win32" ? 40 : 0,
+      retryDelay: 250,
+    });
+  } catch (cleanupError) {
+    if (!primaryFailure) throw cleanupError;
+    console.error(
+      `Managed smoke cleanup also failed: ${cleanupError?.message ?? cleanupError}`,
+    );
+  }
 }
