@@ -28,7 +28,12 @@
     "package:check": "bun run --cwd apps/cli package:check",
     "package:pack": "bun apps/cli/scripts/pack-package.ts",
     "portable:pack": "bun scripts/package-portable.ts",
-    "release:checksums": "bun scripts/write-release-checksums.ts"
+    "release:checksums": "bun scripts/write-release-checksums.ts",
+    "desktop:test": "bun run --cwd apps/desktop test",
+    "desktop:smoke": "bun run --cwd apps/desktop smoke",
+    "desktop:dist:dir": "bun run --cwd apps/desktop dist:dir",
+    "desktop:dist:mac": "bun run --cwd apps/desktop dist:mac",
+    "desktop:dist:win": "bun run --cwd apps/desktop dist:win"
   },
   "devDependencies": {
     "@types/bun": "^1.3.5",
@@ -44,5 +49,10 @@
     "@hyperframes/producer": "0.7.60",
     "@hyperframes/sdk": "0.7.60",
     "@hyperframes/studio-server": "0.7.60"
-  }
+  },
+  "trustedDependencies": [
+    "@derhuerst/ffprobe-static",
+    "electron",
+    "ffmpeg-static"
+  ]
 }
