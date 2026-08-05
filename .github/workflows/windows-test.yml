@@ -59,6 +59,10 @@ jobs:
           Copy-Item release/chengfeng-videocut-portable.tar.gz local-release/
           Copy-Item install.cjs local-release/
           node -e "const{createHash}=require('crypto');const fs=require('fs');const p='local-release/chengfeng-videocut-portable.tar.gz';const h=createHash('sha256').update(fs.readFileSync(p)).digest('hex');fs.writeFileSync('local-release/SHA256SUMS.txt',h+'  chengfeng-videocut-portable.tar.gz\n');"
+          $staleShimDir = Join-Path $env:RUNNER_TEMP 'stale-bun-shim'
+          New-Item -ItemType Directory -Force $staleShimDir | Out-Null
+          Set-Content -LiteralPath (Join-Path $staleShimDir 'bun.cmd') -Encoding Ascii -Value '@exit /b 1'
+          $env:PATH = "$staleShimDir;$env:PATH"
           $env:CHENGFENG_VIDEOCUT_HOME = Join-Path $env:RUNNER_TEMP 'vc-home'
           $env:CHENGFENG_VIDEOCUT_DOWNLOAD_BASE = ([uri](Join-Path $PWD 'local-release')).AbsoluteUri
           node local-release/install.cjs
