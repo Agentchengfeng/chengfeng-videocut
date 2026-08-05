@@ -461,32 +461,6 @@ export async function runWindowsStudioServiceCommand(
   }
 }
 
-function findBunExecutable(): string | null {
-  const names = ["bun.exe", "bun.cmd"];
-  for (const entry of (process.env.PATH || "").split(";").filter(Boolean)) {
-    for (const name of names) {
-      const candidate = join(entry, name);
-      try {
-        openSync(candidate, "r");
-        return candidate;
-      } catch {
-        // keep searching
-      }
-    }
-  }
-  const home = process.env.USERPROFILE;
-  if (home) {
-    const fallback = join(home, ".bun", "bin", "bun.exe");
-    try {
-      openSync(fallback, "r");
-      return fallback;
-    } catch {
-      // fall through
-    }
-  }
-  return null;
-}
-
 // 看门狗：直接以 bun 起 server 子进程（child.pid 即 health 报告的 PID），
 // 崩溃 5 秒节流后重拉，日志追加到与 launchd 相同的文件，状态发布到
 // supervisor.json 供 status/stop 交叉验证。任务结束（schtasks /End、注销）
@@ -517,11 +491,9 @@ export async function runStudioSupervisor(paths: StudioServicePaths): Promise<nu
   await mkdir(join(paths.dataDir, "logs"), { recursive: true });
   await mkdir(join(paths.dataDir, "service"), { recursive: true });
   const cliEntry = join(paths.dataDir, "app", "current", "cli.js");
-  const bun = findBunExecutable();
-  if (!bun) {
-    process.stderr.write("找不到 Bun，无法启动 Studio 服务。\n");
-    return 127;
-  }
+  // `service supervise` 本身已由稳定启动器通过验证过的 Bun 启动。复用当前
+  // execPath，避免再次扫描 PATH 时被陈旧的 bun.cmd shim 遮蔽原生 bun.exe。
+  const bun = process.execPath;
 
   let stopping = false;
   let child: ReturnType<typeof spawn> | null = null;

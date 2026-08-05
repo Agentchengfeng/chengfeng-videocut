@@ -44,29 +44,62 @@ const BIN_ROOT = path.join(INSTALL_ROOT, "bin");
 const TARGET_DIR = path.join(APP_ROOT, VERSION);
 const CURRENT_LINK = path.join(APP_ROOT, "current");
 const BIN_LINK = path.join(BIN_ROOT, IS_WINDOWS ? "chengfeng-videocut.cmd" : "chengfeng-videocut");
+const MINIMUM_BUN_VERSION = [1, 2, 0];
 
 function fail(message) {
   process.stderr.write(`错误：${message}\n`);
   process.exit(1);
 }
 
-function findBun() {
-  const names = IS_WINDOWS ? ["bun.exe", "bun.cmd"] : ["bun"];
-  for (const entry of (process.env.PATH || "").split(path.delimiter).filter(Boolean)) {
-    for (const name of names) {
-      const candidate = path.join(entry, name);
-      if (existsSync(candidate)) return candidate;
-    }
+function supportedBunVersion(rawVersion) {
+  const match = String(rawVersion).trim().match(/^(\d+)\.(\d+)\.(\d+)/);
+  if (!match) return false;
+  const actual = match.slice(1, 4).map(Number);
+  for (let index = 0; index < MINIMUM_BUN_VERSION.length; index += 1) {
+    if (actual[index] > MINIMUM_BUN_VERSION[index]) return true;
+    if (actual[index] < MINIMUM_BUN_VERSION[index]) return false;
   }
-  const fallbacks = IS_WINDOWS
-    ? [path.join(os.homedir(), ".bun", "bin", "bun.exe")]
+  return true;
+}
+
+function runnableBun(candidate, run = spawnSync) {
+  const probe = run(candidate, ["--version"], {
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  return probe.status === 0 && supportedBunVersion(probe.stdout);
+}
+
+function findBun(options = {}) {
+  const platform = options.platform || process.platform;
+  const pathApi = platform === "win32" ? path.win32 : path.posix;
+  const delimiter = platform === "win32" ? ";" : ":";
+  const searchPath = options.searchPath ?? process.env.PATH ?? "";
+  const homeDir = options.homeDir ?? os.homedir();
+  const exists = options.exists ?? existsSync;
+  const probe = options.probe ?? runnableBun;
+  // Node cannot spawn a .cmd shim directly on Windows. Bun's supported Windows
+  // distributions all contain bun.exe, so ignore shell shims and probe each
+  // native candidate before accepting it.
+  const names = platform === "win32" ? ["bun.exe"] : ["bun"];
+  const candidates = [];
+  for (const entry of searchPath.split(delimiter).filter(Boolean)) {
+    for (const name of names) candidates.push(pathApi.join(entry, name));
+  }
+  candidates.push(...(platform === "win32"
+    ? [pathApi.join(homeDir, ".bun", "bin", "bun.exe")]
     : [
-        path.join(os.homedir(), ".bun", "bin", "bun"),
+        pathApi.join(homeDir, ".bun", "bin", "bun"),
         "/opt/homebrew/bin/bun",
         "/usr/local/bin/bun",
-      ];
-  for (const candidate of fallbacks) {
-    if (existsSync(candidate)) return candidate;
+      ]));
+
+  const seen = new Set();
+  for (const candidate of candidates) {
+    const key = platform === "win32" ? candidate.toLowerCase() : candidate;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (exists(candidate) && probe(candidate)) return candidate;
   }
   return null;
 }
@@ -154,14 +187,19 @@ set "CHENGFENG_VIDEOCUT_EXECUTABLE=%~f0"
 for %%I in ("%~dp0..") do set "CHENGFENG_VIDEOCUT_DATA_DIR=%%~fI"
 set "APP_DIR=%~dp0..\\app\\current"
 set "BUN_EXE="
-where bun >nul 2>nul && set "BUN_EXE=bun"
-if not defined BUN_EXE if exist "%USERPROFILE%\\.bun\\bin\\bun.exe" set "BUN_EXE=%USERPROFILE%\\.bun\\bin\\bun.exe"
+for /f "delims=" %%B in ('where bun.exe 2^>nul') do if not defined BUN_EXE call :use_bun "%%~fB"
+if not defined BUN_EXE if exist "%USERPROFILE%\\.bun\\bin\\bun.exe" call :use_bun "%USERPROFILE%\\.bun\\bin\\bun.exe"
 if not defined BUN_EXE (
   echo chengfeng-videocut 需要 Bun 1.2 或更高版本：https://bun.sh/docs/installation 1>&2
   exit /b 127
 )
 "%BUN_EXE%" "%APP_DIR%\\cli.js" %*
 exit /b %ERRORLEVEL%
+
+:use_bun
+"%~1" --version >nul 2>nul
+if not errorlevel 1 set "BUN_EXE=%~1"
+exit /b 0
 `;
 
 async function main() {
@@ -274,6 +312,10 @@ async function main() {
   process.stdout.write(probe.stdout);
 }
 
-main().catch((error) => {
-  fail(error instanceof Error ? error.message : String(error));
-});
+if (require.main === module) {
+  main().catch((error) => {
+    fail(error instanceof Error ? error.message : String(error));
+  });
+}
+
+module.exports = { findBun, runnableBun, supportedBunVersion };
