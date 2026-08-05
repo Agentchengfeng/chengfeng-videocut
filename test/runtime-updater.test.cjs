@@ -1095,6 +1095,76 @@ test("regular upgrade crash after completed journal preserves new tools and clea
   assert.equal(readdirSync(toolsRoot).filter((name) => name.includes(".previous.")).length, 0);
 });
 
+test("planned tools promotion crash preserves an existing target before backup move", (t) => {
+  const { home, release } = fixture(t);
+  const old = createLegacyRuntime(home, { service: "absent" });
+  const { toolsRoot, oldTools, candidateTools } = createManagedTools(home);
+  const previousTarget = path.join(toolsRoot, VERSION);
+  mkdirSync(previousTarget, { recursive: true });
+  const suffix = IS_WINDOWS ? ".exe" : "";
+  for (const name of ["bun", "ffmpeg", "ffprobe"]) writeFileSync(path.join(previousTarget, `${name}${suffix}`), "previous");
+  writeFileSync(path.join(previousTarget, "resources-manifest.json"), "{}\n");
+  const crashed = invoke(home, release, {
+    CHENGFENG_VIDEOCUT_MANAGED_TOOLS_SOURCE_DIR: candidateTools,
+    CHENGFENG_VIDEOCUT_TEST_CRASH_AT_PHASE: "tools_promotion_planned",
+  });
+  assert.equal(crashed.status, 86, crashed.stderr);
+  const recovered = invoke(home, release, {
+    CHENGFENG_VIDEOCUT_DOWNLOAD_BASE: pathToFileURL(path.join(path.dirname(home), "missing-release")).href,
+  });
+  assert.notEqual(recovered.status, 0);
+  assert.equal(currentTarget(home), old.runtime);
+  assert.equal(readFileSync(path.join(previousTarget, `bun${suffix}`), "utf8"), "previous");
+  assert.equal(path.resolve(toolsRoot, readlinkSync(path.join(toolsRoot, "current"))), oldTools);
+});
+
+test("backup-moved crash restores the version before relinking a dangling tools/current", (t) => {
+  const { home, release } = fixture(t);
+  createLegacyRuntime(home, { service: "absent" });
+  const { toolsRoot, candidateTools } = createManagedTools(home);
+  const previousTarget = path.join(toolsRoot, VERSION);
+  mkdirSync(previousTarget, { recursive: true });
+  const suffix = IS_WINDOWS ? ".exe" : "";
+  for (const name of ["bun", "ffmpeg", "ffprobe"]) writeFileSync(path.join(previousTarget, `${name}${suffix}`), "previous");
+  writeFileSync(path.join(previousTarget, "resources-manifest.json"), "{}\n");
+  unlinkSync(path.join(toolsRoot, "current"));
+  symlinkSync(IS_WINDOWS ? previousTarget : VERSION, path.join(toolsRoot, "current"), IS_WINDOWS ? "junction" : "dir");
+  const crashed = invoke(home, release, {
+    CHENGFENG_VIDEOCUT_MANAGED_TOOLS_SOURCE_DIR: candidateTools,
+    CHENGFENG_VIDEOCUT_TEST_CRASH_AT_PHASE: "tools_backup_moved",
+  });
+  assert.equal(crashed.status, 86, crashed.stderr);
+  const recovered = invoke(home, release, {
+    CHENGFENG_VIDEOCUT_DOWNLOAD_BASE: pathToFileURL(path.join(path.dirname(home), "missing-release")).href,
+  });
+  assert.notEqual(recovered.status, 0);
+  assert.equal(path.resolve(toolsRoot, readlinkSync(path.join(toolsRoot, "current"))), previousTarget);
+  assert.equal(readFileSync(path.join(previousTarget, `bun${suffix}`), "utf8"), "previous");
+});
+
+test("failed staged-to-target rename restores backup without an idle journal mismatch", (t) => {
+  const { home, release } = fixture(t);
+  const old = createLegacyRuntime(home, { service: "absent" });
+  const { toolsRoot, candidateTools } = createManagedTools(home);
+  const previousTarget = path.join(toolsRoot, VERSION);
+  mkdirSync(previousTarget, { recursive: true });
+  const suffix = IS_WINDOWS ? ".exe" : "";
+  for (const name of ["bun", "ffmpeg", "ffprobe"]) writeFileSync(path.join(previousTarget, `${name}${suffix}`), "previous");
+  writeFileSync(path.join(previousTarget, "resources-manifest.json"), "{}\n");
+  unlinkSync(path.join(toolsRoot, "current"));
+  symlinkSync(IS_WINDOWS ? previousTarget : VERSION, path.join(toolsRoot, "current"), IS_WINDOWS ? "junction" : "dir");
+  const result = invoke(home, release, {
+    CHENGFENG_VIDEOCUT_MANAGED_TOOLS_SOURCE_DIR: candidateTools,
+    CHENGFENG_VIDEOCUT_TEST_FAIL_TOOLS_TARGET_RENAME: "1",
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /TEST_FAIL_TOOLS_TARGET_RENAME/);
+  assert.equal(currentTarget(home), old.runtime);
+  assert.equal(path.resolve(toolsRoot, readlinkSync(path.join(toolsRoot, "current"))), previousTarget);
+  assert.equal(readFileSync(path.join(previousTarget, `bun${suffix}`), "utf8"), "previous");
+  assert.equal(readState(home).phase, "idle");
+});
+
 test("Desktop tools/current failure after promotion restores the old Runtime and tools links", (t) => {
   const { home, release } = fixture(t);
   const old = createLegacyRuntime(home, { service: "absent" });

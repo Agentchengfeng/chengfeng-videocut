@@ -1218,13 +1218,24 @@ function stageAndPromoteManagedTools(state, source, transactionId) {
   const stagedSource = validateExternalToolsSource(staged, { allowManagedRoot: true });
   if (canonicalPath(stagedSource) !== canonicalPath(staged)) fail("工具 pending 复制后路径身份异常。");
   state.transaction.toolsTarget = target;
-  state.transaction.toolsBackup = pathExists(target) ? backup : null;
+  state.transaction.toolsTargetExisted = pathExists(target);
+  state.transaction.toolsBackup = state.transaction.toolsTargetExisted ? backup : null;
   state.transaction.toolsCandidate = target;
   state.transaction.toolsPromotionStarted = true;
+  state.transaction.toolsBackupMoved = false;
   writeState(state);
+  maybeCrashAt("tools_promotion_planned");
   if (pathExists(backup)) removeManagedToolsDirectory(backup);
-  if (pathExists(target)) renameSync(target, backup);
+  if (state.transaction.toolsTargetExisted) {
+    renameSync(target, backup);
+    state.transaction.toolsBackupMoved = true;
+    writeState(state);
+    maybeCrashAt("tools_backup_moved");
+  }
   try {
+    if (process.env.CHENGFENG_VIDEOCUT_TEST_FAIL_TOOLS_TARGET_RENAME === "1") {
+      fail("TEST_FAIL_TOOLS_TARGET_RENAME");
+    }
     renameSync(staged, target);
     // Deliberately leave toolsPromoted=false until the journal write below.
     // Recovery must therefore inspect target/backup rather than trusting it.
@@ -1234,6 +1245,9 @@ function stageAndPromoteManagedTools(state, source, transactionId) {
     return target;
   } catch (error) {
     if (!pathExists(target) && pathExists(backup)) renameSync(backup, target);
+    state.transaction.toolsBackupMoved = false;
+    state.transaction.toolsPromoted = false;
+    writeState(state);
     throw error;
   }
 }
@@ -1248,12 +1262,18 @@ function restoreManagedToolsVersion(transaction) {
   }
   const target = transaction.toolsTarget;
   const backup = transaction.toolsBackup;
-  // A crash can happen after staged -> target but before toolsPromoted reaches
-  // the journal.  Filesystem state is authoritative for this compensation:
-  // target + backup means target is the uncommitted candidate and backup is
-  // the old version; remove the candidate before restoring the old name.
-  if (target && pathExists(target)) removeManagedToolsDirectory(target);
-  if (backup && pathExists(backup)) renameSync(backup, target);
+  // target + backup proves the target is the uncommitted candidate.  A
+  // planned promotion without a backup is not proof: target is either the old
+  // version or a catch-restored old version and must stay untouched.
+  const backupExists = Boolean(backup && pathExists(backup));
+  if (backupExists) {
+    if (target && pathExists(target)) removeManagedToolsDirectory(target);
+    renameSync(backup, target);
+  } else if (!transaction.toolsTargetExisted && target && pathExists(target)) {
+    // First import has no old target.  Any target that exists here is the
+    // candidate and can be removed to restore the original absent state.
+    removeManagedToolsDirectory(target);
+  }
   if (transaction.toolsPending && pathExists(transaction.toolsPending)) {
     removeTreeWithoutFollowingLinks(transaction.toolsPending);
   }
@@ -1589,8 +1609,8 @@ async function rollbackActivatedTransaction(state, bunExecutable, { reason = "�
     if (old) switchCurrent(old.path, state.transactionId || randomUUID());
     else clearCurrentForFirstInstall(state.transactionId || randomUUID());
     if (state.transaction?.toolsSource || state.transaction?.toolsCandidate || state.transaction?.toolsBefore) {
-      restoreManagedTools(state.transaction?.toolsBefore || null, state.transactionId || randomUUID());
       restoreManagedToolsVersion(state.transaction);
+      restoreManagedTools(state.transaction?.toolsBefore || null, state.transactionId || randomUUID());
     }
     if (state.transaction?.serviceEnsureStarted && candidate) {
       await stopCandidateService(candidate, bunExecutable);
