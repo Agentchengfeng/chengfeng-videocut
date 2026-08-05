@@ -136,8 +136,10 @@ if (args[0] === 'service') {
     );
   }
   const isStatus = action === 'status';
-  if (!isStatus && ${hangOnEnsure}) hangIgnoringTermination();
-  if (!isStatus && ${spamOnEnsure}) spamIgnoringTermination();
+  // The fault models service ensure itself.  A timed-out ensure command may
+  // still need a subsequent healthy service stop during rollback.
+  if (action === 'ensure' && ${hangOnEnsure}) hangIgnoringTermination();
+  if (action === 'ensure' && ${spamOnEnsure}) spamIgnoringTermination();
   const failEnsureOncePath = process.env.CHENGFENG_VIDEOCUT_TEST_FAIL_ENSURE_ONCE_PATH;
   const failEnsureOnce = !isStatus && action === 'ensure' && failEnsureOncePath &&
     !require('node:fs').existsSync(failEnsureOncePath);
@@ -1020,6 +1022,9 @@ test("candidate ensure invalid reply stops the candidate and restores an existin
     CHENGFENG_VIDEOCUT_TEST_SERVICE_URL: server.url,
     CHENGFENG_VIDEOCUT_TEST_SERVICE_PID: String(server.pid),
     CHENGFENG_VIDEOCUT_TEST_ENSURE_INVALID_AFTER_START: "1",
+    // This makes a premature tools rollback fail.  The existing-service path
+    // must stop the candidate before it can remove candidate bun/FFmpeg.
+    CHENGFENG_VIDEOCUT_TEST_FAIL_TOOLS_CLEANUP_UNTIL_SERVICE_STOPPED: "1",
   });
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /新 Runtime service ensure 失败/);
@@ -1117,6 +1122,106 @@ test("planned tools promotion crash preserves an existing target before backup m
   assert.equal(currentTarget(home), old.runtime);
   assert.equal(readFileSync(path.join(previousTarget, `bun${suffix}`), "utf8"), "previous");
   assert.equal(path.resolve(toolsRoot, readlinkSync(path.join(toolsRoot, "current"))), oldTools);
+});
+
+test("legacy intermediate tools journal preserves an unknown existing target and only becomes idle after recovery", (t) => {
+  const { home, release } = fixture(t);
+  const old = createLegacyRuntime(home, { service: "absent" });
+  const { toolsRoot, oldTools, candidateTools } = createManagedTools(home);
+  const target = path.join(toolsRoot, VERSION);
+  const backup = path.join(toolsRoot, `.${VERSION}.previous.legacy-intermediate`);
+  const suffix = IS_WINDOWS ? ".exe" : "";
+  mkdirSync(target, { recursive: true });
+  for (const name of ["bun", "ffmpeg", "ffprobe"]) writeFileSync(path.join(target, `${name}${suffix}`), "old-target");
+  writeFileSync(path.join(target, "resources-manifest.json"), "{}\n");
+
+  // This represents a journal written by the schema before toolsTargetExisted
+  // was persisted: promotion had been planned, but the old target has not
+  // moved to its backup.  The target therefore cannot be proven candidate.
+  writeFileSync(path.join(home, "installer-state.json"), JSON.stringify({
+    schemaVersion: 1,
+    transactionId: "legacy-intermediate",
+    phase: "health_check",
+    active: { version: "0.4.7", path: old.runtime },
+    previous: null,
+    pending: { version: VERSION, path: path.join(home, "app", VERSION) },
+    transaction: {
+      oldActive: { version: "0.4.7", path: old.runtime },
+      oldPrevious: null,
+      serviceBefore: null,
+      serviceEnsureStarted: false,
+      launcherBefore: { kind: "missing" },
+      toolsBefore: oldTools,
+      toolsSource: candidateTools,
+      toolsCandidate: target,
+      toolsPending: path.join(toolsRoot, ".pending", "legacy-intermediate"),
+      toolsTarget: target,
+      toolsBackup: backup,
+      toolsPromotionStarted: true,
+      toolsBackupMoved: false,
+      // Intentionally no toolsTargetExisted: old schema / interrupted write.
+    },
+    terminationFailure: null,
+    updatedAt: new Date().toISOString(),
+  }));
+
+  const recovered = invoke(home, release, {
+    CHENGFENG_VIDEOCUT_DOWNLOAD_BASE: pathToFileURL(path.join(path.dirname(home), "missing-release")).href,
+  });
+  assert.notEqual(recovered.status, 0);
+  assert.equal(currentTarget(home), old.runtime);
+  assert.equal(readFileSync(path.join(target, `bun${suffix}`), "utf8"), "old-target");
+  assert.equal(path.resolve(toolsRoot, readlinkSync(path.join(toolsRoot, "current"))), oldTools);
+  const state = readState(home);
+  assert.equal(state.phase, "idle");
+  assert.equal(state.active.version, "0.4.7");
+  assert.equal(state.transaction, null);
+});
+
+test("explicit first-run toolsTargetExisted false still removes the promoted candidate during recovery", (t) => {
+  const { home, release } = fixture(t);
+  const old = createLegacyRuntime(home, { service: "absent" });
+  const { toolsRoot, candidateTools } = createManagedTools(home);
+  const target = path.join(toolsRoot, VERSION);
+  const suffix = IS_WINDOWS ? ".exe" : "";
+  mkdirSync(target, { recursive: true });
+  for (const name of ["bun", "ffmpeg", "ffprobe"]) writeFileSync(path.join(target, `${name}${suffix}`), "candidate-target");
+  writeFileSync(path.join(target, "resources-manifest.json"), "{}\n");
+
+  writeFileSync(path.join(home, "installer-state.json"), JSON.stringify({
+    schemaVersion: 1,
+    transactionId: "explicit-first-run",
+    phase: "health_check",
+    active: { version: "0.4.7", path: old.runtime },
+    previous: null,
+    pending: { version: VERSION, path: path.join(home, "app", VERSION) },
+    transaction: {
+      oldActive: { version: "0.4.7", path: old.runtime },
+      oldPrevious: null,
+      serviceBefore: null,
+      serviceEnsureStarted: false,
+      launcherBefore: { kind: "missing" },
+      toolsBefore: null,
+      toolsSource: candidateTools,
+      toolsCandidate: target,
+      toolsTarget: target,
+      toolsBackup: null,
+      toolsPromotionStarted: true,
+      toolsBackupMoved: false,
+      toolsTargetExisted: false,
+    },
+    terminationFailure: null,
+    updatedAt: new Date().toISOString(),
+  }));
+
+  const recovered = invoke(home, release, {
+    CHENGFENG_VIDEOCUT_DOWNLOAD_BASE: pathToFileURL(path.join(path.dirname(home), "missing-release")).href,
+  });
+  assert.notEqual(recovered.status, 0);
+  assert.equal(currentTarget(home), old.runtime);
+  assert.equal(existsSync(target), false);
+  assert.equal(existsSync(path.join(toolsRoot, "current")), false);
+  assert.equal(readState(home).phase, "idle");
 });
 
 test("backup-moved crash restores the version before relinking a dangling tools/current", (t) => {
