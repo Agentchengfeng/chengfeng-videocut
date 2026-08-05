@@ -61,6 +61,10 @@ export interface StudioServiceDependencies {
   getPortOwnerPid?: () => Promise<number | null>;
   isProcessAlive?: (pid: number) => boolean;
   killProcess?: (pid: number) => void;
+  // Tests and embedding hosts can supply the already-proven SID instead of
+  // spawning a Windows identity lookup. Product calls leave this unset and
+  // resolve the SID from the active logon session.
+  windowsTaskUserId?: string;
   readyTimeoutMs?: number;
   lockTimeoutMs?: number;
 }
@@ -145,6 +149,7 @@ export interface ResolvedServiceDependencies {
   getPortOwnerPid: () => Promise<number | null>;
   isProcessAlive: (pid: number) => boolean;
   killProcess: (pid: number) => void;
+  windowsTaskUserId?: string;
   readyTimeoutMs: number;
   lockTimeoutMs: number;
 }
@@ -303,6 +308,7 @@ function resolveDependencies(input: StudioServiceDependencies): ResolvedServiceD
     killProcess: input.killProcess ?? ((pid) => {
       process.kill(pid);
     }),
+    windowsTaskUserId: input.windowsTaskUserId,
     readyTimeoutMs: input.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS,
     lockTimeoutMs: input.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS,
   };

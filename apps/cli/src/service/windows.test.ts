@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PRODUCT_NAME, PRODUCT_VERSION } from "../output";
 import { runStudioServiceCommand, studioServicePaths } from "./index";
-import { renderStudioScheduledTask, windowsSupervisorStatePath } from "./windows";
+import {
+  parseWindowsUserSid,
+  renderStudioScheduledTask,
+  windowsSupervisorStatePath,
+} from "./windows";
 
 const cleanupPaths: string[] = [];
 
@@ -20,6 +24,8 @@ interface Scenario {
   serverPid: number;
   healthRuntimeMode: string;
   healthPid?: number;
+  readyAfterSleeps: number;
+  sleeps: number;
   commands: string[][];
 }
 
@@ -44,6 +50,8 @@ async function makeFixture(scenario: Partial<Scenario> = {}) {
     alive: new Set<number>(),
     serverPid: 4242,
     healthRuntimeMode: "windows-task",
+    readyAfterSleeps: 0,
+    sleeps: 0,
     commands: [],
     ...scenario,
   };
@@ -60,7 +68,10 @@ async function makeFixture(scenario: Partial<Scenario> = {}) {
     launcherPath,
     readyTimeoutMs: 3_000,
     lockTimeoutMs: 2_000,
-    sleep: async () => {},
+    sleep: async () => {
+      state.sleeps += 1;
+      if (state.started && state.sleeps >= state.readyAfterSleeps) state.alive.add(state.serverPid);
+    },
     runCommand: async (executable: string, args: readonly string[]) => {
       state.commands.push([executable, ...args]);
       if (executable !== "schtasks") return { code: 1, stdout: "", stderr: "unknown executable" };
@@ -77,7 +88,7 @@ async function makeFixture(scenario: Partial<Scenario> = {}) {
       }
       if (args[0] === "/Run") {
         state.started = true;
-        state.alive.add(state.serverPid);
+        if (state.readyAfterSleeps === 0) state.alive.add(state.serverPid);
         return ok;
       }
       if (args[0] === "/Change") {
@@ -109,11 +120,18 @@ async function makeFixture(scenario: Partial<Scenario> = {}) {
       state.alive.delete(pid);
       if (pid === state.serverPid) state.started = false;
     },
+    windowsTaskUserId: "S-1-5-21-1000",
   };
   return { root, paths, state, deps };
 }
 
 describe("Windows scheduled-task service", () => {
+  it("extracts a SID from whoami's invariant CSV output", () => {
+    expect(parseWindowsUserSid('"DOMAIN\\user","S-1-5-21-1000-2000-3000-4000"\r\n'))
+      .toBe("S-1-5-21-1000-2000-3000-4000");
+    expect(parseWindowsUserSid('"DOMAIN\\user","not-a-sid"\r\n')).toBeNull();
+  });
+
   it("runs the stable cmd launcher through a native command processor", async () => {
     const { paths } = await makeFixture();
     const commandProcessor = "C:\\Windows\\System32\\cmd.exe";
@@ -152,12 +170,22 @@ describe("Windows scheduled-task service", () => {
     expect(result.pid).toBe(state.serverPid);
     expect(result.identity?.runtimeMode).toBe("windows-task");
     // 任务定义按 UTF-16LE + BOM 落盘（schtasks /XML 的硬要求）。
-    expect(await readFile(paths.plistPath, "utf16le")).toBe(`\ufeff${renderStudioScheduledTask(paths)}`);
+    expect(await readFile(paths.plistPath, "utf16le")).toBe(
+      `\ufeff${renderStudioScheduledTask(paths, "S-1-5-21-1000")}`,
+    );
     const verbs = state.commands
       .filter(([executable]) => executable === "schtasks")
       .map(([, verb]) => verb);
     expect(verbs).toContain("/Create");
     expect(verbs).toContain("/Run");
+  });
+
+  it("waits for Task Scheduler to publish the server PID before accepting health", async () => {
+    const { state, deps } = await makeFixture({ readyAfterSleeps: 2 });
+    const result = await runStudioServiceCommand("ensure", {}, deps);
+    expect(result.ready).toBe(true);
+    expect(result.pid).toBe(state.serverPid);
+    expect(state.sleeps).toBe(2);
   });
 
   it("refuses to touch a Product runtime that is not task-managed", async () => {
@@ -172,7 +200,7 @@ describe("Windows scheduled-task service", () => {
 
   it("treats a launchd-mode runtime on Windows as a conflict, not an identity", async () => {
     const { paths, state, deps } = await makeFixture({ registered: true });
-    await writeFile(paths.plistPath, Buffer.from(`\ufeff${renderStudioScheduledTask(paths)}`, "utf16le"));
+    await writeFile(paths.plistPath, Buffer.from(`\ufeff${renderStudioScheduledTask(paths, "S-1-5-21-1000")}`, "utf16le"));
     state.started = true;
     state.alive.add(state.serverPid);
     state.healthRuntimeMode = "launchd";
@@ -183,7 +211,7 @@ describe("Windows scheduled-task service", () => {
 
   it("stop disables the task and terminates the supervised processes", async () => {
     const { paths, state, deps } = await makeFixture({ registered: true });
-    await writeFile(paths.plistPath, Buffer.from(`\ufeff${renderStudioScheduledTask(paths)}`, "utf16le"));
+    await writeFile(paths.plistPath, Buffer.from(`\ufeff${renderStudioScheduledTask(paths, "S-1-5-21-1000")}`, "utf16le"));
     state.started = true;
     state.alive.add(state.serverPid);
     state.alive.add(state.serverPid - 1);

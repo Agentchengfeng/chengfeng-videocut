@@ -34,25 +34,53 @@ export const WINDOWS_TASK_NAME = "chengfeng-videocut-studio";
 
 // 任务的 UserId：工作组机器上 DOMAIN\user 形式会被拒（"No mapping between account
 // names and security IDs"，2026-08-03 真机实测），SID 在域/工作组都成立。
-// PowerShell 冷启动在 Windows CI / Defender 扫描时可能超过 1 秒；同一进程的
-// 登录身份不会变化，因此只解析一次，避免 status/ensure 反复启动 PowerShell。
+// PowerShell 冷启动在 Windows CI / Defender 扫描时可能接近服务测试的 5 秒默认
+// 上限；whoami.exe 是系统原生命令，能以固定 CSV 形态给出同一个 SID。身份不会
+// 在一个 CLI 进程里变化，因此只解析一次。
 let cachedCurrentUserId: string | undefined;
+const WINDOWS_SID_LOOKUP_TIMEOUT_MS = 2_000;
+
+export function parseWindowsUserSid(output: string): string | null {
+  const value = /S-1-[0-9-]+/i.exec(output)?.[0];
+  return value && /^S-1-[0-9-]+$/.test(value) ? value : null;
+}
+
+function windowsWhoamiExecutable(): string {
+  const systemRoot = process.env.SystemRoot?.trim();
+  return systemRoot ? join(systemRoot, "System32", "whoami.exe") : "whoami.exe";
+}
 
 function currentUserId(): string {
   if (cachedCurrentUserId !== undefined) return cachedCurrentUserId;
+  const executable = windowsWhoamiExecutable();
   const sid = spawnSync(
-    "powershell",
-    ["-NoProfile", "-Command", "[Security.Principal.WindowsIdentity]::GetCurrent().User.Value"],
-    { encoding: "utf8" },
+    executable,
+    ["/user", "/fo", "csv", "/nh"],
+    { encoding: "utf8", timeout: WINDOWS_SID_LOOKUP_TIMEOUT_MS, windowsHide: true },
   );
-  const value = (sid.stdout || "").trim();
-  if (/^S-1-[0-9-]+$/.test(value)) {
+  const value = parseWindowsUserSid(sid.stdout || "");
+  if (value) {
     cachedCurrentUserId = value;
     return cachedCurrentUserId;
   }
-  const name = process.env.USERNAME || process.env.USER || "";
-  cachedCurrentUserId = name ? `${process.env.COMPUTERNAME || "."}\\${name}` : name;
-  return cachedCurrentUserId;
+  const spawnError = sid.error;
+  const errorCode = spawnError && typeof spawnError === "object" && "code" in spawnError
+    ? String((spawnError as { code?: unknown }).code)
+    : null;
+  // DOMAIN\\user is rejected on workgroup machines. Do not silently write a
+  // task that Task Scheduler may accept but can never start; expose a bounded,
+  // actionable failure instead.
+  throw new StudioServiceError(
+    "service_unavailable",
+    "Could not resolve the current Windows user SID for the scheduled task",
+    {
+      executable,
+      timeoutMs: WINDOWS_SID_LOOKUP_TIMEOUT_MS,
+      status: sid.status,
+      signal: sid.signal,
+      errorCode,
+    },
+  );
 }
 const RESPAWN_THROTTLE_MS = 5_000;
 
@@ -132,6 +160,24 @@ ${userId ? `      <UserId>${xmlEscape(userId)}</UserId>` : ""}
 `;
 }
 
+function windowsTaskUserId(deps: ResolvedServiceDependencies): string {
+  const injected = deps.windowsTaskUserId;
+  if (injected === undefined) return currentUserId();
+  if (/^S-1-[0-9-]+$/.test(injected)) return injected;
+  throw new StudioServiceError(
+    "service_unavailable",
+    "Windows scheduled-task identity must be a SID",
+    { provided: true },
+  );
+}
+
+function renderCurrentStudioScheduledTask(
+  deps: ResolvedServiceDependencies,
+  paths: StudioServicePaths,
+): string {
+  return renderStudioScheduledTask(paths, windowsTaskUserId(deps));
+}
+
 async function writeTaskDefinition(path: string, content: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const temporary = `${path}.${process.pid}.tmp`;
@@ -139,9 +185,12 @@ async function writeTaskDefinition(path: string, content: string): Promise<void>
   await rename(temporary, path);
 }
 
-async function taskConfigurationCurrent(paths: StudioServicePaths): Promise<boolean> {
+async function taskConfigurationCurrent(
+  deps: ResolvedServiceDependencies,
+  paths: StudioServicePaths,
+): Promise<boolean> {
   try {
-    return await readFile(paths.plistPath, "utf16le") === `\ufeff${renderStudioScheduledTask(paths)}`;
+    return await readFile(paths.plistPath, "utf16le") === `\ufeff${renderCurrentStudioScheduledTask(deps, paths)}`;
   } catch (error) {
     const code = error && typeof error === "object" && "code" in error
       ? String((error as { code?: unknown }).code)
@@ -212,7 +261,7 @@ async function inspectWindowsStatus(
 ): Promise<StudioServiceStatus> {
   const [installed, configured, job, health] = await Promise.all([
     pathExists(paths.plistPath),
-    taskConfigurationCurrent(paths),
+    taskConfigurationCurrent(deps, paths),
     scheduledTaskStatus(deps, paths),
     probeHealth(deps),
   ]);
@@ -277,6 +326,11 @@ async function waitUntilWindowsReady(
         url: last.url,
         previousPid,
         observedPid: last.pid,
+        loaded: last.loaded,
+        configured: last.configured,
+        runtimeMode: last.runtimeMode,
+        productVersion: last.productVersion,
+        detail: last.detail,
         stderrLogPath: paths.stderrLogPath,
       },
     );
@@ -330,7 +384,7 @@ async function installWindowsUnlocked(
 
   // schtasks 的 /XML 解析器只接受 UTF-16LE + BOM 的任务定义（即便 XML 声明写着
   // UTF-8）；2026-08-03 Windows 真机首次点火实测：无 BOM 报「无法切换编码」。
-  await writeTaskDefinition(paths.plistPath, renderStudioScheduledTask(paths));
+  await writeTaskDefinition(paths.plistPath, renderCurrentStudioScheduledTask(deps, paths));
   await runSchtasksOrThrow(
     deps,
     ["/Create", "/TN", WINDOWS_TASK_NAME, "/XML", paths.plistPath, "/F"],
@@ -418,7 +472,7 @@ async function ensureWindowsUnlocked(
   paths: StudioServicePaths,
 ): Promise<{ status: StudioServiceStatus; changed: boolean }> {
   const before = await inspectWindowsStatus(deps, paths);
-  const configurationCurrent = await taskConfigurationCurrent(paths);
+  const configurationCurrent = await taskConfigurationCurrent(deps, paths);
   if (before.state === "conflict") {
     const job = await scheduledTaskStatus(deps, paths);
     const health = await probeHealth(deps);
@@ -459,14 +513,14 @@ export async function runWindowsStudioServiceCommand(
   try {
     if (action === "install") {
       const before = await inspectWindowsStatus(deps, paths);
-      if (before.ready && await taskConfigurationCurrent(paths)) {
+      if (before.ready && await taskConfigurationCurrent(deps, paths)) {
         return { action, changed: false, ...before };
       }
       return { action, changed: true, ...await installWindowsUnlocked(deps, paths) };
     }
     if (action === "start") {
       const before = await inspectWindowsStatus(deps, paths);
-      if (!(await taskConfigurationCurrent(paths))) {
+      if (!(await taskConfigurationCurrent(deps, paths))) {
         return { action, changed: true, ...await installWindowsUnlocked(deps, paths) };
       }
       return { action, changed: !before.ready, ...await startWindowsUnlocked(deps, paths) };
@@ -480,7 +534,7 @@ export async function runWindowsStudioServiceCommand(
       };
     }
     if (action === "restart") {
-      if (!(await taskConfigurationCurrent(paths))) {
+      if (!(await taskConfigurationCurrent(deps, paths))) {
         return { action, changed: true, ...await installWindowsUnlocked(deps, paths) };
       }
       return { action, changed: true, ...await restartWindowsUnlocked(deps, paths) };
@@ -490,32 +544,6 @@ export async function runWindowsStudioServiceCommand(
   } finally {
     await release();
   }
-}
-
-function findBunExecutable(): string | null {
-  const names = ["bun.exe", "bun.cmd"];
-  for (const entry of (process.env.PATH || "").split(";").filter(Boolean)) {
-    for (const name of names) {
-      const candidate = join(entry, name);
-      try {
-        openSync(candidate, "r");
-        return candidate;
-      } catch {
-        // keep searching
-      }
-    }
-  }
-  const home = process.env.USERPROFILE;
-  if (home) {
-    const fallback = join(home, ".bun", "bin", "bun.exe");
-    try {
-      openSync(fallback, "r");
-      return fallback;
-    } catch {
-      // fall through
-    }
-  }
-  return null;
 }
 
 // 看门狗：直接以 bun 起 server 子进程（child.pid 即 health 报告的 PID），
@@ -548,11 +576,10 @@ export async function runStudioSupervisor(paths: StudioServicePaths): Promise<nu
   await mkdir(join(paths.dataDir, "logs"), { recursive: true });
   await mkdir(join(paths.dataDir, "service"), { recursive: true });
   const cliEntry = join(paths.dataDir, "app", "current", "cli.js");
-  const bun = findBunExecutable();
-  if (!bun) {
-    process.stderr.write("找不到 Bun，无法启动 Studio 服务。\n");
-    return 127;
-  }
+  // service supervise is itself launched by the stable .cmd launcher after it
+  // selected a runnable native bun.exe. Reuse that executable so a stale
+  // bun.cmd earlier in PATH cannot redirect this long-lived supervisor.
+  const bun = process.execPath;
 
   let stopping = false;
   let child: ReturnType<typeof spawn> | null = null;
