@@ -96,6 +96,53 @@ function assertSuccess(label, result, marker) {
   }
 }
 
+async function readDiagnostic(path) {
+  try {
+    return (await readFile(path, "utf8")).slice(-8_000);
+  } catch (error) {
+    return `<unavailable: ${error?.code ?? error?.message ?? error}>`;
+  }
+}
+
+async function reportWindowsManagedFailure(root, launcher) {
+  if (platform !== "win32") return;
+  const direct = stableCommand(launcher, ["--version"]);
+  const [task, launcherResult, taskXml, supervisor, stdoutLog, stderrLog] =
+    await Promise.all([
+      runProcess(
+        "powershell.exe",
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          "$task=Get-ScheduledTask -TaskName 'chengfeng-videocut-studio' -ErrorAction Stop;" +
+            "$info=Get-ScheduledTaskInfo -TaskName 'chengfeng-videocut-studio' -ErrorAction Stop;" +
+            "[pscustomobject]@{State=[string]$task.State;LastTaskResult=$info.LastTaskResult;" +
+            "LastRunTime=$info.LastRunTime.ToString('o');Actions=$task.Actions}|" +
+            "ConvertTo-Json -Depth 4 -Compress",
+        ],
+        {},
+        { timeoutMs: 15_000 },
+      ),
+      runProcess(direct.executable, direct.args, {}, {
+        windowsVerbatimArguments: direct.windowsVerbatimArguments,
+        timeoutMs: 15_000,
+      }),
+      readDiagnostic(join(root, "service", "studio-task.xml")),
+      readDiagnostic(join(root, "service", "supervisor.json")),
+      readDiagnostic(join(root, "logs", "studio.stdout.log")),
+      readDiagnostic(join(root, "logs", "studio.stderr.log")),
+    ]);
+  console.error(`WINDOWS_MANAGED_DIAGNOSTICS ${JSON.stringify({
+    task,
+    launcherResult,
+    taskXml,
+    supervisor,
+    stdoutLog,
+    stderrLog,
+  })}`);
+}
+
 async function waitForHealth(expected, timeoutMs = 30_000) {
   const deadline = Date.now() + timeoutMs;
   let last = null;
@@ -140,6 +187,14 @@ try {
     timeoutMs: 120_000,
     trace: true,
   });
+  if (
+    appResult.timeout ||
+    appResult.error ||
+    appResult.code !== 0 ||
+    !appResult.stdout.includes("DESKTOP_SMOKE_OK")
+  ) {
+    await reportWindowsManagedFailure(root, launcher);
+  }
   assertSuccess("managed packaged app", appResult, "DESKTOP_SMOKE_OK");
   const smokeLine = appResult.stdout
     .split(/\r?\n/)
