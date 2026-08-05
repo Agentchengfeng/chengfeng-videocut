@@ -68,7 +68,29 @@ export function windowsSupervisorStatePath(paths: StudioServicePaths): string {
   return join(paths.dataDir, "service", "supervisor.json");
 }
 
-export function renderStudioScheduledTask(paths: StudioServicePaths, userId = currentUserId()): string {
+function windowsCommandProcessor(): string {
+  const configured = process.env.ComSpec?.trim();
+  if (configured) return configured;
+  const systemRoot = process.env.SystemRoot?.trim();
+  return systemRoot ? join(systemRoot, "System32", "cmd.exe") : "cmd.exe";
+}
+
+function scheduledTaskArguments(launcherPath: string): string {
+  if (/[\0\r\n"]/.test(launcherPath)) {
+    throw new Error("Stable Windows launcher path contains unsafe command characters");
+  }
+  // Task Scheduler ExecAction only starts native executables. The stable
+  // launcher is a .cmd file, so run it through cmd.exe with delayed expansion
+  // disabled and quote the complete /c command using cmd's required outer
+  // quote pair.
+  return `/d /v:off /s /c ""${launcherPath}" service supervise"`;
+}
+
+export function renderStudioScheduledTask(
+  paths: StudioServicePaths,
+  userId = currentUserId(),
+  commandProcessor = windowsCommandProcessor(),
+): string {
   // 声明必须与落盘编码一致：文件按 UTF-16LE+BOM 写（schtasks /XML 的要求），
   // 若这里仍写 UTF-8，解析器报「无法切换编码」——2026-08-03 真机实测。
   return `<?xml version="1.0" encoding="UTF-16"?>
@@ -102,8 +124,8 @@ ${userId ? `      <UserId>${xmlEscape(userId)}</UserId>` : ""}
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>${xmlEscape(paths.launcherPath)}</Command>
-      <Arguments>service supervise</Arguments>
+      <Command>${xmlEscape(commandProcessor)}</Command>
+      <Arguments>${xmlEscape(scheduledTaskArguments(paths.launcherPath))}</Arguments>
     </Exec>
   </Actions>
 </Task>

@@ -114,6 +114,21 @@ async function makeFixture(scenario: Partial<Scenario> = {}) {
 }
 
 describe("Windows scheduled-task service", () => {
+  it("runs the stable cmd launcher through a native command processor", async () => {
+    const { paths } = await makeFixture();
+    const commandProcessor = "C:\\Windows\\System32\\cmd.exe";
+    const xml = renderStudioScheduledTask(
+      paths,
+      "S-1-5-21-1000",
+      commandProcessor,
+    );
+    expect(xml).toContain(`<Command>${commandProcessor}</Command>`);
+    expect(xml).toContain(
+      `<Arguments>/d /v:off /s /c &quot;&quot;${paths.launcherPath}&quot; service supervise&quot;</Arguments>`,
+    );
+    expect(xml).not.toContain(`<Command>${paths.launcherPath}</Command>`);
+  });
+
   it("still refuses platforms without a managed backend", async () => {
     await expect(
       runStudioServiceCommand("status", {}, { platform: "linux", uid: -1, homeDir: "/tmp" }),
