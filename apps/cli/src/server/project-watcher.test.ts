@@ -5,6 +5,7 @@ import {
   mkdtemp,
   realpath,
   rm,
+  stat,
   symlink,
   writeFile,
 } from "node:fs/promises";
@@ -42,16 +43,24 @@ interface PublishedEvent {
   data: unknown;
 }
 
-function isProjectFileChange(
+async function isProjectFileChange(
   published: PublishedEvent[],
   projectId: string,
   path: string,
-): boolean {
-  return published.some(({ event, data }) => {
-    if (event !== "file-change" || !data || typeof data !== "object") return false;
+): Promise<boolean> {
+  const expected = await stat(path, { bigint: true });
+  for (const { event, data } of published) {
+    if (event !== "file-change" || !data || typeof data !== "object") continue;
     const change = data as { projectId?: unknown; path?: unknown };
-    return change.projectId === projectId && change.path === path;
-  });
+    if (change.projectId !== projectId || typeof change.path !== "string") continue;
+    try {
+      const actual = await stat(change.path, { bigint: true });
+      if (actual.dev === expected.dev && actual.ino === expected.ino) return true;
+    } catch {
+      // A stale or unrelated notification is not the event under test.
+    }
+  }
+  return false;
 }
 
 describe("watchRegisteredProjects", () => {
@@ -82,7 +91,7 @@ describe("watchRegisteredProjects", () => {
 
       await waitFor(async () => {
         await appendFile(linkedIndex, "\n");
-        return isProjectFileChange(published, "linked", linkedIndexRealPath);
+        return await isProjectFileChange(published, "linked", linkedIndexRealPath);
       }, 8_000, () => ({ linkedIndexRealPath, published }));
 
       const directProject = join(projectsDir, "direct");
@@ -93,7 +102,7 @@ describe("watchRegisteredProjects", () => {
 
       await waitFor(async () => {
         await appendFile(directData, "\n");
-        return isProjectFileChange(published, "direct", directDataRealPath);
+        return await isProjectFileChange(published, "direct", directDataRealPath);
       }, 8_000, () => ({ directDataRealPath, published }));
 
       // Non-editing artifacts must not trigger Studio refresh events.
