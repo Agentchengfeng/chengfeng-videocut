@@ -46,6 +46,16 @@ export type CommandRunner = (
   args: readonly string[],
 ) => Promise<CommandResult>;
 
+export interface WindowsSidLookupResult {
+  executable: string;
+  stdout: string;
+  status: number | null;
+  signal: string | null;
+  errorCode: string | null;
+}
+
+export type WindowsSidLookup = () => WindowsSidLookupResult;
+
 export interface StudioServiceDependencies {
   platform?: string;
   homeDir?: string;
@@ -65,6 +75,7 @@ export interface StudioServiceDependencies {
   // spawning a Windows identity lookup. Product calls leave this unset and
   // resolve the SID from the active logon session.
   windowsTaskUserId?: string;
+  windowsSidLookup?: WindowsSidLookup;
   readyTimeoutMs?: number;
   lockTimeoutMs?: number;
 }
@@ -150,6 +161,7 @@ export interface ResolvedServiceDependencies {
   isProcessAlive: (pid: number) => boolean;
   killProcess: (pid: number) => void;
   windowsTaskUserId?: string;
+  windowsSidLookup?: WindowsSidLookup;
   readyTimeoutMs: number;
   lockTimeoutMs: number;
 }
@@ -309,6 +321,7 @@ function resolveDependencies(input: StudioServiceDependencies): ResolvedServiceD
       process.kill(pid);
     }),
     windowsTaskUserId: input.windowsTaskUserId,
+    windowsSidLookup: input.windowsSidLookup,
     readyTimeoutMs: input.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS,
     lockTimeoutMs: input.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS,
   };

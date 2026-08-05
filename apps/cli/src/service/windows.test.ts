@@ -3,10 +3,16 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PRODUCT_NAME, PRODUCT_VERSION } from "../output";
-import { runStudioServiceCommand, studioServicePaths } from "./index";
+import {
+  StudioServiceError,
+  runStudioServiceCommand,
+  studioServicePaths,
+  type StudioServiceDependencies,
+} from "./index";
 import {
   parseWindowsUserSid,
   renderStudioScheduledTask,
+  resolveWindowsTaskUserId,
   windowsSupervisorStatePath,
 } from "./windows";
 
@@ -61,7 +67,7 @@ async function makeFixture(scenario: Partial<Scenario> = {}) {
     `${JSON.stringify({ supervisorPid: state.serverPid - 1, serverPid: state.serverPid, updatedAt: 1 })}\n`,
   );
 
-  const deps = {
+  const deps: StudioServiceDependencies = {
     platform: "win32",
     homeDir,
     dataDir,
@@ -126,10 +132,38 @@ async function makeFixture(scenario: Partial<Scenario> = {}) {
 }
 
 describe("Windows scheduled-task service", () => {
+  const windowsOnly = process.platform === "win32" ? it : it.skip;
+
   it("extracts a SID from whoami's invariant CSV output", () => {
     expect(parseWindowsUserSid('"DOMAIN\\user","S-1-5-21-1000-2000-3000-4000"\r\n'))
       .toBe("S-1-5-21-1000-2000-3000-4000");
     expect(parseWindowsUserSid('"DOMAIN\\user","not-a-sid"\r\n')).toBeNull();
+  });
+
+  it("reports timeout, non-zero, empty, and malformed SID lookup failures without accepting a task identity", () => {
+    const cases = [
+      { status: null, signal: "SIGTERM", errorCode: "ETIMEDOUT", stdout: '"DOMAIN\\user","S-1-5-21-1000"\r\n' },
+      { status: 1, signal: null, errorCode: null, stdout: '"DOMAIN\\user","S-1-5-21-1000"\r\n' },
+      { status: 0, signal: null, errorCode: null, stdout: "" },
+      { status: 0, signal: null, errorCode: null, stdout: '"DOMAIN\\user","not-a-sid"\r\n' },
+    ] as const;
+    for (const expected of cases) {
+      try {
+        resolveWindowsTaskUserId(() => ({ executable: "whoami.exe", ...expected }));
+        throw new Error("SID lookup should have failed");
+      } catch (error) {
+        expect(error).toBeInstanceOf(StudioServiceError);
+        const serviceError = error as StudioServiceError;
+        expect(serviceError.code).toBe("service_unavailable");
+        expect(serviceError.details).toMatchObject({
+          executable: "whoami.exe",
+          status: expected.status,
+          signal: expected.signal,
+          errorCode: expected.errorCode,
+          timeoutMs: 2_000,
+        });
+      }
+    }
   });
 
   it("runs the stable cmd launcher through a native command processor", async () => {
@@ -180,12 +214,66 @@ describe("Windows scheduled-task service", () => {
     expect(verbs).toContain("/Run");
   });
 
+  windowsOnly("uses actual whoami SID resolution while service ensure talks only to the scheduled-task fixture", async () => {
+    const { paths, state, deps } = await makeFixture();
+    delete (deps as { windowsTaskUserId?: string }).windowsTaskUserId;
+    const result = await runStudioServiceCommand("ensure", {}, deps);
+    expect(result.ready).toBe(true);
+    expect(result.pid).toBe(state.serverPid);
+    expect(await readFile(paths.plistPath, "utf16le")).toMatch(
+      /<UserId>S-1-[0-9-]+<\/UserId>/,
+    );
+    expect(state.commands.some((command) => command[1] === "/Create")).toBe(true);
+    expect(state.commands.some((command) => command[1] === "/Run")).toBe(true);
+  });
+
   it("waits for Task Scheduler to publish the server PID before accepting health", async () => {
     const { state, deps } = await makeFixture({ readyAfterSleeps: 2 });
     const result = await runStudioServiceCommand("ensure", {}, deps);
     expect(result.ready).toBe(true);
     expect(result.pid).toBe(state.serverPid);
     expect(state.sleeps).toBe(2);
+  });
+
+  it("returns status and reuses a healthy task when SID lookup is unavailable", async () => {
+    const { paths, state, deps } = await makeFixture({ registered: true });
+    await writeFile(
+      paths.plistPath,
+      Buffer.from(`\ufeff${renderStudioScheduledTask(paths, "S-1-5-21-1000")}`, "utf16le"),
+    );
+    state.started = true;
+    state.alive.add(state.serverPid);
+    delete (deps as { windowsTaskUserId?: string }).windowsTaskUserId;
+    let lookups = 0;
+    deps.windowsSidLookup = () => {
+      lookups += 1;
+      return { executable: "whoami.exe", stdout: "", status: null, signal: "SIGTERM", errorCode: "ETIMEDOUT" };
+    };
+
+    const status = await runStudioServiceCommand("status", {}, deps);
+    expect(status.state).toBe("running");
+    expect(status.ready).toBe(true);
+    const ensured = await runStudioServiceCommand("ensure", {}, deps);
+    expect(ensured.changed).toBe(false);
+    expect(ensured.state).toBe("running");
+    expect(lookups).toBe(0);
+  });
+
+  it("requires a SID only when ensure must create or rewrite the scheduled task", async () => {
+    const { state, deps } = await makeFixture();
+    delete (deps as { windowsTaskUserId?: string }).windowsTaskUserId;
+    deps.windowsSidLookup = () => ({
+      executable: "whoami.exe",
+      stdout: "",
+      status: null,
+      signal: "SIGTERM",
+      errorCode: "ETIMEDOUT",
+    });
+    await expect(runStudioServiceCommand("ensure", {}, deps)).rejects.toMatchObject({
+      code: "service_unavailable",
+      details: { errorCode: "ETIMEDOUT" },
+    });
+    expect(state.commands.some((command) => command[1] === "/Create")).toBe(false);
   });
 
   it("refuses to touch a Product runtime that is not task-managed", async () => {

@@ -25,6 +25,8 @@ import {
   type StudioServiceCommandResult,
   type StudioServicePaths,
   type StudioServiceStatus,
+  type WindowsSidLookup,
+  type WindowsSidLookupResult,
 } from "./index";
 
 // Windows 托管形态：计划任务只负责「登录自启 + 脱离父进程」，崩溃重启由产品
@@ -50,23 +52,34 @@ function windowsWhoamiExecutable(): string {
   return systemRoot ? join(systemRoot, "System32", "whoami.exe") : "whoami.exe";
 }
 
-function currentUserId(): string {
-  if (cachedCurrentUserId !== undefined) return cachedCurrentUserId;
+function defaultWindowsSidLookup(): WindowsSidLookupResult {
   const executable = windowsWhoamiExecutable();
   const sid = spawnSync(
     executable,
     ["/user", "/fo", "csv", "/nh"],
     { encoding: "utf8", timeout: WINDOWS_SID_LOOKUP_TIMEOUT_MS, windowsHide: true },
   );
-  const value = parseWindowsUserSid(sid.stdout || "");
-  if (value) {
-    cachedCurrentUserId = value;
-    return cachedCurrentUserId;
-  }
   const spawnError = sid.error;
   const errorCode = spawnError && typeof spawnError === "object" && "code" in spawnError
     ? String((spawnError as { code?: unknown }).code)
     : null;
+  return {
+    executable,
+    stdout: sid.stdout || "",
+    status: sid.status,
+    signal: sid.signal ?? null,
+    errorCode,
+  };
+}
+
+export function resolveWindowsTaskUserId(lookup?: WindowsSidLookup): string {
+  if (lookup === undefined && cachedCurrentUserId !== undefined) return cachedCurrentUserId;
+  const result = (lookup ?? defaultWindowsSidLookup)();
+  const value = parseWindowsUserSid(result.stdout);
+  if (result.status === 0 && result.signal === null && result.errorCode === null && value) {
+    if (lookup === undefined) cachedCurrentUserId = value;
+    return value;
+  }
   // DOMAIN\\user is rejected on workgroup machines. Do not silently write a
   // task that Task Scheduler may accept but can never start; expose a bounded,
   // actionable failure instead.
@@ -74,11 +87,11 @@ function currentUserId(): string {
     "service_unavailable",
     "Could not resolve the current Windows user SID for the scheduled task",
     {
-      executable,
+      executable: result.executable,
       timeoutMs: WINDOWS_SID_LOOKUP_TIMEOUT_MS,
-      status: sid.status,
-      signal: sid.signal,
-      errorCode,
+      status: result.status,
+      signal: result.signal,
+      errorCode: result.errorCode,
     },
   );
 }
@@ -116,7 +129,7 @@ function scheduledTaskArguments(launcherPath: string): string {
 
 export function renderStudioScheduledTask(
   paths: StudioServicePaths,
-  userId = currentUserId(),
+  userId = resolveWindowsTaskUserId(),
   commandProcessor = windowsCommandProcessor(),
 ): string {
   // 声明必须与落盘编码一致：文件按 UTF-16LE+BOM 写（schtasks /XML 的要求），
@@ -162,7 +175,7 @@ ${userId ? `      <UserId>${xmlEscape(userId)}</UserId>` : ""}
 
 function windowsTaskUserId(deps: ResolvedServiceDependencies): string {
   const injected = deps.windowsTaskUserId;
-  if (injected === undefined) return currentUserId();
+  if (injected === undefined) return resolveWindowsTaskUserId(deps.windowsSidLookup);
   if (/^S-1-[0-9-]+$/.test(injected)) return injected;
   throw new StudioServiceError(
     "service_unavailable",
@@ -185,12 +198,17 @@ async function writeTaskDefinition(path: string, content: string): Promise<void>
   await rename(temporary, path);
 }
 
-async function taskConfigurationCurrent(
-  deps: ResolvedServiceDependencies,
-  paths: StudioServicePaths,
-): Promise<boolean> {
+function taskConfigurationCurrentXml(raw: string, paths: StudioServicePaths): boolean {
+  const userIds = [...raw.matchAll(/<UserId>\s*(S-1-[0-9-]+)\s*<\/UserId>/gi)].map((match) => match[1]);
+  return userIds.length === 2 && userIds[0] === userIds[1] &&
+    raw.includes(`<Command>${xmlEscape(windowsCommandProcessor())}</Command>`) &&
+    raw.includes(`<Arguments>${xmlEscape(scheduledTaskArguments(paths.launcherPath))}</Arguments>`) &&
+    /<LogonType>\s*InteractiveToken\s*<\/LogonType>/i.test(raw);
+}
+
+async function taskConfigurationCurrent(paths: StudioServicePaths): Promise<boolean> {
   try {
-    return await readFile(paths.plistPath, "utf16le") === `\ufeff${renderCurrentStudioScheduledTask(deps, paths)}`;
+    return taskConfigurationCurrentXml(await readFile(paths.plistPath, "utf16le"), paths);
   } catch (error) {
     const code = error && typeof error === "object" && "code" in error
       ? String((error as { code?: unknown }).code)
@@ -261,7 +279,7 @@ async function inspectWindowsStatus(
 ): Promise<StudioServiceStatus> {
   const [installed, configured, job, health] = await Promise.all([
     pathExists(paths.plistPath),
-    taskConfigurationCurrent(deps, paths),
+    taskConfigurationCurrent(paths),
     scheduledTaskStatus(deps, paths),
     probeHealth(deps),
   ]);
@@ -472,7 +490,7 @@ async function ensureWindowsUnlocked(
   paths: StudioServicePaths,
 ): Promise<{ status: StudioServiceStatus; changed: boolean }> {
   const before = await inspectWindowsStatus(deps, paths);
-  const configurationCurrent = await taskConfigurationCurrent(deps, paths);
+  const configurationCurrent = await taskConfigurationCurrent(paths);
   if (before.state === "conflict") {
     const job = await scheduledTaskStatus(deps, paths);
     const health = await probeHealth(deps);
@@ -513,14 +531,14 @@ export async function runWindowsStudioServiceCommand(
   try {
     if (action === "install") {
       const before = await inspectWindowsStatus(deps, paths);
-      if (before.ready && await taskConfigurationCurrent(deps, paths)) {
+      if (before.ready && await taskConfigurationCurrent(paths)) {
         return { action, changed: false, ...before };
       }
       return { action, changed: true, ...await installWindowsUnlocked(deps, paths) };
     }
     if (action === "start") {
       const before = await inspectWindowsStatus(deps, paths);
-      if (!(await taskConfigurationCurrent(deps, paths))) {
+      if (!(await taskConfigurationCurrent(paths))) {
         return { action, changed: true, ...await installWindowsUnlocked(deps, paths) };
       }
       return { action, changed: !before.ready, ...await startWindowsUnlocked(deps, paths) };
@@ -534,7 +552,7 @@ export async function runWindowsStudioServiceCommand(
       };
     }
     if (action === "restart") {
-      if (!(await taskConfigurationCurrent(deps, paths))) {
+      if (!(await taskConfigurationCurrent(paths))) {
         return { action, changed: true, ...await installWindowsUnlocked(deps, paths) };
       }
       return { action, changed: true, ...await restartWindowsUnlocked(deps, paths) };
