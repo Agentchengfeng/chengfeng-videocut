@@ -17,10 +17,7 @@ export interface JobRunnerDefinition {
   recover: "rerun" | "checkpoint" | "unsupported";
 }
 export const JOB_RUNNERS: readonly JobRunnerDefinition[] = [
-  { kind: "transcribe", recover: "checkpoint" },
-  { kind: "cut", recover: "rerun" },
   { kind: "export", recover: "rerun" },
-  { kind: "render", recover: "rerun" },
 ];
 
 /** Hash only the immutable document snapshot consumed by executeExport. */
