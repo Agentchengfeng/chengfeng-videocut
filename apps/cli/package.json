@@ -23,6 +23,7 @@
     "@hyperframes/core": "0.7.60",
     "@hyperframes/studio-server": "0.7.60",
     "@video-workbench/core": "workspace:*",
+    "@video-workbench/contracts": "workspace:*",
     "@video-workbench/koubo-adapter": "workspace:*",
     "gsap": "^3.13.0"
   },

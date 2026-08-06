@@ -10,6 +10,10 @@
     ],
     "legacyWorkbenchPanel": false,
     "managedTimelineEditing": true,
+    "durableJobsApiVersion": 1,
+    "durableJobKinds": [
+      "export"
+    ],
     "managedTimelineOperations": [
       "move",
       "trim",

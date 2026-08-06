@@ -30,6 +30,8 @@ import { placeCutBoundaries } from "./preview-stream";
 import { fetchGuardedStudioApi } from "./studio-mutation-guard";
 import { createVideocutWorkflowHandler } from "./workflow-api";
 import { PRODUCT_VERSION } from "../output";
+import { JobManager } from "../jobs/manager";
+import { createJobsApi } from "./jobs-api";
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 5190;
@@ -440,6 +442,9 @@ export async function startStudioServer(
   ]);
 
   const events = new StudioEventHub();
+  const jobs = new JobManager(dataDir, { projectsDir });
+  await jobs.initialize();
+  const jobsApi = createJobsApi(jobs);
   const editPreviewArtifacts = new EditPreviewArtifactManager(projectsDir);
   const editPreviewArtifactApi = createEditPreviewArtifactHandler(editPreviewArtifacts);
   const context: StudioServerApiContext = { projectsDir, dataDir, events };
@@ -537,6 +542,8 @@ export async function startStudioServer(
         if (url.pathname === "/api/health") {
           return healthResponse(request, staticSnapshot.buildId, runtimeMode, mediaToolsMissing);
         }
+        const jobsResponse = await jobsApi(request);
+        if (jobsResponse) return jobsResponse;
         const mediaResponse = await projectMedia(request);
         if (mediaResponse) return mediaResponse;
         const timelineMediaResponse = await timelineMediaApi(request);
@@ -613,6 +620,7 @@ export async function startStudioServer(
     projectWatcher.close();
     events.close();
     server.stop(true);
+    await jobs.shutdown();
   };
 
   if (options.installSignalHandlers) {

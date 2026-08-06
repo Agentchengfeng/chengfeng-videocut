@@ -98,6 +98,10 @@ Usage:
   chengfeng-videocut service logs [--lines <1-1000>] [--json]
   chengfeng-videocut service ensure [--open] [--json]
   chengfeng-videocut doctor [--json]
+  chengfeng-videocut job start <export> <project> [--out <file.mp4>] [--scale <n>] [--fps <n>] [--keep-work] [--api-base <url>]
+  chengfeng-videocut job get <job-id> [--api-base <url>]
+  chengfeng-videocut job list [--project <id>] [--kind <kind>] [--state <state>] [--limit <1-100>] [--api-base <url>]
+  chengfeng-videocut job cancel <job-id> [--api-base <url>]
   chengfeng-videocut config get [--json]
   chengfeng-videocut config set <transcription.apiKey|transcription.resourceId|transcription.modelName> <value> [--json]
   chengfeng-videocut inspect <project> [--json]
@@ -124,7 +128,7 @@ Usage:
   chengfeng-videocut visual get <project> [--json]
   chengfeng-videocut visual add <project> --module <project-relative .html> --cues <id,id,...> [--id <layer>] [--expected-revision <sha256>] [--dry-run] [--json]
   chengfeng-videocut visual remove <project> --id <layer> [--expected-revision <sha256>] [--dry-run] [--json]
-  chengfeng-videocut export <project> [--out <file.mp4>] [--scale <n>] [--fps <n>] [--keep-work] [--dry-run] [--json]
+  chengfeng-videocut export <project> [--out <file.mp4>] [--scale <n>] [--fps <n>] [--keep-work] [--dry-run] [--api-base <url>] [--json]
 
 service ensure is the product entry point: it atomically installs or recovers the managed user service (launchd on macOS, Task Scheduler on Windows) and waits for a matching ready Runtime.
 service stop disables and unloads the managed user service; service start re-enables it. Service commands fail closed on unsupported platforms and never kill an unknown process occupying port 5190.

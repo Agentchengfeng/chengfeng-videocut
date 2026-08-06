@@ -161,6 +161,7 @@ export interface RenderOverlayFramesInput {
   /** Where the PNGs go. Created if missing. */
   framesDirectory: string;
   onProgress?: (rendered: number, total: number) => void;
+  signal?: AbortSignal;
 }
 
 export interface RenderOverlayFramesResult {
@@ -179,6 +180,7 @@ export async function renderOverlayFrames(
   const server = await startProjectFileServer(input.projectDirectory, html);
   let page: ChromePage | null = null;
   try {
+    input.signal?.throwIfAborted();
     page = await ChromePage.launch({
       width: plan.output.width,
       // The extra rows are the marker strip; ffmpeg crops them off before the
@@ -196,6 +198,7 @@ export async function renderOverlayFrames(
     if (failure) throw new Error(`The overlay page could not reach a module: ${failure}`);
 
     for (let index = 0; index < plan.frameCount; index += 1) {
+      input.signal?.throwIfAborted();
       // The frame's own timestamp, not its middle: this is the instant the
       // picture claims to be, and it is what the player shows when the
       // playhead reads that number.

@@ -1615,6 +1615,8 @@ export interface DoctorCapabilities {
   managedStudioService: true;
   serviceParentProcessIndependent: true;
   serviceCrashRestart: true;
+  durableJobsApiVersion: 1;
+  durableJobKinds: readonly ["export"];
   editListSchemaVersion: 1;
   editListOperations: readonly ["move", "trim", "split", "delete", "restore", "delete-range", "restore-snapshot"];
   managedArollProjection: true;
@@ -2004,6 +2006,8 @@ export async function doctor(
       managedStudioService: true,
       serviceParentProcessIndependent: true,
       serviceCrashRestart: true,
+      durableJobsApiVersion: 1,
+      durableJobKinds: ["export"],
       editListSchemaVersion: 1,
       editListOperations: ["move", "trim", "split", "delete", "restore", "delete-range", "restore-snapshot"],
       managedArollProjection: true,

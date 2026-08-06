@@ -43,7 +43,11 @@ export type CliCommand =
   | "workflow.get"
   | "workflow.transition"
   | "render.run"
-  | "export";
+  | "export"
+  | "job.start"
+  | "job.get"
+  | "job.list"
+  | "job.cancel";
 
 export interface ParsedArgs {
   command: CliCommand;
@@ -94,6 +98,11 @@ export interface ParsedArgs {
   fps?: number;
   /** Keep the intermediate video and the overlay PNGs for inspection. */
   keepWork: boolean;
+  jobId?: string;
+  jobKind?: string;
+  jobState?: string;
+  projectFilter?: string;
+  jobLimit?: number;
   /**
    * `cuts set`: submit the checkbox truth instead of a semantic overlay.
    *
@@ -140,6 +149,10 @@ const VALUE_OPTIONS = new Set([
   "--zoom",
   "--scale",
   "--fps",
+  "--kind",
+  "--state",
+  "--project",
+  "--limit",
 ]);
 
 const BOOLEAN_OPTIONS = new Set([
@@ -244,6 +257,15 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     }
   }
 
+  const jobLimitValue = values.get("--limit");
+  let jobLimit: number | undefined;
+  if (jobLimitValue !== undefined) {
+    jobLimit = Number(jobLimitValue);
+    if (!Number.isInteger(jobLimit) || jobLimit < 1 || jobLimit > 100) {
+      usageError("--limit must be an integer from 1 to 100");
+    }
+  }
+
   const columnsValue = values.get("--max-columns");
   let maxColumns: number | undefined;
   if (columnsValue !== undefined) {
@@ -293,6 +315,10 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     replace: booleanValues.has("--replace"),
     keepWork: booleanValues.has("--keep-work"),
     fullSelection: booleanValues.has("--full-selection"),
+    jobKind: values.get("--kind"),
+    jobState: values.get("--state"),
+    projectFilter: values.get("--project"),
+    jobLimit,
   };
   if (version) return { command: "version", ...common };
   if (help || positionals.length === 0) return { command: "help", ...common };
@@ -316,6 +342,44 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
       usageError("--open is only valid for start or service ensure");
     }
   };
+
+  if (positionals[0] === "job") {
+    const action = positionals[1];
+    if (action === "start") {
+      if (positionals.length !== 4) usageError("Usage: chengfeng-videocut job start <kind> <target>");
+      assertOptions(["--api-base", "--out", "--scale", "--fps"], ["--keep-work"]);
+      const rawScale = values.get("--scale");
+      const scale = rawScale === undefined ? undefined : Number(rawScale);
+      if (scale !== undefined && (!Number.isFinite(scale) || scale <= 0 || scale > 4)) {
+        usageError("--scale must be a number between 0 and 4");
+      }
+      const rawFps = values.get("--fps");
+      const fps = rawFps === undefined ? undefined : Number(rawFps);
+      if (fps !== undefined && (!Number.isFinite(fps) || fps < 1 || fps > 120)) {
+        usageError("--fps must be a frame rate between 1 and 120");
+      }
+      return {
+        ...common,
+        command: "job.start",
+        jobKind: positionals[2],
+        project: positionals[3],
+        outFile: values.get("--out"),
+        scale,
+        fps,
+      };
+    }
+    if (action === "get" || action === "cancel") {
+      if (positionals.length !== 3) usageError(`Usage: chengfeng-videocut job ${action} <job-id>`);
+      assertOptions(["--api-base"]);
+      return { ...common, command: `job.${action}` as CliCommand, jobId: positionals[2] };
+    }
+    if (action === "list") {
+      if (positionals.length !== 2) usageError("Usage: chengfeng-videocut job list");
+      assertOptions(["--api-base", "--project", "--kind", "--state", "--limit"]);
+      return { ...common, command: "job.list" };
+    }
+    usageError("Usage: chengfeng-videocut job <start|get|list|cancel>");
+  }
 
   if (positionals[0] === "start") {
     if (positionals.length !== 1) {
@@ -646,7 +710,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
       );
     }
     assertOptions(
-      ["--out", "--scale", "--fps", "--projects-dir", "--output-dir"],
+      ["--out", "--scale", "--fps", "--projects-dir", "--output-dir", "--api-base"],
       ["--keep-work"],
       true,
     );

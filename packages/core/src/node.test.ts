@@ -150,6 +150,8 @@ describe("project store", () => {
       managedStudioService: true,
       serviceParentProcessIndependent: true,
       serviceCrashRestart: true,
+      durableJobsApiVersion: 1,
+      durableJobKinds: ["export"],
       cloudTranscriptionProvider: "volcengine",
       cloudTranscriptionTaskLocalOnly: true,
     });

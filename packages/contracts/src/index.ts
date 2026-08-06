@@ -1,5 +1,65 @@
 export const WORKBENCH_SCHEMA_VERSION = 1 as const;
 
+export const JOB_SCHEMA_VERSION = 1 as const;
+
+export type JobKind = "transcribe" | "cut" | "export" | "render";
+
+export type JobState =
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "cancelling"
+  | "cancelled"
+  | "recovery_blocked";
+
+export interface JobError {
+  code: string;
+  message: string;
+  details?: Record<string, unknown>;
+}
+
+export interface JobOwner {
+  pid: number;
+  token: string;
+  startedAt: string;
+  heartbeatAt: string;
+}
+
+export interface DurableJob {
+  schemaVersion: typeof JOB_SCHEMA_VERSION;
+  jobId: string;
+  kind: JobKind;
+  targetKey: string;
+  projectId?: string;
+  target: string;
+  params: Record<string, unknown>;
+  frozen: Record<string, unknown>;
+  state: JobState;
+  phase: string;
+  progress: { done: number; total: number } | null;
+  attempt: number;
+  owner: JobOwner | null;
+  cancelRequestedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  result: Record<string, unknown> | null;
+  error: JobError | null;
+}
+
+export interface StartJobRequest {
+  kind: JobKind;
+  target: string;
+  params?: Record<string, unknown>;
+}
+
+export interface JobListResponse {
+  schemaVersion: typeof JOB_SCHEMA_VERSION;
+  jobs: DurableJob[];
+}
+
 export type WorkbenchTrackKind =
   | "a-roll"
   | "b-roll"

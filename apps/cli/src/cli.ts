@@ -1,7 +1,33 @@
 #!/usr/bin/env bun
 
 import { runCli } from "./run";
+import { runJobWorker } from "./jobs/runners";
 
 if (import.meta.main) {
-  process.exitCode = await runCli(process.argv.slice(2));
+  const argv = process.argv.slice(2);
+  if (argv[0] === "__job-worker") {
+    const jobId = argv[1];
+    const dataDirIndex = argv.indexOf("--data-dir");
+    const tokenIndex = argv.indexOf("--owner-token");
+    try {
+      if (!jobId || dataDirIndex < 0 || tokenIndex < 0 || !argv[dataDirIndex + 1] || !argv[tokenIndex + 1]) {
+        throw Object.assign(new Error("Invalid internal worker arguments"), { code: "invalid_argument" });
+      }
+      await runJobWorker(argv[dataDirIndex + 1]!, jobId, argv[tokenIndex + 1]!);
+      process.exitCode = 0;
+    } catch (error) {
+      const value = error as { code?: string; message?: string; details?: Record<string, unknown> };
+      process.stdout.write(`${JSON.stringify({
+        ok: false,
+        error: {
+          code: value.code ?? "job_worker_failed",
+          message: value.message ?? "Job worker failed",
+          ...(value.details ? { details: value.details } : {}),
+        },
+      })}\n`);
+      process.exitCode = 1;
+    }
+  } else {
+    process.exitCode = await runCli(argv);
+  }
 }

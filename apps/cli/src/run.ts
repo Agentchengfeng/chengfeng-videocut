@@ -5,7 +5,6 @@ import { join, resolve } from "node:path";
 import { VideocutError, asVideocutError, parseTranscriptWords } from "@video-workbench/core";
 import {
   createKouboProject,
-  exportFilm,
   prepareKouboProject,
   probeMedia,
   putKouboArtifact,
@@ -654,6 +653,55 @@ async function requestWorkflowApi(options: {
   return record;
 }
 
+async function requestJobsApi(options: {
+  apiBase: string;
+  command: "job.start" | "job.get" | "job.list" | "job.cancel";
+  jobId?: string;
+  body?: Record<string, unknown>;
+  filters?: Record<string, string | undefined>;
+}): Promise<unknown> {
+  let endpoint: URL;
+  try { endpoint = new URL(options.apiBase); }
+  catch { throw new CliRequestError("invalid_argument", `Invalid --api-base URL: ${options.apiBase}`); }
+  if (endpoint.protocol !== "http:" && endpoint.protocol !== "https:") {
+    throw new CliRequestError("invalid_argument", "--api-base must use http or https");
+  }
+  endpoint.pathname = options.command === "job.list" || options.command === "job.start"
+    ? "/api/v1/jobs"
+    : `/api/v1/jobs/${encodeURIComponent(options.jobId ?? "")}${options.command === "job.cancel" ? "/cancel" : ""}`;
+  endpoint.search = "";
+  for (const [name, value] of Object.entries(options.filters ?? {})) {
+    if (value) endpoint.searchParams.set(name, value);
+  }
+  const method = options.command === "job.start" || options.command === "job.cancel" ? "POST" : "GET";
+  let response: Response;
+  try {
+    response = await fetch(endpoint, {
+      method,
+      headers: options.body ? { "Content-Type": "application/json" } : { Accept: "application/json" },
+      body: options.body ? JSON.stringify(options.body) : undefined,
+      signal: AbortSignal.timeout(30_000),
+    });
+  } catch (error) {
+    throw new CliRequestError("service_unavailable", `Cannot reach chengfeng-videocut at ${options.apiBase}`, {
+      endpoint: endpoint.toString(), cause: error instanceof Error ? error.message : String(error),
+    });
+  }
+  let payload: unknown;
+  try { payload = await response.json(); }
+  catch { throw new CliRequestError("service_unavailable", `Runtime returned invalid JSON (${response.status})`); }
+  if (!response.ok) {
+    const record = objectRecord(payload);
+    const error = objectRecord(record?.error);
+    throw new CliRequestError(
+      typeof error?.code === "string" ? error.code : "service_unavailable",
+      typeof error?.message === "string" ? error.message : `Job request failed (${response.status})`,
+      objectRecord(error?.details) ?? { endpoint: endpoint.toString(), status: response.status },
+    );
+  }
+  return payload;
+}
+
 async function assertRegisteredProject(input: {
   project: Awaited<ReturnType<typeof resolveProject>>;
   cwd: string;
@@ -715,7 +763,7 @@ export async function runCli(
 ): Promise<number> {
   const io = options.io ?? defaultIo;
   const cwd = resolve(options.cwd ?? process.cwd());
-  const wantsJson = argv.includes("--json") || argv.some((arg) => arg.startsWith("--json="));
+  const wantsJson = argv[0] === "job" || argv.includes("--json") || argv.some((arg) => arg.startsWith("--json="));
   let command = argv[0] === "cuts" && argv[1]
     ? `cuts.${argv[1]}`
     : argv[0] === "service" && argv[1]
@@ -739,6 +787,37 @@ export async function runCli(
       } else {
         io.stdout(PRODUCT_VERSION);
       }
+      return 0;
+    }
+    if (parsed.command.startsWith("job.")) {
+      const apiBase = parsed.apiBase ?? "http://127.0.0.1:5190";
+      const data = await requestJobsApi({
+        apiBase,
+        command: parsed.command as "job.start" | "job.get" | "job.list" | "job.cancel",
+        jobId: parsed.jobId,
+        body: parsed.command === "job.start" ? {
+          kind: parsed.jobKind,
+          target: (() => {
+            const target = parsed.project as string;
+            return target.startsWith(".") || target.includes("/") || target.includes("\\")
+              ? resolve(cwd, target)
+              : target;
+          })(),
+          params: {
+            ...(parsed.outFile ? { outputPath: resolve(cwd, parsed.outFile) } : {}),
+            ...(parsed.scale !== undefined ? { scale: parsed.scale } : {}),
+            ...(parsed.fps !== undefined ? { fps: parsed.fps } : {}),
+            ...(parsed.keepWork ? { keepWork: true } : {}),
+          },
+        } : undefined,
+        filters: parsed.command === "job.list" ? {
+          projectId: parsed.projectFilter,
+          kind: parsed.jobKind,
+          state: parsed.jobState,
+          limit: parsed.jobLimit === undefined ? undefined : String(parsed.jobLimit),
+        } : undefined,
+      });
+      io.stdout(JSON.stringify(successEnvelope(parsed.command, data)));
       return 0;
     }
     if (parsed.command === "service.supervise") {
@@ -1335,41 +1414,46 @@ export async function runCli(
         else io.stdout(JSON.stringify(summary, null, 2));
         return 0;
       }
-      const workDirectory = join(project.directory, ".chengfeng-videocut", "export");
-      await rm(workDirectory, { recursive: true, force: true });
-      let lastReport = 0;
-      const result = await exportFilm({
-        projectDirectory: project.directory,
-        sourcePath,
-        plan,
-        outputPath,
-        workDirectory,
-        keepWork: parsed.keepWork,
-        onProgress: (stage, done, total) => {
-          if (parsed.json) return;
-          const now = Date.now();
-          if (done !== total && now - lastReport < 1000) return;
-          lastReport = now;
-          io.stderr(`${stage} ${done}/${total}`);
+      const apiBase = parsed.apiBase ?? "http://127.0.0.1:5190";
+      const started = objectRecord(await requestJobsApi({
+        apiBase,
+        command: "job.start",
+        body: {
+          kind: "export",
+          target: project.directory,
+          params: {
+            outputPath,
+            ...(parsed.scale !== undefined ? { scale: parsed.scale } : {}),
+            ...(parsed.fps !== undefined ? { fps: parsed.fps } : {}),
+            ...(parsed.keepWork ? { keepWork: true } : {}),
+          },
         },
-      });
-      const data = {
-        ...summary,
-        width: result.probe.width,
-        height: result.probe.height,
-        actualDuration: result.probe.duration,
-        hasAudio: result.probe.hasAudio,
-        renderedFrames: result.frameCount,
-        problems: result.problems,
-      };
-      // A file that does not match its own plan is not a delivery, and the
-      // product may not report it as one. The file is left on disk and named
-      // in the details — it is evidence, not a result.
-      if (result.problems.length > 0) {
-        throw new VideocutError("readback_mismatch", "成片和导出计划对不上", {
-          ...data,
-        });
+      }));
+      const jobId = started?.jobId;
+      if (typeof jobId !== "string") {
+        throw new CliRequestError("service_unavailable", "Runtime returned an invalid job start response");
       }
+      let completed: Record<string, unknown>;
+      while (true) {
+        const current = objectRecord(await requestJobsApi({
+          apiBase, command: "job.get", jobId,
+        }));
+        if (!current || typeof current.state !== "string") {
+          throw new CliRequestError("service_unavailable", "Runtime returned an invalid job response", { jobId });
+        }
+        if (current.state === "succeeded") { completed = current; break; }
+        if (["failed", "cancelled", "recovery_blocked"].includes(current.state)) {
+          const jobError = objectRecord(current.error);
+          throw new CliRequestError(
+            typeof jobError?.code === "string" ? jobError.code : "job_failed",
+            typeof jobError?.message === "string" ? jobError.message : `Export job ended in ${current.state}`,
+            objectRecord(jobError?.details) ?? { jobId, state: current.state },
+          );
+        }
+        await Bun.sleep(250);
+      }
+      const data = objectRecord(completed.result);
+      if (!data) throw new CliRequestError("service_unavailable", "Succeeded job has no result", { jobId });
       if (parsed.json) io.stdout(JSON.stringify(successEnvelope(parsed.command, data)));
       else io.stdout(JSON.stringify(data, null, 2));
       return 0;

@@ -46,11 +46,15 @@ const INTERMEDIATE_CRF = "10";
 
 export interface FfmpegRunOptions {
   onLine?: (line: string) => void;
+  signal?: AbortSignal;
 }
 
 export async function runFfmpeg(args: string[], options: FfmpegRunOptions = {}): Promise<void> {
   await new Promise<void>((resolve, reject) => {
+    options.signal?.throwIfAborted();
     const child = spawn("ffmpeg", args, { stdio: ["ignore", "ignore", "pipe"] });
+    const abort = () => child.kill("SIGKILL");
+    options.signal?.addEventListener("abort", abort, { once: true });
     let tail = "";
     child.stderr?.setEncoding("utf8");
     child.stderr?.on("data", (chunk: string) => {
@@ -59,7 +63,9 @@ export async function runFfmpeg(args: string[], options: FfmpegRunOptions = {}):
     });
     child.on("error", reject);
     child.on("close", (code) => {
-      if (code === 0) resolve();
+      options.signal?.removeEventListener("abort", abort);
+      if (options.signal?.aborted) reject(options.signal.reason ?? new DOMException("Aborted", "AbortError"));
+      else if (code === 0) resolve();
       else reject(new Error(`ffmpeg failed (${code ?? "signal"}): ${tail.trim().slice(-3000)}`));
     });
   });
@@ -83,6 +89,7 @@ export async function assembleCut(input: {
   output: string;
   plan: ExportPlan;
   onLine?: (line: string) => void;
+  signal?: AbortSignal;
 }): Promise<void> {
   const { plan } = input;
   await mkdir(dirname(input.output), { recursive: true });
@@ -115,7 +122,7 @@ export async function assembleCut(input: {
     "-c:a", "flac",
     "-t", seconds(plan.frameCount / plan.fps),
     ...ffmpegOutputArgs("matroska", input.output),
-  ], { onLine: input.onLine });
+  ], { onLine: input.onLine, signal: input.signal });
 }
 
 function audioFilter(plan: ExportPlan): string {
@@ -176,6 +183,7 @@ export async function composeFilm(input: {
   plan: ExportPlan;
   onSpan?: (done: number, total: number) => void;
   onLine?: (line: string) => void;
+  signal?: AbortSignal;
 }): Promise<void> {
   const { plan } = input;
   await mkdir(dirname(input.output), { recursive: true });
@@ -227,7 +235,7 @@ export async function composeFilm(input: {
       // drift here slides every drawing after it off the words it belongs to.
       "-frames:v", String(count),
       ...ffmpegOutputArgs("mp4", spanFile),
-    ], { onLine: input.onLine });
+    ], { onLine: input.onLine, signal: input.signal });
     spanFiles.push(spanFile);
     input.onSpan?.(index + 1, plan.zoomSpans.length);
   }
@@ -255,7 +263,7 @@ export async function composeFilm(input: {
     // rather than trusted to stay harmless.
     "-movflags", "+faststart",
     ...ffmpegOutputArgs("mp4", input.output),
-  ], { onLine: input.onLine });
+  ], { onLine: input.onLine, signal: input.signal });
 }
 
 function concatPath(path: string): string {
@@ -271,13 +279,13 @@ function concatPath(path: string): string {
  * overlay — the plan says how many pictures this film is, so the file has to
  * have that many.
  */
-export async function verifyFilm(path: string, plan: ExportPlan): Promise<{
+export async function verifyFilm(path: string, plan: ExportPlan, signal?: AbortSignal): Promise<{
   probe: MediaProbe;
   frames: number;
   problems: string[];
 }> {
   const probe = await probeMedia(path);
-  const frames = await countVideoFrames(path);
+  const frames = await countVideoFrames(path, signal);
   const problems: string[] = [];
   if (!probe.hasVideo) problems.push("成片没有视频轨");
   if (!probe.hasAudio) problems.push("成片没有音频轨");
@@ -290,7 +298,7 @@ export async function verifyFilm(path: string, plan: ExportPlan): Promise<{
   return { probe, frames, problems };
 }
 
-async function countVideoFrames(path: string): Promise<number> {
+async function countVideoFrames(path: string, signal?: AbortSignal): Promise<number> {
   const output = await new Promise<string>((resolve, reject) => {
     const child = spawn("ffprobe", [
       "-v", "error",
@@ -299,11 +307,17 @@ async function countVideoFrames(path: string): Promise<number> {
       "-of", "csv=p=0",
       ffmpegFileArg(path),
     ], { stdio: ["ignore", "pipe", "ignore"] });
+    const abort = () => child.kill("SIGKILL");
+    signal?.addEventListener("abort", abort, { once: true });
     let stdout = "";
     child.stdout?.setEncoding("utf8");
     child.stdout?.on("data", (chunk: string) => { stdout += chunk; });
     child.on("error", reject);
-    child.on("close", () => resolve(stdout));
+    child.on("close", () => {
+      signal?.removeEventListener("abort", abort);
+      if (signal?.aborted) reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+      else resolve(stdout);
+    });
   });
   const count = Number(output.trim());
   return Number.isFinite(count) ? count : -1;

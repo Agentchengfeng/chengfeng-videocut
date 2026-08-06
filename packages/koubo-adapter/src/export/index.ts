@@ -40,6 +40,7 @@ export interface ExportFilmInput {
   workDirectory: string;
   /** Leave the intermediate and the PNG frames behind for inspection. */
   keepWork?: boolean;
+  signal?: AbortSignal;
   onProgress?: (stage: ExportStage, done: number, total: number) => void;
 }
 
@@ -58,7 +59,8 @@ export async function exportFilm(input: ExportFilmInput): Promise<ExportFilmResu
   const framesDirectory = join(input.workDirectory, "overlay");
 
   input.onProgress?.("assemble", 0, 1);
-  await assembleCut({ source: input.sourcePath, output: assembled, plan });
+  input.signal?.throwIfAborted();
+  await assembleCut({ source: input.sourcePath, output: assembled, plan, signal: input.signal });
   input.onProgress?.("assemble", 1, 1);
 
   // The overlay is rendered after the cut rather than beside it on purpose:
@@ -74,6 +76,7 @@ export async function exportFilm(input: ExportFilmInput): Promise<ExportFilmResu
       plan,
       projectDirectory: input.projectDirectory,
       framesDirectory,
+      signal: input.signal,
       onProgress: (done, total) => input.onProgress?.("overlay", done, total),
     })
     : null;
@@ -85,11 +88,13 @@ export async function exportFilm(input: ExportFilmInput): Promise<ExportFilmResu
     output: input.outputPath,
     workDirectory: join(input.workDirectory, "spans"),
     plan,
+    signal: input.signal,
     onSpan: (done, total) => input.onProgress?.("compose", done, total),
   });
 
   input.onProgress?.("verify", 0, 1);
-  const { probe, frames: filmFrames, problems } = await verifyFilm(input.outputPath, plan);
+  input.signal?.throwIfAborted();
+  const { probe, frames: filmFrames, problems } = await verifyFilm(input.outputPath, plan, input.signal);
   input.onProgress?.("verify", 1, 1);
 
   if (!input.keepWork) {

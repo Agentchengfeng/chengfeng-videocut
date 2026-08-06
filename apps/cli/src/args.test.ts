@@ -2,6 +2,16 @@ import { describe, expect, it } from "bun:test";
 import { parseArgs } from "./args";
 
 describe("start argument parser", () => {
+  it("parses durable job start/get/list/cancel commands", () => {
+    expect(parseArgs(["job", "start", "export", "/tmp/project", "--out", "/tmp/out.mp4"])).toMatchObject({
+      command: "job.start", jobKind: "export", project: "/tmp/project", outFile: "/tmp/out.mp4",
+    });
+    expect(parseArgs(["job", "get", "abc"])).toMatchObject({ command: "job.get", jobId: "abc" });
+    expect(parseArgs(["job", "list", "--project", "demo", "--state", "queued", "--limit", "25"])).toMatchObject({
+      command: "job.list", projectFilter: "demo", jobState: "queued", jobLimit: 25,
+    });
+    expect(parseArgs(["job", "cancel", "abc"])).toMatchObject({ command: "job.cancel", jobId: "abc" });
+  });
   it("parses defaults and supports an ephemeral port", () => {
     expect(parseArgs(["start"])).toMatchObject({
       command: "start",
