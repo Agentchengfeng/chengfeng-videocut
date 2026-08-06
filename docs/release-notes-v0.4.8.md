@@ -10,6 +10,8 @@
 - Version-pinned and stable-name portable Runtime archives.
 - Version-pinned and stable-name CLI `.tgz` archives for diagnostics or
   controlled installation.
+- **No macOS Desktop DMG is attached to this Release.** macOS Desktop testing
+  is outside the v0.4.8 controlled-test scope.
 
 ## Download verification
 

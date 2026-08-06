@@ -31,6 +31,7 @@
     "portable:pack": "bun scripts/package-portable.ts",
     "release:stage:windows-desktop": "bun scripts/stage-desktop-windows-release.ts",
     "release:checksums": "bun scripts/write-release-checksums.ts",
+    "release:artifact-check": "bun scripts/release-artifact-check.ts",
     "desktop:test": "bun run --cwd apps/desktop test",
     "desktop:smoke": "bun run --cwd apps/desktop smoke",
     "desktop:dist:dir": "bun run --cwd apps/desktop dist:dir",

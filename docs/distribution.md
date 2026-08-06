@@ -6,9 +6,10 @@ chengfeng-videocut 的正式二进制分发入口是 GitHub Releases：
 
 https://github.com/Agentchengfeng/chengfeng-videocut/releases
 
-当前不发布 npm 包，也不使用 `bunx` 作为用户入口。Runtime 便携包、macOS DMG 和
-Windows NSIS 都由同一个版本的 GitHub Release / CI 产物承载；桌面包在签名、公证与
-媒体二进制再分发复核完成前只能标为预发布测试资产。
+当前不发布 npm 包，也不使用 `bunx` 作为用户入口。Runtime 便携包和 Windows NSIS
+由同一个版本的 GitHub Release / CI 产物承载。**v0.4.8 是 Windows Desktop 受控测试
+prerelease：不附带 macOS DMG。** 仓库可在 macOS CI 构建 DMG，但那不是本次 Release
+资产。桌面包在签名、公证与媒体二进制再分发复核完成前只能标为预发布测试资产。
 
 两条用户路径：
 
@@ -19,7 +20,7 @@ Windows NSIS 都由同一个版本的 GitHub Release / CI 产物承载；桌面�
 
 ## Release 资产
 
-每个正式版本至少应提供：
+v0.4.8 Windows Desktop 受控测试 Release 应提供：
 
 - `install.sh`：与该版本绑定的一行安装器副本
 - `install.cjs`：Windows / Node 安装器副本
@@ -28,10 +29,11 @@ Windows NSIS 都由同一个版本的 GitHub Release / CI 产物承载；桌面�
 - `chengfeng-videocut-<version>.tgz`：版本化 CLI 包，供诊断或受控安装
 - `chengfeng-videocut.tgz`：与本次 Release 内容相同的稳定 CLI 文件名
 - `SHA256SUMS.txt`：覆盖同次 Release 的全部 Runtime 下载资产：`install.sh`、`install.cjs`、版本化/稳定名 portable 与 tgz，以及 Windows NSIS EXE；它是内容完整性清单，不是发布者签名
-- `Chengfeng-VideoCut-<version>-mac-arm64.dmg`：macOS 桌面测试包
 - `Chengfeng-VideoCut-<version>-win-x64.exe`：Windows 桌面受控测试包；必须由 Windows workflow 完成无提权安装、启动、受管 Runtime、卸载 smoke 后，才可与同一 `SHA256SUMS.txt` 一起下载
 
 稳定文件名便于安装器和 Skills 使用；版本化文件名用于固定版本、审计和回滚。稳定文件名不得跨 Release 静默替换内容。
+macOS DMG 不在 v0.4.8 附件中；未来单独提供 macOS Desktop 测试时，必须另列资产与
+对应验证证据，不能把 CI artifact 当成已经发布的下载包。
 
 ## 用户安装路径
 
@@ -135,10 +137,12 @@ LaunchAgent 必须执行便携启动器保留的稳定入口 `~/.chengfeng-video
 5. 确认版本号、Release 标签、便携包内版本和 `CITATION.cff` 一致。
 6. 生成最终 `SHA256SUMS.txt` 后再上传，不得在生成校验值后修改资产。
 7. 保留 Apache-2.0 许可、HyperFrames 上游归属和修改说明。
-8. 桌面资产必须额外通过只读 DMG / 无提权 NSIS 安装、App 父进程退出后服务存活、
-   稳定 launcher doctor、显式 stop、端口冲突与卸载验证。
-9. 公开桌面包前完成 macOS 签名/公证、Windows 签名，以及随包 FFmpeg/FFprobe 的
-   GPL 许可、对应源代码提供方式与第三方通知复核；未完成只能保留为测试资产。
+8. v0.4.8 的 Windows 桌面资产必须额外通过无提权 NSIS 安装、App 父进程退出后服务
+   存活、稳定 launcher doctor、显式 stop、端口冲突与卸载验证。未来 macOS Desktop
+   资产必须另行通过只读 DMG 安装验证。
+9. 面向正式可用性的桌面包须完成 macOS 签名/公证、Windows 签名，以及随包
+   FFmpeg/FFprobe 的 GPL 许可、对应源代码提供方式与第三方通知复核；未完成只能保留
+   为测试资产。v0.4.8 不声称这些工作已完成。
 
 ## 许可与品牌
 

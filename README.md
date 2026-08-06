@@ -7,21 +7,24 @@ chengfeng-videocut 是一个本地优先的口播视频剪辑产品：浏览器�
 ## 下载与安装
 
 正式分发只走 [GitHub Releases](https://github.com/Agentchengfeng/chengfeng-videocut/releases)，
-不发布 npm 包，也不需要 `bunx`。0.4.8 同时提供桌面预览包和 CLI 便携包；桌面包在
-完成代码签名、公证与 FFmpeg 再分发复核前只作为预发布测试资产。
+不发布 npm 包，也不需要 `bunx`。**v0.4.8 是 Windows Desktop 受控测试
+prerelease**：本次 Release 提供 Windows 桌面 EXE 与 CLI 便携包，**不提供 macOS
+Desktop DMG**。桌面测试包在完成代码签名、公证与 FFmpeg 再分发复核前只作为预发布
+测试资产。
 
-桌面预览包：
+v0.4.8 桌面预览包：
 
-- macOS Apple Silicon：DMG
 - Windows 10/11 x64：NSIS EXE
 - 随包提供 Runtime、Bun、FFmpeg 与 FFprobe，不要求用户修改系统 PATH
 - 首次启动把这些资产安装到 `~/.chengfeng-videocut`，再通过同一个稳定 CLI 执行
   `service ensure`；关闭窗口后用户级服务继续运行，Skills 直接复用
 
+macOS 用户可使用下面的 CLI Runtime 安装路径；它不会安装 Desktop App。
+
 纯 CLI / 便携包仍要求 Bun 1.2+ 与 FFmpeg 6+；Windows 的 `install.cjs` 另需
 Node.js 20+。Linux 可用 foreground `start` 做开发诊断，常驻 `service` 尚不支持。
 
-macOS 一行安装：
+macOS CLI Runtime 一行安装（非 Desktop App）：
 
 ```bash
 curl -fsSL https://github.com/Agentchengfeng/chengfeng-videocut/releases/download/v0.4.8/install.sh | sh

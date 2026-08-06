@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   requiredReleaseAssetNames,
+  verifyReleaseAssetManifest,
   windowsDesktopInstallerName,
   writeReleaseChecksums,
 } from "../../../scripts/release-assets";
@@ -55,7 +56,13 @@ describe("release contract", () => {
       (name) => name !== "install.sh" && name !== "install.cjs",
     );
     for (const name of assetNames) {
-      await Bun.write(join(releaseDir, name), `fixture:${name}\n`);
+      const canonicalName =
+        name === "chengfeng-videocut-portable.tar.gz"
+          ? `chengfeng-videocut-${PRODUCT_VERSION}-portable.tar.gz`
+          : name === "chengfeng-videocut.tgz"
+            ? `chengfeng-videocut-${PRODUCT_VERSION}.tgz`
+            : name;
+      await Bun.write(join(releaseDir, name), `fixture:${canonicalName}\n`);
     }
 
     const result = await writeReleaseChecksums({
@@ -76,6 +83,18 @@ describe("release contract", () => {
     expect(sums).toContain(
       `${createHash("sha256").update(installer).digest("hex")}  install.sh\n`,
     );
+    await expect(
+      verifyReleaseAssetManifest({ releaseDir, version: PRODUCT_VERSION }),
+    ).resolves.toEqual({
+      assetNames: [...requiredReleaseAssetNames(PRODUCT_VERSION)].sort((left, right) =>
+        left.localeCompare(right, "en"),
+      ),
+      checksums: expect.any(Map),
+    });
+    await Bun.write(join(releaseDir, windowsDesktopInstallerName(PRODUCT_VERSION)), "tampered\n");
+    await expect(
+      verifyReleaseAssetManifest({ releaseDir, version: PRODUCT_VERSION }),
+    ).rejects.toThrow(`SHA256 mismatch for ${windowsDesktopInstallerName(PRODUCT_VERSION)}`);
   });
 
   it("fails closed when a required archive is missing", async () => {
