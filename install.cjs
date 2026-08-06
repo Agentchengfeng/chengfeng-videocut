@@ -35,21 +35,80 @@ const {
 const os = require("node:os");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
-const { fileURLToPath } = require("node:url");
+const { fileURLToPath, pathToFileURL } = require("node:url");
 
 const REPOSITORY = "Agentchengfeng/chengfeng-videocut";
-const VERSION = "0.4.9";
+const VERSION = "0.5.0";
 const ARCHIVE_NAME = "chengfeng-videocut-portable.tar.gz";
 const CHECKSUM_NAME = "SHA256SUMS.txt";
+const INSTALL_MANIFEST_NAME = "chengfeng-videocut-install-manifest.json";
 const ARCHIVE_ROOT_NAME = `chengfeng-videocut-${VERSION}`;
 const IS_WINDOWS = process.platform === "win32";
 const STATE_SCHEMA_VERSION = 1;
+const SMALL_MANIFEST_DOWNLOAD_LIMIT_BYTES = 1_048_576;
+const RELEASE_ASSET_DOWNLOAD_LIMIT_BYTES = 4 * 1_073_741_824;
+
+function parseInstallerArguments(argv) {
+  const options = {
+    manifest: null,
+    targetRoot: null,
+    checksumFile: null,
+    json: false,
+    ensureService: false,
+    allowUnverifiedLocalFixture: false,
+  };
+  const valueOptions = new Set(["--manifest", "--target-root", "--checksum-file"]);
+  const seen = new Set();
+  let index = 0;
+  // node install.cjs includes the script path; a compiled Bun executable does not.
+  if (
+    argv[0] && !argv[0].startsWith("--") &&
+    /(?:^|[\\/])(?:install\.cjs|chengfeng-videocut-installer-[^/\\]+)$/.test(argv[0])
+  ) index = 1;
+  for (; index < argv.length; index += 1) {
+    const argument = argv[index];
+    if (!argument.startsWith("--")) fail(`不接受多余位置参数：${argument}`);
+    if (seen.has(argument)) fail(`安装器参数重复：${argument}`);
+    seen.add(argument);
+    if (valueOptions.has(argument)) {
+      const value = argv[index + 1];
+      if (!value || value.startsWith("--")) fail(`${argument} 需要一个值。`);
+      if (argument === "--manifest") options.manifest = value;
+      else if (argument === "--target-root") options.targetRoot = value;
+      else options.checksumFile = value;
+      index += 1;
+      continue;
+    }
+    if (argument === "--json") options.json = true;
+    else if (argument === "--ensure-service") options.ensureService = true;
+    else if (argument === "--allow-unverified-local-fixture") options.allowUnverifiedLocalFixture = true;
+    else fail(`未知安装器参数：${argument}`);
+  }
+  return options;
+}
+
+const INSTALLER_OPTIONS = parseInstallerArguments(process.argv.slice(1));
 
 const DOWNLOAD_BASE =
   process.env.CHENGFENG_VIDEOCUT_DOWNLOAD_BASE ||
   `https://github.com/${REPOSITORY}/releases/download/v${VERSION}`;
-const INSTALL_ROOT =
-  process.env.CHENGFENG_VIDEOCUT_HOME || path.join(os.homedir(), ".chengfeng-videocut");
+const REQUESTED_INSTALL_ROOT =
+  INSTALLER_OPTIONS.targetRoot || process.env.CHENGFENG_VIDEOCUT_HOME ||
+  path.join(os.homedir(), ".chengfeng-videocut");
+if (!path.isAbsolute(REQUESTED_INSTALL_ROOT)) {
+  fail("--target-root 必须是绝对路径。");
+}
+const INSTALL_ROOT = path.resolve(REQUESTED_INSTALL_ROOT);
+const INSTALL_ROOT_RESOLVED = path.resolve(INSTALL_ROOT);
+const HOME_RESOLVED = path.resolve(os.homedir());
+if (
+  INSTALL_ROOT_RESOLVED === path.parse(INSTALL_ROOT_RESOLVED).root ||
+  INSTALL_ROOT_RESOLVED === HOME_RESOLVED ||
+  HOME_RESOLVED.startsWith(`${INSTALL_ROOT_RESOLVED}${path.sep}`)
+) {
+  fail("--target-root 不得是文件系统根、用户 HOME 或 HOME 的祖先。");
+}
+assertSafeInstallRootPath(INSTALL_ROOT_RESOLVED);
 const APP_ROOT = path.join(INSTALL_ROOT, "app");
 const TOOLS_ROOT = path.join(INSTALL_ROOT, "tools");
 const TOOLS_CURRENT_LINK = path.join(TOOLS_ROOT, "current");
@@ -59,6 +118,7 @@ const TARGET_DIR = path.join(APP_ROOT, VERSION);
 const CURRENT_LINK = path.join(APP_ROOT, "current");
 const BIN_LINK = path.join(BIN_ROOT, IS_WINDOWS ? "chengfeng-videocut.cmd" : "chengfeng-videocut");
 const STATE_PATH = path.join(INSTALL_ROOT, "installer-state.json");
+const TOOLS_STATE_PATH = path.join(INSTALL_ROOT, "managed-tools-state.json");
 const UPDATE_LOCK_PATH = path.join(INSTALL_ROOT, "runtime-update.lock");
 const PENDING_ROOT = path.join(APP_ROOT, ".pending");
 const SERVICE_HTTP_REQUEST_TIMEOUT_MS = positiveMilliseconds(
@@ -83,12 +143,48 @@ const EXECUTABLE_OUTPUT_LIMIT_BYTES = positiveBytes(
 );
 const EXECUTABLE_DIAGNOSTIC_TAIL_BYTES = 65_536;
 const EXECUTABLE_TERMINATION_GRACE_MS = 1_000;
-// Electron can request one complete shared-Runtime transaction.  This remains
-// an installer concern: Desktop only supplies the local Release payload and
-// observes the resulting shared service.
-const ENSURE_MANAGED_SERVICE = process.env.CHENGFENG_VIDEOCUT_INSTALLER_ENSURE_SERVICE === "1";
+// A caller can request one complete shared-Runtime transaction. This remains
+// a Product installer concern: callers supply only verified Release inputs and
+// observe the resulting shared service.
+const ENSURE_MANAGED_SERVICE =
+  INSTALLER_OPTIONS.ensureService ||
+  process.env.CHENGFENG_VIDEOCUT_INSTALLER_ENSURE_SERVICE === "1";
 const MANAGED_TOOLS_SOURCE_DIR = process.env.CHENGFENG_VIDEOCUT_MANAGED_TOOLS_SOURCE_DIR || null;
+const COMPILED_INSTALLER_VERSION =
+  typeof CHENGFENG_COMPILED_INSTALLER_VERSION === "string"
+    ? CHENGFENG_COMPILED_INSTALLER_VERSION
+    : null;
+const INSTALL_MANIFEST_SOURCE =
+  INSTALLER_OPTIONS.manifest || process.env.CHENGFENG_VIDEOCUT_INSTALL_MANIFEST ||
+      (COMPILED_INSTALLER_VERSION ? `${DOWNLOAD_BASE}/${INSTALL_MANIFEST_NAME}` : null);
+const INSTALL_MANIFEST_CHECKSUM_SOURCE =
+  INSTALLER_OPTIONS.checksumFile || process.env.CHENGFENG_VIDEOCUT_MANIFEST_CHECKSUM_FILE || null;
+const ALLOW_UNVERIFIED_LOCAL_TOOLS =
+  INSTALLER_OPTIONS.allowUnverifiedLocalFixture ||
+  process.env.CHENGFENG_VIDEOCUT_ALLOW_UNVERIFIED_LOCAL_TOOLS === "1";
 let candidateServiceStopAttempted = false;
+let installerToolsDirectory = null;
+
+if (COMPILED_INSTALLER_VERSION && COMPILED_INSTALLER_VERSION !== VERSION) {
+  fail(`编译安装器版本 ${COMPILED_INSTALLER_VERSION} 与 Runtime ${VERSION} 不一致。`);
+}
+function progress(message) {
+  (INSTALLER_OPTIONS.json ? process.stderr : process.stdout).write(message);
+}
+
+function reportSuccess(status, assetDownloads, message) {
+  if (INSTALLER_OPTIONS.json) {
+    process.stdout.write(`${JSON.stringify({
+      schemaVersion: 1,
+      product: "chengfeng-videocut",
+      command: "runtime.install",
+      ok: true,
+      data: { status, productVersion: VERSION, targetRoot: INSTALL_ROOT, assetDownloads },
+    })}\n`);
+  } else {
+    process.stdout.write(message);
+  }
+}
 
 function fail(message) {
   throw new Error(message);
@@ -113,6 +209,37 @@ function pathExists(candidate) {
   } catch (error) {
     if (error && error.code === "ENOENT") return false;
     throw error;
+  }
+}
+
+function comparablePath(candidate) {
+  const resolved = path.resolve(candidate);
+  return IS_WINDOWS ? resolved.toLowerCase() : resolved;
+}
+
+function assertSafeInstallRootPath(candidate) {
+  const resolved = path.resolve(candidate);
+  const parsed = path.parse(resolved);
+  let current = parsed.root;
+  const segments = resolved.slice(parsed.root.length).split(path.sep).filter(Boolean);
+  for (const segment of segments) {
+    current = path.join(current, segment);
+    let metadata;
+    try {
+      metadata = lstatSync(current);
+    } catch (error) {
+      if (error && error.code === "ENOENT") return;
+      throw error;
+    }
+    if (metadata.isSymbolicLink()) {
+      fail(`Product 受管安装根的已有路径组件不得是链接或 reparse point：${current}`);
+    }
+    if (!metadata.isDirectory()) {
+      fail(`Product 受管安装根的已有路径组件不是目录：${current}`);
+    }
+    if (comparablePath(realpathSync(current)) !== comparablePath(current)) {
+      fail(`Product 受管安装根的已有路径组件发生规范路径跳转：${current}`);
+    }
   }
 }
 
@@ -302,27 +429,89 @@ function validateExternalToolsSource(source, { allowManagedRoot = false } = {}) 
   if (!source) return null;
   const resolved = path.resolve(source);
   if (!allowManagedRoot && (resolved === INSTALL_ROOT || resolved.startsWith(`${INSTALL_ROOT}${path.sep}`))) {
-    fail("Desktop 工具来源不得位于 Product 受管根；安装器只接受外部暂存目录。");
+    fail("Product 受管工具来源不得位于 Product 受管根；安装器只接受外部暂存目录。");
   }
   let sourceReal;
   try {
-    if (!lstatSync(resolved).isDirectory() || isLink(resolved)) fail("Desktop 工具来源必须是非链接目录。");
+    if (!lstatSync(resolved).isDirectory() || isLink(resolved)) fail("Product 受管工具来源必须是非链接目录。");
     sourceReal = realpathSync(resolved);
   } catch (error) {
     if (error instanceof Error) throw error;
-    fail("Desktop 工具来源无效。");
+    fail("Product 受管工具来源无效。");
+  }
+  const manifestPath = path.join(resolved, "resources-manifest.json");
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  } catch {
+    fail("工具来源的 resources-manifest.json 无效。");
+  }
+  if (manifest?.schemaVersion === 2) {
+    validateRegularTree(resolved, path.dirname(resolved), "受管工具来源");
+    if (
+      manifest.product !== "chengfeng-videocut-managed-tools" ||
+      manifest.productVersion !== VERSION ||
+      manifest.platform !== process.platform ||
+      manifest.arch !== process.arch ||
+      !manifest.executables || !manifest.versions || !Array.isArray(manifest.files)
+    ) {
+      fail("受管工具 manifest 与当前 Runtime/平台不一致。");
+    }
+    if (manifest.licenseStatus !== "VERIFIED" && !ALLOW_UNVERIFIED_LOCAL_TOOLS) {
+      fail("受管工具许可状态不是 VERIFIED；公开安装已阻止。仅隔离工程 smoke 可显式允许 UNVERIFIED。");
+    }
+    const requiredKeys = ["bun", "ffmpeg", "ffprobe", "chrome"];
+    for (const key of requiredKeys) {
+      const relative = manifest.executables[key];
+      if (
+        typeof relative !== "string" || !relative || path.isAbsolute(relative) ||
+        relative.split(/[\\/]/).some((part) => part === "..")
+      ) fail(`受管工具 manifest 的 ${key} 路径无效。`);
+      const executable = path.join(resolved, relative);
+      const metadata = lstatSync(executable);
+      if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1) {
+        fail(`受管工具 ${key} 不是单链接普通文件。`);
+      }
+      assertCanonicalInside(executable, resolved, `受管工具 ${key}`);
+      if (!IS_WINDOWS && (metadata.mode & 0o111) === 0) {
+        fail(`受管工具 ${key} 缺少可执行位；已激活树不会被安装器静默修复。`);
+      }
+    }
+    const actualFiles = new Map();
+    const collect = (directory, prefix = "") => {
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+        const absolute = path.join(directory, entry.name);
+        if (entry.isDirectory()) collect(absolute, relative);
+        else if (entry.isFile() && relative !== "resources-manifest.json") {
+          actualFiles.set(relative.replaceAll("\\", "/"), {
+            size: lstatSync(absolute).size,
+            sha256: sha256(absolute),
+          });
+        }
+      }
+    };
+    collect(resolved);
+    if (actualFiles.size !== manifest.files.length) fail("受管工具文件清单数量不一致。");
+    for (const record of manifest.files) {
+      const actual = record && actualFiles.get(record.path);
+      if (!actual || actual.size !== record.size || actual.sha256 !== record.sha256) {
+        fail(`受管工具文件校验失败：${record?.path || "未知"}`);
+      }
+    }
+    return sourceReal;
   }
   const suffix = IS_WINDOWS ? ".exe" : "";
   const required = new Set([`bun${suffix}`, `ffmpeg${suffix}`, `ffprobe${suffix}`, "resources-manifest.json"]);
   const entries = readdirSync(resolved, { withFileTypes: true });
-  if (entries.length !== required.size) fail("Desktop 工具来源只能包含 Bun、FFmpeg、FFprobe 和资源清单。");
+  if (entries.length !== required.size) fail("Product 受管工具来源只能包含 Bun、FFmpeg、FFprobe 和资源清单。");
   for (const entry of entries) {
     if (!required.has(entry.name) || !entry.isFile() || entry.isSymbolicLink()) {
-      fail("Desktop 工具来源包含非普通文件或未知条目。");
+      fail("Product 受管工具来源包含非普通文件或未知条目。");
     }
   }
   for (const name of required) {
-    if (!lstatSync(path.join(resolved, name)).isFile()) fail(`Desktop 工具来源缺少 ${name}。`);
+    if (!lstatSync(path.join(resolved, name)).isFile()) fail(`Product 受管工具来源缺少 ${name}。`);
   }
   return sourceReal;
 }
@@ -841,6 +1030,7 @@ function failIfTerminationRecoveryIsBlocked(state) {
 
 function resolvedRuntimeEnvironment(bunExecutable, { launcher = null } = {}) {
   const toolDirectories = [path.dirname(path.resolve(bunExecutable))];
+  if (installerToolsDirectory) toolDirectories.unshift(installerToolsDirectory);
   for (const tool of [findProgram("ffmpeg"), findProgram("ffprobe")]) {
     if (tool) toolDirectories.push(path.dirname(path.resolve(tool)));
   }
@@ -858,24 +1048,91 @@ function resolvedRuntimeEnvironment(bunExecutable, { launcher = null } = {}) {
     PATH: deterministicPath,
     CHENGFENG_VIDEOCUT_HOME: INSTALL_ROOT,
     CHENGFENG_VIDEOCUT_DATA_DIR: INSTALL_ROOT,
+    ...(installerToolsDirectory
+      ? { CHENGFENG_VIDEOCUT_CHROME_PATH: formalToolsExecutable(installerToolsDirectory, "chrome") }
+      : {}),
     ...(launcher ? { CHENGFENG_VIDEOCUT_EXECUTABLE: launcher } : {}),
   };
 }
 
-async function download(url, destination) {
+function validateDownloadSize(size, { maxBytes, expectedBytes, label }) {
+  if (expectedBytes !== null && size !== expectedBytes) {
+    const error = new Error(`${label} 大小与安装 manifest 不一致：期望 ${expectedBytes}，实际 ${size} bytes。`);
+    error.downloadRetryable = false;
+    throw error;
+  }
+  if (!Number.isSafeInteger(size) || size < 0 || size > maxBytes) {
+    const error = new Error(`${label} 超过允许的下载大小 ${maxBytes} bytes。`);
+    error.downloadRetryable = false;
+    throw error;
+  }
+}
+
+async function download(url, destination, options = {}) {
+  const label = options.label || "下载内容";
+  const maxBytes = options.maxBytes ?? RELEASE_ASSET_DOWNLOAD_LIMIT_BYTES;
+  const expectedBytes = options.expectedBytes ?? null;
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0 || maxBytes > RELEASE_ASSET_DOWNLOAD_LIMIT_BYTES) {
+    fail(`${label} 下载上限无效。`);
+  }
+  if (
+    expectedBytes !== null &&
+    (!Number.isSafeInteger(expectedBytes) || expectedBytes <= 0 || expectedBytes > maxBytes)
+  ) fail(`${label} 的安装 manifest 大小无效。`);
   if (url.startsWith("file://")) {
-    copyFileSync(fileURLToPath(url), destination);
+    const source = fileURLToPath(url);
+    const metadata = lstatSync(source);
+    if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1) {
+      fail(`${label} 本地来源必须是单链接普通文件。`);
+    }
+    validateDownloadSize(metadata.size, { maxBytes, expectedBytes, label });
+    copyFileSync(source, destination);
+    validateDownloadSize(lstatSync(destination).size, { maxBytes, expectedBytes, label });
     return;
   }
   let lastError = null;
   for (let attempt = 0; attempt < 3; attempt += 1) {
+    let descriptor = null;
     try {
       const response = await fetch(url, { redirect: "follow" });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      writeFileSync(destination, Buffer.from(await response.arrayBuffer()));
+      const contentLength = response.headers.get("content-length");
+      if (contentLength !== null) {
+        const declaredSize = Number(contentLength);
+        validateDownloadSize(declaredSize, { maxBytes, expectedBytes, label });
+      }
+      if (!response.body) throw new Error("response body is empty");
+      descriptor = openSync(destination, "w", 0o600);
+      const reader = response.body.getReader();
+      let downloaded = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        downloaded += value.byteLength;
+        validateDownloadSize(downloaded, { maxBytes, expectedBytes: null, label });
+        if (expectedBytes !== null && downloaded > expectedBytes) {
+          await reader.cancel();
+          const error = new Error(`${label} 大小超过安装 manifest 声明的 ${expectedBytes} bytes。`);
+          error.downloadRetryable = false;
+          throw error;
+        }
+        let offset = 0;
+        while (offset < value.byteLength) {
+          const written = writeSync(descriptor, value, offset, value.byteLength - offset, null);
+          if (written <= 0) fail(`${label} 写入不完整。`);
+          offset += written;
+        }
+      }
+      validateDownloadSize(downloaded, { maxBytes, expectedBytes, label });
+      fsyncSync(descriptor);
+      closeSync(descriptor);
+      descriptor = null;
       return;
     } catch (error) {
+      if (descriptor !== null) closeSync(descriptor);
+      rmSync(destination, { force: true });
       lastError = error;
+      if (error && error.downloadRetryable === false) throw error;
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 1_500 * (attempt + 1)));
     }
   }
@@ -892,6 +1149,189 @@ function expectedHashFor(checksumPath, assetName) {
 
 function sha256(filePath) {
   return createHash("sha256").update(readFileSync(filePath)).digest("hex");
+}
+
+function installerPlatformKey() {
+  const key = `${process.platform}-${process.arch}`;
+  if (!["darwin-arm64", "darwin-x64", "win32-x64"].includes(key)) {
+    fail(`0.5.0 原生安装器不支持 ${key}。`);
+  }
+  return key;
+}
+
+function safeAssetRecord(value, label) {
+  if (
+    !value || typeof value !== "object" ||
+    typeof value.asset !== "string" || !/^[^/\\]+$/.test(value.asset) ||
+    typeof value.root !== "string" || !/^[^/\\]+$/.test(value.root) ||
+    typeof value.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(value.sha256) ||
+    !Number.isSafeInteger(value.size) || value.size <= 0 || value.size > RELEASE_ASSET_DOWNLOAD_LIMIT_BYTES
+  ) fail(`安装 manifest 的 ${label} 资产无效。`);
+  return value;
+}
+
+async function loadFormalInstallContext() {
+  if (!INSTALL_MANIFEST_SOURCE) return null;
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "chengfeng-videocut-native-installer-"));
+  try {
+  const manifestPath = path.join(tmpDir, INSTALL_MANIFEST_NAME);
+  const source = /^(?:https?|file):\/\//.test(INSTALL_MANIFEST_SOURCE)
+    ? INSTALL_MANIFEST_SOURCE
+    : pathToFileURL(path.resolve(INSTALL_MANIFEST_SOURCE)).href;
+  await download(source, manifestPath, {
+    label: "安装 manifest",
+    maxBytes: SMALL_MANIFEST_DOWNLOAD_LIMIT_BYTES,
+  });
+  const manifestSha256 = sha256(manifestPath);
+  if (!INSTALL_MANIFEST_CHECKSUM_SOURCE) {
+    removeTreeWithoutFollowingLinks(tmpDir);
+    fail("正式安装必须用 --checksum-file 将 manifest 绑定到已校验的 SHA256SUMS.txt。");
+  }
+  const checksumPath = path.join(tmpDir, "manifest-SHA256SUMS.txt");
+  const checksumSource = /^(?:https?|file):\/\//.test(INSTALL_MANIFEST_CHECKSUM_SOURCE)
+    ? INSTALL_MANIFEST_CHECKSUM_SOURCE
+    : pathToFileURL(path.resolve(INSTALL_MANIFEST_CHECKSUM_SOURCE)).href;
+  await download(checksumSource, checksumPath, {
+    label: "安装 checksum",
+    maxBytes: SMALL_MANIFEST_DOWNLOAD_LIMIT_BYTES,
+  });
+  const expectedManifestSha256 = expectedHashFor(checksumPath, INSTALL_MANIFEST_NAME);
+  if (!expectedManifestSha256 || expectedManifestSha256 !== manifestSha256) {
+    removeTreeWithoutFollowingLinks(tmpDir);
+    fail("安装 manifest 与已校验 checksum 不一致。");
+  }
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  } catch {
+    removeTreeWithoutFollowingLinks(tmpDir);
+    fail("安装 manifest 不是合法 JSON。");
+  }
+  if (
+    manifest?.schemaVersion !== 1 || manifest.product !== "chengfeng-videocut" ||
+    manifest.productVersion !== VERSION || manifest.releaseTag !== `v${VERSION}` ||
+    !manifest.platforms || typeof manifest.platforms !== "object"
+  ) {
+    removeTreeWithoutFollowingLinks(tmpDir);
+    fail("安装 manifest 与当前 Runtime 版本不一致。");
+  }
+  if (manifest.licenseStatus !== "VERIFIED" && !ALLOW_UNVERIFIED_LOCAL_TOOLS) {
+    removeTreeWithoutFollowingLinks(tmpDir);
+    fail("安装 manifest 的第三方许可不是 VERIFIED；公开安装已阻止。");
+  }
+  const platformKey = installerPlatformKey();
+  const platform = manifest.platforms[platformKey];
+  if (!platform || typeof platform.installerAsset !== "string") {
+    removeTreeWithoutFollowingLinks(tmpDir);
+    fail(`安装 manifest 缺少 ${platformKey}。`);
+  }
+  return {
+    tmpDir,
+    manifest,
+    manifestSha256,
+    platformKey,
+    runtime: safeAssetRecord(manifest.runtime, "runtime"),
+    tools: safeAssetRecord(platform.tools, `${platformKey}.tools`),
+  };
+  } catch (error) {
+    if (pathExists(tmpDir)) removeTreeWithoutFollowingLinks(tmpDir);
+    throw error;
+  }
+}
+
+function validateArchiveEntries(archiveName, rootName, tmpDir, label) {
+  const listing = runTar(["-tzf", archiveName], tmpDir);
+  if (listing.status !== 0) fail(`${label} 无法读取：tar ${listing.status}。`);
+  for (const entry of String(listing.stdout || "").split(/\r?\n/).filter(Boolean)) {
+    const normalized = entry.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/$/, "");
+    if (
+      normalized.startsWith("/") || /^[A-Za-z]:/.test(normalized) ||
+      normalized.split("/").some((part) => part === "..") ||
+      (normalized !== rootName && !normalized.startsWith(`${rootName}/`))
+    ) fail(`${label} 包含不安全路径。`);
+  }
+  const verbose = runTar(["-tvzf", archiveName], tmpDir);
+  if (verbose.status !== 0) fail(`${label} 类型清单无法读取。`);
+  for (const line of String(verbose.stdout || "").split(/\r?\n/).filter(Boolean)) {
+    if (line[0] !== "-" && line[0] !== "d") fail(`${label} 包含链接或特殊条目。`);
+  }
+}
+
+async function downloadAndExtractManifestAsset(context, asset, label) {
+  const archivePath = path.join(context.tmpDir, asset.asset);
+  await download(`${DOWNLOAD_BASE}/${asset.asset}`, archivePath, {
+    label,
+    maxBytes: asset.size,
+    expectedBytes: asset.size,
+  });
+  if (sha256(archivePath) !== asset.sha256) fail(`${label} SHA-256 与安装 manifest 不一致。`);
+  validateArchiveEntries(asset.asset, asset.root, context.tmpDir, label);
+  const extraction = runTar(["-xzf", asset.asset], context.tmpDir);
+  if (extraction.status !== 0) fail(`${label} 解压失败：tar ${extraction.status}。`);
+  const root = path.join(context.tmpDir, asset.root);
+  validateRegularTree(root, context.tmpDir, label);
+  return root;
+}
+
+function formalToolsExecutable(toolsRoot, key) {
+  const manifest = JSON.parse(readFileSync(path.join(toolsRoot, "resources-manifest.json"), "utf8"));
+  const relative = manifest?.executables?.[key];
+  if (typeof relative !== "string") fail(`受管工具 manifest 缺少 ${key}。`);
+  return path.join(toolsRoot, relative);
+}
+
+function writeManagedToolsState(context, toolsPath) {
+  atomicWriteJson(TOOLS_STATE_PATH, {
+    schemaVersion: 1,
+    productVersion: VERSION,
+    platformKey: context.platformKey,
+    manifestSha256: context.manifestSha256,
+    archiveSha256: context.tools.sha256,
+    path: toolsPath,
+    treeDigest: regularTreeDigest(toolsPath),
+    updatedAt: new Date().toISOString(),
+  }, "managed_tools_state");
+}
+
+async function tryFastFormalReuse(context) {
+  if (!pathExists(STATE_PATH) || !pathExists(TOOLS_STATE_PATH)) return false;
+  const releaseLock = acquireUpdateLock();
+  try {
+    const state = readState();
+    if (state.phase !== "idle" || state.active?.version !== VERSION) return false;
+    const toolsState = JSON.parse(readFileSync(TOOLS_STATE_PATH, "utf8"));
+    const toolsTarget = readManagedToolsTarget();
+    if (
+      !toolsTarget || toolsState?.schemaVersion !== 1 || toolsState.productVersion !== VERSION ||
+      toolsState.platformKey !== context.platformKey ||
+      toolsState.manifestSha256 !== context.manifestSha256 ||
+      toolsState.archiveSha256 !== context.tools.sha256 ||
+      path.resolve(toolsState.path || "") !== path.resolve(toolsTarget)
+    ) return false;
+    validateExternalToolsSource(toolsTarget, { allowManagedRoot: true });
+    if (regularTreeDigest(toolsTarget) !== toolsState.treeDigest) fail("受管工具完整树摘要漂移。");
+    if (state.active.archiveSha256 !== context.runtime.sha256) fail("已安装 Runtime 与 manifest 摘要不一致。");
+    const activeInfo = validateCandidateLayout(state.active.path, APP_ROOT);
+    if (activeInfo.treeDigest !== state.active.treeDigest || activeInfo.buildId !== state.active.buildId) {
+      fail("已安装 Runtime 完整树身份漂移。");
+    }
+    const bunExecutable = formalToolsExecutable(toolsTarget, "bun");
+    installerToolsDirectory = toolsTarget;
+    await assertSupportedBun(bunExecutable);
+    await selfTestCandidate(state.active.path, bunExecutable, state.active.buildId);
+    if (ENSURE_MANAGED_SERVICE) {
+      await verifyManagedService(
+        state.active,
+        bunExecutable,
+        activeInfo.capabilities,
+        activeInfo.buildId,
+      );
+    }
+    reportSuccess("reused", 0, `chengfeng-videocut ${VERSION} 已复用；asset-downloads=0。\n`);
+    return true;
+  } finally {
+    releaseLock();
+  }
 }
 
 function runTar(args, cwd) {
@@ -1148,7 +1588,7 @@ function clearCurrentForFirstInstall(transactionId) {
 }
 
 function switchManagedTools(target, transactionId, { injectFailure = true } = {}) {
-  assertCanonicalManagedDirectory(target, "候选 Desktop 工具", TOOLS_ROOT);
+  assertCanonicalManagedDirectory(target, "候选 Product 受管工具", TOOLS_ROOT);
   const next = path.join(TOOLS_ROOT, `.current.next.${transactionId}`);
   const backup = path.join(TOOLS_ROOT, `.current.previous.${transactionId}`);
   if (pathExists(next)) removeLink(next);
@@ -1205,7 +1645,7 @@ function stageAndPromoteManagedTools(state, source, transactionId) {
   const staged = path.join(pendingRoot, "tools");
   const target = path.join(TOOLS_ROOT, VERSION);
   const backup = path.join(TOOLS_ROOT, `.${VERSION}.previous.${transactionId}`);
-  assertCanonicalManagedDirectory(source, "Desktop 工具外部来源", path.dirname(source));
+  assertCanonicalManagedDirectory(source, "Product 受管工具外部来源", path.dirname(source));
   // Persist the pending location before the first managed-root write, so an
   // interruption during copy has a deterministic cleanup target.
   state.transaction.toolsPending = pendingRoot;
@@ -1643,7 +2083,7 @@ async function rollbackActivatedTransaction(state, bunExecutable, { reason = "�
   }
 }
 
-async function activateSameVersionDesktopTools(state, bunExecutable, candidateInfo, managedTools) {
+async function activateSameVersionManagedTools(state, bunExecutable, candidateInfo, managedTools) {
   const transactionId = randomUUID();
   state.pending = state.active;
   state.phase = "health_check";
@@ -1662,7 +2102,7 @@ async function activateSameVersionDesktopTools(state, bunExecutable, candidateIn
   writeState(state);
   try {
     // Even though app/current already names this verified Runtime, the stable
-    // launcher and tools/current are still one Desktop-owned activation unit.
+    // launcher and tools/current are still one Product-managed activation unit.
     createLauncher();
     state.transaction.serviceBefore = await inspectManagedService(state.active, bunExecutable);
     writeState(state);
@@ -1681,7 +2121,7 @@ async function activateSameVersionDesktopTools(state, bunExecutable, candidateIn
     }
   } catch (error) {
     if (hasUnconfirmedProcessTree(error)) throw error;
-    await rollbackActivatedTransaction(state, bunExecutable, { reason: "同版本 Desktop 工具激活自证失败" });
+    await rollbackActivatedTransaction(state, bunExecutable, { reason: "同版本 Product 受管工具激活自证失败" });
     throw error;
   }
   state.pending = null;
@@ -1744,11 +2184,33 @@ function maybeCrashAt(phase) {
   }
 }
 
-async function main() {
-  const bunExecutable = findBun();
-  if (!bunExecutable) {
-    const hint = IS_WINDOWS ? 'powershell -c "irm bun.sh/install.ps1 | iex"' : "https://bun.sh/docs/installation";
-    fail(`需要先安装 Bun 1.2 或更高版本：${hint}`);
+async function runInstaller(formalContext) {
+  if (formalContext && await tryFastFormalReuse(formalContext)) {
+    return;
+  }
+  let formalRuntimeRoot = null;
+  let formalToolsRoot = null;
+  let bunExecutable = null;
+  if (formalContext) {
+    formalRuntimeRoot = await downloadAndExtractManifestAsset(
+      formalContext,
+      formalContext.runtime,
+      "Runtime bundle",
+    );
+    formalToolsRoot = await downloadAndExtractManifestAsset(
+      formalContext,
+      formalContext.tools,
+      "managed tools bundle",
+    );
+    validateExternalToolsSource(formalToolsRoot);
+    installerToolsDirectory = formalToolsRoot;
+    bunExecutable = formalToolsExecutable(formalToolsRoot, "bun");
+  } else {
+    bunExecutable = findBun();
+    if (!bunExecutable) {
+      const hint = IS_WINDOWS ? 'powershell -c "irm bun.sh/install.ps1 | iex"' : "https://bun.sh/docs/installation";
+      fail(`需要先安装 Bun 1.2 或更高版本：${hint}`);
+    }
   }
   await assertSupportedBun(bunExecutable);
   mkdirSync(APP_ROOT, { recursive: true });
@@ -1763,15 +2225,25 @@ async function main() {
     state = await recoverInterruptedTransaction(state, bunExecutable);
     assertCurrentMatches(state);
 
-    const tmpDir = mkdtempSync(path.join(os.tmpdir(), "chengfeng-videocut-"));
+    const tmpDir = formalContext?.tmpDir || mkdtempSync(path.join(os.tmpdir(), "chengfeng-videocut-"));
     try {
-      const archivePath = path.join(tmpDir, ARCHIVE_NAME);
-      const checksumPath = path.join(tmpDir, CHECKSUM_NAME);
-      process.stdout.write(`正在下载 chengfeng-videocut ${VERSION}…\n`);
-      await download(`${DOWNLOAD_BASE}/${ARCHIVE_NAME}`, archivePath);
-      await download(`${DOWNLOAD_BASE}/${CHECKSUM_NAME}`, checksumPath);
-      const archiveSha256 = validateArchive(archivePath, checksumPath, tmpDir);
-      const extracted = path.join(tmpDir, `chengfeng-videocut-${VERSION}`);
+      let archiveSha256;
+      let extracted;
+      if (formalContext) {
+        archiveSha256 = formalContext.runtime.sha256;
+        extracted = formalRuntimeRoot;
+      } else {
+        const archivePath = path.join(tmpDir, ARCHIVE_NAME);
+        const checksumPath = path.join(tmpDir, CHECKSUM_NAME);
+        progress(`正在下载 chengfeng-videocut ${VERSION}…\n`);
+        await download(`${DOWNLOAD_BASE}/${ARCHIVE_NAME}`, archivePath, { label: "Runtime bundle" });
+        await download(`${DOWNLOAD_BASE}/${CHECKSUM_NAME}`, checksumPath, {
+          label: "Runtime checksum",
+          maxBytes: SMALL_MANIFEST_DOWNLOAD_LIMIT_BYTES,
+        });
+        archiveSha256 = validateArchive(archivePath, checksumPath, tmpDir);
+        extracted = path.join(tmpDir, `chengfeng-videocut-${VERSION}`);
+      }
       if (process.env.CHENGFENG_VIDEOCUT_TEST_REPLACE_EXTRACTED_ROOT_WITH_REPARSE) {
         removeTreeWithoutFollowingLinks(extracted);
         symlinkSync(
@@ -1782,7 +2254,7 @@ async function main() {
       }
       normalizeCandidatePermissions(extracted, tmpDir);
       const candidateInfo = validateCandidateLayout(extracted);
-      const managedTools = validateExternalToolsSource(MANAGED_TOOLS_SOURCE_DIR);
+      const managedTools = validateExternalToolsSource(formalToolsRoot || MANAGED_TOOLS_SOURCE_DIR);
 
       if (state.active?.version === VERSION) {
         if (path.resolve(state.active.path) !== path.resolve(TARGET_DIR)) {
@@ -1806,7 +2278,8 @@ async function main() {
         }
         await selfTestCandidate(state.active.path, bunExecutable, state.active.buildId);
         if (managedTools) {
-          await activateSameVersionDesktopTools(state, bunExecutable, candidateInfo, managedTools);
+          await activateSameVersionManagedTools(state, bunExecutable, candidateInfo, managedTools);
+          if (formalContext) writeManagedToolsState(formalContext, readManagedToolsTarget());
         } else if (ENSURE_MANAGED_SERVICE) {
           await verifyManagedService(
             state.active,
@@ -1815,7 +2288,11 @@ async function main() {
             candidateInfo.buildId,
           );
         }
-        process.stdout.write(`chengfeng-videocut ${VERSION} 已是当前 Runtime；未改写 current。\n`);
+        reportSuccess(
+          "current",
+          formalContext ? 2 : 2,
+          `chengfeng-videocut ${VERSION} 已是当前 Runtime；未改写 current。\n`,
+        );
         return;
       }
       if (pathExists(TARGET_DIR)) {
@@ -1984,15 +2461,20 @@ async function main() {
       writeState(state);
       maybeCrashAt("tools_committed");
       finalizeManagedToolsVersion(state.transaction);
+      if (formalContext) writeManagedToolsState(formalContext, readManagedToolsTarget());
       maybeCrashAt("completed");
       state.phase = "idle";
       state.transactionId = null;
       state.transaction = null;
       state.terminationFailure = null;
       writeState(state);
-      process.stdout.write(`chengfeng-videocut ${VERSION} 已验证并激活。\n`);
+      reportSuccess(
+        "installed",
+        formalContext ? 2 : 2,
+        `chengfeng-videocut ${VERSION} 已验证并激活。\n`,
+      );
       if (IS_WINDOWS) {
-        process.stdout.write("Windows junction 切换采用 journal 可恢复事务；异常中断会在下次安装启动时恢复。\n");
+        progress("Windows junction 切换采用 journal 可恢复事务；异常中断会在下次安装启动时恢复。\n");
       }
     } finally {
       removeTreeWithoutFollowingLinks(tmpDir);
@@ -2007,7 +2489,30 @@ async function main() {
   }
 }
 
+async function main() {
+  let formalContext = null;
+  try {
+    formalContext = await loadFormalInstallContext();
+    return await runInstaller(formalContext);
+  } finally {
+    if (formalContext?.tmpDir && pathExists(formalContext.tmpDir)) {
+      removeTreeWithoutFollowingLinks(formalContext.tmpDir);
+    }
+  }
+}
+
 main().catch((error) => {
-  process.stderr.write(`错误：${error instanceof Error ? error.message : String(error)}\n`);
+  const message = error instanceof Error ? error.message : String(error);
+  if (INSTALLER_OPTIONS.json) {
+    process.stdout.write(`${JSON.stringify({
+      schemaVersion: 1,
+      product: "chengfeng-videocut",
+      command: "runtime.install",
+      ok: false,
+      error: { code: "installation_failed", message },
+    })}\n`);
+  } else {
+    process.stderr.write(`错误：${message}\n`);
+  }
   process.exitCode = 1;
 });

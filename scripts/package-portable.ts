@@ -19,6 +19,7 @@ const bundleName = `chengfeng-videocut-${version}`;
 const bundleDir = join(stageDir, bundleName);
 const versionedArchive = join(releaseDir, `${bundleName}-portable.tar.gz`);
 const stableArchive = join(releaseDir, "chengfeng-videocut-portable.tar.gz");
+const runtimeArchive = join(releaseDir, `chengfeng-videocut-runtime-${version}.tar.gz`);
 
 async function requirePath(path: string, label: string): Promise<void> {
   try {
@@ -63,8 +64,8 @@ if [ -z "\${CHENGFENG_VIDEOCUT_DATA_DIR:-}" ]; then
   fi
 fi
 
-# Desktop installs its bundled Bun/FFmpeg/FFprobe here. Keeping this lookup in
-# the stable launcher means the Desktop app and every Skill use the same tools
+# Product installs its managed Bun/FFmpeg/FFprobe here. Keeping this lookup in
+# the stable launcher means every caller and Skill uses the same tools
 # without requiring a system-wide PATH mutation.
 if [ -n "\${CHENGFENG_VIDEOCUT_DATA_DIR:-}" ]; then
   MANAGED_TOOLS_DIR="$CHENGFENG_VIDEOCUT_DATA_DIR/tools/current"
@@ -160,11 +161,14 @@ try {
 
   await rm(versionedArchive, { force: true });
   await rm(stableArchive, { force: true });
+  await rm(runtimeArchive, { force: true });
   await run(["tar", "-czf", versionedArchive, "-C", stageDir, bundleName], rootDir);
   await copyFile(versionedArchive, stableArchive);
+  await copyFile(versionedArchive, runtimeArchive);
 } finally {
   await rm(stageDir, { recursive: true, force: true });
 }
 
 console.log(`Created ${versionedArchive}`);
 console.log(`Created ${stableArchive}`);
+console.log(`Created ${runtimeArchive}`);

@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Agentchengfeng/chengfeng-videocut/blob/v0.5.0/installer/runtime-install-manifest.schema.json",
+  "title": "Chengfeng VideoCut Runtime install manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "product", "productVersion", "releaseTag", "runtime", "platforms", "licenseStatus"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "product": { "const": "chengfeng-videocut" },
+    "productVersion": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$" },
+    "releaseTag": { "type": "string", "pattern": "^v\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$" },
+    "runtime": { "$ref": "#/$defs/archive" },
+    "platforms": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["darwin-arm64", "darwin-x64", "win32-x64"],
+      "properties": {
+        "darwin-arm64": { "$ref": "#/$defs/platform" },
+        "darwin-x64": { "$ref": "#/$defs/platform" },
+        "win32-x64": { "$ref": "#/$defs/platform" }
+      }
+    },
+    "licenseStatus": { "enum": ["VERIFIED", "UNVERIFIED"] },
+    "licenseNote": { "type": "string", "minLength": 1 }
+  },
+  "$defs": {
+    "archive": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["asset", "root", "sha256", "size"],
+      "properties": {
+        "asset": { "type": "string", "pattern": "^[^/\\\\]+$" },
+        "root": { "type": "string", "pattern": "^[^/\\\\]+$" },
+        "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "size": { "type": "integer", "minimum": 1, "maximum": 4294967296 }
+      }
+    },
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["installerAsset", "tools"],
+      "properties": {
+        "installerAsset": { "type": "string", "pattern": "^[^/\\\\]+$" },
+        "tools": { "$ref": "#/$defs/archive" }
+      }
+    }
+  }
+}

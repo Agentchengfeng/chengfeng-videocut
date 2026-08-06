@@ -16,6 +16,7 @@ const {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  realpathSync,
   readFileSync,
   readlinkSync,
   readdirSync,
@@ -34,7 +35,7 @@ const { gzipSync } = require("node:zlib");
 const ROOT = path.resolve(__dirname, "..");
 const INSTALLER = path.join(ROOT, "install.cjs");
 const SHELL_INSTALLER = path.join(ROOT, "install.sh");
-const VERSION = "0.4.9";
+const VERSION = "0.5.0";
 const IS_WINDOWS = process.platform === "win32";
 const PROJECT_CONTENT = "project must survive update transaction\n";
 
@@ -570,7 +571,7 @@ function readState(home) {
 }
 
 function fixture(t, releaseOptions) {
-  const root = mkdtempSync(path.join(os.tmpdir(), "chengfeng-videocut-updater-test-"));
+  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "chengfeng-videocut-updater-test-")));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const home = path.join(root, "home");
   const releaseInfo = makeRelease(root, releaseOptions);
@@ -1576,7 +1577,7 @@ test("lock mkdir-to-owner race never lets a second installer delete the live loc
 });
 
 test("crafted archive candidate root symlink is rejected and cannot escape into projects", (t) => {
-  const root = mkdtempSync(path.join(os.tmpdir(), "chengfeng-videocut-updater-link-test-"));
+  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "chengfeng-videocut-updater-link-test-")));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const home = path.join(root, "home");
   const old = createLegacyRuntime(home);

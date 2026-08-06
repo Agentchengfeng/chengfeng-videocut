@@ -19,17 +19,15 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 
 /**
- * Where a system Chrome lives.
- *
- * A browser is not installed for this product: the export borrows the one on
- * the machine. If there is none, the export says so plainly rather than
- * downloading a hundred and fifty megabytes behind the user's back.
+ * A managed Runtime carries one fixed Chrome Headless Shell. Export never asks
+ * Playwright/Puppeteer to download a browser. Explicit developer overrides and
+ * legacy system Chrome remain fallbacks for source checkouts only.
  */
 const CHROME_PATHS = [
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -40,8 +38,71 @@ const CHROME_PATHS = [
   "/usr/bin/chromium-browser",
 ];
 
-export function findSystemChrome(): string | null {
-  return CHROME_PATHS.find((path) => existsSync(path)) ?? null;
+export class ChromeError extends Error {}
+
+interface ChromePathOptions {
+  configuredPath?: string;
+  dataDir?: string;
+  candidates?: readonly string[];
+  platform?: NodeJS.Platform;
+}
+
+function isExecutableFile(path: string, platform: NodeJS.Platform): boolean {
+  try {
+    const metadata = lstatSync(path);
+    if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1) return false;
+    accessSync(path, platform === "win32" ? constants.R_OK : constants.R_OK | constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function managedChromePath(dataDir: string | undefined, platform: NodeJS.Platform): string | null {
+  if (!dataDir) return null;
+  const toolsRoot = resolve(dataDir, "tools/current");
+  const manifestPath = join(toolsRoot, "resources-manifest.json");
+  if (!existsSync(manifestPath)) {
+    throw new ChromeError(`Product Runtime 缺少受管浏览器 manifest：${manifestPath}`);
+  }
+  let manifest: { schemaVersion?: number; product?: string; executables?: { chrome?: string } };
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as typeof manifest;
+  } catch {
+    throw new ChromeError(`受管浏览器 manifest 无效：${manifestPath}`);
+  }
+  const relative = manifest.executables?.chrome;
+  if (
+    manifest.schemaVersion !== 2 || manifest.product !== "chengfeng-videocut-managed-tools" ||
+    typeof relative !== "string" || !relative || isAbsolute(relative) ||
+    relative.split(/[\\/]/).some((part) => part === "..")
+  ) throw new ChromeError(`受管浏览器 manifest 合同无效：${manifestPath}`);
+  const candidate = resolve(toolsRoot, relative);
+  const canonicalRoot = realpathSync(toolsRoot);
+  const canonicalCandidate = realpathSync(candidate);
+  if (!canonicalCandidate.startsWith(`${canonicalRoot}${process.platform === "win32" ? "\\" : "/"}`)) {
+    throw new ChromeError("受管浏览器路径逃出 tools/current。 ");
+  }
+  if (!isExecutableFile(candidate, platform)) throw new ChromeError(`受管浏览器不可执行：${candidate}`);
+  return candidate;
+}
+
+export function findSystemChrome(options: ChromePathOptions = {}): string | null {
+  const platform = options.platform ?? process.platform;
+  const configuredPath = options.configuredPath ?? process.env.CHENGFENG_VIDEOCUT_CHROME_PATH;
+  if (configuredPath !== undefined) {
+    if (!isAbsolute(configuredPath)) {
+      throw new ChromeError("CHENGFENG_VIDEOCUT_CHROME_PATH 必须是绝对路径。");
+    }
+    if (!isExecutableFile(configuredPath, platform)) {
+      throw new ChromeError(`CHENGFENG_VIDEOCUT_CHROME_PATH 不是可执行普通文件：${configuredPath}`);
+    }
+    return configuredPath;
+  }
+  const productDataDir =
+    options.dataDir ?? process.env.CHENGFENG_VIDEOCUT_DATA_DIR ?? process.env.CHENGFENG_VIDEOCUT_HOME;
+  if (productDataDir) return managedChromePath(productDataDir, platform);
+  return (options.candidates ?? CHROME_PATHS).find((path) => isExecutableFile(path, platform)) ?? null;
 }
 
 interface PendingCall {
@@ -63,8 +124,6 @@ export interface ChromePageOptions {
   /** Extra seconds to wait for the browser to come up. */
   launchTimeoutMs?: number;
 }
-
-export class ChromeError extends Error {}
 
 export class ChromePage {
   #socket: WebSocket;
@@ -91,17 +150,22 @@ export class ChromePage {
     const executable = findSystemChrome();
     if (!executable) {
       throw new ChromeError(
-        "找不到 Chrome。导出要用系统上的 Chrome 把字幕和动画画成图片，请先安装 Google Chrome。",
+        "找不到受管 Chrome Headless Shell。请用同一 0.5.0 manifest 修复 Runtime 工具包；导出不会自动下载浏览器。",
       );
     }
     const profileDir = await mkdtemp(join(tmpdir(), "chengfeng-videocut-export-"));
     const child = spawn(executable, [
-      "--headless=new",
+      "--headless",
       "--remote-debugging-port=0",
       `--user-data-dir=${profileDir}`,
       `--window-size=${Math.round(options.width)},${Math.round(options.height)}`,
       "--no-first-run",
       "--no-default-browser-check",
+      "--disable-crash-reporter",
+      "--disable-breakpad",
+      "--disable-crashpad",
+      "--disable-background-networking",
+      "--disable-component-update",
       "--disable-extensions",
       "--disable-sync",
       "--mute-audio",

@@ -1,12 +1,11 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   requiredReleaseAssetNames,
+  nativeInstallerAssetNames,
   verifyReleaseAssetManifest,
-  windowsDesktopInstallerName,
   writeReleaseChecksums,
 } from "../../../scripts/release-assets";
 import { checkVersionContract } from "../../../scripts/version-contract";
@@ -48,25 +47,13 @@ describe("release contract", () => {
     expect(sourcePackager).not.toContain('join(root, "release")');
   });
 
-  it("copies installers and checksums every portable, tgz, and Windows desktop asset", async () => {
+  it("checksums the manifest, Runtime, three native installers, and three tools bundles", async () => {
     const fixtureRoot = await mkdtemp(join(tmpdir(), "videocut-release-contract-"));
     cleanupPaths.push(fixtureRoot);
     const releaseDir = join(fixtureRoot, "release");
     await mkdir(releaseDir, { recursive: true });
-    await Bun.write(join(fixtureRoot, "install.sh"), "#!/bin/sh\nVERSION=fixture\n");
-    await Bun.write(join(fixtureRoot, "install.cjs"), 'const VERSION = "fixture";\n');
-
-    const assetNames = requiredReleaseAssetNames(PRODUCT_VERSION).filter(
-      (name) => name !== "install.sh" && name !== "install.cjs",
-    );
-    for (const name of assetNames) {
-      const canonicalName =
-        name === "chengfeng-videocut-portable.tar.gz"
-          ? `chengfeng-videocut-${PRODUCT_VERSION}-portable.tar.gz`
-          : name === "chengfeng-videocut.tgz"
-            ? `chengfeng-videocut-${PRODUCT_VERSION}.tgz`
-            : name;
-      await Bun.write(join(releaseDir, name), `fixture:${canonicalName}\n`);
+    for (const name of requiredReleaseAssetNames(PRODUCT_VERSION)) {
+      await Bun.write(join(releaseDir, name), `fixture:${name}\n`);
     }
 
     const result = await writeReleaseChecksums({
@@ -75,18 +62,15 @@ describe("release contract", () => {
       version: PRODUCT_VERSION,
     });
     const sums = await readFile(result.checksumPath, "utf8");
-    expect(result.lines).toHaveLength(7);
+    expect(result.lines).toHaveLength(8);
     for (const name of requiredReleaseAssetNames(PRODUCT_VERSION)) {
       expect(sums).toContain(`  ${name}\n`);
     }
-    expect(windowsDesktopInstallerName(PRODUCT_VERSION)).toBe(
-      `Chengfeng-VideoCut-${PRODUCT_VERSION}-win-x64.exe`,
-    );
-    const installer = await readFile(join(releaseDir, "install.sh"), "utf8");
-    expect(installer).toBe("#!/bin/sh\nVERSION=fixture\n");
-    expect(sums).toContain(
-      `${createHash("sha256").update(installer).digest("hex")}  install.sh\n`,
-    );
+    expect(nativeInstallerAssetNames()).toEqual([
+      "chengfeng-videocut-installer-macos-arm64",
+      "chengfeng-videocut-installer-macos-x64",
+      "chengfeng-videocut-installer-windows-x64.exe",
+    ]);
     await expect(
       verifyReleaseAssetManifest({ releaseDir, version: PRODUCT_VERSION }),
     ).resolves.toEqual({
@@ -95,18 +79,17 @@ describe("release contract", () => {
       ),
       checksums: expect.any(Map),
     });
-    await Bun.write(join(releaseDir, windowsDesktopInstallerName(PRODUCT_VERSION)), "tampered\n");
+    const windowsInstaller = "chengfeng-videocut-installer-windows-x64.exe";
+    await Bun.write(join(releaseDir, windowsInstaller), "tampered\n");
     await expect(
       verifyReleaseAssetManifest({ releaseDir, version: PRODUCT_VERSION }),
-    ).rejects.toThrow(`SHA256 mismatch for ${windowsDesktopInstallerName(PRODUCT_VERSION)}`);
+    ).rejects.toThrow(`SHA256 mismatch for ${windowsInstaller}`);
   });
 
   it("fails closed when a required archive is missing", async () => {
     const fixtureRoot = await mkdtemp(join(tmpdir(), "videocut-release-missing-"));
     cleanupPaths.push(fixtureRoot);
     const releaseDir = join(fixtureRoot, "release");
-    await writeFile(join(fixtureRoot, "install.sh"), "#!/bin/sh\n");
-    await writeFile(join(fixtureRoot, "install.cjs"), 'const VERSION = "fixture";\n');
     await expect(
       writeReleaseChecksums({ rootDir: fixtureRoot, releaseDir, version: PRODUCT_VERSION }),
     ).rejects.toThrow("Missing chengfeng-videocut");
@@ -117,11 +100,7 @@ describe("release contract", () => {
     cleanupPaths.push(fixtureRoot);
     const releaseDir = join(fixtureRoot, "release");
     await mkdir(releaseDir, { recursive: true });
-    await Bun.write(join(fixtureRoot, "install.sh"), "#!/bin/sh\n");
-    await Bun.write(join(fixtureRoot, "install.cjs"), 'const VERSION = "fixture";\n');
-    for (const name of requiredReleaseAssetNames(PRODUCT_VERSION).filter(
-      (asset) => asset !== "install.sh" && asset !== "install.cjs",
-    )) {
+    for (const name of requiredReleaseAssetNames(PRODUCT_VERSION)) {
       await Bun.write(join(releaseDir, name), `fixture:${name}\n`);
     }
     await Bun.write(
@@ -130,6 +109,6 @@ describe("release contract", () => {
     );
     await expect(
       writeReleaseChecksums({ rootDir: fixtureRoot, releaseDir, version: PRODUCT_VERSION }),
-    ).rejects.toThrow("Windows prerelease release directory contains unsupported assets");
+    ).rejects.toThrow("Release directory contains unsupported assets");
   });
 });

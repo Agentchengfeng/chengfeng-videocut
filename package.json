@@ -1,6 +1,6 @@
 {
   "name": "chengfeng-videocut-monorepo",
-  "version": "0.4.9",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
@@ -32,6 +32,10 @@
     "release:stage:windows-desktop": "bun scripts/stage-desktop-windows-release.ts",
     "release:checksums": "bun scripts/write-release-checksums.ts",
     "release:artifact-check": "bun scripts/release-artifact-check.ts",
+    "installer:build": "bun scripts/build-native-installer.ts",
+    "tools:pack": "bun scripts/package-managed-tools.ts",
+    "install-manifest:build": "bun scripts/write-install-manifest.ts",
+    "release:native:stage": "bun scripts/stage-native-release.ts",
     "desktop:prepare": "bun run --cwd apps/desktop prepare:desktop",
     "desktop:test": "bun run --cwd apps/desktop test",
     "desktop:smoke": "bun run --cwd apps/desktop smoke",

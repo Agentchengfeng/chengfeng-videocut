@@ -6,67 +6,17 @@ chengfeng-videocut 是一个本地优先的口播视频剪辑产品：浏览器�
 
 ## 下载与安装
 
-正式分发只走 [GitHub Releases](https://github.com/Agentchengfeng/chengfeng-videocut/releases)，
-不发布 npm 包，也不需要 `bunx`。**v0.4.9 是 Windows Desktop 受控测试
-prerelease**：本次 Release 提供 Windows 桌面 EXE 与 CLI 便携包，**不提供 macOS
-Desktop DMG**。桌面测试包在完成代码签名、公证与 FFmpeg 再分发复核前只作为预发布
-测试资产。
+0.5.0 的目标入口是 Codex Plugin。Plugin 调用平台原生 installer，用户机器不需要预装
+Node、Bun、FFmpeg、FFprobe 或 Chrome。installer 用已校验的
+`chengfeng-videocut-install-manifest.json` 安装 Runtime 与固定版本 managed tools，随后
+显式 `service ensure`；多个 Codex 任务复用同一个 Product Runtime。
 
-v0.4.9 桌面预览包：
+当前 0.5.0 代码与本机隔离安装已实现，但**公开发布被阻止**：FFmpeg/FFprobe/Bun/
+Chrome Headless Shell 的再分发许可复核、macOS/Windows 签名和 Windows 实机安装尚未
+完成。仓库中的 `UNVERIFIED` 不是免责声明式通过，而是 fail-closed 发布门禁。
 
-- Windows 10/11 x64：NSIS EXE
-- 随包提供 Runtime、Bun、FFmpeg 与 FFprobe，不要求用户修改系统 PATH
-- 首次启动把这些资产安装到 `~/.chengfeng-videocut`，再通过同一个稳定 CLI 执行
-  `service ensure`；关闭窗口后用户级服务继续运行，Skills 直接复用
-
-macOS 用户可使用下面的 CLI Runtime 安装路径；它不会安装 Desktop App。
-
-纯 CLI / 便携包仍要求 Bun 1.2+ 与 FFmpeg 6+；Windows 的 `install.cjs` 另需
-Node.js 20+。Linux 可用 foreground `start` 做开发诊断，常驻 `service` 尚不支持。
-
-macOS CLI Runtime 一行安装（非 Desktop App）：
-
-```bash
-curl -fsSL https://github.com/Agentchengfeng/chengfeng-videocut/releases/download/v0.4.9/install.sh | sh
-```
-
-安装后可运行：
-
-```bash
-chengfeng-videocut doctor
-chengfeng-videocut service ensure --open
-chengfeng-videocut service status
-chengfeng-videocut service logs
-```
-
-`service ensure` 是正式用户入口：首次使用时在 macOS 注册 LaunchAgent、在 Windows 注册 Task Scheduler 用户任务，后续调用会复用健康进程。安装器本身只安装 Runtime，不会在安装时偷偷注册后台服务。
-
-桌面 App 是这个规则的另一个入口，不是另一套服务：它先在本地安装随包资产，再显式
-执行 `service ensure`。App 与 Skills 都只认 `~/.chengfeng-videocut/bin` 的稳定
-launcher；Electron resources 路径不会成为公开 CLI。
-
-本版常驻服务支持 macOS 与 Windows。其他平台调用 `service` 会明确返回 `service_unsupported`，仍可使用 foreground `start` 进行开发诊断。
-
-若终端暂时找不到命令，请按照安装器最后输出的提示，将 `~/.chengfeng-videocut/bin` 加入 `PATH`。
-
-### 手动安装
-
-1. 从 [v0.4.9 prerelease](https://github.com/Agentchengfeng/chengfeng-videocut/releases/tag/v0.4.9) 下载同一版本的 `install.sh`、`chengfeng-videocut-portable.tar.gz` 和 `SHA256SUMS.txt` 到同一目录。
-2. 对照 `SHA256SUMS.txt` 校验下载文件。
-3. 在该目录运行 `CHENGFENG_VIDEOCUT_DOWNLOAD_BASE="file://$PWD" sh ./install.sh`，把 Runtime 落到稳定的 `~/.chengfeng-videocut/bin` 与 `app/current` 布局。
-4. 运行 `~/.chengfeng-videocut/bin/chengfeng-videocut service ensure --open` 启动工作台。
-
-Windows PowerShell 使用同一 Release 的 `install.cjs`、便携包与校验清单：
-
-```powershell
-$env:CHENGFENG_VIDEOCUT_DOWNLOAD_BASE = ([uri]$PWD).AbsoluteUri
-node .\install.cjs
-& "$env:USERPROFILE\.chengfeng-videocut\bin\chengfeng-videocut.cmd" service ensure --open
-```
-
-裸解压的便携目录可用于 `doctor` 或 foreground 诊断，但不会被操作系统受管任务绑定为永久路径；请勿移动临时目录后继续依赖其中的服务入口。
-
-版本化资产用于固定版本和回滚；不带版本号的 `chengfeng-videocut-portable.tar.gz` 始终指向该次 Release 的便携包。
+正式资产契约见 [docs/distribution.md](docs/distribution.md)。`install.sh`、Node 执行
+`install.cjs` 和 Desktop/Companion 只保留历史兼容或实验用途，不是 0.5.0 用户入口。
 
 ## 基本使用
 

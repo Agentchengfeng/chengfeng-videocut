@@ -77,8 +77,10 @@ for (const name of manifest.assetNames) await scanFile(join(releaseDir, name), n
 
 const temporaryRoot = await mkdtemp(join(tmpdir(), "chengfeng-videocut-release-audit-"));
 try {
-  await extractAndScan(`chengfeng-videocut-${version.version}-portable.tar.gz`, temporaryRoot);
-  await extractAndScan(`chengfeng-videocut-${version.version}.tgz`, temporaryRoot);
+  await extractAndScan(`chengfeng-videocut-runtime-${version.version}.tar.gz`, temporaryRoot);
+  await extractAndScan(`chengfeng-videocut-tools-${version.version}-darwin-arm64.tar.gz`, temporaryRoot);
+  await extractAndScan(`chengfeng-videocut-tools-${version.version}-darwin-x64.tar.gz`, temporaryRoot);
+  await extractAndScan(`chengfeng-videocut-tools-${version.version}-win32-x64.tar.gz`, temporaryRoot);
 } finally {
   await rm(temporaryRoot, { recursive: true, force: true });
 }
