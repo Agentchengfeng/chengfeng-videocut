@@ -1,6 +1,7 @@
 import type { JobKind } from "@video-workbench/contracts";
 import { JobManager } from "../jobs/manager";
 import { JobStoreError } from "../jobs/store";
+import { publicJob } from "../jobs/public";
 
 function responseError(status: number, code: string, message: string, details?: Record<string, unknown>): Response {
   return Response.json({ error: { code, message, ...(details ? { details } : {}) } }, {
@@ -58,7 +59,7 @@ export function createJobsApi(manager: JobManager) {
             target: record.target,
             params: params as Record<string, unknown> | undefined,
           });
-          return Response.json(job, { status: 202, headers: { "Cache-Control": "no-store" } });
+          return Response.json(publicJob(job), { status: 202, headers: { "Cache-Control": "no-store" } });
         }
         if (request.method === "GET") {
           const rawLimit = url.searchParams.get("limit");
@@ -72,7 +73,7 @@ export function createJobsApi(manager: JobManager) {
             state: url.searchParams.get("state") ?? undefined,
             limit,
           });
-          return Response.json({ schemaVersion: 1, jobs }, { headers: { "Cache-Control": "no-store" } });
+          return Response.json({ schemaVersion: 1, jobs: jobs.map(publicJob) }, { headers: { "Cache-Control": "no-store" } });
         }
         return responseError(405, "method_not_allowed", "Method not allowed", { allow: "GET, POST" });
       }
@@ -86,12 +87,12 @@ export function createJobsApi(manager: JobManager) {
       if (!jobId || jobId.includes("/")) return responseError(400, "invalid_job_id", "Invalid job id");
       if (cancel) {
         if (request.method !== "POST") return responseError(405, "method_not_allowed", "Method not allowed", { allow: "POST" });
-        return Response.json(await manager.cancel(jobId), { headers: { "Cache-Control": "no-store" } });
+        return Response.json(publicJob(await manager.cancel(jobId)), { headers: { "Cache-Control": "no-store" } });
       }
       if (request.method !== "GET") return responseError(405, "method_not_allowed", "Method not allowed", { allow: "GET" });
       const job = await manager.read(jobId);
       return job
-        ? Response.json(job, { headers: { "Cache-Control": "no-store" } })
+        ? Response.json(publicJob(job), { headers: { "Cache-Control": "no-store" } })
         : responseError(404, "job_not_found", "Job not found", { jobId });
     } catch (error) {
       const normalized = asError(error);

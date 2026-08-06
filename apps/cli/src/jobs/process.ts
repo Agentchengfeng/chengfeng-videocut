@@ -3,6 +3,19 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
+export async function runWindowsTaskkill(
+  pid: number,
+  execute: (file: string, args: string[]) => Promise<unknown> = execFileAsync,
+): Promise<"terminated" | "cleanup_failed"> {
+  try {
+    await execute("taskkill.exe", ["/PID", String(pid), "/T", "/F"]);
+    return "terminated";
+  } catch {
+    // The root disappearing cannot prove that taskkill removed descendants.
+    return "cleanup_failed";
+  }
+}
+
 function processExists(pid: number): boolean {
   try { process.kill(pid, 0); return true; }
   catch (error) {
@@ -58,11 +71,7 @@ export async function terminateOwnedProcessTree(
     return "identity_mismatch";
   }
   if (process.platform === "win32") {
-    try {
-      await execFileAsync("taskkill.exe", ["/PID", String(pid), "/T", "/F"]);
-    } catch {
-      if (processExists(pid)) return "cleanup_failed";
-    }
+    if (await runWindowsTaskkill(pid) === "cleanup_failed") return "cleanup_failed";
   } else {
     try {
       try { process.kill(-pid, "SIGTERM"); } catch { process.kill(pid, "SIGTERM"); }

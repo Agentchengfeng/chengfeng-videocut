@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { cp, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { DurableJob } from "@video-workbench/contracts";
@@ -106,6 +106,20 @@ describe("durable jobs HTTP and real export", () => {
 
     const beforeRestart = await waitJob(server.url, first.jobId, ["running"]);
     const oldWorkerPid = beforeRestart.owner?.pid;
+    expect(beforeRestart.owner).not.toHaveProperty("token");
+    expect(JSON.stringify(beforeRestart)).not.toContain('"token"');
+    const privateRecord = JSON.parse(await readFile(
+      join(f.dataDir, "jobs", first.jobId, "job.json"),
+      "utf8",
+    ));
+    expect(typeof privateRecord.owner.token).toBe("string");
+    const runningCliLines: string[] = [];
+    expect(await runCli(["job", "get", first.jobId, "--api-base", server.url], {
+      io: { stdout: (line) => runningCliLines.push(line), stderr: (line) => runningCliLines.push(line) },
+    })).toBe(0);
+    const runningCliPayload = JSON.parse(runningCliLines[0]!);
+    expect(runningCliPayload.data.owner).not.toHaveProperty("token");
+    expect(JSON.stringify(runningCliPayload)).not.toContain('"token"');
     await server.stop();
     servers.splice(servers.indexOf(server), 1);
 

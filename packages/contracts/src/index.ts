@@ -21,7 +21,17 @@ export interface JobError {
 
 export interface JobOwner {
   pid: number;
+  /** Runtime process that minted this worker attempt. */
+  managerPid?: number;
+  /** HMAC proof for the manager-only, non-persisted worker secret. */
+  secretProof?: string;
   token: string;
+  startedAt: string;
+  heartbeatAt: string;
+}
+
+export interface PublicJobOwner {
+  pid: number;
   startedAt: string;
   heartbeatAt: string;
 }
@@ -49,6 +59,10 @@ export interface DurableJob {
   error: JobError | null;
 }
 
+export type PublicDurableJob = Omit<DurableJob, "owner"> & {
+  owner: PublicJobOwner | null;
+};
+
 export interface StartJobRequest {
   kind: JobKind;
   target: string;
@@ -57,7 +71,7 @@ export interface StartJobRequest {
 
 export interface JobListResponse {
   schemaVersion: typeof JOB_SCHEMA_VERSION;
-  jobs: DurableJob[];
+  jobs: PublicDurableJob[];
 }
 
 export type WorkbenchTrackKind =

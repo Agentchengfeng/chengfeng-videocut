@@ -1,9 +1,14 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { link, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JobManager } from "./manager";
-import { candidateForOutput, exportInputFingerprint, fileIdentity } from "./runners";
+import {
+  candidateForOutput,
+  createExportSnapshot,
+  exportDependencyFingerprint,
+  fileIdentity,
+} from "./runners";
 
 const cleanup: string[] = [];
 const managers: JobManager[] = [];
@@ -20,6 +25,8 @@ async function fixture() {
   for (const [index, project] of projects.entries()) {
     await mkdir(project, { recursive: true });
     await writeFile(join(project, "project.json"), JSON.stringify({ jobId: index ? "two" : "one", inputVideo: "input.mp4" }));
+    await writeFile(join(project, "input.mp4"), `source-${index}`);
+    await writeFile(join(project, "overlay.html"), `<p>overlay-${index}</p>`);
   }
   const slowWorker = join(root, "slow-worker.ts");
   await writeFile(slowWorker, "await Bun.sleep(60_000);\n");
@@ -31,7 +38,7 @@ import { createHash } from "node:crypto";
 const argv = process.argv.slice(2);
 const jobId = argv[1];
 const dataDir = argv[argv.indexOf("--data-dir") + 1];
-const token = argv[argv.indexOf("--owner-token") + 1];
+const token = process.env.CHENGFENG_JOB_OWNER_TOKEN;
 let job;
 for (let i = 0; i < 200; i++) {
   job = JSON.parse(await readFile(join(dataDir, "jobs", jobId, "job.json"), "utf8"));
@@ -42,11 +49,45 @@ const candidate = "candidate";
 await writeFile(job.params.candidatePath, candidate);
 console.log(JSON.stringify({ ok: true, result: {
   worker: "test",
+  dependencyFingerprint: job.frozen.dependencyFingerprint,
   candidateSha256: createHash("sha256").update(candidate).digest("hex"),
   candidateSize: Buffer.byteLength(candidate),
 } }));
 `);
-  return { root, dataDir, projects, slowWorker, successWorker };
+  const delayedWorker = join(root, "delayed-worker.ts");
+  await writeFile(delayedWorker, (await readFile(successWorker, "utf8")).replace(
+    'const candidate = "candidate";',
+    'await Bun.sleep(250);\nconst candidate = "candidate";',
+  ));
+  return { root, dataDir, projects, slowWorker, successWorker, delayedWorker };
+}
+
+async function createPersistedExport(
+  manager: JobManager,
+  input: { jobId: string; target: string; projectId: string; outputPath: string },
+) {
+  const candidatePath = candidateForOutput(input.outputPath, input.jobId);
+  const jobDirectory = manager.store.jobDirectory(input.jobId);
+  const snapshotDirectory = join(jobDirectory, "snapshot");
+  const snapshot = await createExportSnapshot(input.target, snapshotDirectory);
+  const dependencyFingerprint = await exportDependencyFingerprint(input.target, {
+    excludePaths: [input.outputPath, candidatePath, jobDirectory],
+    sourcePath: join(input.target, "input.mp4"),
+  });
+  return manager.store.create({
+    jobId: input.jobId,
+    kind: "export",
+    target: input.target,
+    targetKey: `project:${input.target}`,
+    projectId: input.projectId,
+    frozen: { ...snapshot, dependencyFingerprint },
+    params: {
+      outputPath: input.outputPath,
+      candidatePath,
+      workDirectory: join(jobDirectory, "work"),
+      snapshotDirectory,
+    },
+  });
 }
 
 async function waitState(manager: JobManager, jobId: string, state: string, timeout = 10_000) {
@@ -60,21 +101,54 @@ async function waitState(manager: JobManager, jobId: string, state: string, time
 }
 
 describe("job manager", () => {
+  it("makes the publishing lease atomically non-cancellable", async () => {
+    const f = await fixture();
+    let entered!: () => void;
+    let release!: () => void;
+    const atPublish = new Promise<void>((resolveEntered) => { entered = resolveEntered; });
+    const continuePublish = new Promise<void>((resolveRelease) => { release = resolveRelease; });
+    const manager = new JobManager(f.dataDir, {
+      workerEntrypoint: f.successWorker,
+      async beforePublishLink() {
+        entered();
+        await continuePublish;
+      },
+    });
+    managers.push(manager);
+    await manager.initialize();
+    const started = await manager.start({
+      kind: "export", target: f.projects[0]!, params: { outputPath: join(f.root, "atomic-cancel.mp4") },
+    });
+    await atPublish;
+    await expect(manager.cancel(started.jobId)).rejects.toMatchObject({ code: "job_not_cancellable" });
+    expect(await manager.read(started.jobId)).toMatchObject({ state: "running", phase: "publishing" });
+    release();
+    expect(await waitState(manager, started.jobId, "succeeded")).toMatchObject({ phase: "published" });
+  });
+
+  it("uses a no-replace publish primitive when output appears at the final seam", async () => {
+    const f = await fixture();
+    const outputPath = join(f.root, "publish-race.mp4");
+    const manager = new JobManager(f.dataDir, {
+      workerEntrypoint: f.successWorker,
+      beforePublishLink: () => writeFile(outputPath, "unrelated-winner"),
+    });
+    managers.push(manager);
+    await manager.initialize();
+    const started = await manager.start({ kind: "export", target: f.projects[0]!, params: { outputPath } });
+    const failed = await waitState(manager, started.jobId, "failed");
+    expect(failed.error).toMatchObject({ code: "job_output_exists" });
+    expect(await readFile(outputPath, "utf8")).toBe("unrelated-winner");
+  });
+
   it("refuses cancellation after verified output enters the publishing phase", async () => {
     const f = await fixture();
     const manager = new JobManager(f.dataDir, { workerEntrypoint: f.successWorker });
     managers.push(manager);
     await manager.store.initialize();
     const outputPath = join(f.root, "publishing.mp4");
-    const job = await manager.store.create({
-      jobId: "publishing-job", kind: "export", target: f.projects[0]!,
-      targetKey: `project:${f.projects[0]}`, projectId: "one",
-      frozen: { inputFingerprint: await exportInputFingerprint(f.projects[0]!) },
-      params: {
-        outputPath,
-        candidatePath: candidateForOutput(outputPath, "publishing-job"),
-        workDirectory: join(f.dataDir, "jobs", "publishing-job", "work"),
-      },
+    const job = await createPersistedExport(manager, {
+      jobId: "publishing-job", target: f.projects[0]!, projectId: "one", outputPath,
     });
     await manager.store.update(job.jobId, (value) => ({
       ...value, state: "running", phase: "publishing", result: { outputPath },
@@ -92,15 +166,8 @@ describe("job manager", () => {
     const outputPath = join(f.root, "published.mp4");
     await writeFile(outputPath, "verified-output");
     const identity = await fileIdentity(outputPath);
-    const job = await manager.store.create({
-      jobId: "published-job", kind: "export", target: f.projects[0]!,
-      targetKey: `project:${f.projects[0]}`, projectId: "one",
-      frozen: { inputFingerprint: await exportInputFingerprint(f.projects[0]!) },
-      params: {
-        outputPath,
-        candidatePath: candidateForOutput(outputPath, "published-job"),
-        workDirectory: join(f.dataDir, "jobs", "published-job", "work"),
-      },
+    const job = await createPersistedExport(manager, {
+      jobId: "published-job", target: f.projects[0]!, projectId: "one", outputPath,
     });
     await manager.store.update(job.jobId, (value) => ({
       ...value, state: "running", phase: "publishing", result: {
@@ -124,14 +191,8 @@ describe("job manager", () => {
     await writeFile(outputPath, "unrelated-output");
     await writeFile(expectedPath, "expected-output");
     const expected = await fileIdentity(expectedPath);
-    const job = await manager.store.create({
-      jobId: "unrelated-output", kind: "export", target: f.projects[0]!,
-      targetKey: `project:${f.projects[0]}`, projectId: "one",
-      frozen: { inputFingerprint: await exportInputFingerprint(f.projects[0]!) },
-      params: {
-        outputPath, candidatePath: candidateForOutput(outputPath, "unrelated-output"),
-        workDirectory: join(f.dataDir, "jobs", "unrelated-output", "work"),
-      },
+    const job = await createPersistedExport(manager, {
+      jobId: "unrelated-output", target: f.projects[0]!, projectId: "one", outputPath,
     });
     await manager.store.update(job.jobId, (value) => ({
       ...value, state: "running", phase: "publishing",
@@ -153,14 +214,8 @@ describe("job manager", () => {
     await writeFile(outputPath, "verified-before-crash");
     const expected = await fileIdentity(outputPath);
     await writeFile(outputPath, "tampered-after-crash");
-    const job = await manager.store.create({
-      jobId: "tampered-output", kind: "export", target: f.projects[0]!,
-      targetKey: `project:${f.projects[0]}`, projectId: "one",
-      frozen: { inputFingerprint: await exportInputFingerprint(f.projects[0]!) },
-      params: {
-        outputPath, candidatePath: candidateForOutput(outputPath, "tampered-output"),
-        workDirectory: join(f.dataDir, "jobs", "tampered-output", "work"),
-      },
+    const job = await createPersistedExport(manager, {
+      jobId: "tampered-output", target: f.projects[0]!, projectId: "one", outputPath,
     });
     await manager.store.update(job.jobId, (value) => ({
       ...value, state: "running", phase: "publishing",
@@ -184,12 +239,9 @@ describe("job manager", () => {
       await writeFile(candidatePath, content);
       const identity = await fileIdentity(candidatePath);
       if (tamper) await writeFile(candidatePath, `${content}-tampered`);
-      const job = await manager.store.create({
-        jobId, kind: "export", target: tamper ? f.projects[0]! : f.projects[1]!,
-        targetKey: `project:${tamper ? f.projects[0] : f.projects[1]}`,
-        projectId: tamper ? "one" : "two",
-        frozen: { inputFingerprint: await exportInputFingerprint(tamper ? f.projects[0]! : f.projects[1]!) },
-        params: { outputPath, candidatePath, workDirectory: join(f.dataDir, "jobs", jobId, "work") },
+      const target = tamper ? f.projects[0]! : f.projects[1]!;
+      const job = await createPersistedExport(manager, {
+        jobId, target, projectId: tamper ? "one" : "two", outputPath,
       });
       await manager.store.update(job.jobId, (value) => ({
         ...value, state: "running", phase: "publishing",
@@ -207,6 +259,178 @@ describe("job manager", () => {
     expect(await manager.read(intact.jobId)).toMatchObject({ state: "succeeded", phase: "published" });
     expect(await fileIdentity(join(f.root, "intact-candidate.mp4"))).toMatchObject({
       sha256: (await manager.read(intact.jobId))!.result!.candidateSha256,
+    });
+  });
+
+  it.skipIf(process.platform === "win32")("finishes recovery only when candidate and output are the same verified inode", async () => {
+    const f = await fixture();
+    const manager = new JobManager(f.dataDir, { workerEntrypoint: f.successWorker });
+    managers.push(manager);
+    await manager.store.initialize();
+    const outputPath = join(f.root, "hard-linked.mp4");
+    const job = await createPersistedExport(manager, {
+      jobId: "hard-linked", target: f.projects[0]!, projectId: "one", outputPath,
+    });
+    const candidatePath = candidateForOutput(outputPath, job.jobId);
+    await writeFile(candidatePath, "linked-output");
+    const identity = await fileIdentity(candidatePath);
+    await link(candidatePath, outputPath);
+    await manager.store.update(job.jobId, (value) => ({
+      ...value,
+      state: "running",
+      phase: "publishing",
+      result: { candidateSha256: identity.sha256, candidateSize: identity.size },
+      owner: { pid: 2_000_000_000, token: "dead", startedAt: value.createdAt, heartbeatAt: value.createdAt },
+    }), ["queued"]);
+    await manager.initialize();
+    expect(await manager.read(job.jobId)).toMatchObject({ state: "succeeded", phase: "published" });
+    await expect(readFile(candidatePath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readFile(outputPath, "utf8")).toBe("linked-output");
+  });
+
+  it.skipIf(process.platform === "win32")("blocks equal-hash candidate and output when their inodes differ", async () => {
+    const f = await fixture();
+    const manager = new JobManager(f.dataDir, { workerEntrypoint: f.successWorker });
+    managers.push(manager);
+    await manager.store.initialize();
+    const outputPath = join(f.root, "same-bytes-different-inode.mp4");
+    const job = await createPersistedExport(manager, {
+      jobId: "same-bytes-different-inode", target: f.projects[0]!, projectId: "one", outputPath,
+    });
+    const candidatePath = candidateForOutput(outputPath, job.jobId);
+    await writeFile(candidatePath, "identical-bytes");
+    await writeFile(outputPath, "identical-bytes");
+    const identity = await fileIdentity(candidatePath);
+    await manager.store.update(job.jobId, (value) => ({
+      ...value,
+      state: "running",
+      phase: "publishing",
+      result: { candidateSha256: identity.sha256, candidateSize: identity.size },
+      owner: { pid: 2_000_000_000, token: "dead", startedAt: value.createdAt, heartbeatAt: value.createdAt },
+    }), ["queued"]);
+    await manager.initialize();
+    expect(await manager.read(job.jobId)).toMatchObject({
+      state: "recovery_blocked", error: { code: "job_publish_ambiguous" },
+    });
+    expect(await readFile(outputPath, "utf8")).toBe("identical-bytes");
+    expect(await readFile(candidatePath, "utf8")).toBe("identical-bytes");
+  });
+
+  it("rejects a second Runtime before it can recover or kill the first worker", async () => {
+    const f = await fixture();
+    const first = new JobManager(f.dataDir, { workerEntrypoint: f.slowWorker });
+    const second = new JobManager(f.dataDir, { workerEntrypoint: f.successWorker });
+    managers.push(first, second);
+    await first.initialize();
+    const started = await first.start({ kind: "export", target: f.projects[0]! });
+    const running = await waitState(first, started.jobId, "running");
+    await expect(second.initialize()).rejects.toMatchObject({ code: "job_runtime_conflict" });
+    expect(() => process.kill(running.owner!.pid, 0)).not.toThrow();
+    expect(await first.read(started.jobId)).toMatchObject({ state: "running", attempt: 1 });
+  });
+
+  it("does not let a worker escape when shutdown crosses the launch seam", async () => {
+    const f = await fixture();
+    let entered!: () => void;
+    let release!: () => void;
+    const atLaunch = new Promise<void>((resolveEntered) => { entered = resolveEntered; });
+    const continueLaunch = new Promise<void>((resolveRelease) => { release = resolveRelease; });
+    const manager = new JobManager(f.dataDir, {
+      workerEntrypoint: f.slowWorker,
+      async beforeWorkerSpawn() {
+        entered();
+        await continueLaunch;
+      },
+    });
+    managers.push(manager);
+    await manager.initialize();
+    const started = await manager.start({ kind: "export", target: f.projects[0]! });
+    await atLaunch;
+    const stopping = manager.shutdown();
+    release();
+    await stopping;
+    expect(await manager.read(started.jobId)).toMatchObject({ state: "queued", owner: null });
+  });
+
+  it("does not let settlement overwrite a shutdown lease", async () => {
+    const f = await fixture();
+    let entered!: () => void;
+    let release!: () => void;
+    const beforeLease = new Promise<void>((resolveEntered) => { entered = resolveEntered; });
+    const continueLease = new Promise<void>((resolveRelease) => { release = resolveRelease; });
+    const outputPath = join(f.root, "shutdown-settle.mp4");
+    const manager = new JobManager(f.dataDir, {
+      workerEntrypoint: f.successWorker,
+      async beforePublishingLease() {
+        entered();
+        await continueLease;
+      },
+    });
+    managers.push(manager);
+    await manager.initialize();
+    const started = await manager.start({
+      kind: "export", target: f.projects[0]!, params: { outputPath },
+    });
+    await beforeLease;
+    const stopping = manager.shutdown();
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+      const phase = (await manager.read(started.jobId))?.phase;
+      if (phase === "stopping" || phase === "queued_after_shutdown") break;
+      await Bun.sleep(10);
+    }
+    release();
+    await stopping;
+    expect(await manager.read(started.jobId)).toMatchObject({
+      state: "queued", phase: "queued_after_shutdown", owner: null,
+    });
+    await expect(readFile(outputPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("blocks publish when the input video or an overlay asset changes during execution", async () => {
+    const f = await fixture();
+    const manager = new JobManager(f.dataDir, { workerEntrypoint: f.delayedWorker });
+    managers.push(manager);
+    await manager.initialize();
+
+    const sourceJob = await manager.start({
+      kind: "export", target: f.projects[0]!, params: { outputPath: join(f.root, "source-change.mp4") },
+    });
+    await waitState(manager, sourceJob.jobId, "running");
+    await writeFile(join(f.projects[0]!, "input.mp4"), "source-mutated");
+    expect(await waitState(manager, sourceJob.jobId, "failed")).toMatchObject({
+      error: { code: "job_publish_conflict" },
+    });
+
+    const overlayJob = await manager.start({
+      kind: "export", target: f.projects[1]!, params: { outputPath: join(f.root, "overlay-change.mp4") },
+    });
+    await waitState(manager, overlayJob.jobId, "running");
+    await writeFile(join(f.projects[1]!, "overlay.html"), "overlay-mutated");
+    expect(await waitState(manager, overlayJob.jobId, "failed")).toMatchObject({
+      error: { code: "job_publish_conflict" },
+    });
+  });
+
+  it("ignores settlement from a superseded owner token and attempt", async () => {
+    const f = await fixture();
+    const manager = new JobManager(f.dataDir, { workerEntrypoint: f.delayedWorker });
+    managers.push(manager);
+    await manager.initialize();
+    const started = await manager.start({
+      kind: "export", target: f.projects[0]!, params: { outputPath: join(f.root, "superseded.mp4") },
+    });
+    const first = await waitState(manager, started.jobId, "running");
+    await manager.store.update(started.jobId, (value) => ({
+      ...value,
+      attempt: value.attempt + 1,
+      owner: { ...value.owner!, token: "newer-attempt-token" },
+    }), ["running"]);
+    await Bun.sleep(500);
+    expect(await manager.read(started.jobId)).toMatchObject({
+      state: "running",
+      attempt: first.attempt + 1,
+      owner: { token: "newer-attempt-token" },
     });
   });
 
@@ -249,18 +473,8 @@ describe("job manager", () => {
     managers.push(manager);
     await manager.store.initialize();
     const outputPath = join(f.root, "recovered.mp4");
-    const job = await manager.store.create({
-      jobId: "recovery-job",
-      kind: "export",
-      target: f.projects[0]!,
-      targetKey: `project:${f.projects[0]}`,
-      projectId: "one",
-      frozen: { inputFingerprint: await exportInputFingerprint(f.projects[0]!) },
-      params: {
-        outputPath,
-        candidatePath: candidateForOutput(outputPath, "recovery-job"),
-        workDirectory: join(f.dataDir, "jobs", "recovery-job", "work"),
-      },
+    const job = await createPersistedExport(manager, {
+      jobId: "recovery-job", target: f.projects[0]!, projectId: "one", outputPath,
     });
     await manager.store.update(job.jobId, (value) => ({
       ...value,

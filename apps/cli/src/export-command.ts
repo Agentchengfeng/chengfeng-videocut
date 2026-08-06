@@ -11,6 +11,10 @@ import { exportFilm, probeMedia } from "@video-workbench/koubo-adapter";
 
 export interface ExecuteExportOptions {
   project: ResolvedProject;
+  /** Live read-only root used for HTML/CSS/JS/assets referenced by snapshot docs. */
+  assetProjectDirectory?: string;
+  /** Live immutable source corresponding to the snapshot's inputVideo field. */
+  sourcePathOverride?: string;
   outputPath: string;
   workDirectory: string;
   scale?: number;
@@ -32,7 +36,7 @@ export async function executeExport(options: ExecuteExportOptions): Promise<Reco
   if (typeof inputVideo !== "string" || !inputVideo.trim()) {
     throw new VideocutError("invalid_project", "This project has no inputVideo to export");
   }
-  const sourcePath = resolve(project.directory, inputVideo);
+  const sourcePath = options.sourcePathOverride ?? resolve(project.directory, inputVideo);
   const probe = await probeMedia(sourcePath);
   if (!probe.hasVideo) {
     throw new VideocutError("invalid_project", "The source is not a readable video", { sourcePath });
@@ -66,7 +70,7 @@ export async function executeExport(options: ExecuteExportOptions): Promise<Reco
     warnings: plan.warnings,
   };
   const result = await exportFilm({
-    projectDirectory: project.directory,
+    projectDirectory: options.assetProjectDirectory ?? project.directory,
     sourcePath,
     plan,
     outputPath: options.outputPath,

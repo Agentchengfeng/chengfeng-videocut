@@ -28,6 +28,17 @@ function waitForExit(child: ChildProcess): Promise<void> {
   return new Promise((resolveExit) => child.once("close", () => resolveExit()));
 }
 
+function readOutput(stream: ChildProcess["stdout"]): Promise<string> {
+  if (!stream) return Promise.resolve("");
+  stream.setEncoding("utf8");
+  return new Promise((resolveOutput, reject) => {
+    let output = "";
+    stream.on("data", (chunk: string) => { output += chunk; });
+    stream.once("end", () => resolveOutput(output));
+    stream.once("error", reject);
+  });
+}
+
 async function startPackagedRuntime(dataDir: string, projectsDir: string): Promise<{ child: ChildProcess; url: string }> {
   const child = spawn(process.execPath, [packagedCli, "start", "--port", "0", "--data-dir", dataDir, "--projects-dir", projectsDir, "--json"], {
     stdio: ["ignore", "pipe", "pipe"],
@@ -113,6 +124,22 @@ describe("packaged durable jobs", () => {
     const running = await waitJob(firstRuntime.url, started.jobId, "running");
     const oldWorkerPid = running.owner!.pid;
     processGroups.push(oldWorkerPid);
+
+    const competingRuntime = spawn(process.execPath, [
+      packagedCli, "start", "--port", "0", "--data-dir", dataDir,
+      "--projects-dir", projectsDir, "--json",
+    ], { stdio: ["ignore", "pipe", "pipe"] });
+    processes.push(competingRuntime);
+    const [competingExit, competingStdout] = await Promise.all([
+      waitForExit(competingRuntime).then(() => competingRuntime.exitCode),
+      readOutput(competingRuntime.stdout),
+    ]);
+    expect(competingExit).not.toBe(0);
+    expect(competingStdout).toContain("job_runtime_conflict");
+    expect(await waitJob(firstRuntime.url, started.jobId, "running")).toMatchObject({
+      attempt: 1,
+      owner: { pid: oldWorkerPid },
+    });
 
     firstRuntime.child.kill("SIGKILL");
     await waitForExit(firstRuntime.child);

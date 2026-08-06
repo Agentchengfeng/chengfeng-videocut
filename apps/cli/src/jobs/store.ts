@@ -1,13 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile, readdir, rename, rm } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import {
   JOB_SCHEMA_VERSION,
   type DurableJob,
   type JobState,
 } from "@video-workbench/contracts";
 
-const ACTIVE_STATES = new Set<JobState>(["queued", "running", "cancelling"]);
+const OCCUPYING_STATES = new Set<JobState>([
+  "queued", "running", "cancelling", "recovery_blocked",
+]);
 
 export class JobStoreError extends Error {
   constructor(
@@ -29,6 +31,54 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+function exactAbsolutePath(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && isAbsolute(value) && resolve(value) === value;
+}
+
+export interface ExportJobPaths {
+  outputPath: string;
+  candidatePath: string;
+  workDirectory: string;
+  snapshotDirectory: string;
+}
+
+function assertExportRecordPaths(
+  value: Record<string, unknown>,
+  recordPath: string,
+): ExportJobPaths {
+  const jobId = String(value.jobId);
+  const target = value.target;
+  const params = value.params;
+  if (!exactAbsolutePath(target) || value.targetKey !== `project:${target}` || !isRecord(params)) {
+    throw new JobStoreError("job_store_corrupt", "Export job target identity is invalid", {
+      path: recordPath,
+    });
+  }
+  const outputPath = params.outputPath;
+  const candidatePath = params.candidatePath;
+  const workDirectory = params.workDirectory;
+  const snapshotDirectory = params.snapshotDirectory;
+  const jobDirectory = dirname(recordPath);
+  const expectedCandidate = exactAbsolutePath(outputPath)
+    ? join(dirname(outputPath), `.${basename(outputPath)}.${jobId}.candidate`)
+    : "";
+  if (
+    !exactAbsolutePath(outputPath) || !basename(outputPath) || dirname(outputPath) === outputPath ||
+    !exactAbsolutePath(candidatePath) || candidatePath !== expectedCandidate ||
+    !exactAbsolutePath(workDirectory) || workDirectory !== join(jobDirectory, "work") ||
+    !exactAbsolutePath(snapshotDirectory) || snapshotDirectory !== join(jobDirectory, "snapshot") ||
+    (params.scale !== undefined && (typeof params.scale !== "number" || !Number.isFinite(params.scale) || params.scale <= 0 || params.scale > 4)) ||
+    (params.fps !== undefined && (typeof params.fps !== "number" || !Number.isFinite(params.fps) || params.fps < 1 || params.fps > 120)) ||
+    (params.keepWork !== undefined && typeof params.keepWork !== "boolean")
+  ) {
+    throw new JobStoreError("job_store_corrupt", "Export job paths or parameters are invalid", {
+      path: recordPath,
+      jobId,
+    });
+  }
+  return { outputPath, candidatePath, workDirectory, snapshotDirectory };
+}
+
 function assertJob(value: unknown, path: string): asserts value is DurableJob {
   if (!isRecord(value) || value.schemaVersion !== JOB_SCHEMA_VERSION) {
     throw new JobStoreError("job_store_corrupt", "Job record has an unsupported schema", { path });
@@ -37,7 +87,7 @@ function assertJob(value: unknown, path: string): asserts value is DurableJob {
   if (strings.some((key) => typeof value[key] !== "string")) {
     throw new JobStoreError("job_store_corrupt", "Job record is missing required fields", { path });
   }
-  if (!["transcribe", "cut", "export", "render"].includes(String(value.kind)) ||
+  if (value.kind !== "export" ||
       !["queued", "running", "succeeded", "failed", "cancelling", "cancelled", "recovery_blocked"].includes(String(value.state)) ||
       !isRecord(value.params) || !isRecord(value.frozen)) {
     throw new JobStoreError("job_store_corrupt", "Job record contains invalid fields", { path });
@@ -54,15 +104,27 @@ function assertJob(value: unknown, path: string): asserts value is DurableJob {
     (value.result !== null && !isRecord(value.result)) ||
     (progress !== null && (!isRecord(progress) || typeof progress.done !== "number" || typeof progress.total !== "number")) ||
     (owner !== null && (!isRecord(owner) || !Number.isInteger(owner.pid) || Number(owner.pid) <= 0 ||
+      (owner.managerPid !== undefined && (!Number.isInteger(owner.managerPid) || Number(owner.managerPid) <= 0)) ||
+      (owner.secretProof !== undefined && (typeof owner.secretProof !== "string" || !/^[a-f0-9]{64}$/.test(owner.secretProof))) ||
+      ((owner.managerPid === undefined) !== (owner.secretProof === undefined)) ||
       typeof owner.token !== "string" || typeof owner.startedAt !== "string" || typeof owner.heartbeatAt !== "string")) ||
     (error !== null && (!isRecord(error) || typeof error.code !== "string" || typeof error.message !== "string" ||
       (error.details !== undefined && !isRecord(error.details))))
   ) {
     throw new JobStoreError("job_store_corrupt", "Job record failed schema validation", { path });
   }
+  const frozen = value.frozen;
+  if (
+    typeof frozen.dependencyFingerprint !== "string" || !/^[a-f0-9]{64}$/.test(frozen.dependencyFingerprint) ||
+    typeof frozen.snapshotFingerprint !== "string" || !/^[a-f0-9]{64}$/.test(frozen.snapshotFingerprint) ||
+    typeof frozen.projectRevision !== "string" || !/^[a-f0-9]{64}$/.test(frozen.projectRevision)
+  ) {
+    throw new JobStoreError("job_store_corrupt", "Export job frozen identity is invalid", { path });
+  }
+  assertExportRecordPaths(value, path);
 }
 
-async function syncDirectory(path: string): Promise<void> {
+export async function syncDirectory(path: string): Promise<void> {
   try {
     const handle = await open(path, "r");
     try { await handle.sync(); } finally { await handle.close(); }
@@ -127,6 +189,13 @@ export class JobStore {
     return join(this.jobDirectory(jobId), "job.json");
   }
 
+  exportPaths(job: DurableJob): ExportJobPaths {
+    if (job.jobId !== basename(this.jobDirectory(job.jobId))) {
+      throw new JobStoreError("job_store_corrupt", "Job identity is invalid", { jobId: job.jobId });
+    }
+    return assertExportRecordPaths(job as unknown as Record<string, unknown>, this.jobPath(job.jobId));
+  }
+
   async read(jobId: string): Promise<DurableJob | null> {
     const path = this.jobPath(jobId);
     let raw: string;
@@ -166,7 +235,7 @@ export class JobStore {
   async create(input: CreateJobInput): Promise<DurableJob> {
     return this.#withRegistryLock(async () => {
       const existing = (await this.list()).find((job) =>
-        ACTIVE_STATES.has(job.state) && (
+        OCCUPYING_STATES.has(job.state) && (
           job.targetKey === input.targetKey ||
           (typeof job.params.outputPath === "string" &&
             typeof input.params.outputPath === "string" &&
@@ -201,6 +270,7 @@ export class JobStore {
         result: null,
         error: null,
       };
+      assertJob(job, this.jobPath(job.jobId));
       await writeJsonAtomic(this.jobPath(job.jobId), job, this.hooks);
       return job;
     });
@@ -221,6 +291,13 @@ export class JobStore {
       }
       const next = updater(structuredClone(current));
       next.updatedAt = new Date().toISOString();
+      assertJob(next, this.jobPath(jobId));
+      if (next.jobId !== jobId) {
+        throw new JobStoreError("job_store_corrupt", "Job update changed its persisted identity", {
+          jobId,
+          actualJobId: next.jobId,
+        });
+      }
       await writeJsonAtomic(this.jobPath(jobId), next, this.hooks);
       return next;
     });
