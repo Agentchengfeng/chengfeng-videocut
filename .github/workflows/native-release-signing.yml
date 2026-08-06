@@ -1,5 +1,14 @@
 name: native-release-signing
 
+# SECURITY BOUNDARY: this repository may build and native-sign installers, but
+# it is not an independent attestation trust anchor for its own source tag.
+# Public staging remains fail-closed until a protected reusable workflow in an
+# independent repository is pinned by repository, workflow, and immutable
+# signer digest in installer/native-release-signing-policy.json. Do not add an
+# in-repository actions/attest step and treat it as release authorization.
+# The external orchestrator must also provide a read-only trust-policy file and
+# its protected SHA256; this source workflow must never mint that trust input.
+
 on:
   pull_request:
     paths:
@@ -24,8 +33,8 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.3.5
       - run: bun install --frozen-lockfile
@@ -39,11 +48,9 @@ jobs:
     environment: native-release
     permissions:
       contents: read
-      id-token: write
-      attestations: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.3.5
       - run: bun install --frozen-lockfile
@@ -113,32 +120,18 @@ jobs:
           xcrun notarytool submit "$archive" --key "$key" --key-id "$APPLE_NOTARY_KEY_ID" --issuer "$APPLE_NOTARY_ISSUER_ID" --wait
       - name: Verify Developer ID identity and live Gatekeeper notarization on final bytes
         run: bun run release:native:verify:macos -- "$PWD/release"
-      - name: Attest arm64 installer after native verification
-        id: attest-arm64
-        uses: actions/attest@v4
-        with:
-          subject-path: release/chengfeng-videocut-installer-macos-arm64
-      - name: Attest x64 installer after native verification
-        id: attest-x64
-        uses: actions/attest@v4
-        with:
-          subject-path: release/chengfeng-videocut-installer-macos-x64
-      - name: Collect cryptographic attestation bundles
+      - name: Package signed installers for the independent attestation builder
         shell: bash
         run: |
           set -euo pipefail
-          mkdir native-attestations
-          cp "${{ steps.attest-arm64.outputs.bundle-path }}" native-attestations/chengfeng-videocut-installer-macos-arm64.attestation.json
-          cp "${{ steps.attest-x64.outputs.bundle-path }}" native-attestations/chengfeng-videocut-installer-macos-x64.attestation.json
           transport="$RUNNER_TEMP/native-release-macos-transport"
-          mkdir -p "$transport/release" "$transport/native-attestations"
+          mkdir -p "$transport/release"
           cp -p release/chengfeng-videocut-installer-macos-arm64 "$transport/release/"
           cp -p release/chengfeng-videocut-installer-macos-x64 "$transport/release/"
-          cp native-attestations/*.attestation.json "$transport/native-attestations/"
           tar -czf native-release-macos-signed.tar.gz -C "$transport" .
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: native-release-macos-installers-and-attestations
+          name: native-release-macos-signed-installers
           # upload-artifact normalizes raw file modes. A tar transport is
           # required so the exact signed executables remain executable.
           path: native-release-macos-signed.tar.gz
@@ -160,11 +153,9 @@ jobs:
     environment: native-release
     permissions:
       contents: read
-      id-token: write
-      attestations: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.3.5
       - run: bun install --frozen-lockfile
@@ -206,22 +197,10 @@ jobs:
           "WINDOWS_SIGNING_CERT_THUMBPRINT=$($certificate[0].Thumbprint)" >> $env:GITHUB_ENV
       - name: Verify Authenticode trust, timestamp, EKU, and pinned publisher
         run: bun run release:native:verify:windows -- "$PWD/release"
-      - name: Attest Windows installer only after native verification
-        id: attest-windows
-        uses: actions/attest@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          subject-path: release/chengfeng-videocut-installer-windows-x64.exe
-      - name: Collect cryptographic attestation bundle
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force native-attestations | Out-Null
-          Copy-Item "${{ steps.attest-windows.outputs.bundle-path }}" "native-attestations/chengfeng-videocut-installer-windows-x64.exe.attestation.json"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: native-release-windows-installer-and-attestation
-          path: |
-            release/chengfeng-videocut-installer-windows-x64.exe
-            native-attestations/*.attestation.json
+          name: native-release-windows-signed-installer
+          path: release/chengfeng-videocut-installer-windows-x64.exe
           if-no-files-found: error
       - name: Remove certificate from the runner
         if: always()

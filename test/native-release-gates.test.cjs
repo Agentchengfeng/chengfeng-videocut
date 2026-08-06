@@ -121,9 +121,62 @@ function createNativeSource(testRoot, { releaseReady = true, toolsExecutable = t
 }
 
 function run(script, env) {
+  const cleanEnvironment = { ...process.env };
+  delete cleanEnvironment.CHENGFENG_VIDEOCUT_NATIVE_TRUST_POLICY;
+  delete cleanEnvironment.CHENGFENG_VIDEOCUT_NATIVE_TRUST_POLICY_SHA256;
   return spawnSync("bun", [script], {
     cwd: ROOT,
-    env: { ...process.env, ...env },
+    env: { ...cleanEnvironment, ...env },
+    encoding: "utf8",
+  });
+}
+
+function runStageWithSnapshotReplacement(source, destination, asset, expectedBytes) {
+  const trustPolicy = path.join(path.dirname(source), "protected-native-trust-policy.json");
+  writeFileSync(trustPolicy, "{\"test\":\"module-mocked-security-gate\"}\n");
+  chmodSync(trustPolicy, 0o444);
+  const program = `
+    import { mock } from "bun:test";
+    import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+    import { join } from "node:path";
+    const asset = process.env.NATIVE_MUTATED_ASSET;
+    const expected = Buffer.from(process.env.NATIVE_EXPECTED_BASE64, "base64");
+    mock.module(process.env.NATIVE_SIGNATURE_MODULE, () => ({
+      nativeInstallerAssets: [
+        "chengfeng-videocut-installer-macos-arm64",
+        "chengfeng-videocut-installer-macos-x64",
+        "chengfeng-videocut-installer-windows-x64.exe",
+      ],
+      verifyNativeReleaseSecurity: async ({ releaseDir }) => {
+        const actual = await readFile(join(releaseDir, asset));
+        if (!actual.equals(expected)) throw new Error("security verifier did not receive snapshot bytes");
+      },
+    }));
+    const { stageNativeRelease } = await import(${JSON.stringify(STAGE)});
+    await stageNativeRelease({
+      sourceDir: process.env.NATIVE_SOURCE,
+      destinationDir: process.env.NATIVE_DESTINATION,
+      testHooks: {
+        afterSnapshot: async ({ sourceDir }) => {
+          await rename(sourceDir, sourceDir + ".before-replacement");
+          await mkdir(sourceDir);
+          await writeFile(join(sourceDir, asset), "post-snapshot replacement bytes\\n");
+        },
+      },
+    });
+  `;
+  return spawnSync("bun", ["-e", program], {
+    cwd: ROOT,
+    env: {
+      ...process.env,
+      NATIVE_SOURCE: source,
+      NATIVE_DESTINATION: destination,
+      NATIVE_MUTATED_ASSET: asset,
+      NATIVE_EXPECTED_BASE64: expectedBytes.toString("base64"),
+      NATIVE_SIGNATURE_MODULE: path.join(ROOT, "scripts/native-release-signatures.ts"),
+      CHENGFENG_VIDEOCUT_NATIVE_TRUST_POLICY: trustPolicy,
+      CHENGFENG_VIDEOCUT_NATIVE_TRUST_POLICY_SHA256: sha256(readFileSync(trustPolicy)),
+    },
     encoding: "utf8",
   });
 }
@@ -153,8 +206,59 @@ test("exact VERIFIED content passes structural checks but formal stage blocks wi
       CHENGFENG_VIDEOCUT_NATIVE_RELEASE_DIR: destination,
     });
     assert.notEqual(staged.status, 0);
-    assert.match(`${staged.stdout}\n${staged.stderr}`, /signing policy is UNCONFIGURED/);
+    assert.match(`${staged.stdout}\n${staged.stderr}`, /Out-of-band native trust policy is required/);
     assert.equal(readFileSync(path.join(destination, "sentinel.txt"), "utf8"), "do not delete\n");
+    assert.equal(
+      readdirSync(root).filter((name) => name.startsWith(".destination.snapshot-")).length,
+      0,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("production stage exposes no injectable security verifier and rejects checkout policy as trust", () => {
+  const stageSource = readFileSync(STAGE, "utf8");
+  assert.doesNotMatch(stageSource, /verifySecurity|securityVerifier/);
+  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "videocut-native-release-local-trust-")));
+  try {
+    const { source } = createNativeSource(root);
+    const localPolicy = path.join(ROOT, "installer/native-release-signing-policy.json");
+    const staged = run(STAGE, {
+      CHENGFENG_VIDEOCUT_NATIVE_ASSET_SOURCE: source,
+      CHENGFENG_VIDEOCUT_NATIVE_RELEASE_DIR: path.join(root, "destination"),
+      CHENGFENG_VIDEOCUT_NATIVE_TRUST_POLICY: localPolicy,
+      CHENGFENG_VIDEOCUT_NATIVE_TRUST_POLICY_SHA256: sha256(readFileSync(localPolicy)),
+    });
+    assert.notEqual(staged.status, 0);
+    assert.match(`${staged.stdout}\n${staged.stderr}`, /must live outside the release checkout/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("stage verifies and atomically publishes immutable snapshot bytes after source path replacement", () => {
+  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "videocut-native-release-snapshot-")));
+  try {
+    const { source } = createNativeSource(root);
+    const destination = path.join(root, "destination");
+    const asset = "chengfeng-videocut-installer-windows-x64.exe";
+    const expectedBytes = readFileSync(path.join(source, asset));
+    const staged = runStageWithSnapshotReplacement(source, destination, asset, expectedBytes);
+    assert.equal(staged.status, 0, `${staged.stdout}\n${staged.stderr}`);
+    assert.equal(
+      readFileSync(path.join(source, asset), "utf8"),
+      "post-snapshot replacement bytes\n",
+    );
+    assert.deepEqual(readFileSync(path.join(destination, asset)), expectedBytes);
+    const checksum = readFileSync(path.join(destination, "SHA256SUMS.txt"), "utf8");
+    assert.match(checksum, new RegExp(`^${sha256(expectedBytes)}  ${asset}$`, "m"));
+    const verified = verifyContent(destination);
+    assert.equal(verified.status, 0, `${verified.stdout}\n${verified.stderr}`);
+    assert.equal(
+      readdirSync(root).filter((name) => name.startsWith(".destination.snapshot-")).length,
+      0,
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

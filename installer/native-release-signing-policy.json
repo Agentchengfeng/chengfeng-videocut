@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "status": "UNCONFIGURED",
   "macos": {
     "teamIdentifier": null,
@@ -16,8 +16,10 @@
   },
   "githubAttestation": {
     "repository": "Agentchengfeng/chengfeng-videocut",
-    "signerWorkflow": "Agentchengfeng/chengfeng-videocut/.github/workflows/native-release-signing.yml",
+    "signerRepository": null,
+    "signerWorkflow": null,
+    "signerDigest": null,
     "denySelfHostedRunners": true
   },
-  "note": "Public native releases remain blocked until the real Developer ID and Authenticode identities are reviewed and pinned here."
+  "note": "This checkout file is a non-authoritative UNCONFIGURED schema template. Public native releases require a read-only, SHA256-pinned policy supplied out of band by an independently protected release orchestrator."
 }

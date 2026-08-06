@@ -16,11 +16,9 @@ const EXPECTED_MAC_IDENTIFIERS = {
     "com.agentchengfeng.chengfeng-videocut.installer.x64",
 } as const;
 const EXPECTED_ATTESTATION_REPOSITORY = "Agentchengfeng/chengfeng-videocut";
-const EXPECTED_ATTESTATION_WORKFLOW =
-  "Agentchengfeng/chengfeng-videocut/.github/workflows/native-release-signing.yml";
 
 export type NativeSigningPolicy = {
-  schemaVersion: 1;
+  schemaVersion: 2;
   status: "VERIFIED" | "UNCONFIGURED";
   macos: {
     teamIdentifier: string | null;
@@ -34,7 +32,9 @@ export type NativeSigningPolicy = {
   };
   githubAttestation: {
     repository: string;
+    signerRepository: string;
     signerWorkflow: string;
+    signerDigest: string;
     denySelfHostedRunners: true;
   };
   note?: string;
@@ -79,7 +79,7 @@ function requireExactString(value: unknown, label: string, pattern: RegExp): ass
 
 export function validateNativeSigningPolicy(policy: unknown): asserts policy is NativeSigningPolicy {
   const value = policy as Record<string, any>;
-  if (value?.schemaVersion !== 1 || value?.status !== "VERIFIED") {
+  if (value?.schemaVersion !== 2 || value?.status !== "VERIFIED") {
     throw new Error("Native signing policy is UNCONFIGURED; public native staging is blocked");
   }
   requireExactString(value.macos?.teamIdentifier, "macOS teamIdentifier", /^[A-Z0-9]{10}$/);
@@ -110,13 +110,31 @@ export function validateNativeSigningPolicy(policy: unknown): asserts policy is 
     /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/,
   );
   requireExactString(
+    value.githubAttestation?.signerRepository,
+    "GitHub signer repository",
+    /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/,
+  );
+  if (
+    value.githubAttestation.signerRepository.toLowerCase() ===
+      EXPECTED_ATTESTATION_REPOSITORY.toLowerCase()
+  ) {
+    throw new Error("Native attestation signer must be an independent repository");
+  }
+  requireExactString(
     value.githubAttestation?.signerWorkflow,
     "GitHub signerWorkflow",
     /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/\.github\/workflows\/[A-Za-z0-9_.-]+\.ya?ml$/,
   );
+  if (!value.githubAttestation.signerWorkflow.startsWith(`${value.githubAttestation.signerRepository}/`)) {
+    throw new Error("Native attestation signer workflow does not belong to its pinned repository");
+  }
+  requireExactString(
+    value.githubAttestation?.signerDigest,
+    "GitHub signerDigest",
+    /^[a-f0-9]{40}$/,
+  );
   if (
     value.githubAttestation.repository !== EXPECTED_ATTESTATION_REPOSITORY ||
-    value.githubAttestation.signerWorkflow !== EXPECTED_ATTESTATION_WORKFLOW ||
     value.githubAttestation.denySelfHostedRunners !== true
   ) throw new Error("Native signing policy GitHub attestation identity is not exact");
 }
@@ -129,7 +147,10 @@ async function assertSingleLinkFile(path: string, label: string): Promise<void> 
 }
 
 export async function readNativeSigningPolicy(rootDir: string): Promise<NativeSigningPolicy> {
-  const path = join(rootDir, "installer/native-release-signing-policy.json");
+  return readNativeSigningPolicyFile(join(rootDir, "installer/native-release-signing-policy.json"));
+}
+
+export async function readNativeSigningPolicyFile(path: string): Promise<NativeSigningPolicy> {
   await assertSingleLinkFile(path, "Native signing policy");
   const policy = JSON.parse(await readFile(path, "utf8")) as unknown;
   validateNativeSigningPolicy(policy);
@@ -311,6 +332,9 @@ export async function verifyInstallerAttestations(options: {
   if (!/^[a-f0-9]{40,64}$/.test(options.sourceDigest)) {
     throw new Error("Native attestation source digest must be the exact release commit");
   }
+  if (options.sourceDigest === options.policy.githubAttestation.signerDigest) {
+    throw new Error("Native attestation signer digest must be independent from the source digest");
+  }
   const attestationDir = await canonicalAttestationDirectory(options.attestationDir);
   const runner = options.runner ?? defaultRunner;
   for (const asset of ALL_INSTALLERS) {
@@ -328,6 +352,8 @@ export async function verifyInstallerAttestations(options: {
       options.policy.githubAttestation.repository,
       "--signer-workflow",
       options.policy.githubAttestation.signerWorkflow,
+      "--signer-digest",
+      options.policy.githubAttestation.signerDigest,
       "--source-ref",
       `refs/tags/v${options.version}`,
       "--source-digest",
@@ -354,13 +380,16 @@ export async function verifyInstallerAttestations(options: {
 
 export async function verifyNativeReleaseSecurity(options: {
   rootDir: string;
+  policyPath?: string;
   releaseDir: string;
   version: string;
   attestationDir?: string;
   runner?: CommandRunner;
   platform?: NodeJS.Platform;
 }): Promise<void> {
-  const policy = await readNativeSigningPolicy(options.rootDir);
+  const policy = options.policyPath
+    ? await readNativeSigningPolicyFile(options.policyPath)
+    : await readNativeSigningPolicy(options.rootDir);
   const attestationDir = options.attestationDir ?? process.env.CHENGFENG_VIDEOCUT_NATIVE_ATTESTATION_DIR;
   if (!attestationDir) {
     throw new Error("CHENGFENG_VIDEOCUT_NATIVE_ATTESTATION_DIR is required for public native staging");

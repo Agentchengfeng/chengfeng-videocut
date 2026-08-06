@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -23,7 +23,7 @@ const WINDOWS_ASSET = "chengfeng-videocut-installer-windows-x64.exe";
 
 function policy(): NativeSigningPolicy {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     status: "VERIFIED",
     macos: {
       teamIdentifier: "ABCDEFGHIJ",
@@ -42,8 +42,10 @@ function policy(): NativeSigningPolicy {
     },
     githubAttestation: {
       repository: "Agentchengfeng/chengfeng-videocut",
+      signerRepository: "Agentchengfeng/chengfeng-release-builder",
       signerWorkflow:
-        "Agentchengfeng/chengfeng-videocut/.github/workflows/native-release-signing.yml",
+        "Agentchengfeng/chengfeng-release-builder/.github/workflows/native-attest.yml",
+      signerDigest: "2".repeat(40),
       denySelfHostedRunners: true,
     },
   };
@@ -68,8 +70,19 @@ afterEach(async () => {
 });
 
 describe("native signing policy", () => {
+  test("keeps the checkout policy as a non-authoritative UNCONFIGURED template", async () => {
+    const template = JSON.parse(await readFile(
+      join(import.meta.dir, "../installer/native-release-signing-policy.json"),
+      "utf8",
+    ));
+    expect(template.status).toBe("UNCONFIGURED");
+    expect(template.githubAttestation.signerRepository).toBeNull();
+    expect(template.githubAttestation.signerWorkflow).toBeNull();
+    expect(template.githubAttestation.signerDigest).toBeNull();
+  });
+
   test("keeps public staging blocked until real publisher identities are pinned", () => {
-    expect(() => validateNativeSigningPolicy({ schemaVersion: 1, status: "UNCONFIGURED" }))
+    expect(() => validateNativeSigningPolicy({ schemaVersion: 2, status: "UNCONFIGURED" }))
       .toThrow(/UNCONFIGURED/);
   });
 
@@ -77,6 +90,49 @@ describe("native signing policy", () => {
     const value = policy();
     value.macos.certificateCommonName = "Developer ID Application: Test Publisher (ZZZZZZZZZZ)";
     expect(() => validateNativeSigningPolicy(value)).toThrow(/does not match its Team ID/);
+  });
+
+  test("refuses to trust an attestation workflow from the source repository", () => {
+    const value = policy();
+    value.githubAttestation.signerRepository = value.githubAttestation.repository;
+    value.githubAttestation.signerWorkflow =
+      "Agentchengfeng/chengfeng-videocut/.github/workflows/native-release-signing.yml";
+    expect(() => validateNativeSigningPolicy(value)).toThrow(/independent repository/);
+  });
+
+  test("treats repository identity as case-insensitive when enforcing independence", () => {
+    const value = policy();
+    value.githubAttestation.signerRepository = "agentchengfeng/CHENGFENG-VIDEOCUT";
+    value.githubAttestation.signerWorkflow =
+      "agentchengfeng/CHENGFENG-VIDEOCUT/.github/workflows/native-release-signing.yml";
+    expect(() => validateNativeSigningPolicy(value)).toThrow(/independent repository/);
+  });
+});
+
+describe("native signing workflow supply chain", () => {
+  test("pins every external action to a reviewed immutable commit", async () => {
+    const workflow = await readFile(
+      join(import.meta.dir, "../.github/workflows/native-release-signing.yml"),
+      "utf8",
+    );
+    const useLines = workflow.split(/\r?\n/).filter((line) => /\buses:/.test(line));
+    expect(useLines.length).toBeGreaterThan(0);
+    for (const line of useLines) {
+      const reference = /^\s*(?:-\s*)?uses:\s*([^\s#]+)/.exec(line)?.[1];
+      expect(reference, `unparsed uses line: ${line}`).toBeDefined();
+      expect(reference).toMatch(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+@[a-f0-9]{40}$/);
+    }
+    expect(workflow).not.toMatch(/\buses:\s*[^\s#]+@v\d+/);
+  });
+
+  test("does not claim the source repository is its own attestation trust anchor", async () => {
+    const workflow = await readFile(
+      join(import.meta.dir, "../.github/workflows/native-release-signing.yml"),
+      "utf8",
+    );
+    expect(workflow).not.toContain("actions/attest@");
+    expect(workflow).toContain("independent attestation trust anchor");
+    expect(workflow).toContain("protected reusable workflow");
   });
 });
 
@@ -221,7 +277,8 @@ describe("protected cross-platform attestation summary", () => {
     expect(calls).toHaveLength(3);
     for (const call of calls) {
       expect(call.slice(0, 3)).toEqual(["gh", "attestation", "verify"]);
-      expect(call).toContain("Agentchengfeng/chengfeng-videocut/.github/workflows/native-release-signing.yml");
+      expect(call).toContain("Agentchengfeng/chengfeng-release-builder/.github/workflows/native-attest.yml");
+      expect(call).toContain("2".repeat(40));
       expect(call).toContain("refs/tags/v0.5.0");
       expect(call).toContain("1".repeat(40));
       expect(call).toContain("--deny-self-hosted-runners");
@@ -243,5 +300,18 @@ describe("protected cross-platform attestation summary", () => {
       policy: policy(),
       runner,
     })).rejects.toThrow(/bundle signature could not be verified/);
+  });
+
+  test("rejects using the source commit as the supposedly independent signer digest", async () => {
+    const { releaseDir, attestationDir } = await fixture();
+    const value = policy();
+    await expect(verifyInstallerAttestations({
+      releaseDir,
+      attestationDir,
+      version: "0.5.0",
+      sourceDigest: value.githubAttestation.signerDigest,
+      policy: value,
+      runner: async () => ({ status: 0, stdout: "[]", stderr: "" }),
+    })).rejects.toThrow(/independent from the source digest/);
   });
 });
