@@ -48,6 +48,16 @@ for (const [label, args, pattern] of [
   });
 }
 
+test("Windows HOME protection is case-insensitive", { skip: process.platform !== "win32" }, () => {
+  const home = os.homedir();
+  const differentlyCasedHome = home.replace(/[A-Za-z]/, (letter) =>
+    letter === letter.toLowerCase() ? letter.toUpperCase() : letter.toLowerCase());
+  assert.notEqual(differentlyCasedHome, home);
+  const result = invoke(["--target-root", differentlyCasedHome]);
+  assert.notEqual(result.status, 0);
+  assert.match(`${result.stdout}\n${result.stderr}`, /不得是文件系统根、用户 HOME/);
+});
+
 test("a manifest download failure removes its private temporary directory", () => {
   const temp = temporaryRoot("videocut-installer-cleanup-test-");
   try {
@@ -79,6 +89,50 @@ test("installer rejects an existing symlink or reparse component before writing 
     assert.deepEqual(readdirSync(outside), []);
   } finally {
     rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+for (const managedName of ["app", "bin", "tools"]) {
+  test(`installer rejects a pre-created ${managedName} symlink without writing its external target`, () => {
+    const temp = temporaryRoot(`videocut-installer-${managedName}-link-`);
+    try {
+      const target = path.join(temp, "product");
+      const outside = path.join(temp, `outside-${managedName}`);
+      mkdirSync(target);
+      mkdirSync(outside);
+      writeFileSync(path.join(outside, "keep.txt"), "keep\n");
+      symlinkSync(outside, path.join(target, managedName), process.platform === "win32" ? "junction" : "dir");
+      const result = invoke(["--target-root", target]);
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}\n${result.stderr}`, /普通目录|reparse point|规范路径跳转/);
+      assert.deepEqual(readdirSync(outside).sort(), ["keep.txt"]);
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+  });
+}
+
+test("installer rejects symlinked state and update-lock paths without touching external data", () => {
+  for (const targetName of ["installer-state.json", "runtime-update.lock"]) {
+    const temp = temporaryRoot(`videocut-installer-${targetName.replaceAll(".", "-")}-link-`);
+    try {
+      const target = path.join(temp, "product");
+      const outside = path.join(temp, "outside");
+      mkdirSync(target);
+      mkdirSync(outside);
+      writeFileSync(path.join(outside, "keep.txt"), "keep\n");
+      if (targetName.endsWith(".json")) {
+        symlinkSync(path.join(outside, "keep.txt"), path.join(target, targetName), "file");
+      } else {
+        symlinkSync(outside, path.join(target, targetName), process.platform === "win32" ? "junction" : "dir");
+      }
+      const result = invoke(["--target-root", target]);
+      assert.notEqual(result.status, 0);
+      assert.match(`${result.stdout}\n${result.stderr}`, /single-link regular file|普通目录|reparse point/);
+      assert.deepEqual(readdirSync(outside).sort(), ["keep.txt"]);
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
   }
 });
 
@@ -148,18 +202,26 @@ test("formal asset download requires the exact byte size declared by the manifes
       product: "chengfeng-videocut",
       productVersion: "0.5.0",
       releaseTag: "v0.5.0",
+      distributionMode: "local-test-only",
       runtime: {
         asset: runtimeAsset,
         root: "runtime",
         sha256: createHash("sha256").update(runtimeBytes).digest("hex"),
         size: 1,
       },
-      platforms: {
-        [platformKey]: {
-          installerAsset: "installer",
-          tools: { asset: toolsAsset, root: "tools", sha256: "0".repeat(64), size: 1 },
-        },
-      },
+      platforms: Object.fromEntries(
+        ["darwin-arm64", "darwin-x64", "win32-x64"].map((key) => [key, {
+          installerAsset: key === platformKey ? "installer" : `installer-${key}`,
+          installer: {
+            asset: key === platformKey ? "installer" : `installer-${key}`,
+            sha256: "1".repeat(64),
+            size: 1,
+          },
+          tools: key === platformKey
+            ? { asset: toolsAsset, root: "tools", sha256: "0".repeat(64), size: 1 }
+            : { asset: `tools-${key}.tar.gz`, root: `tools-${key}`, sha256: "0".repeat(64), size: 1 },
+        }]),
+      ),
       licenseStatus: "UNVERIFIED",
     };
     const manifest = path.join(temp, "chengfeng-videocut-install-manifest.json");

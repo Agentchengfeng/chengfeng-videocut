@@ -7,13 +7,14 @@ import {
   chmod,
   open as openFile,
   readFile,
+  readdir,
   realpath,
   rename,
   rm,
   stat,
   symlink,
 } from "node:fs/promises";
-import { constants as fsConstants, existsSync } from "node:fs";
+import { constants as fsConstants, createReadStream, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, relative as relativePath, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1926,6 +1927,144 @@ export async function correctTranscriptText(
   return serializeProjectOperation(project.directory, apply);
 }
 
+interface ManagedToolsDoctorResult {
+  ok: boolean;
+  detail: string;
+  executables: Partial<Record<"bun" | "ffmpeg" | "ffprobe" | "chrome", string>>;
+}
+
+async function stableFileSha256(
+  path: string,
+  before: { dev: number; ino: number; size: number; mtimeMs: number },
+): Promise<string> {
+  const digest = createHash("sha256");
+  for await (const chunk of createReadStream(path)) digest.update(chunk);
+  const after = await lstat(path);
+  if (
+    !after.isFile() || after.isSymbolicLink() || after.nlink !== 1 ||
+    after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size ||
+    after.mtimeMs !== before.mtimeMs
+  ) throw new Error(`managed tools file changed while hashing: ${path}`);
+  return digest.digest("hex");
+}
+
+async function inspectInstalledManagedTools(dataDir: string): Promise<ManagedToolsDoctorResult> {
+  const toolsRoot = resolve(dataDir, "tools");
+  const current = join(toolsRoot, "current");
+  try {
+    const currentLinkMetadata = await lstat(current);
+    if (!currentLinkMetadata.isSymbolicLink()) {
+      throw new Error("tools/current must be a managed symlink or junction");
+    }
+    const [canonicalToolsRoot, canonicalCurrent] = await Promise.all([
+      realpath(toolsRoot),
+      realpath(current),
+    ]);
+    const relativeCurrent = relativePath(canonicalToolsRoot, canonicalCurrent);
+    if (
+      !relativeCurrent || relativeCurrent === ".." ||
+      relativeCurrent.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) ||
+      isAbsolute(relativeCurrent) || relativeCurrent.split(/[\\/]/).length !== 1 ||
+      !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(relativeCurrent)
+    ) throw new Error("tools/current does not target an exact managed version directory");
+    const currentMetadata = await lstat(canonicalCurrent);
+    if (!currentMetadata.isDirectory() || currentMetadata.isSymbolicLink()) {
+      throw new Error("tools/current target is not a regular directory");
+    }
+    const manifestPath = join(canonicalCurrent, "resources-manifest.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
+      schemaVersion?: number;
+      product?: string;
+      productVersion?: string;
+      platform?: string;
+      arch?: string;
+      distributionMode?: string;
+      licenseStatus?: string;
+      executables?: Record<string, string>;
+      files?: Array<{ path?: string; size?: number; sha256?: string }>;
+    };
+    if (
+      manifest.schemaVersion !== 2 || manifest.product !== "chengfeng-videocut-managed-tools" ||
+      manifest.platform !== process.platform || manifest.arch !== process.arch ||
+      manifest.distributionMode !== "release-ready" || manifest.licenseStatus !== "VERIFIED" ||
+      !manifest.executables || !Array.isArray(manifest.files)
+    ) throw new Error("resources-manifest is not VERIFIED/release-ready for this platform");
+    const runtimeVersion = (await readFile(join(dataDir, "app", "current", "VERSION"), "utf8"))
+      .split(/\r?\n/, 1)[0];
+    if (!runtimeVersion || manifest.productVersion !== runtimeVersion) {
+      throw new Error("managed tools version does not match app/current");
+    }
+    const actualFiles = new Map<string, { size: number; sha256: string }>();
+    const walk = async (directory: string, prefix = ""): Promise<void> => {
+      for (const entry of await readdir(directory, { withFileTypes: true })) {
+        const absolute = join(directory, entry.name);
+        const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+        const metadata = await lstat(absolute);
+        if (metadata.isSymbolicLink()) throw new Error(`managed tools contain symlink: ${relative}`);
+        if (metadata.isDirectory()) {
+          const canonical = await realpath(absolute);
+          const escaped = relativePath(canonicalCurrent, canonical);
+          if (escaped === ".." || escaped.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)) {
+            throw new Error(`managed tools directory escaped: ${relative}`);
+          }
+          await walk(absolute, relative);
+        } else if (!metadata.isFile() || metadata.nlink !== 1) {
+          throw new Error(`managed tools contain hardlink/reparse/special entry: ${relative}`);
+        } else if (relative !== "resources-manifest.json") {
+          actualFiles.set(relative.replaceAll("\\", "/"), {
+            size: metadata.size,
+            sha256: await stableFileSha256(absolute, metadata),
+          });
+        }
+      }
+    };
+    await walk(canonicalCurrent);
+    if (actualFiles.size !== manifest.files.length) throw new Error("managed tools file count drifted");
+    const seen = new Set<string>();
+    for (const record of manifest.files) {
+      if (
+        typeof record.path !== "string" || seen.has(record.path) ||
+        !Number.isSafeInteger(record.size) || typeof record.sha256 !== "string"
+      ) throw new Error("managed tools manifest contains an invalid file record");
+      seen.add(record.path);
+      const actual = actualFiles.get(record.path);
+      if (!actual || actual.size !== record.size || actual.sha256 !== record.sha256) {
+        throw new Error(`managed tools content drifted: ${record.path}`);
+      }
+    }
+    const executables: ManagedToolsDoctorResult["executables"] = {};
+    for (const key of ["bun", "ffmpeg", "ffprobe", "chrome"] as const) {
+      const relative = manifest.executables[key];
+      if (
+        typeof relative !== "string" || !relative || isAbsolute(relative) ||
+        relative.split(/[\\/]/).some((part) => part === "..")
+      ) throw new Error(`managed ${key} path is invalid`);
+      const executable = resolve(canonicalCurrent, relative);
+      const canonicalExecutable = await realpath(executable);
+      const escaped = relativePath(canonicalCurrent, canonicalExecutable);
+      if (!escaped || escaped === ".." || escaped.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)) {
+        throw new Error(`managed ${key} escaped tools/current`);
+      }
+      const metadata = await lstat(executable);
+      if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1) {
+        throw new Error(`managed ${key} is not a single-link regular file`);
+      }
+      await access(executable, process.platform === "win32" ? fsConstants.R_OK : fsConstants.R_OK | fsConstants.X_OK);
+      executables[key] = executable;
+    }
+    if (await realpath(process.execPath) !== await realpath(executables.bun!)) {
+      throw new Error("Runtime was not launched by tools/current managed Bun");
+    }
+    return { ok: true, detail: `VERIFIED ${manifest.productVersion} at ${canonicalCurrent}`, executables };
+  } catch (error) {
+    return {
+      ok: false,
+      detail: error instanceof Error ? error.message : String(error),
+      executables: {},
+    };
+  }
+}
+
 export async function doctor(
   options: Pick<ProjectResolutionOptions, "projectsDir"> = {},
 ): Promise<{ healthy: boolean; capabilities: DoctorCapabilities; checks: DoctorCheck[] }> {
@@ -1933,24 +2072,40 @@ export async function doctor(
   const productRoot = resolve(fileURLToPath(new URL("../../../", import.meta.url)));
   const packagedStudioIndex = fileURLToPath(new URL("./studio/index.html", import.meta.url));
   const sourceStudioPackage = join(productRoot, "apps/studio/package.json");
-  const [ffmpeg, ffprobe, registryExists, studioExists, transcription] = await Promise.all([
-    findExecutable("ffmpeg"),
-    findExecutable("ffprobe"),
+  const installedMode = Boolean(process.env.CHENGFENG_VIDEOCUT_EXECUTABLE);
+  const managedTools = installedMode
+    ? await inspectInstalledManagedTools(productHomeDir())
+    : { ok: true, detail: "source-development PATH fallback", executables: {} };
+  const [sourceFfmpeg, sourceFfprobe, registryExists, studioExists, transcription] = await Promise.all([
+    installedMode ? Promise.resolve(null) : findExecutable("ffmpeg"),
+    installedMode ? Promise.resolve(null) : findExecutable("ffprobe"),
     existingDirectory(projectsDir),
     Promise.all([pathExists(packagedStudioIndex), pathExists(sourceStudioPackage)]).then(
       ([packaged, source]) => packaged || source,
     ),
     resolveTranscriptionCredentials(),
   ]);
+  const ffmpeg = installedMode ? managedTools.executables.ffmpeg ?? null : sourceFfmpeg;
+  const ffprobe = installedMode ? managedTools.executables.ffprobe ?? null : sourceFfprobe;
   const bunVersion = (
     globalThis as typeof globalThis & { Bun?: { version?: string } }
   ).Bun?.version ?? null;
   const checks: DoctorCheck[] = [
     {
-      name: "runtime",
-      ok: Boolean(bunVersion),
+      name: "dependencyMode",
+      ok: managedTools.ok,
       required: true,
-      detail: bunVersion ? `Bun ${bunVersion}` : "Bun is required",
+      detail: managedTools.detail,
+    },
+    {
+      name: "runtime",
+      ok: Boolean(bunVersion) && managedTools.ok,
+      required: true,
+      detail: bunVersion
+        ? installedMode
+          ? `Managed Bun ${bunVersion}`
+          : `Bun ${bunVersion} (source-development fallback)`
+        : "Bun is required",
     },
     {
       name: "studio",
@@ -1979,6 +2134,14 @@ export async function doctor(
       ok: Boolean(ffprobe),
       required: true,
       detail: ffprobe ?? "ffprobe was not found on PATH",
+    },
+    {
+      name: "chrome",
+      ok: installedMode ? Boolean(managedTools.executables.chrome) : true,
+      required: installedMode,
+      detail: installedMode
+        ? managedTools.executables.chrome ?? "managed Chrome Headless Shell is missing or drifted"
+        : "source-development browser resolution is checked when export starts",
     },
     {
       // Documented in four contracts and checked nowhere: a machine without the

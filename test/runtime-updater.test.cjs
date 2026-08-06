@@ -20,6 +20,7 @@ const {
   readFileSync,
   readlinkSync,
   readdirSync,
+  renameSync,
   rmSync,
   symlinkSync,
   unlinkSync,
@@ -288,6 +289,112 @@ function makeRelease(root, options = {}) {
   return { release, ...packageInfo };
 }
 
+function makeFormalRelease(root, release, bundle) {
+  const platformKey = `${process.platform}-${process.arch}`;
+  const [platform, arch] = platformKey.split("-");
+  const runtimeAsset = `chengfeng-videocut-runtime-${VERSION}.tar.gz`;
+  copyFileSync(path.join(release, "chengfeng-videocut-portable.tar.gz"), path.join(release, runtimeAsset));
+  const toolsRootName = `chengfeng-videocut-tools-${VERSION}-${platformKey}`;
+  const toolsRoot = path.join(root, toolsRootName);
+  mkdirSync(path.join(toolsRoot, "chrome"), { recursive: true });
+  const suffix = IS_WINDOWS ? ".exe" : "";
+  copyFileSync(process.execPath, path.join(toolsRoot, `bun${suffix}`));
+  if (!IS_WINDOWS) chmodSync(path.join(toolsRoot, "bun"), 0o755);
+  writeExecutable(path.join(toolsRoot, `ffmpeg${suffix}`), "#!/bin/sh\nexit 0\n");
+  writeExecutable(path.join(toolsRoot, `ffprobe${suffix}`), "#!/bin/sh\nexit 0\n");
+  writeExecutable(path.join(toolsRoot, "chrome", `chrome${suffix}`), "#!/bin/sh\nexit 0\n");
+  const executableNames = {
+    bun: `bun${suffix}`,
+    ffmpeg: `ffmpeg${suffix}`,
+    ffprobe: `ffprobe${suffix}`,
+    chrome: `chrome/chrome${suffix}`,
+  };
+  const files = Object.values(executableNames).map((relative) => {
+    const bytes = readFileSync(path.join(toolsRoot, relative));
+    return { path: relative, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") };
+  });
+  writeFileSync(path.join(toolsRoot, "resources-manifest.json"), `${JSON.stringify({
+    schemaVersion: 2,
+    product: "chengfeng-videocut-managed-tools",
+    productVersion: VERSION,
+    platform,
+    arch,
+    executables: executableNames,
+    versions: { bun: "fixture", ffmpeg: "fixture", ffprobe: "fixture", chrome: "fixture" },
+    distributionMode: "local-test-only",
+    files,
+    licenseStatus: "UNVERIFIED",
+    licenseNote: "test fixture only",
+  })}\n`);
+  const toolsAsset = `${toolsRootName}.tar.gz`;
+  execFileSync("tar", ["-czf", path.join(release, toolsAsset), "-C", root, toolsRootName]);
+  const fileRecord = (name, withRoot = false) => {
+    const bytes = readFileSync(path.join(release, name));
+    return {
+      asset: name,
+      ...(withRoot ? { root: name.slice(0, -".tar.gz".length) } : {}),
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      size: bytes.length,
+    };
+  };
+  const installerNames = {
+    "darwin-arm64": "chengfeng-videocut-installer-macos-arm64",
+    "darwin-x64": "chengfeng-videocut-installer-macos-x64",
+    "win32-x64": "chengfeng-videocut-installer-windows-x64.exe",
+  };
+  for (const name of Object.values(installerNames)) writeFileSync(path.join(release, name), "fixture-installer\n");
+  const runtimeBytes = readFileSync(path.join(release, runtimeAsset));
+  const platforms = Object.fromEntries(Object.entries(installerNames).map(([key, installerAsset]) => [key, {
+    installerAsset,
+    installer: fileRecord(installerAsset),
+    tools: key === platformKey
+      ? fileRecord(toolsAsset, true)
+      : { asset: `unused-${key}.tar.gz`, root: `unused-${key}`, sha256: "0".repeat(64), size: 1 },
+  }]));
+  const manifest = {
+    schemaVersion: 1,
+    product: "chengfeng-videocut",
+    productVersion: VERSION,
+    releaseTag: `v${VERSION}`,
+    distributionMode: "local-test-only",
+    runtime: {
+      asset: runtimeAsset,
+      root: path.basename(bundle),
+      sha256: createHash("sha256").update(runtimeBytes).digest("hex"),
+      size: runtimeBytes.length,
+    },
+    platforms,
+    licenseStatus: "UNVERIFIED",
+    licenseNote: "test fixture only",
+  };
+  const manifestPath = path.join(release, "chengfeng-videocut-install-manifest.json");
+  const manifestBytes = Buffer.from(`${JSON.stringify(manifest)}\n`);
+  writeFileSync(manifestPath, manifestBytes);
+  const checksumPath = path.join(release, "formal-SHA256SUMS.txt");
+  writeFileSync(
+    checksumPath,
+    `${createHash("sha256").update(manifestBytes).digest("hex")}  chengfeng-videocut-install-manifest.json\n`,
+  );
+  return { manifestPath, checksumPath };
+}
+
+function invokeFormal(executable, home, release, formal) {
+  return spawnSync(executable, [
+    ...(executable === process.execPath ? [INSTALLER] : []),
+    "--manifest", formal.manifestPath,
+    "--checksum-file", formal.checksumPath,
+    "--target-root", home,
+    "--allow-unverified-local-fixture",
+    "--json",
+  ], {
+    env: {
+      ...process.env,
+      CHENGFENG_VIDEOCUT_DOWNLOAD_BASE: pathToFileURL(release).href.replace(/\/$/, ""),
+    },
+    encoding: "utf8",
+  });
+}
+
 function addInstallerBootstrapAssets(release, { tamperInstaller = false } = {}) {
   const releaseInstaller = path.join(release, "install.cjs");
   copyFileSync(INSTALLER, releaseInstaller);
@@ -501,6 +608,16 @@ function createLegacyRuntime(home, { version = "0.4.7", service = "absent" } = {
   return { runtime, ...identity };
 }
 
+function createLegacyStableLauncher(home, runtime) {
+  const packagedLauncher = path.join(runtime, "chengfeng-videocut");
+  writeExecutable(packagedLauncher, "#!/bin/sh\nexit 0\n");
+  const bin = path.join(home, "bin");
+  mkdirSync(bin, { recursive: true });
+  const launcher = path.join(bin, "chengfeng-videocut");
+  symlinkSync(path.join("..", "app", "current", "chengfeng-videocut"), launcher, "file");
+  return launcher;
+}
+
 function assertProjectPreserved(home) {
   assert.equal(readFileSync(path.join(home, "projects", "keep-me.txt"), "utf8"), PROJECT_CONTENT);
 }
@@ -519,11 +636,16 @@ function createManagedTools(home, { oldVersion = "0.4.7", candidateVersion = VER
   return { toolsRoot, oldTools, candidateTools };
 }
 
-test("Windows stable launcher gives managed tools/current Bun priority", () => {
+test("Windows stable launcher calls only managed tools/current Bun", () => {
   const source = readFileSync(INSTALLER, "utf8");
-  assert.match(source, /set "MANAGED_TOOLS=%~dp0\.\.\\\\tools\\\\current"/);
-  assert.match(source, /if exist "%MANAGED_TOOLS%\\\\bun\.exe" set "BUN_EXE=%MANAGED_TOOLS%\\\\bun\.exe"/);
-  assert.match(source, /set "PATH=%MANAGED_TOOLS%;%PATH%"/);
+  const start = source.indexOf("function managedLauncherContents()");
+  const end = source.indexOf("function legacyWindowsLauncherContents()");
+  assert.ok(start >= 0 && end > start);
+  const launcher = source.slice(start, end);
+  assert.match(launcher, /set "MANAGED_TOOLS=%~dp0\.\.\\\\tools\\\\current"/);
+  assert.match(launcher, /set "BUN_EXE=%MANAGED_TOOLS%\\\\bun\.exe"/);
+  assert.match(launcher, /set "PATH=%MANAGED_TOOLS%;%PATH%"/);
+  assert.doesNotMatch(launcher, /where bun|USERPROFILE|bun\.cmd/);
 });
 
 test("macOS shell bootstrap downloads and verifies install.cjs before a real local Release install", {
@@ -566,6 +688,65 @@ test("macOS shell bootstrap rejects install.cjs changed after SHA256SUMS", {
   assert.equal(existsSync(path.join(home, "runtime-update.lock")), false);
 });
 
+test("real arm64 compiled installer cold-installs a regular launcher and reuses with zero asset downloads", {
+  skip: process.platform !== "darwin" || process.arch !== "arm64",
+}, (t) => {
+  const { root, home, release, bundle } = fixture(t);
+  const formal = makeFormalRelease(root, release, bundle);
+  mkdirSync(path.join(ROOT, "release"), { recursive: true });
+  const compiledRoot = mkdtempSync(path.join(ROOT, "release", "native-installer-test-"));
+  t.after(() => rmSync(compiledRoot, { recursive: true, force: true }));
+  const compiled = path.join(compiledRoot, "chengfeng-videocut-installer-macos-arm64");
+  const built = spawnSync("bun", [
+    "build", "--compile", "--target=bun-darwin-arm64",
+    "--define", `CHENGFENG_COMPILED_INSTALLER_VERSION=${JSON.stringify(VERSION)}`,
+    INSTALLER,
+    `--outfile=${compiled}`,
+  ], { cwd: ROOT, encoding: "utf8" });
+  assert.equal(built.status, 0, `${built.stdout}\n${built.stderr}`);
+  chmodSync(compiled, 0o755);
+  const first = invokeFormal(compiled, home, release, formal);
+  assert.equal(first.status, 0, `${first.error?.message || ""}\n${first.stderr}`);
+  const firstPayload = JSON.parse(first.stdout.trim().split(/\r?\n/).at(-1));
+  assert.equal(firstPayload.data.assetDownloads, 2);
+  const launcher = path.join(home, "bin", "chengfeng-videocut");
+  const metadata = lstatSync(launcher);
+  assert.equal(metadata.isFile(), true);
+  assert.equal(metadata.isSymbolicLink(), false);
+  assert.equal(metadata.nlink, 1);
+  assert.equal(metadata.mode & 0o777, 0o755);
+  const version = spawnSync(launcher, ["--version"], { encoding: "utf8", env: { ...process.env, PATH: "/usr/bin:/bin" } });
+  assert.equal(version.status, 0, version.stderr);
+  assert.match(version.stdout, new RegExp(VERSION.replaceAll(".", "\\.")));
+  const managedBun = path.join(home, "tools", VERSION, "bun");
+  const hiddenManagedBun = `${managedBun}.missing`;
+  renameSync(managedBun, hiddenManagedBun);
+  const noFallback = spawnSync(launcher, ["--version"], {
+    encoding: "utf8",
+    env: { ...process.env, PATH: path.dirname(process.execPath) },
+  });
+  renameSync(hiddenManagedBun, managedBun);
+  assert.equal(noFallback.status, 127);
+  assert.match(noFallback.stderr, /managed Bun is missing/);
+  unlinkSync(launcher);
+  symlinkSync(path.join("..", "app", "current", "chengfeng-videocut"), launcher, "file");
+  const second = invokeFormal(compiled, home, release, formal);
+  assert.equal(second.status, 0, second.stderr);
+  const secondPayload = JSON.parse(second.stdout.trim().split(/\r?\n/).at(-1));
+  assert.equal(secondPayload.data.status, "reused");
+  assert.equal(secondPayload.data.assetDownloads, 0);
+  assert.equal(lstatSync(launcher).isSymbolicLink(), false);
+  assert.equal(lstatSync(launcher).nlink, 1);
+  const ffmpeg = path.join(home, "tools", VERSION, "ffmpeg");
+  writeFileSync(ffmpeg, `${readFileSync(ffmpeg, "utf8")}drift\n`);
+  const damaged = invokeFormal(compiled, home, release, formal);
+  assert.notEqual(damaged.status, 0);
+  assert.doesNotMatch(damaged.stdout, /"status":"reused"/);
+  const damagedPayload = JSON.parse(damaged.stdout.trim().split(/\r?\n/).at(-1));
+  assert.equal(damagedPayload.ok, false);
+  assert.match(damagedPayload.error.message, /文件校验失败|完整树摘要漂移/);
+});
+
 function readState(home) {
   return JSON.parse(readFileSync(path.join(home, "installer-state.json"), "utf8"));
 }
@@ -589,6 +770,42 @@ test("upgrade validates pending candidate before current, preserves projects, th
   assert.equal(readState(home).active.version, VERSION);
   assert.equal(readState(home).previous.version, "0.4.7");
   assert.equal(existsSync(path.join(home, "app", ".pending")), true);
+});
+
+test("0.4.7 exact legacy symlink migrates to a single-link regular managed launcher", {
+  skip: IS_WINDOWS,
+}, (t) => {
+  const { home, release } = fixture(t);
+  const old = createLegacyRuntime(home);
+  const launcher = createLegacyStableLauncher(home, old.runtime);
+  assert.equal(lstatSync(launcher).isSymbolicLink(), true);
+  const result = invoke(home, release);
+  assert.equal(result.status, 0, result.stderr);
+  const metadata = lstatSync(launcher);
+  assert.equal(metadata.isFile(), true);
+  assert.equal(metadata.isSymbolicLink(), false);
+  assert.equal(metadata.nlink, 1);
+  assert.equal(metadata.mode & 0o777, 0o755);
+  const contents = readFileSync(launcher, "utf8");
+  assert.match(contents, /BUN_EXE="\$MANAGED_TOOLS\/bun"/);
+  assert.doesNotMatch(contents, /command -v bun|\.bun\/bin|homebrew/);
+});
+
+test("unknown stable launcher symlink is rejected without touching its target", {
+  skip: IS_WINDOWS,
+}, (t) => {
+  const { root, home, release } = fixture(t);
+  const old = createLegacyRuntime(home);
+  const outside = path.join(root, "outside-launcher");
+  writeExecutable(outside, "#!/bin/sh\nexit 0\n");
+  mkdirSync(path.join(home, "bin"), { recursive: true });
+  symlinkSync(outside, path.join(home, "bin", "chengfeng-videocut"));
+  const before = readFileSync(outside, "utf8");
+  const result = invoke(home, release);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /未知 symlink/);
+  assert.equal(readFileSync(outside, "utf8"), before);
+  assert.equal(currentTarget(home), old.runtime);
 });
 
 test("installer rejects Bun older than 1.2 before changing Runtime state", (t) => {
@@ -653,6 +870,62 @@ test("candidate version self-test that ignores SIGTERM is hard-bounded before ac
   assert.deepEqual(readdirSync(path.join(home, "app", ".pending")), []);
   assert.equal(existsSync(path.join(home, "runtime-update.lock")), false);
   assertProjectPreserved(home);
+});
+
+test("formal retry preserves a termination_failed journal and dead-owner lock before fast reuse", (t) => {
+  const { root, home, release, bundle } = fixture(t);
+  const formal = makeFormalRelease(root, release, bundle);
+  const old = createLegacyRuntime(home, { service: "absent" });
+  const transactionId = "blocked-formal-retry";
+  const pending = path.join(home, "app", ".pending", transactionId, "app");
+  mkdirSync(pending, { recursive: true });
+  const blockedState = {
+    schemaVersion: 2,
+    transactionId,
+    phase: "termination_failed",
+    active: { version: "0.4.7", path: old.runtime },
+    previous: null,
+    pending: { version: VERSION, path: pending },
+    transaction: {
+      oldActive: { version: "0.4.7", path: old.runtime },
+      oldPrevious: null,
+      serviceBefore: null,
+      serviceEnsureStarted: false,
+      launcherBefore: { kind: "missing" },
+      toolsBefore: null,
+      toolsSource: null,
+      toolsCandidate: null,
+    },
+    terminationFailure: {
+      rootPid: process.pid,
+      observedRootAlive: true,
+      duringPhase: "staged",
+      failedAt: new Date().toISOString(),
+      method: IS_WINDOWS ? "taskkill" : "process_group_sigkill",
+      detailCode: "fixture_unconfirmed",
+      reasonCode: "ETIMEDOUT",
+    },
+    updatedAt: new Date().toISOString(),
+  };
+  writeFileSync(path.join(home, "installer-state.json"), `${JSON.stringify(blockedState)}\n`);
+  writeFileSync(path.join(home, "managed-tools-state.json"), "{}\n");
+  const lock = path.join(home, "runtime-update.lock");
+  mkdirSync(lock);
+  const owner = {
+    pid: 2_147_483_647,
+    acquiredAt: new Date().toISOString(),
+    transactionId: "dead-owner-diagnostic",
+  };
+  writeFileSync(path.join(lock, "owner.json"), `${JSON.stringify(owner)}\n`);
+  const serializedState = readFileSync(path.join(home, "installer-state.json"), "utf8");
+  const serializedOwner = readFileSync(path.join(lock, "owner.json"), "utf8");
+
+  const retry = invokeFormal(process.execPath, home, release, formal);
+  assert.notEqual(retry.status, 0);
+  assert.match(retry.stdout, /termination_failed.*阻止后续安装/s);
+  assert.equal(readFileSync(path.join(home, "installer-state.json"), "utf8"), serializedState);
+  assert.equal(readFileSync(path.join(lock, "owner.json"), "utf8"), serializedOwner);
+  assert.equal(existsSync(pending), true);
 });
 
 test("missing Windows taskkill fail-closes the journal while a residual process is alive", {
@@ -1125,7 +1398,7 @@ test("planned tools promotion crash preserves an existing target before backup m
   assert.equal(path.resolve(toolsRoot, readlinkSync(path.join(toolsRoot, "current"))), oldTools);
 });
 
-test("legacy intermediate tools journal preserves an unknown existing target and only becomes idle after recovery", (t) => {
+test("legacy intermediate tools journal without ownership proof fails closed and preserves every path", (t) => {
   const { home, release } = fixture(t);
   const old = createLegacyRuntime(home, { service: "absent" });
   const { toolsRoot, oldTools, candidateTools } = createManagedTools(home);
@@ -1170,13 +1443,14 @@ test("legacy intermediate tools journal preserves an unknown existing target and
     CHENGFENG_VIDEOCUT_DOWNLOAD_BASE: pathToFileURL(path.join(path.dirname(home), "missing-release")).href,
   });
   assert.notEqual(recovered.status, 0);
+  assert.match(recovered.stderr, /缺少 toolsTargetExisted.*不会删除任何路径/);
   assert.equal(currentTarget(home), old.runtime);
   assert.equal(readFileSync(path.join(target, `bun${suffix}`), "utf8"), "old-target");
   assert.equal(path.resolve(toolsRoot, readlinkSync(path.join(toolsRoot, "current"))), oldTools);
   const state = readState(home);
-  assert.equal(state.phase, "idle");
+  assert.equal(state.phase, "health_check");
   assert.equal(state.active.version, "0.4.7");
-  assert.equal(state.transaction, null);
+  assert.equal(state.transaction.toolsTargetExisted, undefined);
 });
 
 test("explicit first-run toolsTargetExisted false still removes the promoted candidate during recovery", (t) => {
@@ -1223,6 +1497,42 @@ test("explicit first-run toolsTargetExisted false still removes the promoted can
   assert.equal(existsSync(target), false);
   assert.equal(existsSync(path.join(toolsRoot, "current")), false);
   assert.equal(readState(home).phase, "idle");
+});
+
+test("forged journal paths never delete an external tools pending directory", (t) => {
+  const { root, home, release } = fixture(t);
+  const old = createLegacyRuntime(home, { service: "absent" });
+  const outside = path.join(root, "outside-owned-by-user");
+  mkdirSync(outside, { recursive: true });
+  writeFileSync(path.join(outside, "keep.txt"), "keep\n");
+  const transactionId = "forged-external-path";
+  writeFileSync(path.join(home, "installer-state.json"), JSON.stringify({
+    schemaVersion: 2,
+    transactionId,
+    phase: "health_check",
+    active: { version: "0.4.7", path: old.runtime },
+    previous: null,
+    pending: { version: VERSION, path: path.join(home, "app", VERSION) },
+    transaction: {
+      oldActive: { version: "0.4.7", path: old.runtime },
+      oldPrevious: null,
+      serviceBefore: null,
+      serviceEnsureStarted: false,
+      launcherBefore: { kind: "missing" },
+      toolsBefore: null,
+      toolsSource: null,
+      toolsCandidate: null,
+      toolsPending: outside,
+      toolsPromotionStarted: false,
+    },
+    terminationFailure: null,
+    updatedAt: new Date().toISOString(),
+  }));
+  const result = invoke(home, release);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /toolsPending.*约定的受管路径/);
+  assert.equal(readFileSync(path.join(outside, "keep.txt"), "utf8"), "keep\n");
+  assert.equal(currentTarget(home), old.runtime);
 });
 
 test("backup-moved crash restores the version before relinking a dangling tools/current", (t) => {
@@ -1664,7 +1974,15 @@ for (const fault of JOURNAL_FAULTS) {
   });
 }
 
-for (const phase of ["staged", "validated", "promoting", "switching", "health_check", "completed"]) {
+for (const phase of [
+  "staged",
+  "validated",
+  "promoting",
+  "promoted_before_journal",
+  "switching",
+  "health_check",
+  "completed",
+]) {
   test(`startup recovery handles crash journal phase ${phase}`, (t) => {
     const { home, release } = fixture(t);
     createLegacyRuntime(home);

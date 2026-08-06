@@ -156,6 +156,41 @@ describe("project store", () => {
       cloudTranscriptionTaskLocalOnly: true,
     });
   });
+  it("fails closed in installed mode instead of falling back to PATH dependencies", async () => {
+    const root = await mkdtemp(join(tmpdir(), "videocut-doctor-installed-"));
+    cleanupPaths.push(root);
+    const previousExecutable = process.env.CHENGFENG_VIDEOCUT_EXECUTABLE;
+    const previousDataDir = process.env.CHENGFENG_VIDEOCUT_DATA_DIR;
+    await mkdir(join(root, "tools", "current"), { recursive: true });
+    process.env.CHENGFENG_VIDEOCUT_EXECUTABLE = join(root, "bin", "chengfeng-videocut");
+    process.env.CHENGFENG_VIDEOCUT_DATA_DIR = root;
+    try {
+      const result = await doctor({ projectsDir: join(root, "projects") });
+      expect(result.healthy).toBe(false);
+      expect(result.checks.find((check) => check.name === "dependencyMode")).toMatchObject({
+        ok: false,
+        required: true,
+        detail: "tools/current must be a managed symlink or junction",
+      });
+      expect(result.checks.find((check) => check.name === "ffmpeg")).toMatchObject({
+        ok: false,
+        required: true,
+      });
+      expect(result.checks.find((check) => check.name === "ffprobe")).toMatchObject({
+        ok: false,
+        required: true,
+      });
+      expect(result.checks.find((check) => check.name === "chrome")).toMatchObject({
+        ok: false,
+        required: true,
+      });
+    } finally {
+      if (previousExecutable === undefined) delete process.env.CHENGFENG_VIDEOCUT_EXECUTABLE;
+      else process.env.CHENGFENG_VIDEOCUT_EXECUTABLE = previousExecutable;
+      if (previousDataDir === undefined) delete process.env.CHENGFENG_VIDEOCUT_DATA_DIR;
+      else process.env.CHENGFENG_VIDEOCUT_DATA_DIR = previousDataDir;
+    }
+  });
   it("resolves and inspects a legacy project without changing it", async () => {
     const { projectDir } = await createFixture();
     const before = await readFile(join(projectDir, "project.json"), "utf8");

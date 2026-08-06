@@ -44,7 +44,7 @@ const CHECKSUM_NAME = "SHA256SUMS.txt";
 const INSTALL_MANIFEST_NAME = "chengfeng-videocut-install-manifest.json";
 const ARCHIVE_ROOT_NAME = `chengfeng-videocut-${VERSION}`;
 const IS_WINDOWS = process.platform === "win32";
-const STATE_SCHEMA_VERSION = 1;
+const STATE_SCHEMA_VERSION = 2;
 const SMALL_MANIFEST_DOWNLOAD_LIMIT_BYTES = 1_048_576;
 const RELEASE_ASSET_DOWNLOAD_LIMIT_BYTES = 4 * 1_073_741_824;
 
@@ -101,10 +101,12 @@ if (!path.isAbsolute(REQUESTED_INSTALL_ROOT)) {
 const INSTALL_ROOT = path.resolve(REQUESTED_INSTALL_ROOT);
 const INSTALL_ROOT_RESOLVED = path.resolve(INSTALL_ROOT);
 const HOME_RESOLVED = path.resolve(os.homedir());
+const INSTALL_ROOT_COMPARABLE = comparablePath(INSTALL_ROOT_RESOLVED);
+const HOME_COMPARABLE = comparablePath(HOME_RESOLVED);
 if (
-  INSTALL_ROOT_RESOLVED === path.parse(INSTALL_ROOT_RESOLVED).root ||
-  INSTALL_ROOT_RESOLVED === HOME_RESOLVED ||
-  HOME_RESOLVED.startsWith(`${INSTALL_ROOT_RESOLVED}${path.sep}`)
+  INSTALL_ROOT_COMPARABLE === comparablePath(path.parse(INSTALL_ROOT_RESOLVED).root) ||
+  INSTALL_ROOT_COMPARABLE === HOME_COMPARABLE ||
+  HOME_COMPARABLE.startsWith(`${INSTALL_ROOT_COMPARABLE}${path.sep}`)
 ) {
   fail("--target-root 不得是文件系统根、用户 HOME 或 HOME 的祖先。");
 }
@@ -164,6 +166,9 @@ const ALLOW_UNVERIFIED_LOCAL_TOOLS =
   process.env.CHENGFENG_VIDEOCUT_ALLOW_UNVERIFIED_LOCAL_TOOLS === "1";
 let candidateServiceStopAttempted = false;
 let installerToolsDirectory = null;
+let lockedInstallRootCanonical = null;
+let heldUpdateLockOwner = null;
+let lockOwnerWriteInProgress = false;
 
 if (COMPILED_INSTALLER_VERSION && COMPILED_INSTALLER_VERSION !== VERSION) {
   fail(`编译安装器版本 ${COMPILED_INSTALLER_VERSION} 与 Runtime ${VERSION} 不一致。`);
@@ -241,6 +246,107 @@ function assertSafeInstallRootPath(candidate) {
       fail(`Product 受管安装根的已有路径组件发生规范路径跳转：${current}`);
     }
   }
+}
+
+function isWithinOrEqual(root, candidate) {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return relative === "" || (
+    relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
+  );
+}
+
+function assertPlainDirectory(candidate, label) {
+  const metadata = lstatSync(candidate);
+  if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+    fail(`${label} 必须是非链接普通目录；安装已停止。`);
+  }
+  const canonical = canonicalPath(candidate);
+  if (comparablePath(canonical) !== comparablePath(path.resolve(candidate))) {
+    fail(`${label} 发生链接、reparse point 或规范路径跳转；安装已停止。`);
+  }
+  return canonical;
+}
+
+function assertSingleLinkRegularFile(candidate, label) {
+  const metadata = lstatSync(candidate);
+  if (metadata.isSymbolicLink() || !metadata.isFile() || metadata.nlink !== 1) {
+    fail(`${label} 必须是 single-link regular file；安装已停止。`);
+  }
+  return metadata;
+}
+
+function assertInstallRootLayout({ requireHeldLock = false } = {}) {
+  assertSafeInstallRootPath(INSTALL_ROOT);
+  if (!pathExists(INSTALL_ROOT)) fail("Product 受管安装根不存在；安装已停止。");
+  const canonicalRoot = assertPlainDirectory(INSTALL_ROOT, "Product 受管安装根");
+  if (
+    lockedInstallRootCanonical !== null &&
+    comparablePath(canonicalRoot) !== comparablePath(lockedInstallRootCanonical)
+  ) {
+    fail("Product 受管安装根在取得更新锁后发生身份变化；安装已停止。");
+  }
+  for (const [directory, label] of [
+    [APP_ROOT, "Product app 目录"],
+    [BIN_ROOT, "Product bin 目录"],
+    [TOOLS_ROOT, "Product tools 目录"],
+  ]) {
+    if (pathExists(directory)) {
+      assertPlainDirectory(directory, label);
+      assertCanonicalInside(directory, INSTALL_ROOT, label);
+    }
+  }
+  for (const [file, label] of [
+    [STATE_PATH, "installer-state.json"],
+    [TOOLS_STATE_PATH, "managed-tools-state.json"],
+  ]) {
+    if (pathExists(file)) assertSingleLinkRegularFile(file, label);
+  }
+  if (pathExists(UPDATE_LOCK_PATH)) {
+    assertPlainDirectory(UPDATE_LOCK_PATH, "Runtime 更新锁");
+    assertCanonicalInside(UPDATE_LOCK_PATH, INSTALL_ROOT, "Runtime 更新锁");
+  } else if (requireHeldLock) {
+    fail("Runtime 更新锁在写入期间消失；安装已停止。");
+  }
+  if (requireHeldLock && !heldUpdateLockOwner && !lockOwnerWriteInProgress) {
+    fail("Runtime 更新锁没有本进程可验证的 owner；安装已停止。");
+  }
+  return canonicalRoot;
+}
+
+function assertManagedWriteBoundary(candidate, label, { allowDuringLockOwner = false } = {}) {
+  if (!isWithinOrEqual(INSTALL_ROOT, candidate) || path.resolve(candidate) === INSTALL_ROOT) {
+    fail(`${label} 不在 Product 受管安装根内；安装已停止。`);
+  }
+  if (!heldUpdateLockOwner && !(allowDuringLockOwner && lockOwnerWriteInProgress)) {
+    fail(`${label} 写入发生在 Runtime 更新锁之外；安装已停止。`);
+  }
+  assertInstallRootLayout({ requireHeldLock: true });
+  const parent = path.dirname(path.resolve(candidate));
+  const relative = path.relative(INSTALL_ROOT, parent);
+  let current = INSTALL_ROOT;
+  for (const segment of relative.split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    if (!pathExists(current)) fail(`${label} 的父目录不存在：${current}`);
+    assertPlainDirectory(current, `${label} 的父目录`);
+    assertCanonicalInside(current, INSTALL_ROOT, `${label} 的父目录`);
+  }
+}
+
+function assertAtomicWriteDestination(destination) {
+  if (!isWithinOrEqual(INSTALL_ROOT, destination)) return;
+  const ownerPath = path.join(UPDATE_LOCK_PATH, "owner.json");
+  const isLockOwner = path.resolve(destination) === path.resolve(ownerPath);
+  assertManagedWriteBoundary(destination, `原子写入 ${destination}`, {
+    allowDuringLockOwner: isLockOwner,
+  });
+  if (pathExists(destination)) assertSingleLinkRegularFile(destination, `原子写入目标 ${destination}`);
+}
+
+function ensureManagedDirectory(candidate, label, mode = 0o700) {
+  assertManagedWriteBoundary(candidate, label);
+  if (!pathExists(candidate)) mkdirSync(candidate, { mode });
+  assertPlainDirectory(candidate, label);
+  assertCanonicalInside(candidate, INSTALL_ROOT, label);
 }
 
 function isLink(candidate) {
@@ -331,6 +437,7 @@ function removeTreeWithoutFollowingLinks(candidate) {
 }
 
 function removeManagedDirectory(directory) {
+  assertManagedWriteBoundary(directory, "候选 Runtime 目录删除");
   assertManagedPath(directory, "候选目录");
   const metadata = lstatSync(directory);
   if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
@@ -341,11 +448,23 @@ function removeManagedDirectory(directory) {
 }
 
 function removeManagedToolsDirectory(directory) {
+  assertManagedWriteBoundary(directory, "候选工具目录删除");
   const metadata = lstatSync(directory);
   if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
     fail(`工具候选目录不是受管的普通目录：${directory}`);
   }
   assertCanonicalInside(directory, TOOLS_ROOT, "工具候选目录");
+  removeTreeWithoutFollowingLinks(directory);
+}
+
+function removeExpectedManagedTree(directory, expected, label) {
+  assertExactManagedPath(directory, expected, label);
+  assertManagedWriteBoundary(directory, label);
+  const metadata = lstatSync(directory);
+  if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+    fail(`${label} 不是受管普通目录；安装已停止。`);
+  }
+  assertCanonicalInside(directory, INSTALL_ROOT, label);
   removeTreeWithoutFollowingLinks(directory);
 }
 
@@ -372,6 +491,7 @@ function flushDirectoryIfSupported(directory, phase) {
 }
 
 function atomicWriteJson(destination, value, phase = "unknown") {
+  assertAtomicWriteDestination(destination);
   const temporary = `${destination}.${process.pid}.${randomUUID()}.tmp`;
   const bytes = Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf8");
   let descriptor = null;
@@ -389,12 +509,14 @@ function atomicWriteJson(destination, value, phase = "unknown") {
     closeSync(descriptor);
     descriptor = null;
     maybeFailPersistence(phase, "rename");
+    assertAtomicWriteDestination(destination);
     renameSync(temporary, destination);
 
     // Windows 不能可靠 fsync 目录；至少在 rename 前 flush 临时文件，并在
     // rename 后重新打开目标文件 flush。POSIX 还会 flush 父目录元数据。
     // Windows 的 FlushFileBuffers 要求句柄带写权限；只读句柄会返回 EPERM。
     // r+ 不截断目标，并让 rename 后的文件内容得到真实 flush。
+    assertAtomicWriteDestination(destination);
     descriptor = openSync(destination, "r+");
     maybeFailPersistence(phase, "fsync_destination");
     fsyncSync(descriptor);
@@ -545,12 +667,43 @@ function emptyState() {
   };
 }
 
-function validateRuntimeRef(ref, label, { allowNull = false } = {}) {
+function assertObjectKeys(value, allowed, label) {
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) fail(`安装 journal 的 ${label}.${key} 不是已知字段。`);
+  }
+}
+
+function assertExactManagedPath(actual, expected, label) {
+  if (typeof actual !== "string" || path.resolve(actual) !== path.resolve(expected)) {
+    fail(`安装 journal 的 ${label} 不是约定的受管路径。`);
+  }
+}
+
+function safeTransactionId(value) {
+  return typeof value === "string" && /^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$/.test(value);
+}
+
+function validateRuntimeRef(ref, label, { allowNull = false, allowPending = false, transactionId = null } = {}) {
   if (ref === null && allowNull) return;
   if (!ref || typeof ref !== "object" || typeof ref.version !== "string" || typeof ref.path !== "string") {
     fail(`安装 journal 的 ${label} 无效。`);
   }
-  assertManagedPath(ref.path, `安装 journal 的 ${label}`);
+  assertObjectKeys(
+    ref,
+    new Set(["version", "path", "archiveSha256", "buildId", "treeDigest"]),
+    label,
+  );
+  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(ref.version)) {
+    fail(`安装 journal 的 ${label}.version 无效。`);
+  }
+  const exactVersionPath = path.join(APP_ROOT, ref.version);
+  const exactPendingPath = transactionId ? path.join(PENDING_ROOT, transactionId, "app") : null;
+  if (
+    path.resolve(ref.path) !== path.resolve(exactVersionPath) &&
+    !(allowPending && exactPendingPath && path.resolve(ref.path) === path.resolve(exactPendingPath))
+  ) {
+    fail(`安装 journal 的 ${label}.path 不是约定的 Runtime 版本或 pending 路径。`);
+  }
   for (const field of ["archiveSha256", "buildId", "treeDigest"]) {
     if (
       ref[field] !== undefined && ref[field] !== null &&
@@ -583,15 +736,214 @@ function validateTerminationFailure(failure) {
   );
 }
 
+function validateLauncherSnapshot(snapshot) {
+  if (
+    !snapshot || typeof snapshot !== "object" ||
+    !["missing", "file", "legacy_link", "legacy_file"].includes(snapshot.kind)
+  ) {
+    fail("安装 journal 的 transaction.launcherBefore 无效。");
+  }
+  if (snapshot.kind === "missing") {
+    assertObjectKeys(snapshot, new Set(["kind"]), "transaction.launcherBefore");
+    return;
+  }
+  if (snapshot.kind === "legacy_link") {
+    assertObjectKeys(snapshot, new Set(["kind", "target"]), "transaction.launcherBefore");
+    if (IS_WINDOWS || snapshot.target !== LEGACY_POSIX_LAUNCHER_TARGET) {
+      fail("安装 journal 的 transaction.launcherBefore legacy target 无效。");
+    }
+    return;
+  }
+  if (snapshot.kind === "legacy_file") {
+    assertObjectKeys(snapshot, new Set(["kind", "sha256"]), "transaction.launcherBefore");
+    const expectedSha = createHash("sha256").update(legacyWindowsLauncherContents()).digest("hex");
+    if (!IS_WINDOWS || snapshot.sha256 !== expectedSha) {
+      fail("安装 journal 的 transaction.launcherBefore legacy Windows 摘要无效。");
+    }
+    return;
+  }
+  assertObjectKeys(snapshot, new Set(["kind", "sha256"]), "transaction.launcherBefore");
+  const expectedSha = createHash("sha256").update(managedLauncherContents()).digest("hex");
+  if (snapshot.sha256 !== expectedSha) {
+    fail("安装 journal 的 transaction.launcherBefore.sha256 无效。");
+  }
+}
+
+function validateToolsVersionPath(value, label, { allowNull = true } = {}) {
+  if ((value === null || value === undefined) && allowNull) return;
+  if (typeof value !== "string") fail(`安装 journal 的 ${label} 无效。`);
+  const relative = path.relative(TOOLS_ROOT, path.resolve(value));
+  if (
+    !relative || relative === ".." || relative.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relative) || relative.includes(path.sep) ||
+    !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(relative)
+  ) fail(`安装 journal 的 ${label} 不是约定的受管工具版本路径。`);
+}
+
+function validateServiceSnapshot(value) {
+  if (value === null) return;
+  if (
+    !value || typeof value !== "object" ||
+    typeof value.productVersion !== "string" ||
+    typeof value.studioBuildId !== "string" || !/^[0-9a-f]{16}$/.test(value.studioBuildId) ||
+    typeof value.runtimeMode !== "string" || !value.runtimeMode ||
+    !Number.isInteger(value.pid) || value.pid <= 0 ||
+    !value.capabilities || typeof value.capabilities !== "object" || Array.isArray(value.capabilities)
+  ) fail("安装 journal 的 transaction.serviceBefore 无效。");
+}
+
+function validateTransaction(transaction, transactionId) {
+  if (!transaction || typeof transaction !== "object" || Array.isArray(transaction)) {
+    fail("安装 journal 的 transaction 无效。");
+  }
+  assertObjectKeys(transaction, new Set([
+    "oldActive", "oldPrevious", "serviceBefore", "serviceEnsureStarted", "launcherBefore",
+    "toolsBefore", "toolsSource", "toolsCandidate", "toolsPending", "toolsTarget",
+    "toolsBackup", "toolsPromotionStarted", "toolsBackupMoved", "toolsPromoted",
+    "toolsTargetExisted",
+  ]), "transaction");
+  validateRuntimeRef(transaction.oldActive, "transaction.oldActive", { allowNull: true });
+  validateRuntimeRef(transaction.oldPrevious, "transaction.oldPrevious", { allowNull: true });
+  validateServiceSnapshot(transaction.serviceBefore);
+  if (typeof transaction.serviceEnsureStarted !== "boolean") {
+    fail("安装 journal 的 transaction.serviceEnsureStarted 无效。");
+  }
+  validateLauncherSnapshot(transaction.launcherBefore);
+  validateToolsVersionPath(transaction.toolsBefore, "transaction.toolsBefore");
+  if (
+    transaction.toolsSource !== null && transaction.toolsSource !== undefined &&
+    (typeof transaction.toolsSource !== "string" || !path.isAbsolute(transaction.toolsSource) ||
+      transaction.toolsSource.includes("\0"))
+  ) fail("安装 journal 的 transaction.toolsSource 无效。");
+  const expectedPending = path.join(TOOLS_PENDING_ROOT, transactionId);
+  const expectedTarget = path.join(TOOLS_ROOT, VERSION);
+  const expectedBackup = path.join(TOOLS_ROOT, `.${VERSION}.previous.${transactionId}`);
+  if (transaction.toolsPending !== null && transaction.toolsPending !== undefined) {
+    assertExactManagedPath(transaction.toolsPending, expectedPending, "transaction.toolsPending");
+  }
+  for (const field of ["toolsTarget", "toolsCandidate"]) {
+    if (transaction[field] !== null && transaction[field] !== undefined) {
+      assertExactManagedPath(transaction[field], expectedTarget, `transaction.${field}`);
+    }
+  }
+  if (transaction.toolsBackup !== null && transaction.toolsBackup !== undefined) {
+    assertExactManagedPath(transaction.toolsBackup, expectedBackup, "transaction.toolsBackup");
+  }
+  for (const field of ["toolsPromotionStarted", "toolsBackupMoved", "toolsPromoted", "toolsTargetExisted"]) {
+    if (transaction[field] !== undefined && typeof transaction[field] !== "boolean") {
+      fail(`安装 journal 的 transaction.${field} 无效。`);
+    }
+  }
+  if (transaction.toolsPromotionStarted === true) {
+    if (
+      transaction.toolsPending === undefined || transaction.toolsTarget === undefined ||
+      transaction.toolsCandidate === undefined || typeof transaction.toolsTargetExisted !== "boolean" ||
+      typeof transaction.toolsBackupMoved !== "boolean"
+    ) fail("安装 journal 的工具提升 transaction 不完整。");
+    if (transaction.toolsTargetExisted && !transaction.toolsBackup) {
+      fail("安装 journal 的工具提升缺少约定 backup 路径。");
+    }
+    if (!transaction.toolsTargetExisted && transaction.toolsBackup !== null) {
+      fail("安装 journal 的首次工具提升不得包含 backup 路径。");
+    }
+  }
+}
+
+function migrateLegacyState(raw) {
+  if (!raw || typeof raw !== "object") return raw;
+  if (raw.schemaVersion === STATE_SCHEMA_VERSION) return raw;
+  if (raw.schemaVersion !== 1) return raw;
+  const migrated = JSON.parse(JSON.stringify(raw));
+  migrated.schemaVersion = STATE_SCHEMA_VERSION;
+  const snapshot = migrated.transaction?.launcherBefore;
+  if (snapshot?.kind === "link") {
+    if (IS_WINDOWS || snapshot.target !== LEGACY_POSIX_LAUNCHER_TARGET) {
+      fail("旧版安装 journal 含未知 launcher symlink；无法安全迁移，已保留现场。");
+    }
+    migrated.transaction.launcherBefore = {
+      kind: "legacy_link",
+      target: LEGACY_POSIX_LAUNCHER_TARGET,
+    };
+  } else if (snapshot?.kind === "file" && ("contents" in snapshot || "mode" in snapshot)) {
+    let contents;
+    try {
+      contents = Buffer.from(snapshot.contents, "base64");
+    } catch {
+      fail("旧版安装 journal 的 launcher 快照无法解码；已保留现场。");
+    }
+    if (contents.equals(Buffer.from(managedLauncherContents(), "utf8"))) {
+      migrated.transaction.launcherBefore = {
+        kind: "file",
+        sha256: createHash("sha256").update(managedLauncherContents()).digest("hex"),
+      };
+    } else if (IS_WINDOWS && contents.equals(Buffer.from(legacyWindowsLauncherContents(), "utf8"))) {
+      migrated.transaction.launcherBefore = {
+        kind: "legacy_file",
+        sha256: createHash("sha256").update(legacyWindowsLauncherContents()).digest("hex"),
+      };
+    } else {
+      fail("旧版安装 journal 含未知 launcher 文件快照；无法安全迁移，已保留现场。");
+    }
+  }
+  if (
+    migrated.transaction?.toolsPromotionStarted === true &&
+    typeof migrated.transaction.toolsTargetExisted !== "boolean"
+  ) {
+    fail(
+      "旧版安装 journal 的工具提升现场缺少 toolsTargetExisted；无法证明 target/backup 所有权，" +
+      "已保留现场且不会删除任何路径。",
+    );
+  }
+  if (migrated.transaction?.toolsPromotionStarted === true) {
+    migrated.transaction.toolsPending ??= path.join(TOOLS_PENDING_ROOT, migrated.transactionId);
+    migrated.transaction.toolsTarget ??= path.join(TOOLS_ROOT, VERSION);
+    migrated.transaction.toolsCandidate ??= path.join(TOOLS_ROOT, VERSION);
+    migrated.transaction.toolsBackupMoved ??= false;
+  }
+  return migrated;
+}
+
 function validateState(state) {
   if (!state || typeof state !== "object" || state.schemaVersion !== STATE_SCHEMA_VERSION) {
     fail("安装 journal 版本未知；为避免覆盖现有 Runtime，安装已停止。");
   }
-  if (typeof state.transactionId !== "string" && state.transactionId !== null) fail("安装 journal transactionId 无效。");
-  if (typeof state.phase !== "string") fail("安装 journal phase 无效。");
+  assertObjectKeys(state, new Set([
+    "schemaVersion", "transactionId", "phase", "active", "previous", "pending",
+    "transaction", "terminationFailure", "rollbackError", "updatedAt",
+  ]), "root");
+  const phases = new Set([
+    "idle", "staged", "validated", "promoting", "switching", "health_check",
+    "completed", "rolling_back", "rollback_failed", "termination_failed",
+  ]);
+  if (!phases.has(state.phase)) fail("安装 journal phase 无效。");
+  if (state.transactionId !== null && !safeTransactionId(state.transactionId)) {
+    fail("安装 journal transactionId 无效。");
+  }
+  if (typeof state.updatedAt !== "string" || !Number.isFinite(Date.parse(state.updatedAt))) {
+    fail("安装 journal updatedAt 无效。");
+  }
   validateRuntimeRef(state.active, "active", { allowNull: true });
   validateRuntimeRef(state.previous, "previous", { allowNull: true });
-  validateRuntimeRef(state.pending, "pending", { allowNull: true });
+  validateRuntimeRef(state.pending, "pending", {
+    allowNull: true,
+    allowPending: true,
+    transactionId: state.transactionId,
+  });
+  if (state.phase === "idle") {
+    if (state.transactionId !== null || state.pending !== null || state.transaction !== null) {
+      fail("安装 journal 的 idle 状态仍包含事务现场。");
+    }
+  } else {
+    if (!safeTransactionId(state.transactionId)) fail("安装 journal 的非 idle 状态缺少 transactionId。");
+    validateTransaction(state.transaction, state.transactionId);
+  }
+  if (state.phase === "rollback_failed") {
+    if (typeof state.rollbackError !== "string" || !state.rollbackError) {
+      fail("安装 journal 的 rollback_failed 状态缺少 rollbackError。");
+    }
+  } else if (state.rollbackError !== undefined) {
+    fail("安装 journal 在非 rollback_failed 阶段包含 rollbackError。");
+  }
   if (["termination_failed", "rollback_failed"].includes(state.phase)) {
     if (
       state.phase === "termination_failed" && !validateTerminationFailure(state.terminationFailure)
@@ -621,7 +973,7 @@ function readState() {
     return state;
   }
   try {
-    return validateState(JSON.parse(readFileSync(STATE_PATH, "utf8")));
+    return validateState(migrateLegacyState(JSON.parse(readFileSync(STATE_PATH, "utf8"))));
   } catch (error) {
     if (error instanceof Error) throw error;
     fail("安装 journal 无法解析；安装已停止。");
@@ -630,6 +982,7 @@ function readState() {
 
 function writeState(state) {
   state.updatedAt = new Date().toISOString();
+  validateState(state);
   atomicWriteJson(STATE_PATH, state, state.phase);
 }
 
@@ -656,25 +1009,53 @@ function processIsAlive(pid) {
 }
 
 function acquireUpdateLock() {
-  mkdirSync(INSTALL_ROOT, { recursive: true });
+  assertSafeInstallRootPath(INSTALL_ROOT);
+  if (!pathExists(INSTALL_ROOT)) mkdirSync(INSTALL_ROOT, { recursive: true, mode: 0o700 });
+  lockedInstallRootCanonical = assertPlainDirectory(INSTALL_ROOT, "Product 受管安装根");
+  assertInstallRootLayout();
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
+      assertInstallRootLayout();
       mkdirSync(UPDATE_LOCK_PATH, { mode: 0o700 });
+      assertPlainDirectory(UPDATE_LOCK_PATH, "Runtime 更新锁");
+      assertCanonicalInside(UPDATE_LOCK_PATH, INSTALL_ROOT, "Runtime 更新锁");
       const pauseMilliseconds = Number(process.env.CHENGFENG_VIDEOCUT_TEST_PAUSE_AFTER_LOCK_DIRECTORY_MS || 0);
       if (Number.isFinite(pauseMilliseconds) && pauseMilliseconds > 0) {
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, pauseMilliseconds);
       }
-      atomicWriteJson(path.join(UPDATE_LOCK_PATH, "owner.json"), {
+      const owner = {
         pid: process.pid,
         acquiredAt: new Date().toISOString(),
         transactionId: randomUUID(),
-      }, "lock_owner");
-      return () => rmSync(UPDATE_LOCK_PATH, { recursive: true, force: true });
+      };
+      lockOwnerWriteInProgress = true;
+      try {
+        atomicWriteJson(path.join(UPDATE_LOCK_PATH, "owner.json"), owner, "lock_owner");
+      } finally {
+        lockOwnerWriteInProgress = false;
+      }
+      heldUpdateLockOwner = owner;
+      assertInstallRootLayout({ requireHeldLock: true });
+      return () => {
+        assertInstallRootLayout({ requireHeldLock: true });
+        const ownerPath = path.join(UPDATE_LOCK_PATH, "owner.json");
+        assertSingleLinkRegularFile(ownerPath, "Runtime 更新锁 owner");
+        const observed = JSON.parse(readFileSync(ownerPath, "utf8"));
+        if (stableJson(observed) !== stableJson(heldUpdateLockOwner)) {
+          fail("Runtime 更新锁 owner 在释放前发生变化；不会删除未知锁。");
+        }
+        removeTreeWithoutFollowingLinks(UPDATE_LOCK_PATH);
+        heldUpdateLockOwner = null;
+        lockedInstallRootCanonical = null;
+      };
     } catch (error) {
       if (!error || error.code !== "EEXIST") throw error;
+      assertInstallRootLayout();
       let owner;
       try {
-        owner = JSON.parse(readFileSync(path.join(UPDATE_LOCK_PATH, "owner.json"), "utf8"));
+        const ownerPath = path.join(UPDATE_LOCK_PATH, "owner.json");
+        assertSingleLinkRegularFile(ownerPath, "Runtime 更新锁 owner");
+        owner = JSON.parse(readFileSync(ownerPath, "utf8"));
       } catch {
         fail("Runtime 更新锁尚未包含可验证 owner；为避免删除活锁，安装已停止。");
       }
@@ -689,7 +1070,14 @@ function acquireUpdateLock() {
         fail(`已有 Runtime 更新在执行（pid ${owner.pid}）；不会并发改写 current。`);
       }
       if (attempt === 0) {
-        rmSync(UPDATE_LOCK_PATH, { recursive: true, force: true });
+        assertInstallRootLayout();
+        const ownerPath = path.join(UPDATE_LOCK_PATH, "owner.json");
+        assertSingleLinkRegularFile(ownerPath, "Runtime 更新锁 owner");
+        const observed = JSON.parse(readFileSync(ownerPath, "utf8"));
+        if (stableJson(observed) !== stableJson(owner) || processIsAlive(owner.pid)) {
+          fail("Runtime 更新锁在回收前发生变化；不会删除未知锁。");
+        }
+        removeTreeWithoutFollowingLinks(UPDATE_LOCK_PATH);
         continue;
       }
       fail("无法取得 Runtime 更新锁。");
@@ -1170,6 +1558,15 @@ function safeAssetRecord(value, label) {
   return value;
 }
 
+function safeInstallerRecord(value, expectedAsset, label) {
+  if (
+    !value || typeof value !== "object" || value.asset !== expectedAsset || value.root !== undefined ||
+    typeof value.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(value.sha256) ||
+    !Number.isSafeInteger(value.size) || value.size <= 0 || value.size > RELEASE_ASSET_DOWNLOAD_LIMIT_BYTES
+  ) fail(`安装 manifest 的 ${label} installer 资产无效。`);
+  return value;
+}
+
 async function loadFormalInstallContext() {
   if (!INSTALL_MANIFEST_SOURCE) return null;
   const tmpDir = mkdtempSync(path.join(os.tmpdir(), "chengfeng-videocut-native-installer-"));
@@ -1210,12 +1607,18 @@ async function loadFormalInstallContext() {
   if (
     manifest?.schemaVersion !== 1 || manifest.product !== "chengfeng-videocut" ||
     manifest.productVersion !== VERSION || manifest.releaseTag !== `v${VERSION}` ||
-    !manifest.platforms || typeof manifest.platforms !== "object"
+    !["release-ready", "local-test-only"].includes(manifest.distributionMode) ||
+    !manifest.platforms || typeof manifest.platforms !== "object" ||
+    Object.keys(manifest.platforms).sort().join(",") !==
+      ["darwin-arm64", "darwin-x64", "win32-x64"].sort().join(",")
   ) {
     removeTreeWithoutFollowingLinks(tmpDir);
     fail("安装 manifest 与当前 Runtime 版本不一致。");
   }
-  if (manifest.licenseStatus !== "VERIFIED" && !ALLOW_UNVERIFIED_LOCAL_TOOLS) {
+  if (
+    (manifest.licenseStatus !== "VERIFIED" || manifest.distributionMode !== "release-ready") &&
+    !ALLOW_UNVERIFIED_LOCAL_TOOLS
+  ) {
     removeTreeWithoutFollowingLinks(tmpDir);
     fail("安装 manifest 的第三方许可不是 VERIFIED；公开安装已阻止。");
   }
@@ -1225,6 +1628,7 @@ async function loadFormalInstallContext() {
     removeTreeWithoutFollowingLinks(tmpDir);
     fail(`安装 manifest 缺少 ${platformKey}。`);
   }
+  safeInstallerRecord(platform.installer, platform.installerAsset, `${platformKey}.installer`);
   return {
     tmpDir,
     manifest,
@@ -1298,7 +1702,10 @@ async function tryFastFormalReuse(context) {
   const releaseLock = acquireUpdateLock();
   try {
     const state = readState();
+    failIfTerminationRecoveryIsBlocked(state);
     if (state.phase !== "idle" || state.active?.version !== VERSION) return false;
+    assertCurrentMatches(state);
+    const observedLauncherKind = launcherKind();
     const toolsState = JSON.parse(readFileSync(TOOLS_STATE_PATH, "utf8"));
     const toolsTarget = readManagedToolsTarget();
     if (
@@ -1306,7 +1713,8 @@ async function tryFastFormalReuse(context) {
       toolsState.platformKey !== context.platformKey ||
       toolsState.manifestSha256 !== context.manifestSha256 ||
       toolsState.archiveSha256 !== context.tools.sha256 ||
-      path.resolve(toolsState.path || "") !== path.resolve(toolsTarget)
+      path.resolve(toolsState.path || "") !== path.resolve(toolsTarget) ||
+      typeof toolsState.treeDigest !== "string" || !/^[0-9a-f]{64}$/.test(toolsState.treeDigest)
     ) return false;
     validateExternalToolsSource(toolsTarget, { allowManagedRoot: true });
     if (regularTreeDigest(toolsTarget) !== toolsState.treeDigest) fail("受管工具完整树摘要漂移。");
@@ -1326,6 +1734,13 @@ async function tryFastFormalReuse(context) {
         activeInfo.capabilities,
         activeInfo.buildId,
       );
+    }
+    if (observedLauncherKind !== "file") {
+      // Missing or the one precisely-known legacy launcher is repairable only
+      // after Runtime + tools + Bun + CLI (+ service when requested) all prove
+      // the already-installed release. This stays on the zero-asset path.
+      createLauncher();
+      assertManagedLauncherExact();
     }
     reportSuccess("reused", 0, `chengfeng-videocut ${VERSION} 已复用；asset-downloads=0。\n`);
     return true;
@@ -1533,8 +1948,18 @@ async function selfTestCandidate(candidatePath, bunExecutable, expectedBuildId) 
 }
 
 function createLink(linkPath, target, kind) {
+  assertManagedWriteBoundary(linkPath, "受管 current 临时链接");
   if (pathExists(linkPath)) fail(`内部错误：临时链接已存在 ${linkPath}`);
   symlinkSync(target, linkPath, kind);
+}
+
+function removeExpectedManagedLink(linkPath, label) {
+  assertManagedWriteBoundary(linkPath, label);
+  if (!pathExists(linkPath)) return;
+  if (!lstatSync(linkPath).isSymbolicLink()) {
+    fail(`${label} 不是受管链接；安装已停止。`);
+  }
+  removeLink(linkPath);
 }
 
 function switchCurrent(target, transactionId) {
@@ -1542,33 +1967,45 @@ function switchCurrent(target, transactionId) {
   assertCanonicalManagedDirectory(target, "候选 Runtime");
   const nextLink = path.join(APP_ROOT, `.current.next.${transactionId}`);
   const backupLink = path.join(APP_ROOT, `.current.previous.${transactionId}`);
-  if (pathExists(nextLink)) removeLink(nextLink);
-  if (pathExists(backupLink)) removeLink(backupLink);
+  if (pathExists(nextLink)) removeExpectedManagedLink(nextLink, "Runtime next 链接");
+  if (pathExists(backupLink)) removeExpectedManagedLink(backupLink, "Runtime backup 链接");
   if (IS_WINDOWS) {
     createLink(nextLink, path.resolve(target), "junction");
     // Windows Junction 不能 replace-in-place。这里是 journal 驱动的可恢复事务，
     // 而不是“原子切换”：任何中断都由 recoverInterruptedTransaction 恢复。
     try {
-      if (pathExists(CURRENT_LINK)) renameSync(CURRENT_LINK, backupLink);
+      if (pathExists(CURRENT_LINK)) {
+        readCurrentTarget();
+        assertManagedWriteBoundary(backupLink, "Runtime current backup 切换");
+        renameSync(CURRENT_LINK, backupLink);
+      }
+      removeExpectedManagedLink(CURRENT_LINK, "Runtime current 链接");
+      assertManagedWriteBoundary(CURRENT_LINK, "Runtime current 切换");
       renameSync(nextLink, CURRENT_LINK);
-      if (pathExists(backupLink)) removeLink(backupLink);
+      if (pathExists(backupLink)) removeExpectedManagedLink(backupLink, "Runtime backup 链接");
     } catch (error) {
       try {
-        if (!pathExists(CURRENT_LINK) && pathExists(backupLink)) renameSync(backupLink, CURRENT_LINK);
+        if (!pathExists(CURRENT_LINK) && pathExists(backupLink)) {
+          removeExpectedManagedLink(CURRENT_LINK, "Runtime current 链接");
+          assertManagedWriteBoundary(CURRENT_LINK, "Runtime current 恢复");
+          renameSync(backupLink, CURRENT_LINK);
+        }
       } catch {
         // Journal recovery will retry from the durable phase.
       }
       throw error;
     } finally {
-      if (pathExists(nextLink)) removeLink(nextLink);
+      if (pathExists(nextLink)) removeExpectedManagedLink(nextLink, "Runtime next 链接");
     }
     return;
   }
   createLink(nextLink, path.relative(APP_ROOT, target), "dir");
   try {
+    if (pathExists(CURRENT_LINK)) readCurrentTarget();
+    assertManagedWriteBoundary(CURRENT_LINK, "Runtime current 切换");
     renameSync(nextLink, CURRENT_LINK);
   } finally {
-    if (pathExists(nextLink)) removeLink(nextLink);
+    if (pathExists(nextLink)) removeExpectedManagedLink(nextLink, "Runtime next 链接");
   }
 }
 
@@ -1577,13 +2014,16 @@ function clearCurrentForFirstInstall(transactionId) {
   if (!pathExists(CURRENT_LINK)) return;
   if (!isLink(CURRENT_LINK)) fail(`${CURRENT_LINK} 已存在且不是链接；为避免覆盖用户文件，安装已停止。`);
   if (IS_WINDOWS) {
+    readCurrentTarget();
+    assertManagedWriteBoundary(nextLink, "Runtime current 清理暂存");
     renameSync(CURRENT_LINK, nextLink);
-    removeLink(nextLink);
+    removeExpectedManagedLink(nextLink, "Runtime current 清理暂存");
   } else {
     // POSIX rename of a fresh empty directory is not a replacement mechanism for
     // a link. unlink is safe here because the journal records active=null and
     // there is no old Runtime to preserve.
-    removeLink(CURRENT_LINK);
+    readCurrentTarget();
+    removeExpectedManagedLink(CURRENT_LINK, "Runtime current 链接");
   }
 }
 
@@ -1591,8 +2031,8 @@ function switchManagedTools(target, transactionId, { injectFailure = true } = {}
   assertCanonicalManagedDirectory(target, "候选 Product 受管工具", TOOLS_ROOT);
   const next = path.join(TOOLS_ROOT, `.current.next.${transactionId}`);
   const backup = path.join(TOOLS_ROOT, `.current.previous.${transactionId}`);
-  if (pathExists(next)) removeLink(next);
-  if (pathExists(backup)) removeLink(backup);
+  if (pathExists(next)) removeExpectedManagedLink(next, "tools next 链接");
+  if (pathExists(backup)) removeExpectedManagedLink(backup, "tools backup 链接");
   const maybeFailToolsPromotion = (phase) => {
     const configured = process.env.CHENGFENG_VIDEOCUT_TEST_FAIL_TOOLS_PROMOTION;
     if (
@@ -1605,38 +2045,54 @@ function switchManagedTools(target, transactionId, { injectFailure = true } = {}
     }
   };
   if (IS_WINDOWS) {
+    assertManagedWriteBoundary(next, "tools next 链接");
     symlinkSync(path.resolve(target), next, "junction");
     try {
       maybeFailToolsPromotion("before_backup");
-      if (pathExists(TOOLS_CURRENT_LINK)) renameSync(TOOLS_CURRENT_LINK, backup);
+      if (pathExists(TOOLS_CURRENT_LINK)) {
+        readManagedToolsTarget();
+        assertManagedWriteBoundary(backup, "tools current backup 切换");
+        renameSync(TOOLS_CURRENT_LINK, backup);
+      }
       maybeFailToolsPromotion("after_backup");
+      removeExpectedManagedLink(TOOLS_CURRENT_LINK, "tools/current 链接");
+      assertManagedWriteBoundary(TOOLS_CURRENT_LINK, "tools/current 切换");
       renameSync(next, TOOLS_CURRENT_LINK);
       maybeFailToolsPromotion("after_current");
-      if (pathExists(backup)) removeLink(backup);
+      if (pathExists(backup)) removeExpectedManagedLink(backup, "tools backup 链接");
     } catch (error) {
       try {
-        if (!pathExists(TOOLS_CURRENT_LINK) && pathExists(backup)) renameSync(backup, TOOLS_CURRENT_LINK);
+        if (!pathExists(TOOLS_CURRENT_LINK) && pathExists(backup)) {
+          assertManagedWriteBoundary(TOOLS_CURRENT_LINK, "tools/current 恢复");
+          renameSync(backup, TOOLS_CURRENT_LINK);
+        }
       } catch {
         // The durable installer journal will retry recovery on the next launch.
       }
       throw error;
     } finally {
-      if (pathExists(next)) removeLink(next);
+      if (pathExists(next)) removeExpectedManagedLink(next, "tools next 链接");
     }
     return;
   }
+  assertManagedWriteBoundary(next, "tools next 链接");
   symlinkSync(path.relative(TOOLS_ROOT, target), next, "dir");
   try {
+    if (pathExists(TOOLS_CURRENT_LINK)) readManagedToolsTarget();
+    assertManagedWriteBoundary(TOOLS_CURRENT_LINK, "tools/current 切换");
     renameSync(next, TOOLS_CURRENT_LINK);
     maybeFailToolsPromotion("after_current");
   } finally {
-    if (pathExists(next)) removeLink(next);
+    if (pathExists(next)) removeExpectedManagedLink(next, "tools next 链接");
   }
 }
 
 function restoreManagedTools(previous, transactionId) {
   if (previous) return switchManagedTools(previous, transactionId, { injectFailure: false });
-  if (pathExists(TOOLS_CURRENT_LINK)) removeLink(TOOLS_CURRENT_LINK);
+  if (pathExists(TOOLS_CURRENT_LINK)) {
+    readManagedToolsTarget();
+    removeExpectedManagedLink(TOOLS_CURRENT_LINK, "tools/current 链接");
+  }
 }
 
 function stageAndPromoteManagedTools(state, source, transactionId) {
@@ -1651,9 +2107,10 @@ function stageAndPromoteManagedTools(state, source, transactionId) {
   state.transaction.toolsPending = pendingRoot;
   state.transaction.toolsPromotionStarted = false;
   writeState(state);
-  mkdirSync(TOOLS_PENDING_ROOT, { recursive: true, mode: 0o700 });
-  if (pathExists(pendingRoot)) removeTreeWithoutFollowingLinks(pendingRoot);
-  mkdirSync(pendingRoot, { recursive: true, mode: 0o700 });
+  ensureManagedDirectory(TOOLS_PENDING_ROOT, "Product tools pending 目录");
+  if (pathExists(pendingRoot)) fail("工具 pending 事务目录已存在；安装已停止。");
+  ensureManagedDirectory(pendingRoot, "工具 pending 事务目录");
+  assertManagedWriteBoundary(staged, "工具 pending 候选复制");
   cpSync(source, staged, { recursive: true, force: false });
   maybeCrashAt("tools_copied_pending");
   const stagedSource = validateExternalToolsSource(staged, { allowManagedRoot: true });
@@ -1668,6 +2125,10 @@ function stageAndPromoteManagedTools(state, source, transactionId) {
   maybeCrashAt("tools_promotion_planned");
   if (pathExists(backup)) removeManagedToolsDirectory(backup);
   if (state.transaction.toolsTargetExisted) {
+    assertExactManagedPath(target, path.join(TOOLS_ROOT, VERSION), "transaction.toolsTarget");
+    assertExactManagedPath(backup, path.join(TOOLS_ROOT, `.${VERSION}.previous.${transactionId}`), "transaction.toolsBackup");
+    assertCanonicalManagedDirectory(target, "既有工具版本", TOOLS_ROOT);
+    assertManagedWriteBoundary(backup, "工具版本 backup 切换");
     renameSync(target, backup);
     state.transaction.toolsBackupMoved = true;
     writeState(state);
@@ -1677,6 +2138,8 @@ function stageAndPromoteManagedTools(state, source, transactionId) {
     if (process.env.CHENGFENG_VIDEOCUT_TEST_FAIL_TOOLS_TARGET_RENAME === "1") {
       fail("TEST_FAIL_TOOLS_TARGET_RENAME");
     }
+    assertCanonicalManagedDirectory(staged, "工具 pending 候选", pendingRoot);
+    assertManagedWriteBoundary(target, "工具候选提升");
     renameSync(staged, target);
     // Deliberately leave toolsPromoted=false until the journal write below.
     // Recovery must therefore inspect target/backup rather than trusting it.
@@ -1685,7 +2148,11 @@ function stageAndPromoteManagedTools(state, source, transactionId) {
     writeState(state);
     return target;
   } catch (error) {
-    if (!pathExists(target) && pathExists(backup)) renameSync(backup, target);
+    if (!pathExists(target) && pathExists(backup)) {
+      assertExactManagedPath(backup, path.join(TOOLS_ROOT, `.${VERSION}.previous.${transactionId}`), "transaction.toolsBackup");
+      assertManagedWriteBoundary(target, "工具版本 backup 恢复");
+      renameSync(backup, target);
+    }
     state.transaction.toolsBackupMoved = false;
     state.transaction.toolsPromoted = false;
     writeState(state);
@@ -1693,11 +2160,16 @@ function stageAndPromoteManagedTools(state, source, transactionId) {
   }
 }
 
-function restoreManagedToolsVersion(transaction) {
+function restoreManagedToolsVersion(transaction, transactionId) {
   if (!transaction) return;
+  validateTransaction(transaction, transactionId);
   if (!transaction.toolsPromotionStarted) {
     if (transaction.toolsPending && pathExists(transaction.toolsPending)) {
-      removeTreeWithoutFollowingLinks(transaction.toolsPending);
+      removeExpectedManagedTree(
+        transaction.toolsPending,
+        path.join(TOOLS_PENDING_ROOT, transactionId),
+        "transaction.toolsPending",
+      );
     }
     return;
   }
@@ -1714,7 +2186,10 @@ function restoreManagedToolsVersion(transaction) {
     fail("TEST_FAIL_TOOLS_CLEANUP_UNTIL_SERVICE_STOPPED");
   }
   if (backupExists) {
+    assertExactManagedPath(backup, path.join(TOOLS_ROOT, `.${VERSION}.previous.${transactionId}`), "transaction.toolsBackup");
+    assertExactManagedPath(target, path.join(TOOLS_ROOT, VERSION), "transaction.toolsTarget");
     if (target && pathExists(target)) removeManagedToolsDirectory(target);
+    assertInstallRootLayout({ requireHeldLock: true });
     renameSync(backup, target);
   } else if (transaction.toolsTargetExisted === false && target && pathExists(target)) {
     // First import has no old target.  Any target that exists here is the
@@ -1722,59 +2197,252 @@ function restoreManagedToolsVersion(transaction) {
     removeManagedToolsDirectory(target);
   }
   if (transaction.toolsPending && pathExists(transaction.toolsPending)) {
-    removeTreeWithoutFollowingLinks(transaction.toolsPending);
+    removeExpectedManagedTree(
+      transaction.toolsPending,
+      path.join(TOOLS_PENDING_ROOT, transactionId),
+      "transaction.toolsPending",
+    );
   }
 }
 
-function finalizeManagedToolsVersion(transaction) {
+function finalizeManagedToolsVersion(transaction, transactionId) {
   if (!transaction?.toolsPromotionStarted) return;
+  validateTransaction(transaction, transactionId);
   if (transaction.toolsBackup && pathExists(transaction.toolsBackup)) removeManagedToolsDirectory(transaction.toolsBackup);
   if (transaction.toolsPending && pathExists(transaction.toolsPending)) {
-    removeTreeWithoutFollowingLinks(transaction.toolsPending);
+    removeExpectedManagedTree(
+      transaction.toolsPending,
+      path.join(TOOLS_PENDING_ROOT, transactionId),
+      "transaction.toolsPending",
+    );
+  }
+}
+
+function managedLauncherContents() {
+  if (IS_WINDOWS) {
+    return `@echo off\r\nsetlocal\r\nset "CHENGFENG_VIDEOCUT_EXECUTABLE=%~f0"\r\nfor %%I in ("%~dp0..") do set "CHENGFENG_VIDEOCUT_DATA_DIR=%%~fI"\r\nset "APP_DIR=%~dp0..\\app\\current"\r\nset "MANAGED_TOOLS=%~dp0..\\tools\\current"\r\nset "BUN_EXE=%MANAGED_TOOLS%\\bun.exe"\r\nif not exist "%BUN_EXE%" (\r\n  echo chengfeng-videocut managed Bun is missing: "%BUN_EXE%" 1>&2\r\n  exit /b 127\r\n)\r\nset "PATH=%MANAGED_TOOLS%;%PATH%"\r\n"%BUN_EXE%" "%APP_DIR%\\cli.js" %*\r\nexit /b %ERRORLEVEL%\r\n`;
+  }
+  return `#!/bin/sh
+set -eu
+BIN_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+INSTALL_ROOT=$(CDPATH= cd -- "$BIN_DIR/.." && pwd -P)
+APP_DIR="$INSTALL_ROOT/app/current"
+MANAGED_TOOLS="$INSTALL_ROOT/tools/current"
+BUN_EXE="$MANAGED_TOOLS/bun"
+if [ ! -x "$BUN_EXE" ]; then
+  printf '%s\\n' "chengfeng-videocut managed Bun is missing: $BUN_EXE" >&2
+  exit 127
+fi
+CHENGFENG_VIDEOCUT_EXECUTABLE="$BIN_DIR/chengfeng-videocut"
+CHENGFENG_VIDEOCUT_DATA_DIR="$INSTALL_ROOT"
+PATH="$MANAGED_TOOLS\${PATH:+:$PATH}"
+export CHENGFENG_VIDEOCUT_EXECUTABLE CHENGFENG_VIDEOCUT_DATA_DIR PATH
+exec "$BUN_EXE" "$APP_DIR/cli.js" "$@"
+`;
+}
+
+function legacyWindowsLauncherContents() {
+  return `@echo off\r\nsetlocal\r\nset "CHENGFENG_VIDEOCUT_EXECUTABLE=%~f0"\r\nfor %%I in ("%~dp0..") do set "CHENGFENG_VIDEOCUT_DATA_DIR=%%~fI"\r\nset "APP_DIR=%~dp0..\\app\\current"\r\nset "MANAGED_TOOLS=%~dp0..\\tools\\current"\r\nif exist "%MANAGED_TOOLS%" set "PATH=%MANAGED_TOOLS%;%PATH%"\r\nset "BUN_EXE="\r\nif exist "%MANAGED_TOOLS%\\bun.exe" set "BUN_EXE=%MANAGED_TOOLS%\\bun.exe"\r\nfor /f "delims=" %%B in ('where bun.exe 2^>nul') do if not defined BUN_EXE set "BUN_EXE=%%~fB"\r\nif not defined BUN_EXE if exist "%USERPROFILE%\\.bun\\bin\\bun.exe" set "BUN_EXE=%USERPROFILE%\\.bun\\bin\\bun.exe"\r\nfor /f "delims=" %%B in ('where bun.cmd 2^>nul') do if not defined BUN_EXE set "BUN_EXE=%%~fB"\r\nif not defined BUN_EXE (\r\n  echo chengfeng-videocut 需要 Bun 1.2 或更高版本：https://bun.sh/docs/installation 1>&2\r\n  exit /b 127\r\n)\r\n"%BUN_EXE%" "%APP_DIR%\\cli.js" %*\r\nexit /b %ERRORLEVEL%\r\n`;
+}
+
+const LEGACY_POSIX_LAUNCHER_TARGET = path.join("..", "app", "current", "chengfeng-videocut");
+
+function assertExactLegacyLauncher() {
+  if (IS_WINDOWS) fail("Windows 不接受 legacy symlink launcher。");
+  const metadata = lstatSync(BIN_LINK);
+  if (!metadata.isSymbolicLink() || readlinkSync(BIN_LINK) !== LEGACY_POSIX_LAUNCHER_TARGET) {
+    fail("Product 稳定 launcher 是未知 symlink；安装已停止。");
+  }
+  const activeDirectory = readCurrentTarget();
+  if (!activeDirectory) fail("legacy launcher 存在但 app/current 缺失；安装已停止。");
+  const expectedTarget = path.join(activeDirectory, "chengfeng-videocut");
+  const targetMetadata = assertSingleLinkRegularFile(expectedTarget, "legacy launcher 目标");
+  if ((targetMetadata.mode & 0o111) === 0) fail("legacy launcher 目标不可执行；安装已停止。");
+  for (const [relative, label] of [
+    ["cli.js", "legacy Runtime cli.js"],
+    [path.join("studio", "index.html"), "legacy Runtime Studio"],
+    ["chengfeng-videocut", "legacy Runtime launcher"],
+  ]) assertRequiredRegularFile(activeDirectory, relative, label);
+  if (comparablePath(canonicalPath(BIN_LINK)) !== comparablePath(canonicalPath(expectedTarget))) {
+    fail("legacy launcher 的 canonical 目标与 app/current 不一致；安装已停止。");
+  }
+  return metadata;
+}
+
+function launcherKind() {
+  if (!pathExists(BIN_LINK)) return "missing";
+  const metadata = lstatSync(BIN_LINK);
+  if (metadata.isSymbolicLink()) {
+    assertExactLegacyLauncher();
+    return "legacy_link";
+  }
+  assertSingleLinkRegularFile(BIN_LINK, "Product 稳定 launcher");
+  const actual = readFileSync(BIN_LINK);
+  if (actual.equals(Buffer.from(managedLauncherContents(), "utf8"))) {
+    assertManagedLauncherExact();
+    return "file";
+  }
+  if (IS_WINDOWS && actual.equals(Buffer.from(legacyWindowsLauncherContents(), "utf8"))) {
+    assertCanonicalInside(BIN_LINK, BIN_ROOT, "legacy Windows launcher");
+    return "legacy_file";
+  }
+  fail("Product 稳定 launcher 内容不是当前或已知 legacy 精确内容；安装已停止。");
+}
+
+function assertManagedLauncherExact() {
+  const metadata = assertSingleLinkRegularFile(BIN_LINK, "Product 稳定 launcher");
+  const expected = Buffer.from(managedLauncherContents(), "utf8");
+  const actual = readFileSync(BIN_LINK);
+  if (!actual.equals(expected)) {
+    fail("Product 稳定 launcher 内容不是当前 Runtime 管理的精确内容；安装已停止。");
+  }
+  if (!IS_WINDOWS && (metadata.mode & 0o777) !== 0o755) {
+    fail("Product 稳定 launcher 权限不是 0755；安装已停止。");
+  }
+  assertCanonicalInside(BIN_LINK, BIN_ROOT, "Product 稳定 launcher");
+  return metadata;
+}
+
+function atomicWriteManagedLauncher({ replaceExactLegacy = false } = {}) {
+  assertManagedWriteBoundary(BIN_LINK, "Product 稳定 launcher");
+  if (pathExists(BIN_LINK)) {
+    if (!replaceExactLegacy || !["legacy_link", "legacy_file"].includes(launcherKind())) {
+      fail("Product 稳定 launcher 写入目标已存在；安装已停止。");
+    }
+  }
+  const temporary = path.join(BIN_ROOT, `.chengfeng-videocut.${process.pid}.${randomUUID()}.tmp`);
+  const bytes = Buffer.from(managedLauncherContents(), "utf8");
+  let descriptor = null;
+  try {
+    descriptor = openSync(temporary, "wx", IS_WINDOWS ? 0o600 : 0o755);
+    let written = 0;
+    while (written < bytes.length) {
+      const count = writeSync(descriptor, bytes, written, bytes.length - written, null);
+      if (count <= 0) fail("Product 稳定 launcher 写入不完整。");
+      written += count;
+    }
+    fsyncSync(descriptor);
+    closeSync(descriptor);
+    descriptor = null;
+    assertManagedWriteBoundary(BIN_LINK, "Product 稳定 launcher");
+    if (pathExists(BIN_LINK)) {
+      if (!replaceExactLegacy || !["legacy_link", "legacy_file"].includes(launcherKind())) {
+        fail("Product 稳定 launcher 在提交前被替换；安装已停止。");
+      }
+    }
+    renameSync(temporary, BIN_LINK);
+    descriptor = openSync(BIN_LINK, "r+");
+    fsyncSync(descriptor);
+    closeSync(descriptor);
+    descriptor = null;
+    flushDirectoryIfSupported(BIN_ROOT, "launcher");
+    assertManagedLauncherExact();
+  } finally {
+    if (descriptor !== null) closeSync(descriptor);
+    if (pathExists(temporary)) {
+      assertSingleLinkRegularFile(temporary, "Product 稳定 launcher 临时文件");
+      unlinkSync(temporary);
+    }
   }
 }
 
 function createLauncher() {
-  if (IS_WINDOWS) {
-    const launcher = `@echo off\r\nsetlocal\r\nset "CHENGFENG_VIDEOCUT_EXECUTABLE=%~f0"\r\nfor %%I in ("%~dp0..") do set "CHENGFENG_VIDEOCUT_DATA_DIR=%%~fI"\r\nset "APP_DIR=%~dp0..\\app\\current"\r\nset "MANAGED_TOOLS=%~dp0..\\tools\\current"\r\nif exist "%MANAGED_TOOLS%" set "PATH=%MANAGED_TOOLS%;%PATH%"\r\nset "BUN_EXE="\r\nif exist "%MANAGED_TOOLS%\\bun.exe" set "BUN_EXE=%MANAGED_TOOLS%\\bun.exe"\r\nfor /f "delims=" %%B in ('where bun.exe 2^>nul') do if not defined BUN_EXE set "BUN_EXE=%%~fB"\r\nif not defined BUN_EXE if exist "%USERPROFILE%\\.bun\\bin\\bun.exe" set "BUN_EXE=%USERPROFILE%\\.bun\\bin\\bun.exe"\r\nfor /f "delims=" %%B in ('where bun.cmd 2^>nul') do if not defined BUN_EXE set "BUN_EXE=%%~fB"\r\nif not defined BUN_EXE (\r\n  echo chengfeng-videocut 需要 Bun 1.2 或更高版本：https://bun.sh/docs/installation 1>&2\r\n  exit /b 127\r\n)\r\n"%BUN_EXE%" "%APP_DIR%\\cli.js" %*\r\nexit /b %ERRORLEVEL%\r\n`;
-    writeFileSync(BIN_LINK, launcher);
+  assertManagedWriteBoundary(BIN_LINK, "Product 稳定 launcher");
+  if (pathExists(BIN_LINK)) {
+    if (["legacy_link", "legacy_file"].includes(launcherKind())) {
+      atomicWriteManagedLauncher({ replaceExactLegacy: true });
+    }
     return;
   }
-  if (pathExists(BIN_LINK) && !isLink(BIN_LINK)) {
-    fail(`${BIN_LINK} 已存在且不是链接；为避免覆盖用户文件，安装已停止。`);
-  }
-  if (!pathExists(BIN_LINK)) symlinkSync(path.join("..", "app", "current", "chengfeng-videocut"), BIN_LINK, "file");
+  atomicWriteManagedLauncher();
 }
 
 function captureLauncher() {
-  if (!pathExists(BIN_LINK)) return { kind: "missing" };
-  const metadata = lstatSync(BIN_LINK);
-  if (metadata.isSymbolicLink()) return { kind: "link", target: readlinkSync(BIN_LINK) };
-  if (IS_WINDOWS && metadata.isFile()) {
+  assertManagedWriteBoundary(BIN_LINK, "Product 稳定 launcher 快照");
+  const kind = launcherKind();
+  if (kind === "missing") return { kind: "missing" };
+  if (kind === "legacy_link") {
+    return { kind: "legacy_link", target: LEGACY_POSIX_LAUNCHER_TARGET };
+  }
+  if (kind === "legacy_file") {
     return {
-      kind: "file",
-      contents: readFileSync(BIN_LINK).toString("base64"),
-      mode: metadata.mode & 0o777,
+      kind: "legacy_file",
+      sha256: createHash("sha256").update(legacyWindowsLauncherContents()).digest("hex"),
     };
   }
-  fail(`${BIN_LINK} 已存在且不是受管启动器；安装已停止。`);
+  return {
+    kind: "file",
+    sha256: createHash("sha256").update(managedLauncherContents()).digest("hex"),
+  };
 }
 
 function restoreLauncher(snapshot) {
-  if (!snapshot || snapshot.kind === "missing") {
-    removeLink(BIN_LINK);
+  assertManagedWriteBoundary(BIN_LINK, "Product 稳定 launcher 恢复");
+  if (!snapshot || !["missing", "file", "legacy_link", "legacy_file"].includes(snapshot.kind)) {
+    fail("安装 journal 的启动器快照无效；安装已停止。");
+  }
+  if (snapshot.kind === "file") {
+    const expectedSha = createHash("sha256").update(managedLauncherContents()).digest("hex");
+    if (snapshot.sha256 !== expectedSha) fail("安装 journal 的 launcher 摘要无效；安装已停止。");
+    if (pathExists(BIN_LINK)) assertManagedLauncherExact();
+    else atomicWriteManagedLauncher();
     return;
   }
-  removeLink(BIN_LINK);
-  if (snapshot.kind === "link") {
-    symlinkSync(snapshot.target, BIN_LINK, "file");
+  if (snapshot.kind === "legacy_link") {
+    if (IS_WINDOWS || snapshot.target !== LEGACY_POSIX_LAUNCHER_TARGET) {
+      fail("安装 journal 的 legacy launcher 快照无效；安装已停止。");
+    }
+    if (pathExists(BIN_LINK)) {
+      if (launcherKind() === "legacy_link") return;
+      assertManagedLauncherExact();
+      unlinkSync(BIN_LINK);
+    }
+    const temporary = path.join(BIN_ROOT, `.chengfeng-videocut.legacy.${process.pid}.${randomUUID()}.tmp`);
+    assertManagedWriteBoundary(temporary, "legacy launcher 恢复临时链接");
+    symlinkSync(LEGACY_POSIX_LAUNCHER_TARGET, temporary, "file");
+    try {
+      assertManagedWriteBoundary(BIN_LINK, "legacy launcher 恢复");
+      if (pathExists(BIN_LINK)) fail("legacy launcher 恢复目标被替换；安装已停止。");
+      renameSync(temporary, BIN_LINK);
+      assertExactLegacyLauncher();
+      flushDirectoryIfSupported(BIN_ROOT, "launcher_restore_legacy");
+    } finally {
+      if (pathExists(temporary)) removeExpectedManagedLink(temporary, "legacy launcher 恢复临时链接");
+    }
     return;
   }
-  if (snapshot.kind === "file" && IS_WINDOWS) {
-    writeFileSync(BIN_LINK, Buffer.from(snapshot.contents, "base64"), { mode: snapshot.mode });
+  if (snapshot.kind === "legacy_file") {
+    const expectedSha = createHash("sha256").update(legacyWindowsLauncherContents()).digest("hex");
+    if (!IS_WINDOWS || snapshot.sha256 !== expectedSha) {
+      fail("安装 journal 的 legacy Windows launcher 快照无效；安装已停止。");
+    }
+    if (pathExists(BIN_LINK)) {
+      if (launcherKind() === "legacy_file") return;
+      assertManagedLauncherExact();
+      unlinkSync(BIN_LINK);
+    }
+    const temporary = path.join(BIN_ROOT, `.chengfeng-videocut.legacy.${process.pid}.${randomUUID()}.tmp`);
+    assertManagedWriteBoundary(temporary, "legacy Windows launcher 恢复临时文件");
+    writeFileSync(temporary, legacyWindowsLauncherContents(), { flag: "wx", mode: 0o600 });
+    try {
+      assertSingleLinkRegularFile(temporary, "legacy Windows launcher 恢复临时文件");
+      assertManagedWriteBoundary(BIN_LINK, "legacy Windows launcher 恢复");
+      if (pathExists(BIN_LINK)) fail("legacy Windows launcher 恢复目标被替换；安装已停止。");
+      renameSync(temporary, BIN_LINK);
+      if (launcherKind() !== "legacy_file") fail("legacy Windows launcher 恢复后身份不一致。");
+      flushDirectoryIfSupported(BIN_ROOT, "launcher_restore_legacy_windows");
+    } finally {
+      if (pathExists(temporary)) {
+        assertSingleLinkRegularFile(temporary, "legacy Windows launcher 恢复临时文件");
+        unlinkSync(temporary);
+      }
+    }
     return;
   }
-  fail("安装 journal 的启动器快照无效；安装已停止。");
+  if (!pathExists(BIN_LINK)) return;
+  assertManagedLauncherExact();
+  unlinkSync(BIN_LINK);
+  flushDirectoryIfSupported(BIN_ROOT, "launcher_restore");
 }
 
 function parseCliJson(result, command) {
@@ -2062,8 +2730,20 @@ async function rollbackActivatedTransaction(state, bunExecutable, { reason = "�
     if (old) switchCurrent(old.path, state.transactionId || randomUUID());
     else clearCurrentForFirstInstall(state.transactionId || randomUUID());
     if (state.transaction?.toolsSource || state.transaction?.toolsCandidate || state.transaction?.toolsBefore) {
-      restoreManagedToolsVersion(state.transaction);
-      restoreManagedTools(state.transaction?.toolsBefore || null, state.transactionId || randomUUID());
+      const toolsBefore = state.transaction?.toolsBefore || null;
+      const toolsTransactionId = state.transactionId || randomUUID();
+      // A same-version replacement first moves tools/<version> to its backup.
+      // After a crash at that exact point, toolsBefore names the temporarily
+      // absent target, so relinking it first would fail and strand the backup.
+      // Other upgrades restore current away from the candidate before deleting
+      // it, which also keeps Windows junction rollback conservative.
+      if (toolsBefore && !pathExists(toolsBefore)) {
+        restoreManagedToolsVersion(state.transaction, state.transactionId);
+        restoreManagedTools(toolsBefore, toolsTransactionId);
+      } else {
+        restoreManagedTools(toolsBefore, toolsTransactionId);
+        restoreManagedToolsVersion(state.transaction, state.transactionId);
+      }
     }
     if (state.transaction?.serviceBefore) {
       await restoreService(old, bunExecutable, state.transaction.serviceBefore);
@@ -2128,7 +2808,7 @@ async function activateSameVersionManagedTools(state, bunExecutable, candidateIn
   state.phase = "completed";
   writeState(state);
   maybeCrashAt("tools_committed");
-  finalizeManagedToolsVersion(state.transaction);
+  finalizeManagedToolsVersion(state.transaction, state.transactionId);
   state.phase = "idle";
   state.transactionId = null;
   state.transaction = null;
@@ -2143,7 +2823,7 @@ async function recoverInterruptedTransaction(state, bunExecutable) {
     return state;
   }
   if (state.phase === "completed") {
-    finalizeManagedToolsVersion(state.transaction);
+    finalizeManagedToolsVersion(state.transaction, state.transactionId);
     state.phase = "idle";
     state.pending = null;
     state.transaction = null;
@@ -2160,7 +2840,38 @@ async function recoverInterruptedTransaction(state, bunExecutable) {
     const candidate = state.pending;
     if (state.active) switchCurrent(state.active.path, state.transactionId || randomUUID());
     else clearCurrentForFirstInstall(state.transactionId || randomUUID());
-    if (candidate && pathExists(candidate.path) && !sameRuntime(candidate, state.active)) removeManagedDirectory(candidate.path);
+    let recoverableCandidatePath = candidate?.path ?? null;
+    if (state.phase === "promoting" && candidate) {
+      const stagedRoot = path.join(PENDING_ROOT, state.transactionId);
+      const stagedCandidate = path.join(stagedRoot, "app");
+      if (
+        path.resolve(candidate.path) === path.resolve(stagedCandidate) &&
+        !pathExists(stagedCandidate) && pathExists(TARGET_DIR)
+      ) {
+        // rename(pending/app, app/<version>) succeeded but the following
+        // journal write did not. TARGET_DIR was proven absent before this
+        // transaction; still require the exact verified tree identity before
+        // treating the derived path as ours and deleting it.
+        const promotedInfo = validateCandidateLayout(TARGET_DIR, APP_ROOT);
+        if (
+          promotedInfo.buildId !== candidate.buildId ||
+          promotedInfo.treeDigest !== candidate.treeDigest
+        ) fail("promoting 恢复发现未记账的 Runtime 目录身份不匹配；已保留现场。");
+        recoverableCandidatePath = TARGET_DIR;
+      }
+    }
+    if (
+      candidate && recoverableCandidatePath && pathExists(recoverableCandidatePath) &&
+      !sameRuntime({ ...candidate, path: recoverableCandidatePath }, state.active)
+    ) removeManagedDirectory(recoverableCandidatePath);
+    const stagedRoot = state.transactionId ? path.join(PENDING_ROOT, state.transactionId) : null;
+    if (stagedRoot && pathExists(stagedRoot)) {
+      assertCanonicalManagedDirectory(stagedRoot, "Runtime pending 恢复目录", PENDING_ROOT);
+      if (readdirSync(stagedRoot).length !== 0) {
+        fail("Runtime pending 恢复目录仍含未知内容；已保留现场。");
+      }
+      rmdirSync(stagedRoot);
+    }
     restoreLauncher(state.transaction?.launcherBefore);
     state.pending = null;
     state.phase = "idle";
@@ -2185,6 +2896,14 @@ function maybeCrashAt(phase) {
 }
 
 async function runInstaller(formalContext) {
+  // Read-only diagnostic hold check precedes even the formal zero-download
+  // path, which has its own lock. A termination_failed scene must not have a
+  // dead owner lock reclaimed as a side effect of merely retrying install.
+  if (pathExists(INSTALL_ROOT)) {
+    assertSafeInstallRootPath(INSTALL_ROOT);
+    assertInstallRootLayout();
+    if (pathExists(STATE_PATH)) failIfTerminationRecoveryIsBlocked(readState());
+  }
   if (formalContext && await tryFastFormalReuse(formalContext)) {
     return;
   }
@@ -2213,14 +2932,24 @@ async function runInstaller(formalContext) {
     }
   }
   await assertSupportedBun(bunExecutable);
-  mkdirSync(APP_ROOT, { recursive: true });
-  mkdirSync(BIN_ROOT, { recursive: true });
-  // termination_failed 是人工诊断门禁。第二个安装器在取得或清理任何锁前
-  // 就必须停下，不能把“原 updater 已退出”等同于“残余进程树已终止”。
-  if (pathExists(STATE_PATH)) failIfTerminationRecoveryIsBlocked(readState());
+  // termination_failed is a diagnostic hold, not a stale-lock hint. Refuse
+  // before creating, reclaiming, or replacing any update lock so the original
+  // failure scene remains intact. Repeat after lock acquisition below to close
+  // the read/acquire race.
+  if (pathExists(INSTALL_ROOT)) {
+    assertSafeInstallRootPath(INSTALL_ROOT);
+    assertInstallRootLayout();
+    if (pathExists(STATE_PATH)) failIfTerminationRecoveryIsBlocked(readState());
+  }
   const releaseLock = acquireUpdateLock();
   let state = null;
   try {
+    ensureManagedDirectory(APP_ROOT, "Product app 目录");
+    ensureManagedDirectory(BIN_ROOT, "Product bin 目录");
+    ensureManagedDirectory(TOOLS_ROOT, "Product tools 目录");
+    // termination_failed 是人工诊断门禁。取得锁后仍须先停下，不能把
+    // “原 updater 已退出”等同于“残余进程树已终止”。
+    if (pathExists(STATE_PATH)) failIfTerminationRecoveryIsBlocked(readState());
     state = readState();
     state = await recoverInterruptedTransaction(state, bunExecutable);
     assertCurrentMatches(state);
@@ -2303,9 +3032,12 @@ async function runInstaller(formalContext) {
       const stagedRoot = path.join(PENDING_ROOT, transactionId);
       const stagedCandidate = path.join(stagedRoot, "app");
       assertManagedPath(stagedCandidate, "pending 候选目录");
-      mkdirSync(stagedRoot, { recursive: true, mode: 0o700 });
+      ensureManagedDirectory(PENDING_ROOT, "Product app pending 目录");
+      if (pathExists(stagedRoot)) fail("Runtime pending 事务目录已存在；安装已停止。");
+      ensureManagedDirectory(stagedRoot, "Runtime pending 事务目录");
       let stagedInfo;
       try {
+        assertManagedWriteBoundary(stagedCandidate, "Runtime pending 候选复制");
         cpSync(extracted, stagedCandidate, { recursive: true, force: false });
         normalizeCandidatePermissions(stagedCandidate, stagedRoot);
         const stagedReparse = process.env.CHENGFENG_VIDEOCUT_TEST_ADD_STAGED_REPARSE;
@@ -2387,6 +3119,7 @@ async function runInstaller(formalContext) {
       writeState(state);
       maybeCrashAt("promoting");
       renameSync(stagedCandidate, TARGET_DIR);
+      maybeCrashAt("promoted_before_journal");
       rmdirSync(stagedRoot);
       candidate.path = TARGET_DIR;
       state.pending = candidate;
@@ -2460,7 +3193,7 @@ async function runInstaller(formalContext) {
       state.phase = "completed";
       writeState(state);
       maybeCrashAt("tools_committed");
-      finalizeManagedToolsVersion(state.transaction);
+      finalizeManagedToolsVersion(state.transaction, state.transactionId);
       if (formalContext) writeManagedToolsState(formalContext, readManagedToolsTarget());
       maybeCrashAt("completed");
       state.phase = "idle";
