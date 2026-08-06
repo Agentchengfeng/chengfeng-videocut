@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "status": "UNCONFIGURED",
+  "macos": {
+    "teamIdentifier": null,
+    "certificateCommonName": null,
+    "certificateSha256": null,
+    "identifiers": {
+      "chengfeng-videocut-installer-macos-arm64": "com.agentchengfeng.chengfeng-videocut.installer.arm64",
+      "chengfeng-videocut-installer-macos-x64": "com.agentchengfeng.chengfeng-videocut.installer.x64"
+    }
+  },
+  "windows": {
+    "certificateSubject": null,
+    "certificateSha256": null
+  },
+  "githubAttestation": {
+    "repository": "Agentchengfeng/chengfeng-videocut",
+    "signerWorkflow": "Agentchengfeng/chengfeng-videocut/.github/workflows/native-release-signing.yml",
+    "denySelfHostedRunners": true
+  },
+  "note": "Public native releases remain blocked until the real Developer ID and Authenticode identities are reviewed and pinned here."
+}

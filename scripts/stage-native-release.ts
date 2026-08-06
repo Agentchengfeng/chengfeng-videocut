@@ -6,6 +6,7 @@ import {
   verifyNativeReleaseInputs,
   writeReleaseChecksums,
 } from "./release-assets";
+import { verifyNativeReleaseSecurity } from "./native-release-signatures";
 
 const rootDir = resolve(import.meta.dir, "..");
 const sourceDir = resolve(process.env.CHENGFENG_VIDEOCUT_NATIVE_ASSET_SOURCE ?? join(rootDir, "release"));
@@ -38,6 +39,10 @@ for (const name of requiredAssets) {
 // Parse and cross-check the manifest, all seven payload assets, and all three
 // embedded resources-manifest.json files before deleting or copying anything.
 await verifyNativeReleaseInputs({ releaseDir: sourceDir, version });
+// Signature evidence is deliberately outside the distributable asset set. The
+// macOS checks inspect the actual bytes while GitHub/Sigstore attestations bind
+// all three installer digests to the protected tag signing workflow.
+await verifyNativeReleaseSecurity({ rootDir, releaseDir: sourceDir, version });
 
 const home = resolve(homedir());
 for (const forbidden of [parse(destinationDir).root, home, rootDir]) {

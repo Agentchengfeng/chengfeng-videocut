@@ -20,7 +20,6 @@ const test = require("node:test");
 const ROOT = path.resolve(__dirname, "..");
 const VERSION = "0.5.0";
 const STAGE = path.join(ROOT, "scripts/stage-native-release.ts");
-const AUDIT = path.join(ROOT, "scripts/release-artifact-check.ts");
 const PLATFORM_KEYS = ["darwin-arm64", "darwin-x64", "win32-x64"];
 
 function sha256(bytes) {
@@ -129,19 +128,33 @@ function run(script, env) {
   });
 }
 
-test("native stage and artifact audit accept one exact VERIFIED three-platform release", () => {
+function verifyContent(source) {
+  return spawnSync("bun", [
+    "-e",
+    "import {verifyNativeReleaseInputs} from './scripts/release-assets.ts'; await verifyNativeReleaseInputs({releaseDir:process.env.NATIVE_SOURCE,version:'0.5.0'});",
+  ], {
+    cwd: ROOT,
+    env: { ...process.env, NATIVE_SOURCE: source },
+    encoding: "utf8",
+  });
+}
+
+test("exact VERIFIED content passes structural checks but formal stage blocks without pinned signing policy", () => {
   const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "videocut-native-release-valid-")));
   try {
     const { source } = createNativeSource(root);
+    const content = verifyContent(source);
+    assert.equal(content.status, 0, `${content.stdout}\n${content.stderr}`);
     const destination = path.join(root, "destination");
+    mkdirSync(destination);
+    writeFileSync(path.join(destination, "sentinel.txt"), "do not delete\n");
     const staged = run(STAGE, {
       CHENGFENG_VIDEOCUT_NATIVE_ASSET_SOURCE: source,
       CHENGFENG_VIDEOCUT_NATIVE_RELEASE_DIR: destination,
     });
-    assert.equal(staged.status, 0, `${staged.stdout}\n${staged.stderr}`);
-    assert.equal(readdirSync(destination).length, 9);
-    const audited = run(AUDIT, { CHENGFENG_VIDEOCUT_RELEASE_AUDIT_DIR: destination });
-    assert.equal(audited.status, 0, `${audited.stdout}\n${audited.stderr}`);
+    assert.notEqual(staged.status, 0);
+    assert.match(`${staged.stdout}\n${staged.stderr}`, /signing policy is UNCONFIGURED/);
+    assert.equal(readFileSync(path.join(destination, "sentinel.txt"), "utf8"), "do not delete\n");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

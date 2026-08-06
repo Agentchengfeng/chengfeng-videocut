@@ -8,4 +8,8 @@ the Codex Plugin; system Node, Bun, FFmpeg, FFprobe, and Chrome are not prerequi
 
 The asset contract and unresolved gates are documented in `docs/distribution.md`. Third-party
 redistribution review, signing, macOS x64, Windows x64, and real scheduler verification remain
-UNVERIFIED. Local fixture bundles must not be published.
+UNVERIFIED. Native staging now independently requires strict Developer ID/Gatekeeper verification,
+native Windows Authenticode verification, pinned publisher identities, and cryptographic GitHub
+artifact attestations bound to the protected tag workflow. The signing policy intentionally remains
+`UNCONFIGURED`, so unsigned or locally invented identities fail closed. Local fixture bundles must
+not be published.

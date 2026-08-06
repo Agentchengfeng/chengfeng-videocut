@@ -98,7 +98,8 @@ bun run portable:pack
 bun run installer:build
 bun run tools:pack                 # 每个平台在对应 runner 构建
 bun run install-manifest:build     # 三个平台资产齐全后
-bun run release:native:stage       # 生成干净目录与统一 SHA256SUMS.txt
+CHENGFENG_VIDEOCUT_NATIVE_ATTESTATION_DIR=/absolute/attestations \
+  bun run release:native:stage     # 签名门禁通过后生成干净目录与统一 SHA256SUMS.txt
 ```
 
 `tools:pack` 默认要求 release-ready、许可已验证的显式来源。工程 smoke 只有在显式设置
@@ -116,7 +117,34 @@ bun run release:native:stage       # 生成干净目录与统一 SHA256SUMS.txt
 - installer 与工具包 macOS/Windows 签名、公证/信誉路径
 - Bun、FFmpeg、FFprobe、Chrome Headless Shell 的再分发许可、源代码/NOTICE 义务
 
+### Installer 独立签名门禁
+
+工具许可 `VERIFIED` 只说明工具包许可，不代表 installer 可以公开。正式 native stage 还必须
+读取版本库里的 `installer/native-release-signing-policy.json`；policy 必须由
+`UNCONFIGURED` 改为经审核的 `VERIFIED`，并固定真实发布者身份：
+
+- 两个 macOS 裸 executable 对最终字节执行 `codesign --verify --strict`，固定 Developer ID
+  Team ID、证书 Common Name、叶证书 SHA256 与 codesign identifier，同时要求 Hardened
+  Runtime 和 secure timestamp；随后必须由原生 macOS Gatekeeper 返回
+  `source=Notarized Developer ID`。既定分发物是裸 executable，notary ticket 由 Apple 在线
+  服务供 Gatekeeper 查询；若以后改成 DMG/PKG，则要另加对最终容器的 stapling 验证。
+- Windows executable 只能在原生 Windows runner 用 `Get-AuthenticodeSignature` 验证：状态
+  `Valid`、签名类型 `Authenticode`、固定证书 Subject/叶证书 SHA256、Code Signing EKU 与
+  可信时间戳缺一不可。
+- 跨平台汇总不接受普通 JSON sidecar。`.github/workflows/native-release-signing.yml` 只在
+  GitHub-hosted 的精确 `v<version>` tag、受保护的 `native-release` environment 中，在原生
+  验证通过后用 GitHub OIDC/Sigstore `actions/attest` 对 installer 本体生成 artifact
+  attestation。最终 macOS stage 用 `gh attestation verify` 对同一文件字节校验 repository、
+  signer workflow、精确 tag、当前 Release commit digest 与 GitHub-hosted runner；任一 bundle
+  缺失、伪造、来自旧 tag 移动前的 commit 或对应不同字节都 fail-closed。
+
+PR 和手动 workflow 只跑门禁测试；只有 tag 触发签名/公证/attestation jobs。Tag 模式缺
+Developer ID、Apple Notary、Authenticode 证书或受保护 environment secrets 时必须失败，
+不会降级为 unsigned。attestation bundles 是发布过程证据，不进入八个最终资产，也不能
+代替平台原生签名验证。
+
 当前许可状态是 **UNVERIFIED**。POC 的 `ffmpeg-static@5.3.0` 实际 FFmpeg 6.0 配置含
 GPL/nonfree，只可用于本机工程 smoke，绝不能作为公开资产。没有合规媒体二进制时构建/
-发布必须失败。Windows x64、macOS x64、真实调度器、签名与许可尚未验证，因此 0.5.0
-不得发布为稳定可用版本。
+发布必须失败。签名 policy 当前也是 **UNCONFIGURED**，没有写入任何虚构发布者身份；
+Windows x64、macOS x64、真实调度器、真实证书签名/公证与许可尚未验证，因此 0.5.0
+不得发布为稳定可用版本。当前本机的正式 stage 应在复制/删除目标目录前明确 BLOCKED。

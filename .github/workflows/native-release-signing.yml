@@ -1,0 +1,228 @@
+name: native-release-signing
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/native-release-signing.yml"
+      - "installer/native-release-signing-policy.json"
+      - "scripts/native-release-signatures.ts"
+      - "scripts/verify-native-release-signatures.ts"
+      - "scripts/verify-windows-authenticode.ps1"
+      - "scripts/stage-native-release.ts"
+      - "test/native-signing-gates.test.ts"
+      - "test/native-release-gates.test.cjs"
+      - "package.json"
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gate-tests:
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.5
+      - run: bun install --frozen-lockfile
+      - run: bun run test:native-release
+
+  macos-developer-id-notarization:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: gate-tests
+    runs-on: macos-14
+    timeout-minutes: 30
+    environment: native-release
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.5
+      - run: bun install --frozen-lockfile
+      - name: Require the tag to match the Product version
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="v$(bun -e 'console.log((await Bun.file("package.json").json()).version)')"
+          test "$GITHUB_REF_NAME" = "$expected"
+      - name: Require reviewed publisher identities before touching credentials
+        run: bun -e 'const {readNativeSigningPolicy}=await import("./scripts/native-release-signatures.ts"); await readNativeSigningPolicy(process.cwd())'
+      - name: Build both macOS native installers
+        env:
+          CHENGFENG_VIDEOCUT_INSTALLER_TARGETS: darwin-arm64,darwin-x64
+        run: bun run installer:build
+      - name: Import the protected Developer ID certificate
+        shell: bash
+        env:
+          MACOS_DEVELOPER_ID_P12_BASE64: ${{ secrets.MACOS_DEVELOPER_ID_P12_BASE64 }}
+          MACOS_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_P12_PASSWORD }}
+          MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$MACOS_DEVELOPER_ID_P12_BASE64"
+          test -n "$MACOS_DEVELOPER_ID_P12_PASSWORD"
+          test -n "$MACOS_KEYCHAIN_PASSWORD"
+          certificate="$RUNNER_TEMP/developer-id.p12"
+          keychain="$RUNNER_TEMP/native-release.keychain-db"
+          printf '%s' "$MACOS_DEVELOPER_ID_P12_BASE64" | /usr/bin/base64 -D > "$certificate"
+          security create-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$keychain"
+          security import "$certificate" -k "$keychain" -P "$MACOS_DEVELOPER_ID_P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$MACOS_KEYCHAIN_PASSWORD" "$keychain"
+          security list-keychains -d user -s "$keychain"
+          echo "NATIVE_RELEASE_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+      - name: Developer ID sign the exact distributed executables
+        shell: bash
+        env:
+          MACOS_DEVELOPER_IDENTITY: ${{ secrets.MACOS_DEVELOPER_IDENTITY }}
+        run: |
+          set -euo pipefail
+          test -n "$MACOS_DEVELOPER_IDENTITY"
+          arm_id="$(bun -e 'const p=await Bun.file("installer/native-release-signing-policy.json").json(); console.log(p.macos.identifiers["chengfeng-videocut-installer-macos-arm64"])')"
+          x64_id="$(bun -e 'const p=await Bun.file("installer/native-release-signing-policy.json").json(); console.log(p.macos.identifiers["chengfeng-videocut-installer-macos-x64"])')"
+          codesign --force --options runtime --timestamp --identifier "$arm_id" --keychain "$NATIVE_RELEASE_KEYCHAIN" --sign "$MACOS_DEVELOPER_IDENTITY" release/chengfeng-videocut-installer-macos-arm64
+          codesign --force --options runtime --timestamp --identifier "$x64_id" --keychain "$NATIVE_RELEASE_KEYCHAIN" --sign "$MACOS_DEVELOPER_IDENTITY" release/chengfeng-videocut-installer-macos-x64
+      - name: Submit the established bare-executable distribution to Apple notarization
+        shell: bash
+        env:
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+          APPLE_NOTARY_PRIVATE_KEY: ${{ secrets.APPLE_NOTARY_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$APPLE_NOTARY_KEY_ID"
+          test -n "$APPLE_NOTARY_ISSUER_ID"
+          test -n "$APPLE_NOTARY_PRIVATE_KEY"
+          payload="$RUNNER_TEMP/native-installer-notary-payload"
+          archive="$RUNNER_TEMP/native-installer-notary-payload.zip"
+          key="$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
+          mkdir "$payload"
+          cp release/chengfeng-videocut-installer-macos-arm64 "$payload/"
+          cp release/chengfeng-videocut-installer-macos-x64 "$payload/"
+          printf '%s' "$APPLE_NOTARY_PRIVATE_KEY" > "$key"
+          ditto -c -k --keepParent "$payload" "$archive"
+          xcrun notarytool submit "$archive" --key "$key" --key-id "$APPLE_NOTARY_KEY_ID" --issuer "$APPLE_NOTARY_ISSUER_ID" --wait
+      - name: Verify Developer ID identity and live Gatekeeper notarization on final bytes
+        run: bun run release:native:verify:macos -- "$PWD/release"
+      - name: Attest arm64 installer after native verification
+        id: attest-arm64
+        uses: actions/attest@v4
+        with:
+          subject-path: release/chengfeng-videocut-installer-macos-arm64
+      - name: Attest x64 installer after native verification
+        id: attest-x64
+        uses: actions/attest@v4
+        with:
+          subject-path: release/chengfeng-videocut-installer-macos-x64
+      - name: Collect cryptographic attestation bundles
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir native-attestations
+          cp "${{ steps.attest-arm64.outputs.bundle-path }}" native-attestations/chengfeng-videocut-installer-macos-arm64.attestation.json
+          cp "${{ steps.attest-x64.outputs.bundle-path }}" native-attestations/chengfeng-videocut-installer-macos-x64.attestation.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-release-macos-installers-and-attestations
+          path: |
+            release/chengfeng-videocut-installer-macos-arm64
+            release/chengfeng-videocut-installer-macos-x64
+            native-attestations/*.attestation.json
+          if-no-files-found: error
+      - name: Remove temporary signing material
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "${NATIVE_RELEASE_KEYCHAIN:-}" ]]; then
+            security delete-keychain "$NATIVE_RELEASE_KEYCHAIN" || true
+          fi
+          rm -f "$RUNNER_TEMP/developer-id.p12" "$RUNNER_TEMP"/AuthKey_*.p8
+
+  windows-authenticode:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: gate-tests
+    runs-on: windows-latest
+    timeout-minutes: 20
+    environment: native-release
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.5
+      - run: bun install --frozen-lockfile
+      - name: Require the tag to match the Product version
+        shell: pwsh
+        run: |
+          $expected = "v$((Get-Content package.json | ConvertFrom-Json).version)"
+          if ($env:GITHUB_REF_NAME -ne $expected) { throw "Tag must be exactly $expected" }
+      - name: Require reviewed publisher identities before touching credentials
+        run: bun -e 'const {readNativeSigningPolicy}=await import("./scripts/native-release-signatures.ts"); await readNativeSigningPolicy(process.cwd())'
+      - name: Build the Windows native installer
+        shell: pwsh
+        run: |
+          $env:CHENGFENG_VIDEOCUT_INSTALLER_TARGETS = "win32-x64"
+          bun run installer:build
+      - name: Import protected certificate and Authenticode sign final bytes
+        shell: pwsh
+        env:
+          WINDOWS_CODE_SIGNING_PFX_BASE64: ${{ secrets.WINDOWS_CODE_SIGNING_PFX_BASE64 }}
+          WINDOWS_CODE_SIGNING_PFX_PASSWORD: ${{ secrets.WINDOWS_CODE_SIGNING_PFX_PASSWORD }}
+        run: |
+          if (-not $env:WINDOWS_CODE_SIGNING_PFX_BASE64) { throw "WINDOWS_CODE_SIGNING_PFX_BASE64 is required" }
+          if (-not $env:WINDOWS_CODE_SIGNING_PFX_PASSWORD) { throw "WINDOWS_CODE_SIGNING_PFX_PASSWORD is required" }
+          $pfx = Join-Path $env:RUNNER_TEMP "windows-code-signing.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CODE_SIGNING_PFX_BASE64))
+          $password = ConvertTo-SecureString $env:WINDOWS_CODE_SIGNING_PFX_PASSWORD -AsPlainText -Force
+          $imported = @(Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password)
+          $certificate = @($imported | Where-Object { $_.HasPrivateKey })
+          if ($certificate.Count -ne 1) { throw "Expected exactly one private-key signing certificate" }
+          $signature = Set-AuthenticodeSignature `
+            -LiteralPath "release/chengfeng-videocut-installer-windows-x64.exe" `
+            -Certificate $certificate[0] `
+            -HashAlgorithm SHA256 `
+            -IncludeChain All `
+            -TimestampServer "http://timestamp.digicert.com"
+          if ($signature.Status.ToString() -ne "Valid") {
+            throw "Authenticode signing failed: $($signature.Status) $($signature.StatusMessage)"
+          }
+          "WINDOWS_SIGNING_CERT_THUMBPRINT=$($certificate[0].Thumbprint)" >> $env:GITHUB_ENV
+      - name: Verify Authenticode trust, timestamp, EKU, and pinned publisher
+        run: bun run release:native:verify:windows -- "$PWD/release"
+      - name: Attest Windows installer only after native verification
+        id: attest-windows
+        uses: actions/attest@v4
+        with:
+          subject-path: release/chengfeng-videocut-installer-windows-x64.exe
+      - name: Collect cryptographic attestation bundle
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force native-attestations | Out-Null
+          Copy-Item "${{ steps.attest-windows.outputs.bundle-path }}" "native-attestations/chengfeng-videocut-installer-windows-x64.exe.attestation.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-release-windows-installer-and-attestation
+          path: |
+            release/chengfeng-videocut-installer-windows-x64.exe
+            native-attestations/*.attestation.json
+          if-no-files-found: error
+      - name: Remove certificate from the runner
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:WINDOWS_SIGNING_CERT_THUMBPRINT) {
+            Remove-Item "Cert:\CurrentUser\My\$env:WINDOWS_SIGNING_CERT_THUMBPRINT" -Force -ErrorAction SilentlyContinue
+          }
+          Remove-Item (Join-Path $env:RUNNER_TEMP "windows-code-signing.pfx") -Force -ErrorAction SilentlyContinue

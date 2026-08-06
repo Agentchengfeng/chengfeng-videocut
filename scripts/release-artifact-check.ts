@@ -3,6 +3,7 @@ import { lstat, mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { verifyReleaseAssetManifest } from "./release-assets";
+import { verifyNativeReleaseSecurity } from "./native-release-signatures";
 
 const rootDir = resolve(import.meta.dir, "..");
 const releaseDir = resolve(process.env.CHENGFENG_VIDEOCUT_RELEASE_AUDIT_DIR ?? join(rootDir, "release"));
@@ -73,6 +74,7 @@ async function extractAndScan(archiveName: string, temporaryRoot: string): Promi
 }
 
 const manifest = await verifyReleaseAssetManifest({ releaseDir, version: version.version });
+await verifyNativeReleaseSecurity({ rootDir, releaseDir, version: version.version });
 for (const name of manifest.assetNames) await scanFile(join(releaseDir, name), name);
 
 const temporaryRoot = await mkdtemp(join(tmpdir(), "chengfeng-videocut-release-audit-"));
