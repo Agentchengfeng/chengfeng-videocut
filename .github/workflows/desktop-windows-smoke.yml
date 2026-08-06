@@ -34,7 +34,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: bun install --frozen-lockfile
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Build desktop runtime after dependencies are linked
+        run: bun run desktop:prepare
       - run: bun run release:check
       - run: bun run desktop:test
       - run: bun run desktop:dist:win
