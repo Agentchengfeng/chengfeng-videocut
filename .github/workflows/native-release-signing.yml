@@ -6,8 +6,8 @@ name: native-release-signing
 # independent repository is pinned by repository, workflow, and immutable
 # signer digest in installer/native-release-signing-policy.json. Do not add an
 # in-repository actions/attest step and treat it as release authorization.
-# The external orchestrator must also provide a read-only trust-policy file and
-# its protected SHA256; this source workflow must never mint that trust input.
+# The external orchestrator must own and verify its trust policy outside this
+# source-controlled stage; this workflow must never mint or accept that trust.
 
 on:
   pull_request:
