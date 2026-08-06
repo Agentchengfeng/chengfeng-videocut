@@ -42,6 +42,8 @@ const VERSION = "0.5.0";
 const ARCHIVE_NAME = "chengfeng-videocut-portable.tar.gz";
 const CHECKSUM_NAME = "SHA256SUMS.txt";
 const INSTALL_MANIFEST_NAME = "chengfeng-videocut-install-manifest.json";
+const EMBEDDED_PAYLOAD_MANIFEST_NAME = "chengfeng-videocut-installer-payload-manifest.json";
+const EMBEDDED_PAYLOAD_CHECKSUM_NAME = "chengfeng-videocut-installer-payload-SHA256SUMS.txt";
 const ARCHIVE_ROOT_NAME = `chengfeng-videocut-${VERSION}`;
 const IS_WINDOWS = process.platform === "win32";
 const STATE_SCHEMA_VERSION = 2;
@@ -152,15 +154,14 @@ const ENSURE_MANAGED_SERVICE =
   INSTALLER_OPTIONS.ensureService ||
   process.env.CHENGFENG_VIDEOCUT_INSTALLER_ENSURE_SERVICE === "1";
 const MANAGED_TOOLS_SOURCE_DIR = process.env.CHENGFENG_VIDEOCUT_MANAGED_TOOLS_SOURCE_DIR || null;
+const DEFAULT_PRODUCT_INSTALL_ROOT = path.resolve(HOME_RESOLVED, ".chengfeng-videocut");
 const COMPILED_INSTALLER_VERSION =
   typeof CHENGFENG_COMPILED_INSTALLER_VERSION === "string"
     ? CHENGFENG_COMPILED_INSTALLER_VERSION
     : null;
-const INSTALL_MANIFEST_SOURCE =
-  INSTALLER_OPTIONS.manifest || process.env.CHENGFENG_VIDEOCUT_INSTALL_MANIFEST ||
-      (COMPILED_INSTALLER_VERSION ? `${DOWNLOAD_BASE}/${INSTALL_MANIFEST_NAME}` : null);
-const INSTALL_MANIFEST_CHECKSUM_SOURCE =
-  INSTALLER_OPTIONS.checksumFile || process.env.CHENGFENG_VIDEOCUT_MANIFEST_CHECKSUM_FILE || null;
+const EMBEDDED_PAYLOAD_BUILD =
+  typeof CHENGFENG_EMBEDDED_PAYLOAD_BUILD === "boolean" &&
+  CHENGFENG_EMBEDDED_PAYLOAD_BUILD === true;
 const ALLOW_UNVERIFIED_LOCAL_TOOLS =
   INSTALLER_OPTIONS.allowUnverifiedLocalFixture ||
   process.env.CHENGFENG_VIDEOCUT_ALLOW_UNVERIFIED_LOCAL_TOOLS === "1";
@@ -172,6 +173,39 @@ let lockOwnerWriteInProgress = false;
 
 if (COMPILED_INSTALLER_VERSION && COMPILED_INSTALLER_VERSION !== VERSION) {
   fail(`编译安装器版本 ${COMPILED_INSTALLER_VERSION} 与 Runtime ${VERSION} 不一致。`);
+}
+
+// launchd / Task Scheduler and port 5190 are a single user-wide service.  A
+// custom target root is useful for diagnostics and fixture installs, but it
+// must never be able to replace that global service definition.  Production
+// Plugin installs always target the user's canonical Product root.
+function assertManagedServiceUsesDefaultRoot() {
+  if (
+    ENSURE_MANAGED_SERVICE &&
+    INSTALL_ROOT_COMPARABLE !== comparablePath(DEFAULT_PRODUCT_INSTALL_ROOT)
+  ) {
+    fail("--ensure-service 只能用于当前用户的默认 Product Runtime 根目录；自定义 --target-root 不得接管全局 5190 / 用户级服务。");
+  }
+}
+
+// The public installer is compiled from a generated ESM wrapper.  That wrapper
+// statically embeds the already-verified Runtime and tools payload and sets this
+// value immediately before importing this module.  Do not capture it at module
+// load time: static ESM imports evaluate this CommonJS module before the wrapper
+// gets to assign the global.
+function embeddedPayload() {
+  const value = globalThis.__CHENGFENG_VIDEOCUT_EMBEDDED_PAYLOAD__;
+  if (!value || typeof value !== "object") return null;
+  return value;
+}
+
+function externalInstallManifestSource() {
+  return INSTALLER_OPTIONS.manifest || process.env.CHENGFENG_VIDEOCUT_INSTALL_MANIFEST ||
+    (COMPILED_INSTALLER_VERSION ? `${DOWNLOAD_BASE}/${INSTALL_MANIFEST_NAME}` : null);
+}
+
+function externalInstallManifestChecksumSource() {
+  return INSTALLER_OPTIONS.checksumFile || process.env.CHENGFENG_VIDEOCUT_MANIFEST_CHECKSUM_FILE || null;
 }
 function progress(message) {
   (INSTALLER_OPTIONS.json ? process.stderr : process.stdout).write(message);
@@ -1567,27 +1601,151 @@ function safeInstallerRecord(value, expectedAsset, label) {
   return value;
 }
 
+function copyEmbeddedPayloadFile(source, destination, expectedBytes, label) {
+  if (typeof source !== "string" || !source || source.includes("\0")) {
+    fail(`${label} 内嵌 payload 路径无效。`);
+  }
+  let bytes;
+  try {
+    // Bun exposes compile-time assets through $bunfs paths.  Node-compatible
+    // fs reads are deliberately used here so the same code remains testable
+    // from the source installer.
+    bytes = readFileSync(source);
+  } catch (error) {
+    fail(`${label} 无法读取内嵌 payload：${error instanceof Error ? error.message : String(error)}`);
+  }
+  validateDownloadSize(bytes.length, { maxBytes: RELEASE_ASSET_DOWNLOAD_LIMIT_BYTES, expectedBytes, label });
+  let descriptor = null;
+  try {
+    descriptor = openSync(destination, "wx", 0o600);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const written = writeSync(descriptor, bytes, offset, bytes.length - offset, null);
+      if (written <= 0) fail(`${label} 内嵌 payload 写入不完整。`);
+      offset += written;
+    }
+    fsyncSync(descriptor);
+  } finally {
+    if (descriptor !== null) closeSync(descriptor);
+  }
+}
+
+function embeddedPayloadPath(payload, key, label) {
+  const value = payload?.[key];
+  if (typeof value !== "string" || !value || value.includes("\0")) {
+    fail(`${label} 内嵌 payload 缺失。`);
+  }
+  return value;
+}
+
+function assertEmbeddedPayloadArgumentsAreClosed() {
+  if (INSTALLER_OPTIONS.manifest || INSTALLER_OPTIONS.checksumFile ||
+      process.env.CHENGFENG_VIDEOCUT_INSTALL_MANIFEST ||
+      process.env.CHENGFENG_VIDEOCUT_MANIFEST_CHECKSUM_FILE ||
+      process.env.CHENGFENG_VIDEOCUT_DOWNLOAD_BASE ||
+      MANAGED_TOOLS_SOURCE_DIR) {
+    fail("自包含 Product Runtime 安装器不接受外部 manifest、checksum、下载源或 tools 来源。");
+  }
+}
+
+function loadEmbeddedInstallContext(payload) {
+  assertEmbeddedPayloadArgumentsAreClosed();
+  const platformKey = installerPlatformKey();
+  if (payload.schemaVersion !== 1 || payload.platformKey !== platformKey) {
+    fail("内嵌 payload 平台或 schema 与当前安装器不一致。");
+  }
+  const tmpDir = mkdtempSync(path.join(os.tmpdir(), "chengfeng-videocut-embedded-installer-"));
+  try {
+    const manifestPath = path.join(tmpDir, EMBEDDED_PAYLOAD_MANIFEST_NAME);
+    const checksumPath = path.join(tmpDir, EMBEDDED_PAYLOAD_CHECKSUM_NAME);
+    copyEmbeddedPayloadFile(
+      embeddedPayloadPath(payload, "manifestPath", "安装 manifest"),
+      manifestPath,
+      null,
+      "安装 manifest",
+    );
+    copyEmbeddedPayloadFile(
+      embeddedPayloadPath(payload, "checksumPath", "安装 checksum"),
+      checksumPath,
+      null,
+      "安装 checksum",
+    );
+    const manifestSha256 = sha256(manifestPath);
+    const expectedManifestSha256 = expectedHashFor(checksumPath, EMBEDDED_PAYLOAD_MANIFEST_NAME);
+    if (!expectedManifestSha256 || expectedManifestSha256 !== manifestSha256) {
+      fail("内嵌安装 manifest 与内嵌 checksum 不一致。");
+    }
+    let manifest;
+    try {
+      manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    } catch {
+      fail("内嵌安装 manifest 不是合法 JSON。");
+    }
+    if (
+      manifest?.schemaVersion !== 1 || manifest.product !== "chengfeng-videocut" ||
+      manifest.productVersion !== VERSION || manifest.releaseTag !== `v${VERSION}` ||
+      !["release-ready", "local-test-only"].includes(manifest.distributionMode) ||
+      !manifest.platforms || typeof manifest.platforms !== "object"
+    ) fail("内嵌安装 manifest 与当前 Runtime 版本不一致。");
+    if (
+      (manifest.licenseStatus !== "VERIFIED" || manifest.distributionMode !== "release-ready") &&
+      !ALLOW_UNVERIFIED_LOCAL_TOOLS
+    ) fail("内嵌安装 manifest 的第三方许可不是 VERIFIED；公开安装已阻止。");
+    const platform = manifest.platforms[platformKey];
+    if (!platform || typeof platform !== "object") fail(`内嵌安装 manifest 缺少 ${platformKey}。`);
+    const runtime = safeAssetRecord(manifest.runtime, "runtime");
+    const tools = safeAssetRecord(platform.tools, `${platformKey}.tools`);
+    for (const asset of [runtime, tools]) {
+      if (!expectedHashFor(checksumPath, asset.asset) || expectedHashFor(checksumPath, asset.asset) !== asset.sha256) {
+        fail(`内嵌 checksum 未锁定 ${asset.asset}。`);
+      }
+    }
+    return {
+      tmpDir,
+      manifest,
+      manifestSha256,
+      platformKey,
+      runtime,
+      tools,
+      embeddedPayload: {
+        runtimePath: embeddedPayloadPath(payload, "runtimePath", "Runtime bundle"),
+        toolsPath: embeddedPayloadPath(payload, "toolsPath", "managed tools bundle"),
+      },
+    };
+  } catch (error) {
+    if (pathExists(tmpDir)) removeTreeWithoutFollowingLinks(tmpDir);
+    throw error;
+  }
+}
+
 async function loadFormalInstallContext() {
-  if (!INSTALL_MANIFEST_SOURCE) return null;
+  const payload = embeddedPayload();
+  if (payload) return loadEmbeddedInstallContext(payload);
+  if (COMPILED_INSTALLER_VERSION) {
+    fail("编译 Product Runtime 安装器缺少内嵌 payload；拒绝回退到远程依赖下载。");
+  }
+  const installManifestSource = externalInstallManifestSource();
+  if (!installManifestSource) return null;
+  const installManifestChecksumSource = externalInstallManifestChecksumSource();
   const tmpDir = mkdtempSync(path.join(os.tmpdir(), "chengfeng-videocut-native-installer-"));
   try {
   const manifestPath = path.join(tmpDir, INSTALL_MANIFEST_NAME);
-  const source = /^(?:https?|file):\/\//.test(INSTALL_MANIFEST_SOURCE)
-    ? INSTALL_MANIFEST_SOURCE
-    : pathToFileURL(path.resolve(INSTALL_MANIFEST_SOURCE)).href;
+  const source = /^(?:https?|file):\/\//.test(installManifestSource)
+    ? installManifestSource
+    : pathToFileURL(path.resolve(installManifestSource)).href;
   await download(source, manifestPath, {
     label: "安装 manifest",
     maxBytes: SMALL_MANIFEST_DOWNLOAD_LIMIT_BYTES,
   });
   const manifestSha256 = sha256(manifestPath);
-  if (!INSTALL_MANIFEST_CHECKSUM_SOURCE) {
+  if (!installManifestChecksumSource) {
     removeTreeWithoutFollowingLinks(tmpDir);
     fail("正式安装必须用 --checksum-file 将 manifest 绑定到已校验的 SHA256SUMS.txt。");
   }
   const checksumPath = path.join(tmpDir, "manifest-SHA256SUMS.txt");
-  const checksumSource = /^(?:https?|file):\/\//.test(INSTALL_MANIFEST_CHECKSUM_SOURCE)
-    ? INSTALL_MANIFEST_CHECKSUM_SOURCE
-    : pathToFileURL(path.resolve(INSTALL_MANIFEST_CHECKSUM_SOURCE)).href;
+  const checksumSource = /^(?:https?|file):\/\//.test(installManifestChecksumSource)
+    ? installManifestChecksumSource
+    : pathToFileURL(path.resolve(installManifestChecksumSource)).href;
   await download(checksumSource, checksumPath, {
     label: "安装 checksum",
     maxBytes: SMALL_MANIFEST_DOWNLOAD_LIMIT_BYTES,
@@ -1663,11 +1821,22 @@ function validateArchiveEntries(archiveName, rootName, tmpDir, label) {
 
 async function downloadAndExtractManifestAsset(context, asset, label) {
   const archivePath = path.join(context.tmpDir, asset.asset);
-  await download(`${DOWNLOAD_BASE}/${asset.asset}`, archivePath, {
-    label,
-    maxBytes: asset.size,
-    expectedBytes: asset.size,
-  });
+  if (context.embeddedPayload) {
+    let source = null;
+    if (asset.asset === context.runtime.asset && asset.sha256 === context.runtime.sha256) {
+      source = context.embeddedPayload.runtimePath;
+    } else if (asset.asset === context.tools.asset && asset.sha256 === context.tools.sha256) {
+      source = context.embeddedPayload.toolsPath;
+    }
+    if (!source) fail(`${label} 不在当前自包含安装器 payload 中。`);
+    copyEmbeddedPayloadFile(source, archivePath, asset.size, label);
+  } else {
+    await download(`${DOWNLOAD_BASE}/${asset.asset}`, archivePath, {
+      label,
+      maxBytes: asset.size,
+      expectedBytes: asset.size,
+    });
+  }
   if (sha256(archivePath) !== asset.sha256) fail(`${label} SHA-256 与安装 manifest 不一致。`);
   validateArchiveEntries(asset.asset, asset.root, context.tmpDir, label);
   const extraction = runTar(["-xzf", asset.asset], context.tmpDir);
@@ -3019,7 +3188,7 @@ async function runInstaller(formalContext) {
         }
         reportSuccess(
           "current",
-          formalContext ? 2 : 2,
+          formalContext?.embeddedPayload ? 0 : 2,
           `chengfeng-videocut ${VERSION} 已是当前 Runtime；未改写 current。\n`,
         );
         return;
@@ -3203,7 +3372,7 @@ async function runInstaller(formalContext) {
       writeState(state);
       reportSuccess(
         "installed",
-        formalContext ? 2 : 2,
+        formalContext?.embeddedPayload ? 0 : 2,
         `chengfeng-videocut ${VERSION} 已验证并激活。\n`,
       );
       if (IS_WINDOWS) {
@@ -3225,6 +3394,7 @@ async function runInstaller(formalContext) {
 async function main() {
   let formalContext = null;
   try {
+    assertManagedServiceUsesDefaultRoot();
     formalContext = await loadFormalInstallContext();
     return await runInstaller(formalContext);
   } finally {
@@ -3234,7 +3404,7 @@ async function main() {
   }
 }
 
-main().catch((error) => {
+function reportMainFailure(error) {
   const message = error instanceof Error ? error.message : String(error);
   if (INSTALLER_OPTIONS.json) {
     process.stdout.write(`${JSON.stringify({
@@ -3247,5 +3417,13 @@ main().catch((error) => {
   } else {
     process.stderr.write(`错误：${message}\n`);
   }
-  process.exitCode = 1;
-});
+}
+
+module.exports = { main, reportMainFailure };
+
+if (require.main === module && !EMBEDDED_PAYLOAD_BUILD) {
+  main().catch((error) => {
+    reportMainFailure(error);
+    process.exitCode = 1;
+  });
+}

@@ -5,6 +5,7 @@ const { createHash } = require("node:crypto");
 const { spawn, spawnSync } = require("node:child_process");
 const { once } = require("node:events");
 const {
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readdirSync,
@@ -87,6 +88,22 @@ test("installer rejects an existing symlink or reparse component before writing 
     assert.notEqual(result.status, 0);
     assert.match(`${result.stdout}\n${result.stderr}`, /不得是链接或 reparse point|规范路径跳转/);
     assert.deepEqual(readdirSync(outside), []);
+  } finally {
+    rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("a custom target root cannot take over the user-wide managed service", () => {
+  const temp = temporaryRoot("videocut-installer-service-root-");
+  try {
+    const target = path.join(temp, "product");
+    const result = invoke(["--target-root", target, "--ensure-service"]);
+    assert.notEqual(result.status, 0);
+    assert.match(
+      `${result.stdout}\n${result.stderr}`,
+      /--ensure-service 只能用于当前用户的默认 Product Runtime 根目录/,
+    );
+    assert.equal(existsSync(target), false);
   } finally {
     rmSync(temp, { recursive: true, force: true });
   }

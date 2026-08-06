@@ -328,6 +328,20 @@ function makeFormalRelease(root, release, bundle) {
   })}\n`);
   const toolsAsset = `${toolsRootName}.tar.gz`;
   execFileSync("tar", ["-czf", path.join(release, toolsAsset), "-C", root, toolsRootName]);
+  const toolsArchivePath = path.join(release, toolsAsset);
+  const toolsArchiveBytes = readFileSync(toolsArchivePath);
+  writeFileSync(`${toolsArchivePath}.json`, `${JSON.stringify({
+    platformKey,
+    asset: toolsAsset,
+    root: toolsRootName,
+    sha256: createHash("sha256").update(toolsArchiveBytes).digest("hex"),
+    size: toolsArchiveBytes.length,
+    resourcesManifestSha256: createHash("sha256")
+      .update(readFileSync(path.join(toolsRoot, "resources-manifest.json")))
+      .digest("hex"),
+    distributionMode: "local-test-only",
+    licenseStatus: "UNVERIFIED",
+  })}\n`);
   const fileRecord = (name, withRoot = false) => {
     const bytes = readFileSync(path.join(release, name));
     return {
@@ -395,6 +409,29 @@ function invokeFormal(executable, home, release, formal) {
   });
 }
 
+function invokeEmbedded(executable, home, extraArgs = [], extraEnv = {}) {
+  const env = { ...process.env };
+  for (const key of [
+    "CHENGFENG_VIDEOCUT_INSTALL_MANIFEST",
+    "CHENGFENG_VIDEOCUT_MANIFEST_CHECKSUM_FILE",
+    "CHENGFENG_VIDEOCUT_DOWNLOAD_BASE",
+    "CHENGFENG_VIDEOCUT_MANAGED_TOOLS_SOURCE_DIR",
+  ]) delete env[key];
+  return spawnSync(executable, [
+    "--target-root", home,
+    "--allow-unverified-local-fixture",
+    "--json",
+    ...extraArgs,
+  ], {
+    env: {
+      ...env,
+      CHENGFENG_VIDEOCUT_ALLOW_UNVERIFIED_LOCAL_TOOLS: "1",
+      ...extraEnv,
+    },
+    encoding: "utf8",
+  });
+}
+
 function addInstallerBootstrapAssets(release, { tamperInstaller = false } = {}) {
   const releaseInstaller = path.join(release, "install.cjs");
   copyFileSync(INSTALLER, releaseInstaller);
@@ -433,6 +470,7 @@ function installEnv(home, release, extra = {}) {
   }
   return {
     ...process.env,
+    HOME: path.dirname(home),
     PATH: `${fakeBin}${path.delimiter}${process.env.PATH || ""}`,
     CHENGFENG_VIDEOCUT_HOME: home,
     CHENGFENG_VIDEOCUT_DOWNLOAD_BASE: pathToFileURL(release).href.replace(/\/$/, ""),
@@ -688,27 +726,52 @@ test("macOS shell bootstrap rejects install.cjs changed after SHA256SUMS", {
   assert.equal(existsSync(path.join(home, "runtime-update.lock")), false);
 });
 
-test("real arm64 compiled installer cold-installs a regular launcher and reuses with zero asset downloads", {
+test("real arm64 compiled installer embeds one Runtime/tools payload, rejects an external source, and reuses with zero downloads", {
   skip: process.platform !== "darwin" || process.arch !== "arm64",
 }, (t) => {
   const { root, home, release, bundle } = fixture(t);
-  const formal = makeFormalRelease(root, release, bundle);
+  makeFormalRelease(root, release, bundle);
+  // Compile the real standalone artifact on the workspace release volume,
+  // not inside the disposable Runtime fixture under the system temp volume.
   mkdirSync(path.join(ROOT, "release"), { recursive: true });
   const compiledRoot = mkdtempSync(path.join(ROOT, "release", "native-installer-test-"));
   t.after(() => rmSync(compiledRoot, { recursive: true, force: true }));
+  for (const asset of [
+    `chengfeng-videocut-runtime-${VERSION}.tar.gz`,
+    `chengfeng-videocut-tools-${VERSION}-darwin-arm64.tar.gz`,
+    `chengfeng-videocut-tools-${VERSION}-darwin-arm64.tar.gz.json`,
+  ]) copyFileSync(path.join(release, asset), path.join(compiledRoot, asset));
   const compiled = path.join(compiledRoot, "chengfeng-videocut-installer-macos-arm64");
-  const built = spawnSync("bun", [
-    "build", "--compile", "--target=bun-darwin-arm64",
-    "--define", `CHENGFENG_COMPILED_INSTALLER_VERSION=${JSON.stringify(VERSION)}`,
-    INSTALLER,
-    `--outfile=${compiled}`,
-  ], { cwd: ROOT, encoding: "utf8" });
+  const built = spawnSync("bun", [path.join(ROOT, "scripts/build-native-installer.ts")], {
+    cwd: ROOT,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      CHENGFENG_VIDEOCUT_RELEASE_DIR: compiledRoot,
+      CHENGFENG_VIDEOCUT_INSTALLER_TARGETS: "darwin-arm64",
+      CHENGFENG_VIDEOCUT_MANAGED_TOOLS_LOCK: path.join(ROOT, "installer/managed-tools.lock.json"),
+    },
+  });
   assert.equal(built.status, 0, `${built.stdout}\n${built.stderr}`);
   chmodSync(compiled, 0o755);
-  const first = invokeFormal(compiled, home, release, formal);
+  assert.match(execFileSync("file", [compiled], { encoding: "utf8" }), /Mach-O 64-bit executable arm64/);
+  const rejectedHome = path.join(root, "external-source-rejected");
+  const rejected = invokeEmbedded(compiled, rejectedHome, [], {
+    CHENGFENG_VIDEOCUT_DOWNLOAD_BASE: "https://invalid.example.test/release",
+  });
+  assert.ok(
+    Number.isInteger(rejected.status) && rejected.status !== 0,
+    `${rejected.error?.message || ""}\n${rejected.stderr || ""}`,
+  );
+  assert.match(
+    `${rejected.stdout || ""}\n${rejected.stderr || ""}`,
+    /自包含 Product Runtime 安装器不接受外部 manifest、checksum、下载源或 tools 来源/,
+  );
+  assert.equal(existsSync(rejectedHome), false);
+  const first = invokeEmbedded(compiled, home);
   assert.equal(first.status, 0, `${first.error?.message || ""}\n${first.stderr}`);
   const firstPayload = JSON.parse(first.stdout.trim().split(/\r?\n/).at(-1));
-  assert.equal(firstPayload.data.assetDownloads, 2);
+  assert.equal(firstPayload.data.assetDownloads, 0);
   const launcher = path.join(home, "bin", "chengfeng-videocut");
   const metadata = lstatSync(launcher);
   assert.equal(metadata.isFile(), true);
@@ -730,16 +793,22 @@ test("real arm64 compiled installer cold-installs a regular launcher and reuses 
   assert.match(noFallback.stderr, /managed Bun is missing/);
   unlinkSync(launcher);
   symlinkSync(path.join("..", "app", "current", "chengfeng-videocut"), launcher, "file");
-  const second = invokeFormal(compiled, home, release, formal);
+  const second = invokeEmbedded(compiled, home);
   assert.equal(second.status, 0, second.stderr);
   const secondPayload = JSON.parse(second.stdout.trim().split(/\r?\n/).at(-1));
   assert.equal(secondPayload.data.status, "reused");
   assert.equal(secondPayload.data.assetDownloads, 0);
   assert.equal(lstatSync(launcher).isSymbolicLink(), false);
   assert.equal(lstatSync(launcher).nlink, 1);
+  unlinkSync(path.join(home, "managed-tools-state.json"));
+  const current = invokeEmbedded(compiled, home);
+  assert.equal(current.status, 0, current.stderr);
+  const currentPayload = JSON.parse(current.stdout.trim().split(/\r?\n/).at(-1));
+  assert.equal(currentPayload.data.status, "current");
+  assert.equal(currentPayload.data.assetDownloads, 0);
   const ffmpeg = path.join(home, "tools", VERSION, "ffmpeg");
   writeFileSync(ffmpeg, `${readFileSync(ffmpeg, "utf8")}drift\n`);
-  const damaged = invokeFormal(compiled, home, release, formal);
+  const damaged = invokeEmbedded(compiled, home);
   assert.notEqual(damaged.status, 0);
   assert.doesNotMatch(damaged.stdout, /"status":"reused"/);
   const damagedPayload = JSON.parse(damaged.stdout.trim().split(/\r?\n/).at(-1));
@@ -754,7 +823,7 @@ function readState(home) {
 function fixture(t, releaseOptions) {
   const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "chengfeng-videocut-updater-test-")));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const home = path.join(root, "home");
+  const home = path.join(root, "user", ".chengfeng-videocut");
   const releaseInfo = makeRelease(root, releaseOptions);
   return { root, home, ...releaseInfo };
 }
