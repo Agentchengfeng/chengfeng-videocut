@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
     paths:
       - ".github/workflows/desktop-windows-smoke.yml"
@@ -13,6 +14,9 @@ on:
       - "packages/**"
       - "install.cjs"
       - "scripts/package-portable.ts"
+      - "scripts/release-assets.ts"
+      - "scripts/stage-desktop-windows-release.ts"
+      - "apps/cli/scripts/pack-package.ts"
       - "package.json"
       - "bun.lock"
 
@@ -94,12 +98,23 @@ jobs:
             Start-Sleep -Milliseconds 500
           }
           throw "Installed desktop executable still exists after uninstall"
-      - name: Preserve verified Windows installer
+      - name: Assemble checksummed prerelease assets after Windows smoke
+        run: |
+          bun run package:pack
+          bun run release:stage:windows-desktop
+          bun run release:checksums
+      - name: Preserve checksummed Windows prerelease assets
         uses: actions/upload-artifact@v4
         with:
-          name: Chengfeng-VideoCut-windows-x64
+          name: chengfeng-videocut-windows-prerelease-assets
           path: |
-            apps/desktop/release/Chengfeng-VideoCut-*-win-x64.exe
-            apps/desktop/release/Chengfeng-VideoCut-*-win-x64.exe.blockmap
+            release/install.sh
+            release/install.cjs
+            release/chengfeng-videocut-*-portable.tar.gz
+            release/chengfeng-videocut-portable.tar.gz
+            release/chengfeng-videocut-*.tgz
+            release/chengfeng-videocut.tgz
+            release/Chengfeng-VideoCut-*-win-x64.exe
+            release/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 7

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   requiredReleaseAssetNames,
+  windowsDesktopInstallerName,
   writeReleaseChecksums,
 } from "../../../scripts/release-assets";
 import { checkVersionContract } from "../../../scripts/version-contract";
@@ -42,7 +43,7 @@ describe("release contract", () => {
     expect(sourcePackager).toContain('"dist-resources"');
   });
 
-  it("copies install.sh and checksums every required portable/tgz asset", async () => {
+  it("copies installers and checksums every portable, tgz, and Windows desktop asset", async () => {
     const fixtureRoot = await mkdtemp(join(tmpdir(), "videocut-release-contract-"));
     cleanupPaths.push(fixtureRoot);
     const releaseDir = join(fixtureRoot, "release");
@@ -63,10 +64,13 @@ describe("release contract", () => {
       version: PRODUCT_VERSION,
     });
     const sums = await readFile(result.checksumPath, "utf8");
-    expect(result.lines).toHaveLength(6);
+    expect(result.lines).toHaveLength(7);
     for (const name of requiredReleaseAssetNames(PRODUCT_VERSION)) {
       expect(sums).toContain(`  ${name}\n`);
     }
+    expect(windowsDesktopInstallerName(PRODUCT_VERSION)).toBe(
+      `Chengfeng-VideoCut-${PRODUCT_VERSION}-win-x64.exe`,
+    );
     const installer = await readFile(join(releaseDir, "install.sh"), "utf8");
     expect(installer).toBe("#!/bin/sh\nVERSION=fixture\n");
     expect(sums).toContain(

@@ -1,6 +1,10 @@
 import { copyFile, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
+export function windowsDesktopInstallerName(version: string): string {
+  return `Chengfeng-VideoCut-${version}-win-x64.exe`;
+}
+
 export function requiredReleaseAssetNames(version: string): string[] {
   return [
     "install.sh",
@@ -9,6 +13,7 @@ export function requiredReleaseAssetNames(version: string): string[] {
     "chengfeng-videocut-portable.tar.gz",
     `chengfeng-videocut-${version}.tgz`,
     "chengfeng-videocut.tgz",
+    windowsDesktopInstallerName(version),
   ];
 }
 
@@ -54,4 +59,3 @@ export async function writeReleaseChecksums(options: {
   await writeFile(checksumPath, `${lines.join("\n")}\n`);
   return { checksumPath, lines };
 }
-

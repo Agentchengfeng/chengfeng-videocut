@@ -24,7 +24,7 @@ Node.js 20+。Linux 可用 foreground `start` 做开发诊断，常驻 `service`
 macOS 一行安装：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Agentchengfeng/chengfeng-videocut/main/install.sh | sh
+curl -fsSL https://github.com/Agentchengfeng/chengfeng-videocut/releases/download/v0.4.8/install.sh | sh
 ```
 
 安装后可运行：
@@ -48,7 +48,7 @@ launcher；Electron resources 路径不会成为公开 CLI。
 
 ### 手动安装
 
-1. 从 [最新 Release](https://github.com/Agentchengfeng/chengfeng-videocut/releases/latest) 下载同一版本的 `install.sh`、`chengfeng-videocut-portable.tar.gz` 和 `SHA256SUMS.txt` 到同一目录。
+1. 从 [v0.4.8 prerelease](https://github.com/Agentchengfeng/chengfeng-videocut/releases/tag/v0.4.8) 下载同一版本的 `install.sh`、`chengfeng-videocut-portable.tar.gz` 和 `SHA256SUMS.txt` 到同一目录。
 2. 对照 `SHA256SUMS.txt` 校验下载文件。
 3. 在该目录运行 `CHENGFENG_VIDEOCUT_DOWNLOAD_BASE="file://$PWD" sh ./install.sh`，把 Runtime 落到稳定的 `~/.chengfeng-videocut/bin` 与 `app/current` 布局。
 4. 运行 `~/.chengfeng-videocut/bin/chengfeng-videocut service ensure --open` 启动工作台。

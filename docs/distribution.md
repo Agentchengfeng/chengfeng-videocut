@@ -27,9 +27,9 @@ Windows NSIS 都由同一个版本的 GitHub Release / CI 产物承载；桌面�
 - `chengfeng-videocut-portable.tar.gz`：与本次 Release 内容相同的稳定文件名
 - `chengfeng-videocut-<version>.tgz`：版本化 CLI 包，供诊断或受控安装
 - `chengfeng-videocut.tgz`：与本次 Release 内容相同的稳定 CLI 文件名
-- `SHA256SUMS.txt`：覆盖 `install.sh`、`install.cjs`、版本化/稳定名 portable 与 tgz 的 SHA-256 校验值
+- `SHA256SUMS.txt`：覆盖同次 Release 的全部 Runtime 下载资产：`install.sh`、`install.cjs`、版本化/稳定名 portable 与 tgz，以及 Windows NSIS EXE；它是内容完整性清单，不是发布者签名
 - `Chengfeng-VideoCut-<version>-mac-arm64.dmg`：macOS 桌面测试包
-- `Chengfeng-VideoCut-<version>-win-x64.exe`：Windows 桌面测试包
+- `Chengfeng-VideoCut-<version>-win-x64.exe`：Windows 桌面受控测试包；必须由 Windows workflow 完成无提权安装、启动、受管 Runtime、卸载 smoke 后，才可与同一 `SHA256SUMS.txt` 一起下载
 
 稳定文件名便于安装器和 Skills 使用；版本化文件名用于固定版本、审计和回滚。稳定文件名不得跨 Release 静默替换内容。
 
@@ -54,10 +54,11 @@ launcher 进入，不读取 `.app/Contents/Resources` 或 `%LOCALAPPDATA%\Progra
 
 ### 纯 CLI 路径
 
-推荐安装命令：
+v0.4.8 预发布测试使用固定 tag 的安装命令（不是可移动的 `main` 或
+`releases/latest`）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Agentchengfeng/chengfeng-videocut/main/install.sh | sh
+curl -fsSL https://github.com/Agentchengfeng/chengfeng-videocut/releases/download/v0.4.8/install.sh | sh
 ```
 
 安装器只应从 `Agentchengfeng/chengfeng-videocut` 的 GitHub Release 下载资产，校验 `SHA256SUMS.txt`，并写入产品自己的用户目录。它不得修改用户项目、媒体或其他工具目录。
