@@ -5,7 +5,7 @@ import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { DurableJob, JobKind } from "@video-workbench/contracts";
 import { resolveProject, serializeProjectOperation } from "@video-workbench/core/node";
-import { candidateForOutput, defaultExportOutput, exportInputFingerprint } from "./runners";
+import { candidateForOutput, defaultExportOutput, exportInputFingerprint, fileIdentity } from "./runners";
 import { terminateOwnedProcessTree } from "./process";
 import { JobStore, JobStoreError } from "./store";
 
@@ -225,11 +225,54 @@ export class JobManager {
     if (job.state === "running" && job.phase === "publishing") {
       const candidate = typeof job.params.candidatePath === "string" && await this.#pathExists(job.params.candidatePath);
       const output = typeof job.params.outputPath === "string" && await this.#pathExists(job.params.outputPath);
+      const expected = this.#persistedCandidateIdentity(job);
+      if (!expected) {
+        await this.#blockRecovery(job, "job_candidate_identity_missing", "Publishing record has no candidate identity");
+        return;
+      }
       if (output && !candidate && job.result) {
+        if (!(await this.#matchesIdentity(job.params.outputPath as string, expected))) {
+          await this.#blockRecovery(job, "job_published_output_mismatch", "Published output does not match the verified candidate");
+          return;
+        }
         await this.store.update(job.jobId, (value) => ({
           ...value, state: "succeeded", phase: "published", owner: null,
           finishedAt: new Date().toISOString(), error: null,
         }), ["running"]);
+        return;
+      }
+      if (candidate && !output) {
+        if (!(await this.#matchesIdentity(job.params.candidatePath as string, expected))) {
+          await this.#blockRecovery(job, "job_candidate_mismatch", "Candidate no longer matches its verified identity");
+          return;
+        }
+        try {
+          await serializeProjectOperation(job.target, async () => {
+            const current = await exportInputFingerprint(job.target);
+            if (current !== job.frozen.inputFingerprint) {
+              throw new JobStoreError("job_publish_conflict", "Project changed before recovered publish", {
+                jobId: job.jobId,
+                frozenFingerprint: job.frozen.inputFingerprint,
+                currentFingerprint: current,
+              });
+            }
+            if (await this.#pathExists(job.params.outputPath as string)) {
+              throw new JobStoreError("job_output_exists", "Export output appeared during recovery", {
+                jobId: job.jobId,
+                outputPath: job.params.outputPath,
+              });
+            }
+            await rename(job.params.candidatePath as string, job.params.outputPath as string);
+          });
+          await this.store.update(job.jobId, (value) => ({
+            ...value, state: "succeeded", phase: "published", owner: null,
+            finishedAt: new Date().toISOString(), error: null,
+          }), ["running"]);
+        } catch (error) {
+          await this.#blockRecovery(job, "job_recovered_publish_failed", "Recovered candidate could not be safely published", {
+            cause: safeError(error),
+          });
+        }
         return;
       }
       if (!(candidate && !output)) {
@@ -402,10 +445,14 @@ export class JobManager {
     const candidatePath = String(job.params.candidatePath);
     const outputPath = String(job.params.outputPath);
     try {
+      const expectedIdentity = this.#resultCandidateIdentity(payload.result);
+      if (!expectedIdentity || !(await this.#matchesIdentity(candidatePath, expectedIdentity))) {
+        throw new JobStoreError("job_candidate_mismatch", "Worker candidate identity could not be verified", { jobId });
+      }
       await this.store.update(jobId, (value) => ({
         ...value,
         phase: "publishing",
-        result: { ...payload.result!, outputPath },
+        result: { ...payload.result!, output: outputPath, outputPath },
       }), ["running"]);
       await serializeProjectOperation(projectDirectory, async () => {
         const current = await exportInputFingerprint(projectDirectory);
@@ -461,6 +508,24 @@ export class JobManager {
     }
   }
 
+  #resultCandidateIdentity(result: Record<string, unknown>): { sha256: string; size: number } | null {
+    return typeof result.candidateSha256 === "string" && /^[a-f0-9]{64}$/.test(result.candidateSha256) &&
+      typeof result.candidateSize === "number" && Number.isSafeInteger(result.candidateSize) && result.candidateSize >= 0
+      ? { sha256: result.candidateSha256, size: result.candidateSize }
+      : null;
+  }
+
+  #persistedCandidateIdentity(job: DurableJob): { sha256: string; size: number } | null {
+    return job.result ? this.#resultCandidateIdentity(job.result) : null;
+  }
+
+  async #matchesIdentity(path: string, expected: { sha256: string; size: number }): Promise<boolean> {
+    try {
+      const actual = await fileIdentity(path);
+      return actual.sha256 === expected.sha256 && actual.size === expected.size;
+    } catch { return false; }
+  }
+
   async #failRunning(
     job: DurableJob,
     phase: string,
@@ -488,13 +553,18 @@ export class JobManager {
     }
   }
 
-  #blockRecovery(job: DurableJob, code: string, message: string): Promise<DurableJob> {
+  #blockRecovery(
+    job: DurableJob,
+    code: string,
+    message: string,
+    extraDetails: Record<string, unknown> = {},
+  ): Promise<DurableJob> {
     return this.store.update(job.jobId, (value) => ({
       ...value,
       state: "recovery_blocked",
       phase: "recovery_blocked",
       finishedAt: new Date().toISOString(),
-      error: { code, message, details: { jobId: job.jobId, kind: job.kind, phase: job.phase } },
+      error: { code, message, details: { jobId: job.jobId, kind: job.kind, phase: job.phase, ...extraDetails } },
     }));
   }
 }

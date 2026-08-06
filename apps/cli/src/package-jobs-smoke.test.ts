@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
-import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { DurableJob } from "@video-workbench/contracts";
@@ -80,7 +80,7 @@ async function waitJob(url: string, jobId: string, state: string, timeout = 30_0
 }
 
 describe("packaged durable jobs", () => {
-  it.skipIf(!existsSync(packagedCli))("kills an orphanable worker group and recovers export after Runtime SIGKILL", async () => {
+  it.skipIf(!existsSync(packagedCli) || process.platform === "win32")("kills an orphanable worker group and recovers export after Runtime SIGKILL", async () => {
     const root = await mkdtemp(join(tmpdir(), "packaged-jobs-"));
     cleanup.push(root);
     const dataDir = join(root, "data");
@@ -88,13 +88,18 @@ describe("packaged durable jobs", () => {
     const project = join(root, "project");
     await mkdir(projectsDir, { recursive: true });
     await mkdir(project, { recursive: true });
-    await cp(resolve("apps/studio/tests/e2e/fixtures/design-panel-qa/assets/test.mp4"), join(project, "input.mp4"));
+    const media = resolve("apps/studio/tests/e2e/fixtures/design-panel-qa/assets/test.mp4");
+    const looped = Bun.spawnSync([
+      "ffmpeg", "-v", "error", "-stream_loop", "9", "-i", media,
+      "-t", "20", "-c", "copy", "-y", join(project, "input.mp4"),
+    ]);
+    expect(looped.exitCode).toBe(0);
     await writeFile(join(project, "project.json"), `${JSON.stringify({ jobId: "packaged", inputVideo: "input.mp4" })}\n`);
     await writeFile(join(project, "edit-list.json"), `${JSON.stringify({
-      schemaVersion: 1, projectId: "packaged", sourceDuration: 2,
+      schemaVersion: 1, projectId: "packaged", sourceDuration: 20,
       baseCutsRevision: "a".repeat(64), baseTranscriptRevision: "b".repeat(64),
-      mode: "manual", duration: 2,
-      segments: [{ id: "a-roll-0001", source: "input.mp4", sourceStart: 0, sourceEnd: 2, timelineStart: 0, trackId: "a-roll", playbackRate: 1 }],
+      mode: "manual", duration: 20,
+      segments: [{ id: "a-roll-0001", source: "input.mp4", sourceStart: 0, sourceEnd: 20, timelineStart: 0, trackId: "a-roll", playbackRate: 1 }],
     })}\n`);
 
     const firstRuntime = await startPackagedRuntime(dataDir, projectsDir);

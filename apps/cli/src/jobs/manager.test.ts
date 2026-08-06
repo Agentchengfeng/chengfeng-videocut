@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JobManager } from "./manager";
-import { candidateForOutput, exportInputFingerprint } from "./runners";
+import { candidateForOutput, exportInputFingerprint, fileIdentity } from "./runners";
 
 const cleanup: string[] = [];
 const managers: JobManager[] = [];
@@ -27,6 +27,7 @@ async function fixture() {
   await writeFile(successWorker, `
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 const argv = process.argv.slice(2);
 const jobId = argv[1];
 const dataDir = argv[argv.indexOf("--data-dir") + 1];
@@ -37,8 +38,13 @@ for (let i = 0; i < 200; i++) {
   if (job.state === "running" && job.owner?.token === token) break;
   await Bun.sleep(10);
 }
-await writeFile(job.params.candidatePath, "candidate");
-console.log(JSON.stringify({ ok: true, result: { worker: "test" } }));
+const candidate = "candidate";
+await writeFile(job.params.candidatePath, candidate);
+console.log(JSON.stringify({ ok: true, result: {
+  worker: "test",
+  candidateSha256: createHash("sha256").update(candidate).digest("hex"),
+  candidateSize: Buffer.byteLength(candidate),
+} }));
 `);
   return { root, dataDir, projects, slowWorker, successWorker };
 }
@@ -78,13 +84,14 @@ describe("job manager", () => {
     expect((await manager.read(job.jobId))?.phase).toBe("publishing");
   });
 
-  it("finishes a publishing record when restart proves candidate was atomically promoted", async () => {
+  it.skipIf(process.platform === "win32")("finishes a publishing record when restart proves candidate was atomically promoted", async () => {
     const f = await fixture();
     const manager = new JobManager(f.dataDir, { workerEntrypoint: f.successWorker });
     managers.push(manager);
     await manager.store.initialize();
     const outputPath = join(f.root, "published.mp4");
     await writeFile(outputPath, "verified-output");
+    const identity = await fileIdentity(outputPath);
     const job = await manager.store.create({
       jobId: "published-job", kind: "export", target: f.projects[0]!,
       targetKey: `project:${f.projects[0]}`, projectId: "one",
@@ -96,12 +103,110 @@ describe("job manager", () => {
       },
     });
     await manager.store.update(job.jobId, (value) => ({
-      ...value, state: "running", phase: "publishing", result: { outputPath, verified: true },
+      ...value, state: "running", phase: "publishing", result: {
+        outputPath, verified: true, candidateSha256: identity.sha256, candidateSize: identity.size,
+      },
       owner: { pid: 2_000_000_000, token: "dead", startedAt: value.createdAt, heartbeatAt: value.createdAt },
     }), ["queued"]);
     await manager.initialize();
     expect(await manager.read(job.jobId)).toMatchObject({
       state: "succeeded", phase: "published", result: { verified: true }, owner: null,
+    });
+  });
+
+  it.skipIf(process.platform === "win32")("blocks publishing recovery when an unrelated output occupies the path", async () => {
+    const f = await fixture();
+    const manager = new JobManager(f.dataDir, { workerEntrypoint: f.successWorker });
+    managers.push(manager);
+    await manager.store.initialize();
+    const outputPath = join(f.root, "unrelated.mp4");
+    const expectedPath = join(f.root, "expected.bin");
+    await writeFile(outputPath, "unrelated-output");
+    await writeFile(expectedPath, "expected-output");
+    const expected = await fileIdentity(expectedPath);
+    const job = await manager.store.create({
+      jobId: "unrelated-output", kind: "export", target: f.projects[0]!,
+      targetKey: `project:${f.projects[0]}`, projectId: "one",
+      frozen: { inputFingerprint: await exportInputFingerprint(f.projects[0]!) },
+      params: {
+        outputPath, candidatePath: candidateForOutput(outputPath, "unrelated-output"),
+        workDirectory: join(f.dataDir, "jobs", "unrelated-output", "work"),
+      },
+    });
+    await manager.store.update(job.jobId, (value) => ({
+      ...value, state: "running", phase: "publishing",
+      result: { candidateSha256: expected.sha256, candidateSize: expected.size },
+      owner: { pid: 2_000_000_000, token: "dead", startedAt: value.createdAt, heartbeatAt: value.createdAt },
+    }), ["queued"]);
+    await manager.initialize();
+    expect(await manager.read(job.jobId)).toMatchObject({
+      state: "recovery_blocked", error: { code: "job_published_output_mismatch" },
+    });
+  });
+
+  it.skipIf(process.platform === "win32")("blocks publishing recovery when the promoted output was tampered", async () => {
+    const f = await fixture();
+    const manager = new JobManager(f.dataDir, { workerEntrypoint: f.successWorker });
+    managers.push(manager);
+    await manager.store.initialize();
+    const outputPath = join(f.root, "tampered-output.mp4");
+    await writeFile(outputPath, "verified-before-crash");
+    const expected = await fileIdentity(outputPath);
+    await writeFile(outputPath, "tampered-after-crash");
+    const job = await manager.store.create({
+      jobId: "tampered-output", kind: "export", target: f.projects[0]!,
+      targetKey: `project:${f.projects[0]}`, projectId: "one",
+      frozen: { inputFingerprint: await exportInputFingerprint(f.projects[0]!) },
+      params: {
+        outputPath, candidatePath: candidateForOutput(outputPath, "tampered-output"),
+        workDirectory: join(f.dataDir, "jobs", "tampered-output", "work"),
+      },
+    });
+    await manager.store.update(job.jobId, (value) => ({
+      ...value, state: "running", phase: "publishing",
+      result: { candidateSha256: expected.sha256, candidateSize: expected.size },
+      owner: { pid: 2_000_000_000, token: "dead", startedAt: value.createdAt, heartbeatAt: value.createdAt },
+    }), ["queued"]);
+    await manager.initialize();
+    expect(await manager.read(job.jobId)).toMatchObject({
+      state: "recovery_blocked", error: { code: "job_published_output_mismatch" },
+    });
+  });
+
+  it.skipIf(process.platform === "win32")("blocks a tampered candidate and publishes an intact recovered candidate", async () => {
+    const f = await fixture();
+    const manager = new JobManager(f.dataDir, { workerEntrypoint: f.successWorker });
+    managers.push(manager);
+    await manager.store.initialize();
+    const makePublishing = async (jobId: string, content: string, tamper: boolean) => {
+      const outputPath = join(f.root, `${jobId}.mp4`);
+      const candidatePath = candidateForOutput(outputPath, jobId);
+      await writeFile(candidatePath, content);
+      const identity = await fileIdentity(candidatePath);
+      if (tamper) await writeFile(candidatePath, `${content}-tampered`);
+      const job = await manager.store.create({
+        jobId, kind: "export", target: tamper ? f.projects[0]! : f.projects[1]!,
+        targetKey: `project:${tamper ? f.projects[0] : f.projects[1]}`,
+        projectId: tamper ? "one" : "two",
+        frozen: { inputFingerprint: await exportInputFingerprint(tamper ? f.projects[0]! : f.projects[1]!) },
+        params: { outputPath, candidatePath, workDirectory: join(f.dataDir, "jobs", jobId, "work") },
+      });
+      await manager.store.update(job.jobId, (value) => ({
+        ...value, state: "running", phase: "publishing",
+        result: { candidateSha256: identity.sha256, candidateSize: identity.size },
+        owner: { pid: 2_000_000_000, token: "dead", startedAt: value.createdAt, heartbeatAt: value.createdAt },
+      }), ["queued"]);
+      return job;
+    };
+    const tampered = await makePublishing("tampered-candidate", "candidate-one", true);
+    const intact = await makePublishing("intact-candidate", "candidate-two", false);
+    await manager.initialize();
+    expect(await manager.read(tampered.jobId)).toMatchObject({
+      state: "recovery_blocked", error: { code: "job_candidate_mismatch" },
+    });
+    expect(await manager.read(intact.jobId)).toMatchObject({ state: "succeeded", phase: "published" });
+    expect(await fileIdentity(join(f.root, "intact-candidate.mp4"))).toMatchObject({
+      sha256: (await manager.read(intact.jobId))!.result!.candidateSha256,
     });
   });
 
@@ -170,9 +275,15 @@ describe("job manager", () => {
       },
     }));
     await manager.initialize();
-    const succeeded = await waitState(manager, job.jobId, "succeeded");
-    expect(succeeded.attempt).toBe(2);
-    expect(succeeded.phase).toBe("published");
+    if (process.platform === "win32") {
+      expect(await manager.read(job.jobId)).toMatchObject({
+        state: "recovery_blocked", error: { code: "job_process_unproven" },
+      });
+    } else {
+      const succeeded = await waitState(manager, job.jobId, "succeeded");
+      expect(succeeded.attempt).toBe(2);
+      expect(succeeded.phase).toBe("published");
+    }
   });
 
   it("requeues on graceful Runtime stop and succeeds after a fresh manager starts", async () => {

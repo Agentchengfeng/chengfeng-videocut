@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rm } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { mkdir, readFile, rm, stat } from "node:fs/promises";
 import { basename, dirname } from "node:path";
 import { resolveProject, serializeProjectOperation } from "@video-workbench/core/node";
 import type { DurableJob, JobKind } from "@video-workbench/contracts";
@@ -30,6 +31,14 @@ export async function exportInputFingerprint(projectDirectory: string): Promise<
     }
   }
   return digest.digest("hex");
+}
+
+export async function fileIdentity(path: string): Promise<{ sha256: string; size: number }> {
+  const info = await stat(path);
+  if (!info.isFile()) throw new JobStoreError("job_candidate_invalid", "Candidate is not a file", { path });
+  const digest = createHash("sha256");
+  for await (const chunk of createReadStream(path)) digest.update(chunk as Buffer);
+  return { sha256: digest.digest("hex"), size: info.size };
 }
 
 function stringParam(job: DurableJob, name: string): string {
@@ -90,7 +99,15 @@ export async function runJobWorker(dataDir: string, jobId: string, ownerToken: s
       keepWork: Boolean(job.params.keepWork),
       signal: controller.signal,
     });
-    process.stdout.write(`${JSON.stringify({ ok: true, result })}\n`);
+    const identity = await fileIdentity(candidatePath);
+    process.stdout.write(`${JSON.stringify({
+      ok: true,
+      result: {
+        ...result,
+        candidateSha256: identity.sha256,
+        candidateSize: identity.size,
+      },
+    })}\n`);
   } finally {
     process.off("SIGTERM", abort);
     process.off("SIGINT", abort);
