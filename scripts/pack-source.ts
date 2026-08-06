@@ -6,13 +6,16 @@ const root = resolve(import.meta.dir, "..");
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
   version: string;
 };
-const releaseDir = join(root, "release");
+// Source snapshots are a developer aid, not a Runtime Release attachment.  A
+// Windows prerelease release/ directory is deliberately limited to the exact
+// checksummed payload contract in release-assets.ts.
+const sourceArchiveDir = join(root, "source-archives");
 const folderName = `chengfeng-videocut-${pkg.version}`;
-const archive = join(releaseDir, `${folderName}-source.tar.gz`);
+const archive = join(sourceArchiveDir, `${folderName}-source.tar.gz`);
 
 await import("./release-check");
-mkdirSync(releaseDir, { recursive: true });
-const stageRoot = mkdtempSync(join(tmpdir(), "video-workbench-release-"));
+mkdirSync(sourceArchiveDir, { recursive: true });
+const stageRoot = mkdtempSync(join(tmpdir(), "video-workbench-source-"));
 const stageDir = join(stageRoot, folderName);
 mkdirSync(stageDir, { recursive: true });
 
@@ -25,6 +28,7 @@ const excludedNames = new Set([
   // media executables here. It is a local build cache, never source material.
   "dist-resources",
   "release",
+  "source-archives",
   "logs",
   ".thumbnails",
   ".DS_Store",
@@ -55,4 +59,4 @@ const result = Bun.spawnSync(["tar", "-czf", archive, "-C", stageRoot, folderNam
 rmSync(stageRoot, { recursive: true, force: true });
 if (result.exitCode !== 0) throw new Error("Failed to create source archive");
 
-console.log(`Created ${archive}`);
+console.log(`Created developer source archive ${archive}`);

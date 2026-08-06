@@ -15,6 +15,8 @@ on:
       - "install.cjs"
       - "scripts/package-portable.ts"
       - "scripts/release-assets.ts"
+      - "scripts/write-release-checksums.ts"
+      - "scripts/release-artifact-check.ts"
       - "scripts/stage-desktop-windows-release.ts"
       - "apps/cli/scripts/pack-package.ts"
       - "package.json"

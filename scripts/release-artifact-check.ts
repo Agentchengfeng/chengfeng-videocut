@@ -5,7 +5,7 @@ import { join, relative, resolve } from "node:path";
 import { verifyReleaseAssetManifest } from "./release-assets";
 
 const rootDir = resolve(import.meta.dir, "..");
-const releaseDir = join(rootDir, "release");
+const releaseDir = resolve(process.env.CHENGFENG_VIDEOCUT_RELEASE_AUDIT_DIR ?? join(rootDir, "release"));
 const version = JSON.parse(await Bun.file(join(rootDir, "package.json")).text()) as { version?: string };
 
 if (!version.version || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version.version)) {
@@ -20,16 +20,26 @@ const forbiddenContent = [
 ] as const;
 
 async function scanFile(path: string, label: string): Promise<void> {
-  let tail = "";
-  for await (const chunk of createReadStream(path)) {
-    const text = tail + Buffer.from(chunk).toString("latin1");
+  const utf8Decoder = new TextDecoder("utf-8");
+  let rawTail = "";
+  let utf8Tail = "";
+  const scanText = (text: string) => {
     for (const forbidden of forbiddenContent) {
       if (forbidden.pattern.test(text)) {
         throw new Error(`Release leak scan found ${forbidden.label} in ${label}`);
       }
     }
-    tail = text.slice(-256);
+  };
+  for await (const chunk of createReadStream(path)) {
+    const bytes = Buffer.from(chunk);
+    const rawText = rawTail + bytes.toString("latin1");
+    const utf8Text = utf8Tail + utf8Decoder.decode(bytes, { stream: true });
+    scanText(rawText);
+    scanText(utf8Text);
+    rawTail = rawText.slice(-256);
+    utf8Tail = utf8Text.slice(-256);
   }
+  scanText(utf8Tail + utf8Decoder.decode());
 }
 
 async function scanExtractedTree(root: string): Promise<void> {

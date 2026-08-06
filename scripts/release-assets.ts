@@ -94,8 +94,17 @@ export async function writeReleaseChecksums(options: {
   await copyFile(join(rootDir, "install.cjs"), join(releaseDir, "install.cjs"));
 
   const requiredNames = requiredReleaseAssetNames(version);
-  const optionalNames = [`chengfeng-videocut-${version}-source.tar.gz`];
   const entries = await readdir(releaseDir, { withFileTypes: true });
+  const allowedNames = new Set([...requiredNames, "SHA256SUMS.txt"]);
+  const unexpectedEntries = entries
+    .filter((entry) => !entry.isFile() || !allowedNames.has(entry.name))
+    .map((entry) => entry.name)
+    .sort((left, right) => left.localeCompare(right, "en"));
+  if (unexpectedEntries.length > 0) {
+    throw new Error(
+      `Windows prerelease release directory contains unsupported assets: ${unexpectedEntries.join(", ")}`,
+    );
+  }
   const availableNames = new Set(
     entries.filter((entry) => entry.isFile()).map((entry) => entry.name),
   );
@@ -106,10 +115,7 @@ export async function writeReleaseChecksums(options: {
     );
   }
 
-  const artifactNames = [
-    ...requiredNames,
-    ...optionalNames.filter((name) => availableNames.has(name)),
-  ].sort((left, right) => left.localeCompare(right, "en"));
+  const artifactNames = [...requiredNames].sort((left, right) => left.localeCompare(right, "en"));
   const lines: string[] = [];
   for (const name of artifactNames) {
     const bytes = await readFile(join(releaseDir, name));

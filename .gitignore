@@ -15,6 +15,7 @@ apps/studio/data/sessions/
 .workbench/
 logs/
 release/
+source-archives/
 
 # Generated/private working material is not part of the public product source.
 .thumbnails/

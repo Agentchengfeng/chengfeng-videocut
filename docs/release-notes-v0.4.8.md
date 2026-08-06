@@ -1,8 +1,9 @@
 # v0.4.8 prerelease — Windows Desktop controlled test
 
 > **Prerelease / controlled test only.** This build is for invited Windows
-> Desktop testers and the matching downloadable Runtime used by Chengfeng
-> VideoCut Skills. Do not treat it as a general-availability release.
+> Desktop testers and provides the downloadable Runtime that a subsequently
+> released matching Chengfeng VideoCut Skills contract may reference. Do not
+> treat it as a general-availability release.
 
 ## What is included
 

@@ -34,6 +34,10 @@ v0.4.8 Windows Desktop 受控测试 Release 应提供：
 稳定文件名便于安装器和 Skills 使用；版本化文件名用于固定版本、审计和回滚。稳定文件名不得跨 Release 静默替换内容。
 macOS DMG 不在 v0.4.8 附件中；未来单独提供 macOS Desktop 测试时，必须另列资产与
 对应验证证据，不能把 CI artifact 当成已经发布的下载包。
+本次 `release/` 不生成也不接受额外的 source `.tar.gz`；GitHub 自动生成的源码快照
+不属于 Runtime 下载资产，不能混入 `SHA256SUMS.txt` 或本次附件清单。
+开发者若需本地源码快照，可运行 `bun run release:pack`；它只写入本机
+`source-archives/`，不会成为 GitHub Release 附件。
 
 ## 用户安装路径
 
