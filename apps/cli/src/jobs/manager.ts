@@ -154,6 +154,13 @@ export class JobManager {
     if (!dirname(outputPath) || dirname(outputPath) === outputPath) {
       throw new JobStoreError("invalid_argument", "outputPath must name a file below a directory");
     }
+    if (await this.#pathExists(outputPath)) {
+      throw new JobStoreError(
+        "job_output_exists",
+        "Export output already exists; choose a new outputPath",
+        { outputPath },
+      );
+    }
     const candidatePath = candidateForOutput(outputPath, jobId);
     const jobDirectory = this.store.jobDirectory(jobId);
     const workDirectory = resolve(jobDirectory, "work");

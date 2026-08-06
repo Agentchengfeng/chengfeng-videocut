@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { link, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { link, mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JobManager } from "./manager";
@@ -101,6 +101,27 @@ async function waitState(manager: JobManager, jobId: string, state: string, time
 }
 
 describe("job manager", () => {
+  it("rejects an existing default output before creating or running a job", async () => {
+    const f = await fixture();
+    const outputPath = join(f.projects[0]!, "成片.mp4");
+    const canonicalOutputPath = join(await realpath(f.projects[0]!), "成片.mp4");
+    await writeFile(outputPath, "previous-export");
+    const manager = new JobManager(f.dataDir, { workerEntrypoint: f.successWorker });
+    managers.push(manager);
+    await manager.initialize();
+
+    let rejected: unknown;
+    try {
+      await manager.start({ kind: "export", target: f.projects[0]! });
+    } catch (error) {
+      rejected = error;
+    }
+    expect((rejected as { code?: string }).code).toBe("job_output_exists");
+    expect((rejected as { details?: { outputPath?: string } }).details?.outputPath).toBe(canonicalOutputPath);
+    expect(await manager.list()).toEqual([]);
+    expect(await readFile(outputPath, "utf8")).toBe("previous-export");
+  });
+
   it("makes the publishing lease atomically non-cancellable", async () => {
     const f = await fixture();
     let entered!: () => void;
