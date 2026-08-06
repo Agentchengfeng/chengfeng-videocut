@@ -130,13 +130,18 @@ jobs:
           mkdir native-attestations
           cp "${{ steps.attest-arm64.outputs.bundle-path }}" native-attestations/chengfeng-videocut-installer-macos-arm64.attestation.json
           cp "${{ steps.attest-x64.outputs.bundle-path }}" native-attestations/chengfeng-videocut-installer-macos-x64.attestation.json
+          transport="$RUNNER_TEMP/native-release-macos-transport"
+          mkdir -p "$transport/release" "$transport/native-attestations"
+          cp -p release/chengfeng-videocut-installer-macos-arm64 "$transport/release/"
+          cp -p release/chengfeng-videocut-installer-macos-x64 "$transport/release/"
+          cp native-attestations/*.attestation.json "$transport/native-attestations/"
+          tar -czf native-release-macos-signed.tar.gz -C "$transport" .
       - uses: actions/upload-artifact@v4
         with:
           name: native-release-macos-installers-and-attestations
-          path: |
-            release/chengfeng-videocut-installer-macos-arm64
-            release/chengfeng-videocut-installer-macos-x64
-            native-attestations/*.attestation.json
+          # upload-artifact normalizes raw file modes. A tar transport is
+          # required so the exact signed executables remain executable.
+          path: native-release-macos-signed.tar.gz
           if-no-files-found: error
       - name: Remove temporary signing material
         if: always()

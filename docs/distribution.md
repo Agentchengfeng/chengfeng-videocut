@@ -141,7 +141,9 @@ CHENGFENG_VIDEOCUT_NATIVE_ATTESTATION_DIR=/absolute/attestations \
 PR 和手动 workflow 只跑门禁测试；只有 tag 触发签名/公证/attestation jobs。Tag 模式缺
 Developer ID、Apple Notary、Authenticode 证书或受保护 environment secrets 时必须失败，
 不会降级为 unsigned。attestation bundles 是发布过程证据，不进入八个最终资产，也不能
-代替平台原生签名验证。
+代替平台原生签名验证。macOS job 用 tar 传递签名后的 executable 与 bundles，因为普通
+GitHub Actions artifact 上传会归一化文件 mode；最终 stage 解包后仍会再次要求 executable
+bit、签名和 Gatekeeper 全部成立。
 
 当前许可状态是 **UNVERIFIED**。POC 的 `ffmpeg-static@5.3.0` 实际 FFmpeg 6.0 配置含
 GPL/nonfree，只可用于本机工程 smoke，绝不能作为公开资产。没有合规媒体二进制时构建/
