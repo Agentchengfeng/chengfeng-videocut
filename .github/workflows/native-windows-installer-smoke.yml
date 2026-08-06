@@ -5,6 +5,7 @@ name: native-windows-installer-smoke
 # publish, relax the release/licensing gate, or establish a release supply chain.
 on:
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read

@@ -11,6 +11,13 @@ on:
   workflow_dispatch:
 
 jobs:
+  # The self-contained installer needs a locally-built, test-only tools payload.
+  # Keep this heavyweight validation manual; routine PR/main checks below retain
+  # their existing portable Runtime scope.
+  native-installer-smoke:
+    if: github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/native-windows-installer-smoke.yml
+
   test:
     runs-on: windows-latest
     steps:
