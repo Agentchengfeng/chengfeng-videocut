@@ -62,10 +62,81 @@ async function waitJob(url: string, jobId: string, states: string[], timeout = 3
 
 describe("durable jobs HTTP and real export", () => {
   it("rejects a non-loopback client before dispatching into the manager", async () => {
-    const handler = createJobsApi({} as never);
-    const response = await handler(new Request("http://127.0.0.1/api/v1/jobs"), "192.168.1.50");
+    const handler = createJobsApi({} as never, 5190);
+    const response = await handler(new Request("http://127.0.0.1:5190/api/v1/jobs", {
+      headers: { Host: "127.0.0.1:5190" },
+    }), "192.168.1.50");
     expect(response?.status).toBe(403);
     expect(await response?.json()).toMatchObject({ error: { code: "local_only" } });
+  });
+
+  it("fails closed without a peer and accepts only canonical loopback authorities", async () => {
+    const manager = {
+      list: async () => [],
+    } as never;
+    const handler = createJobsApi(manager, 5190);
+    const request = (authority: string, options: { host?: string; origin?: string } = {}) => new Request(
+      `http://${authority}/api/v1/jobs`,
+      { headers: {
+        Host: options.host ?? authority,
+        ...(options.origin ? { Origin: options.origin } : {}),
+      } },
+    );
+
+    const missingPeer = await handler(request("127.0.0.1:5190"));
+    expect(missingPeer?.status).toBe(403);
+    expect(await missingPeer?.json()).toMatchObject({ error: { code: "local_only" } });
+
+    for (const [authority, peer] of [
+      ["127.0.0.1:5190", "127.0.0.1"],
+      ["localhost:5190", "127.0.0.1"],
+      ["[::1]:5190", "::1"],
+    ] as const) {
+      const withoutOrigin = await handler(request(authority), peer);
+      expect(withoutOrigin?.status).toBe(200);
+      expect(await withoutOrigin?.json()).toEqual({ schemaVersion: 1, jobs: [] });
+
+      const sameOrigin = await handler(request(authority, { origin: `http://${authority}` }), peer);
+      expect(sameOrigin?.status).toBe(200);
+    }
+  });
+
+  it("rejects DNS rebinding and noncanonical Host header tricks", async () => {
+    const handler = createJobsApi({ list: async () => [] } as never, 5190);
+    const rebound = await handler(new Request("http://attacker.invalid:5190/api/v1/jobs", {
+      headers: { Host: "attacker.invalid:5190", Origin: "http://attacker.invalid:5190" },
+    }), "127.0.0.1");
+    expect(rebound?.status).toBe(403);
+    expect(await rebound?.json()).toMatchObject({ error: { code: "host_forbidden" } });
+
+    const missingHost = await handler(new Request("http://127.0.0.1:5190/api/v1/jobs"), "127.0.0.1");
+    expect(missingHost?.status).toBe(403);
+    expect(await missingHost?.json()).toMatchObject({ error: { code: "host_forbidden" } });
+
+    for (const host of [
+      "127.0.0.1",
+      "127.0.0.1:5191",
+      "127.0.0.1:05190",
+      "127.0.0.1.evil.invalid:5190",
+      "127.0.0.1:5190@evil.invalid",
+      "2130706433:5190",
+      "[::ffff:127.0.0.1]:5190",
+      "localhost.:5190",
+      "localhost:5190,evil.invalid",
+      "::1:5190",
+    ]) {
+      const response = await handler(new Request("http://127.0.0.1:5190/api/v1/jobs", {
+        headers: { Host: host },
+      }), "127.0.0.1");
+      expect(response?.status).toBe(403);
+      expect(await response?.json()).toMatchObject({ error: { code: "host_forbidden" } });
+    }
+
+    const decoupledUrl = await handler(new Request("http://attacker.invalid:5190/api/v1/jobs", {
+      headers: { Host: "127.0.0.1:5190" },
+    }), "127.0.0.1");
+    expect(decoupledUrl?.status).toBe(403);
+    expect(await decoupledUrl?.json()).toMatchObject({ error: { code: "host_forbidden" } });
   });
 
   it("enforces conflict/list/cancel, survives Runtime restart, and publishes a real MP4", async () => {
@@ -85,6 +156,12 @@ describe("durable jobs HTTP and real export", () => {
       body: JSON.stringify({ kind: "export", target: "one" }),
     });
     expect(wrongOrigin.status).toBe(403);
+    const reboundAuthority = `attacker.invalid:${server.port}`;
+    const rebound = await fetch(`${server.url}/api/v1/jobs`, {
+      headers: { Host: reboundAuthority, Origin: `http://${reboundAuthority}` },
+    });
+    expect(rebound.status).toBe(403);
+    expect(await rebound.json()).toMatchObject({ error: { code: "host_forbidden" } });
     const start = await fetch(`${server.url}/api/v1/jobs`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ kind: "export", target: "one", params: { outputPath, scale: 2, fps: 15 } }),

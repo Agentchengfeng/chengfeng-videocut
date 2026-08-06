@@ -42,6 +42,23 @@ function isLoopbackAddress(address: string): boolean {
   return normalized === "::1" || normalized.startsWith("127.") || normalized.startsWith("::ffff:127.");
 }
 
+function trustedLoopbackOrigin(hostHeader: string | null, expectedPort: number): string | null {
+  if (!hostHeader) return null;
+  const match = /^(127\.0\.0\.1|localhost|\[::1\])(?::([0-9]+))?$/i.exec(hostHeader);
+  if (!match) return null;
+
+  const rawPort = match[2];
+  const port = rawPort === undefined ? 80 : Number(rawPort);
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65_535 || port !== expectedPort) return null;
+  // Reject alternative numeric spellings such as :05190. They are unnecessary
+  // for this local endpoint and have inconsistent authority parsing across HTTP stacks.
+  if (rawPort !== undefined && rawPort !== String(port)) return null;
+
+  const rawHostname = match[1]!.toLowerCase();
+  const hostname = rawHostname === "[::1]" ? "[::1]" : rawHostname;
+  return `http://${hostname}${port === 80 ? "" : `:${port}`}`;
+}
+
 async function readJsonBody(request: Request): Promise<unknown> {
   const contentType = request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
   if (contentType !== "application/json") {
@@ -78,15 +95,19 @@ async function readJsonBody(request: Request): Promise<unknown> {
   }
 }
 
-export function createJobsApi(manager: JobManager) {
+export function createJobsApi(manager: JobManager, expectedPort: number) {
   return async (request: Request, clientAddress?: string): Promise<Response | null> => {
     const url = new URL(request.url);
     if (url.pathname !== "/api/v1/jobs" && !url.pathname.startsWith("/api/v1/jobs/")) return null;
-    if (clientAddress && !isLoopbackAddress(clientAddress)) {
+    if (!clientAddress || !isLoopbackAddress(clientAddress)) {
       return responseError(403, "local_only", "Durable job API accepts loopback clients only");
     }
+    const trustedOrigin = trustedLoopbackOrigin(request.headers.get("host"), expectedPort);
+    if (!trustedOrigin || url.origin !== trustedOrigin) {
+      return responseError(403, "host_forbidden", "Durable job API requires a canonical loopback Host");
+    }
     const origin = request.headers.get("origin");
-    if (origin && origin !== url.origin) {
+    if (origin && origin !== trustedOrigin) {
       return responseError(403, "origin_forbidden", "Cross-origin durable job requests are forbidden");
     }
     try {

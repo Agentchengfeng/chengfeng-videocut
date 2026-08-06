@@ -444,7 +444,7 @@ export async function startStudioServer(
   const events = new StudioEventHub();
   const jobs = new JobManager(dataDir, { projectsDir });
   await jobs.initialize();
-  const jobsApi = createJobsApi(jobs);
+  const jobsApi = createJobsApi(jobs, listenPort);
   const editPreviewArtifacts = new EditPreviewArtifactManager(projectsDir);
   const editPreviewArtifactApi = createEditPreviewArtifactHandler(editPreviewArtifacts);
   const context: StudioServerApiContext = { projectsDir, dataDir, events };
