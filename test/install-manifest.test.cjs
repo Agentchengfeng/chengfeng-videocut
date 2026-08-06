@@ -25,9 +25,13 @@ function writeFixture(releaseDir, licenseStatus) {
   writeFileSync(path.join(releaseDir, runtimeName), runtimeBytes);
   writeFileSync(path.join(releaseDir, installerName), "installer");
   writeFileSync(path.join(releaseDir, toolsName), toolsBytes);
-  writeFileSync(path.join(releaseDir, `${toolsName}.json`), `${JSON.stringify({
-    sha256: sha256(toolsBytes),
-    size: toolsBytes.length,
+    writeFileSync(path.join(releaseDir, `${toolsName}.json`), `${JSON.stringify({
+      platformKey: "darwin-arm64",
+      asset: toolsName,
+      root: toolsName.slice(0, -".tar.gz".length),
+      sha256: sha256(toolsBytes),
+      size: toolsBytes.length,
+      resourcesManifestSha256: "a".repeat(64),
     distributionMode: licenseStatus === "VERIFIED" ? "release-ready" : "local-test-only",
     licenseStatus,
   })}\n`);

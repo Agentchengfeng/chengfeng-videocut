@@ -4,12 +4,13 @@
   "title": "Chengfeng VideoCut Runtime install manifest",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "product", "productVersion", "releaseTag", "runtime", "platforms", "licenseStatus"],
+  "required": ["schemaVersion", "product", "productVersion", "releaseTag", "distributionMode", "runtime", "platforms", "licenseStatus"],
   "properties": {
     "schemaVersion": { "const": 1 },
     "product": { "const": "chengfeng-videocut" },
     "productVersion": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$" },
     "releaseTag": { "type": "string", "pattern": "^v\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$" },
+    "distributionMode": { "enum": ["release-ready", "local-test-only"] },
     "runtime": { "$ref": "#/$defs/archive" },
     "platforms": {
       "type": "object",
@@ -39,10 +40,21 @@
     "platform": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["installerAsset", "tools"],
+      "required": ["installerAsset", "installer", "tools"],
       "properties": {
         "installerAsset": { "type": "string", "pattern": "^[^/\\\\]+$" },
+        "installer": { "$ref": "#/$defs/file" },
         "tools": { "$ref": "#/$defs/archive" }
+      }
+    },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["asset", "sha256", "size"],
+      "properties": {
+        "asset": { "type": "string", "pattern": "^[^/\\\\]+$" },
+        "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "size": { "type": "integer", "minimum": 1, "maximum": 4294967296 }
       }
     }
   }

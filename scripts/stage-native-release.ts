@@ -1,7 +1,11 @@
 import { copyFile, lstat, mkdir, readFile, readdir, realpath, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, parse, resolve, sep } from "node:path";
-import { requiredReleaseAssetNames, writeReleaseChecksums } from "./release-assets";
+import {
+  requiredReleaseAssetNames,
+  verifyNativeReleaseInputs,
+  writeReleaseChecksums,
+} from "./release-assets";
 
 const rootDir = resolve(import.meta.dir, "..");
 const sourceDir = resolve(process.env.CHENGFENG_VIDEOCUT_NATIVE_ASSET_SOURCE ?? join(rootDir, "release"));
@@ -13,11 +17,28 @@ const { version } = JSON.parse(await readFile(join(rootDir, "package.json"), "ut
   version: string;
 };
 
+if (process.env.CHENGFENG_VIDEOCUT_LOCAL_TOOLS_FIXTURE === "1") {
+  throw new Error("LOCAL_TOOLS_FIXTURE assets can never be staged for a native release");
+}
+
 const sourceMetadata = await lstat(sourceDir);
 if (!sourceMetadata.isDirectory() || sourceMetadata.isSymbolicLink()) {
   throw new Error("Native asset source must be a non-symlink directory");
 }
 const canonicalSource = await realpath(sourceDir);
+const requiredAssets = requiredReleaseAssetNames(version);
+for (const name of requiredAssets) {
+  const sourceAsset = join(sourceDir, name);
+  const metadata = await lstat(sourceAsset);
+  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1) {
+    throw new Error(`Native release asset must be a single-link regular file: ${name}`);
+  }
+}
+
+// Parse and cross-check the manifest, all seven payload assets, and all three
+// embedded resources-manifest.json files before deleting or copying anything.
+await verifyNativeReleaseInputs({ releaseDir: sourceDir, version });
+
 const home = resolve(homedir());
 for (const forbidden of [parse(destinationDir).root, home, rootDir]) {
   if (
@@ -47,15 +68,6 @@ if (
   canonicalSource.startsWith(`${canonicalDestination}${sep}`) ||
   canonicalDestination.startsWith(`${canonicalSource}${sep}`)
 ) throw new Error("Native release source and destination must be disjoint");
-
-const requiredAssets = requiredReleaseAssetNames(version);
-for (const name of requiredAssets) {
-  const sourceAsset = join(sourceDir, name);
-  const metadata = await lstat(sourceAsset);
-  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1) {
-    throw new Error(`Native release asset must be a single-link regular file: ${name}`);
-  }
-}
 
 await rm(destinationDir, { recursive: true, force: true });
 await mkdir(destinationDir, { recursive: true });

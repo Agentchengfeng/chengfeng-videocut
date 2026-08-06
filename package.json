@@ -19,6 +19,7 @@
     "typecheck": "bun run --filter '@video-workbench/*' typecheck && bun run --cwd apps/cli typecheck",
     "test": "bun test packages apps/cli/src",
     "test:runtime-updater": "node --test test/runtime-updater.test.cjs",
+    "test:native-release": "node --test test/native-release-gates.test.cjs",
     "cli": "bun apps/cli/src/cli.ts",
     "chengfeng-videocut": "bun apps/cli/src/cli.ts",
     "project:link": "bun scripts/link-project.ts",

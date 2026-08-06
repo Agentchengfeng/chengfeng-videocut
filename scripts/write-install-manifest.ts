@@ -56,7 +56,23 @@ for (const [platformKey, names] of Object.entries(platformAssets)) {
   }
   const sidecar = JSON.parse(
     await readFile(`${toolsPath}.json`, "utf8"),
-  ) as { distributionMode?: string; licenseStatus?: string; sha256?: string; size?: number };
+  ) as {
+    platformKey?: string;
+    asset?: string;
+    root?: string;
+    distributionMode?: string;
+    licenseStatus?: string;
+    sha256?: string;
+    size?: number;
+    resourcesManifestSha256?: string;
+  };
+  const expectedRoot = names.toolsAsset.slice(0, -".tar.gz".length);
+  if (
+    sidecar.platformKey !== platformKey || sidecar.asset !== names.toolsAsset ||
+    sidecar.root !== expectedRoot ||
+    typeof sidecar.resourcesManifestSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(sidecar.resourcesManifestSha256)
+  ) throw new Error(`${platformKey} tools sidecar identity is not exact`);
   if (sidecar.sha256 !== await sha256(toolsPath)) {
     throw new Error(`${platformKey} tools sidecar digest does not match the asset`);
   }
@@ -73,9 +89,14 @@ for (const [platformKey, names] of Object.entries(platformAssets)) {
   selectedLicenseStatuses.push(sidecar.licenseStatus ?? "UNVERIFIED");
   platforms[platformKey] = {
     installerAsset: names.installerAsset,
+    installer: {
+      asset: names.installerAsset,
+      sha256: await sha256(installerPath),
+      size: (await stat(installerPath)).size,
+    },
     tools: {
       asset: names.toolsAsset,
-      root: names.toolsAsset.slice(0, -".tar.gz".length),
+      root: expectedRoot,
       sha256: await sha256(toolsPath),
       size: toolsSize,
     },
@@ -95,6 +116,7 @@ const manifest = {
   product: "chengfeng-videocut",
   productVersion: version,
   releaseTag: `v${version}`,
+  distributionMode: manifestLicenseStatus === "VERIFIED" ? "release-ready" : "local-test-only",
   runtime: {
     asset: runtimeAsset,
     root: runtimeRoot,

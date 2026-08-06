@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { chmod, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -13,6 +14,92 @@ import { PRODUCT_VERSION } from "./output";
 
 const cleanupPaths: string[] = [];
 const rootDir = resolve(import.meta.dir, "../../..");
+
+function digest(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+async function assetRecord(path: string, root?: string): Promise<{
+  asset: string;
+  root?: string;
+  sha256: string;
+  size: number;
+}> {
+  const bytes = new Uint8Array(await Bun.file(path).arrayBuffer());
+  return {
+    asset: path.split("/").at(-1)!,
+    ...(root ? { root } : {}),
+    sha256: digest(bytes),
+    size: bytes.byteLength,
+  };
+}
+
+async function writeValidNativeRelease(releaseDir: string, stageDir: string): Promise<void> {
+  const runtimeAsset = `chengfeng-videocut-runtime-${PRODUCT_VERSION}.tar.gz`;
+  await Bun.write(join(releaseDir, runtimeAsset), "fixture runtime\n");
+  for (const name of nativeInstallerAssetNames()) {
+    await Bun.write(join(releaseDir, name), `fixture:${name}\n`);
+    if (name.includes("macos")) await chmod(join(releaseDir, name), 0o755);
+  }
+  const platforms = [
+    ["darwin-arm64", "darwin", "arm64", "chengfeng-videocut-installer-macos-arm64"],
+    ["darwin-x64", "darwin", "x64", "chengfeng-videocut-installer-macos-x64"],
+    ["win32-x64", "win32", "x64", "chengfeng-videocut-installer-windows-x64.exe"],
+  ] as const;
+  const platformRecords: Record<string, unknown> = {};
+  for (const [platformKey, platform, arch, installerAsset] of platforms) {
+    const toolsAsset = `chengfeng-videocut-tools-${PRODUCT_VERSION}-${platformKey}.tar.gz`;
+    const toolsRoot = toolsAsset.slice(0, -".tar.gz".length);
+    const root = join(stageDir, toolsRoot);
+    await mkdir(root, { recursive: true });
+    const executableNames = platform === "win32"
+      ? { bun: "bun.exe", ffmpeg: "ffmpeg.exe", ffprobe: "ffprobe.exe", chrome: "chrome.exe" }
+      : { bun: "bun", ffmpeg: "ffmpeg", ffprobe: "ffprobe", chrome: "chrome" };
+    const files = [];
+    for (const [name, relative] of Object.entries(executableNames)) {
+      const bytes = new TextEncoder().encode(`fixture:${platformKey}:${name}\n`);
+      await Bun.write(join(root, relative), bytes);
+      if (platform === "darwin") await chmod(join(root, relative), 0o755);
+      files.push({ path: relative, size: bytes.byteLength, sha256: digest(bytes) });
+    }
+    await Bun.write(join(root, "resources-manifest.json"), `${JSON.stringify({
+      schemaVersion: 2,
+      product: "chengfeng-videocut-managed-tools",
+      productVersion: PRODUCT_VERSION,
+      platform,
+      arch,
+      distributionMode: "release-ready",
+      licenseStatus: "VERIFIED",
+      versions: {},
+      executables: executableNames,
+      files,
+    })}\n`);
+    const child = Bun.spawn(["tar", "-czf", join(releaseDir, toolsAsset), "-C", stageDir, toolsRoot], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+    if (exitCode !== 0) throw new Error(`tar fixture failed: ${stderr}`);
+    platformRecords[platformKey] = {
+      installerAsset,
+      installer: await assetRecord(join(releaseDir, installerAsset)),
+      tools: await assetRecord(join(releaseDir, toolsAsset), toolsRoot),
+    };
+  }
+  await Bun.write(join(releaseDir, "chengfeng-videocut-install-manifest.json"), `${JSON.stringify({
+    schemaVersion: 1,
+    product: "chengfeng-videocut",
+    productVersion: PRODUCT_VERSION,
+    releaseTag: `v${PRODUCT_VERSION}`,
+    distributionMode: "release-ready",
+    runtime: await assetRecord(
+      join(releaseDir, runtimeAsset),
+      `chengfeng-videocut-${PRODUCT_VERSION}`,
+    ),
+    platforms: platformRecords,
+    licenseStatus: "VERIFIED",
+  })}\n`);
+}
 
 afterEach(async () => {
   await Promise.all(
@@ -52,9 +139,7 @@ describe("release contract", () => {
     cleanupPaths.push(fixtureRoot);
     const releaseDir = join(fixtureRoot, "release");
     await mkdir(releaseDir, { recursive: true });
-    for (const name of requiredReleaseAssetNames(PRODUCT_VERSION)) {
-      await Bun.write(join(releaseDir, name), `fixture:${name}\n`);
-    }
+    await writeValidNativeRelease(releaseDir, join(fixtureRoot, "stage"));
 
     const result = await writeReleaseChecksums({
       rootDir: fixtureRoot,

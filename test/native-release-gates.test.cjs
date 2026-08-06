@@ -1,0 +1,232 @@
+"use strict";
+
+const assert = require("node:assert/strict");
+const { createHash } = require("node:crypto");
+const { execFileSync, spawnSync } = require("node:child_process");
+const {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const test = require("node:test");
+
+const ROOT = path.resolve(__dirname, "..");
+const VERSION = "0.5.0";
+const STAGE = path.join(ROOT, "scripts/stage-native-release.ts");
+const AUDIT = path.join(ROOT, "scripts/release-artifact-check.ts");
+const PLATFORM_KEYS = ["darwin-arm64", "darwin-x64", "win32-x64"];
+
+function sha256(bytes) {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+function fileRecord(directory, name, root) {
+  const bytes = readFileSync(path.join(directory, name));
+  return {
+    asset: name,
+    ...(root ? { root } : {}),
+    sha256: sha256(bytes),
+    size: bytes.length,
+  };
+}
+
+function writeToolsArchive(root, source, platformKey, { releaseReady = true, executable = true } = {}) {
+  const [platform, arch] = platformKey.split("-");
+  const rootName = `chengfeng-videocut-tools-${VERSION}-${platformKey}`;
+  const bundle = path.join(root, rootName);
+  mkdirSync(path.join(bundle, "chrome"), { recursive: true });
+  const suffix = platform === "win32" ? ".exe" : "";
+  const executables = {
+    bun: `bun${suffix}`,
+    ffmpeg: `ffmpeg${suffix}`,
+    ffprobe: `ffprobe${suffix}`,
+    chrome: `chrome/chrome${suffix}`,
+  };
+  for (const [key, relative] of Object.entries(executables)) {
+    writeFileSync(path.join(bundle, relative), `${platformKey}:${key}\n`);
+    if (platform === "darwin" && executable) chmodSync(path.join(bundle, relative), 0o755);
+  }
+  const files = Object.values(executables).map((relative) => {
+    const bytes = readFileSync(path.join(bundle, relative));
+    return { path: relative, size: bytes.length, sha256: sha256(bytes) };
+  });
+  writeFileSync(path.join(bundle, "resources-manifest.json"), `${JSON.stringify({
+    schemaVersion: 2,
+    product: "chengfeng-videocut-managed-tools",
+    productVersion: VERSION,
+    platform,
+    arch,
+    executables,
+    versions: { bun: "1", ffmpeg: "1", ffprobe: "1", chrome: "1" },
+    distributionMode: releaseReady ? "release-ready" : "local-test-only",
+    files,
+    licenseStatus: releaseReady ? "VERIFIED" : "UNVERIFIED",
+    licenseNote: "test fixture",
+  }, null, 2)}\n`);
+  const asset = `${rootName}.tar.gz`;
+  execFileSync("tar", ["-czf", path.join(source, asset), "-C", root, rootName]);
+  return { asset, root: rootName };
+}
+
+function createNativeSource(testRoot, { releaseReady = true, toolsExecutable = true } = {}) {
+  const source = path.join(testRoot, "source");
+  mkdirSync(source, { recursive: true });
+  const runtimeRoot = path.join(testRoot, `chengfeng-videocut-${VERSION}`);
+  mkdirSync(runtimeRoot);
+  writeFileSync(path.join(runtimeRoot, "VERSION"), `${VERSION}\n`);
+  const runtimeAsset = `chengfeng-videocut-runtime-${VERSION}.tar.gz`;
+  execFileSync("tar", ["-czf", path.join(source, runtimeAsset), "-C", testRoot, path.basename(runtimeRoot)]);
+  const installerAssets = {
+    "darwin-arm64": "chengfeng-videocut-installer-macos-arm64",
+    "darwin-x64": "chengfeng-videocut-installer-macos-x64",
+    "win32-x64": "chengfeng-videocut-installer-windows-x64.exe",
+  };
+  const platforms = {};
+  for (const platformKey of PLATFORM_KEYS) {
+    const installerAsset = installerAssets[platformKey];
+    writeFileSync(path.join(source, installerAsset), `${platformKey}:installer\n`);
+    if (platformKey.startsWith("darwin-")) chmodSync(path.join(source, installerAsset), 0o755);
+    const tools = writeToolsArchive(testRoot, source, platformKey, {
+      releaseReady,
+      executable: toolsExecutable,
+    });
+    platforms[platformKey] = {
+      installerAsset,
+      installer: fileRecord(source, installerAsset),
+      tools: fileRecord(source, tools.asset, tools.root),
+    };
+  }
+  const manifest = {
+    schemaVersion: 1,
+    product: "chengfeng-videocut",
+    productVersion: VERSION,
+    releaseTag: `v${VERSION}`,
+    distributionMode: releaseReady ? "release-ready" : "local-test-only",
+    runtime: fileRecord(source, runtimeAsset, path.basename(runtimeRoot)),
+    platforms,
+    licenseStatus: releaseReady ? "VERIFIED" : "UNVERIFIED",
+    licenseNote: "test fixture",
+  };
+  writeFileSync(
+    path.join(source, "chengfeng-videocut-install-manifest.json"),
+    `${JSON.stringify(manifest, null, 2)}\n`,
+  );
+  return { source, manifest };
+}
+
+function run(script, env) {
+  return spawnSync("bun", [script], {
+    cwd: ROOT,
+    env: { ...process.env, ...env },
+    encoding: "utf8",
+  });
+}
+
+test("native stage and artifact audit accept one exact VERIFIED three-platform release", () => {
+  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "videocut-native-release-valid-")));
+  try {
+    const { source } = createNativeSource(root);
+    const destination = path.join(root, "destination");
+    const staged = run(STAGE, {
+      CHENGFENG_VIDEOCUT_NATIVE_ASSET_SOURCE: source,
+      CHENGFENG_VIDEOCUT_NATIVE_RELEASE_DIR: destination,
+    });
+    assert.equal(staged.status, 0, `${staged.stdout}\n${staged.stderr}`);
+    assert.equal(readdirSync(destination).length, 9);
+    const audited = run(AUDIT, { CHENGFENG_VIDEOCUT_RELEASE_AUDIT_DIR: destination });
+    assert.equal(audited.status, 0, `${audited.stdout}\n${audited.stderr}`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("bad source manifest fails before an existing destination sentinel is inspected or deleted", () => {
+  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "videocut-native-release-bad-")));
+  try {
+    const { source, manifest } = createNativeSource(root);
+    manifest.distributionMode = "local-test-only";
+    writeFileSync(
+      path.join(source, "chengfeng-videocut-install-manifest.json"),
+      `${JSON.stringify(manifest, null, 2)}\n`,
+    );
+    const destination = path.join(root, "destination");
+    mkdirSync(destination);
+    writeFileSync(path.join(destination, "sentinel.txt"), "do not delete\n");
+    const staged = run(STAGE, {
+      CHENGFENG_VIDEOCUT_NATIVE_ASSET_SOURCE: source,
+      CHENGFENG_VIDEOCUT_NATIVE_RELEASE_DIR: destination,
+    });
+    assert.notEqual(staged.status, 0);
+    assert.match(`${staged.stdout}\n${staged.stderr}`, /not VERIFIED|release-ready/);
+    assert.equal(readFileSync(path.join(destination, "sentinel.txt"), "utf8"), "do not delete\n");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("LOCAL_TOOLS_FIXTURE is explicitly forbidden from native staging", () => {
+  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "videocut-native-release-local-")));
+  try {
+    const { source } = createNativeSource(root);
+    const staged = run(STAGE, {
+      CHENGFENG_VIDEOCUT_NATIVE_ASSET_SOURCE: source,
+      CHENGFENG_VIDEOCUT_NATIVE_RELEASE_DIR: path.join(root, "destination"),
+      CHENGFENG_VIDEOCUT_LOCAL_TOOLS_FIXTURE: "1",
+    });
+    assert.notEqual(staged.status, 0);
+    assert.match(`${staged.stdout}\n${staged.stderr}`, /can never be staged/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("top-level VERIFIED cannot hide a local-test-only resources manifest", () => {
+  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "videocut-native-release-resource-")));
+  try {
+    const { source } = createNativeSource(root, { releaseReady: false });
+    const manifestPath = path.join(source, "chengfeng-videocut-install-manifest.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    manifest.distributionMode = "release-ready";
+    manifest.licenseStatus = "VERIFIED";
+    for (const platformKey of PLATFORM_KEYS) {
+      const tools = manifest.platforms[platformKey].tools;
+      Object.assign(tools, fileRecord(source, tools.asset, tools.root));
+    }
+    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    const staged = run(STAGE, {
+      CHENGFENG_VIDEOCUT_NATIVE_ASSET_SOURCE: source,
+      CHENGFENG_VIDEOCUT_NATIVE_RELEASE_DIR: path.join(root, "destination"),
+    });
+    assert.notEqual(staged.status, 0);
+    assert.match(`${staged.stdout}\n${staged.stderr}`, /resources-manifest is not VERIFIED\/release-ready/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("native gate rejects non-executable macOS installers and managed tools", () => {
+  for (const damaged of ["installer", "tools"]) {
+    const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), `videocut-native-release-mode-${damaged}-`)));
+    try {
+      const { source } = createNativeSource(root, { toolsExecutable: damaged !== "tools" });
+      if (damaged === "installer") {
+        chmodSync(path.join(source, "chengfeng-videocut-installer-macos-arm64"), 0o644);
+      }
+      const staged = run(STAGE, {
+        CHENGFENG_VIDEOCUT_NATIVE_ASSET_SOURCE: source,
+        CHENGFENG_VIDEOCUT_NATIVE_RELEASE_DIR: path.join(root, "destination"),
+      });
+      assert.notEqual(staged.status, 0);
+      assert.match(`${staged.stdout}\n${staged.stderr}`, /not executable/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
