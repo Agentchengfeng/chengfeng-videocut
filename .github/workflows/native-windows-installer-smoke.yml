@@ -1,0 +1,283 @@
+name: native-windows-installer-smoke
+
+# A manual engineering gate for the self-contained Product Runtime installer.
+# It deliberately uses local-test-only managed tools: this does not sign,
+# publish, relax the release/licensing gate, or establish a release supply chain.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-installer-smoke:
+    name: self-contained installer + Task Scheduler
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install workspace dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Run native Windows installer transaction regression tests
+        shell: pwsh
+        run: |
+          node --test test/installer-arguments.test.cjs test/runtime-updater.test.cjs
+
+      - name: Build the Runtime archive
+        run: |
+          bun run package:build
+          bun run portable:pack
+
+      - name: Prepare exact Windows managed-tool sources
+        id: tools
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $ProgressPreference = "SilentlyContinue"
+          $lock = Get-Content "installer/managed-tools.lock.json" -Raw | ConvertFrom-Json
+          Push-Location "apps/desktop"
+          try {
+            $ffmpeg = (node -p "require('ffmpeg-static')").Trim()
+            $ffprobe = (node -p "require('@derhuerst/ffprobe-static')").Trim()
+          } finally {
+            Pop-Location
+          }
+          $bun = (Get-Command bun.exe -ErrorAction Stop).Source
+          foreach ($source in @($bun, $ffmpeg, $ffprobe)) {
+            if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+              throw "Required managed-tool source is missing: $source"
+            }
+          }
+
+          $chromeArchive = Join-Path $env:RUNNER_TEMP "chrome-headless-shell-win64.zip"
+          $chromeExtract = Join-Path $env:RUNNER_TEMP "chrome-headless-shell"
+          $chromeUrl = "https://storage.googleapis.com/chrome-for-testing-public/$($lock.tools.chrome.buildId)/win64/chrome-headless-shell-win64.zip"
+          $downloaded = $false
+          foreach ($attempt in 1..3) {
+            try {
+              Remove-Item -LiteralPath $chromeArchive -Force -ErrorAction SilentlyContinue
+              Invoke-WebRequest -Uri $chromeUrl -OutFile $chromeArchive -MaximumRedirection 0
+              if ((Get-Item -LiteralPath $chromeArchive).Length -le 0) { throw "Chrome archive is empty" }
+              $downloaded = $true
+              break
+            } catch {
+              if ($attempt -eq 3) { throw }
+              Start-Sleep -Seconds (10 * $attempt)
+            }
+          }
+          if (-not $downloaded) { throw "Chrome Headless Shell download did not complete" }
+          Expand-Archive -LiteralPath $chromeArchive -DestinationPath $chromeExtract -Force
+          $chromeExecutables = @(
+            Get-ChildItem -LiteralPath $chromeExtract -Filter "chrome-headless-shell.exe" -File -Recurse
+          )
+          if ($chromeExecutables.Count -ne 1) {
+            throw "Expected exactly one Chrome Headless Shell executable; found $($chromeExecutables.Count)"
+          }
+          $chrome = $chromeExecutables[0].FullName
+          $chromeVersion = (& $chrome --version | Select-Object -First 1).Trim()
+          if ($LASTEXITCODE -ne 0 -or $chromeVersion -ne "Google Chrome for Testing $($lock.tools.chrome.buildId)") {
+            throw "Chrome Headless Shell identity mismatch: $chromeVersion"
+          }
+
+          $records = @{
+            bun = @{ path = $bun; sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $bun).Hash.ToLowerInvariant() }
+            ffmpeg = @{ path = $ffmpeg; sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $ffmpeg).Hash.ToLowerInvariant() }
+            ffprobe = @{ path = $ffprobe; sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $ffprobe).Hash.ToLowerInvariant() }
+            chrome = @{ path = $chrome; sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $chrome).Hash.ToLowerInvariant() }
+          }
+          $records | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP "native-windows-source-digests.json") -Encoding utf8
+          "CHENGFENG_VIDEOCUT_LOCAL_TOOLS_FIXTURE=1" >> $env:GITHUB_ENV
+          "CHENGFENG_VIDEOCUT_BUN_SOURCE=$bun" >> $env:GITHUB_ENV
+          "CHENGFENG_VIDEOCUT_FFMPEG_SOURCE=$ffmpeg" >> $env:GITHUB_ENV
+          "CHENGFENG_VIDEOCUT_FFPROBE_SOURCE=$ffprobe" >> $env:GITHUB_ENV
+          "CHENGFENG_VIDEOCUT_CHROME_ROOT=$($chromeExecutables[0].DirectoryName)" >> $env:GITHUB_ENV
+          "CHENGFENG_VIDEOCUT_CHROME_EXECUTABLE=$chrome" >> $env:GITHUB_ENV
+
+      - name: Build the Windows tools payload and self-contained installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          bun run tools:pack
+          $env:CHENGFENG_VIDEOCUT_INSTALLER_TARGETS = "win32-x64"
+          bun run installer:build
+          $installer = Join-Path $PWD "release/chengfeng-videocut-installer-windows-x64.exe"
+          if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
+            throw "Windows self-contained installer was not produced"
+          }
+          "CHENGFENG_VIDEOCUT_TEST_INSTALLER=$installer" >> $env:GITHUB_ENV
+
+      - name: Fresh-install, service, reuse, and closed-source smoke
+        id: smoke
+        shell: pwsh
+        env:
+          CHENGFENG_VIDEOCUT_ALLOW_UNVERIFIED_LOCAL_TOOLS: "1"
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $installer = $env:CHENGFENG_VIDEOCUT_TEST_INSTALLER
+          if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw "Installer is missing" }
+          $defaultRoot = Join-Path $env:USERPROFILE ".chengfeng-videocut"
+          if (Test-Path -LiteralPath $defaultRoot) {
+            throw "Hosted runner default Product Runtime root is unexpectedly occupied: $defaultRoot"
+          }
+          @{ schemaVersion = 1; runId = $env:GITHUB_RUN_ID; root = $defaultRoot } |
+            ConvertTo-Json | Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP "native-windows-installer-owned-root.json") -Encoding utf8
+
+          function Invoke-Installer([string[]] $InstallerArguments) {
+            $lines = @(& $installer @InstallerArguments 2>&1)
+            $exitCode = $LASTEXITCODE
+            $jsonLine = @($lines | Where-Object { $_.ToString().TrimStart().StartsWith("{") } | Select-Object -Last 1)
+            $payload = if ($jsonLine.Count -eq 1) { $jsonLine[0] | ConvertFrom-Json } else { $null }
+            return @{ ExitCode = $exitCode; Lines = $lines; Payload = $payload }
+          }
+
+          $rejectedRoot = Join-Path $env:RUNNER_TEMP "native-installer-external-source-rejected"
+          $env:CHENGFENG_VIDEOCUT_DOWNLOAD_BASE = "https://invalid.example.test/release"
+          $rejected = Invoke-Installer @("--target-root", $rejectedRoot, "--allow-unverified-local-fixture", "--json")
+          Remove-Item Env:CHENGFENG_VIDEOCUT_DOWNLOAD_BASE
+          if ($rejected.ExitCode -eq 0 -or $null -eq $rejected.Payload -or $rejected.Payload.ok -ne $false) {
+            throw "Embedded installer accepted an external download source: $($rejected.Lines -join [Environment]::NewLine)"
+          }
+          if ($rejected.Payload.error.message -notmatch "不接受外部 manifest、checksum、下载源或 tools 来源") {
+            throw "Unexpected external-source rejection: $($rejected.Payload.error.message)"
+          }
+          if (Test-Path -LiteralPath $rejectedRoot) { throw "Rejected install wrote its target root" }
+
+          $guardRoot = Join-Path $env:RUNNER_TEMP "native-installer-service-guard"
+          $guard = Invoke-Installer @("--target-root", $guardRoot, "--ensure-service", "--allow-unverified-local-fixture", "--json")
+          if ($guard.ExitCode -eq 0 -or $null -eq $guard.Payload -or $guard.Payload.ok -ne $false) {
+            throw "Custom-root installer unexpectedly took over the service: $($guard.Lines -join [Environment]::NewLine)"
+          }
+          if ($guard.Payload.error.message -notmatch "自定义 --target-root 不得接管全局") {
+            throw "Unexpected custom-root service guard: $($guard.Payload.error.message)"
+          }
+          if (Test-Path -LiteralPath $guardRoot) { throw "Service-guard rejection wrote its target root" }
+
+          $first = Invoke-Installer @("--ensure-service", "--allow-unverified-local-fixture", "--json")
+          if ($first.ExitCode -ne 0 -or $null -eq $first.Payload -or $first.Payload.ok -ne $true) {
+            throw "Fresh self-contained installer failed: $($first.Lines -join [Environment]::NewLine)"
+          }
+          if ($first.Payload.data.status -ne "installed" -or $first.Payload.data.assetDownloads -ne 0) {
+            throw "Fresh install did not report local-only payload activation"
+          }
+
+          $launcher = Join-Path $defaultRoot "bin/chengfeng-videocut.cmd"
+          $tools = Join-Path $defaultRoot "tools/$version"
+          $runtimeVersion = (& $launcher --version | Select-Object -First 1).Trim()
+          if ($LASTEXITCODE -ne 0 -or $runtimeVersion -ne $version) { throw "Managed launcher version mismatch: $runtimeVersion" }
+          $bunVersion = (& (Join-Path $tools "bun.exe") --version | Select-Object -First 1).Trim()
+          $ffmpegVersion = (& (Join-Path $tools "ffmpeg.exe") -version | Select-Object -First 1).Trim()
+          $ffprobeVersion = (& (Join-Path $tools "ffprobe.exe") -version | Select-Object -First 1).Trim()
+          $chromeExecutables = @(Get-ChildItem -LiteralPath (Join-Path $tools "chrome") -Filter "chrome-headless-shell.exe" -File -Recurse)
+          if ($chromeExecutables.Count -ne 1) { throw "Installed Chrome Headless Shell is missing or duplicated" }
+          $installedChrome = $chromeExecutables[0].FullName
+          $chromeVersion = (& $installedChrome --version | Select-Object -First 1).Trim()
+          if ($bunVersion -ne "1.3.5" -or $ffmpegVersion -notmatch "^ffmpeg version (?:n)?6\\.0" -or $ffprobeVersion -notmatch "^ffprobe version (?:n)?6\\.0" -or $chromeVersion -ne "Google Chrome for Testing 151.0.7922.47") {
+            throw "Installed managed tool identity mismatch: Bun=$bunVersion FFmpeg=$ffmpegVersion FFprobe=$ffprobeVersion Chrome=$chromeVersion"
+          }
+
+          $service = (& $launcher service status --json | ConvertFrom-Json)
+          if ($LASTEXITCODE -ne 0 -or -not $service.data.ready -or -not $service.data.healthy -or $service.data.runtimeMode -ne "windows-task") {
+            throw "Windows Task Scheduler service status is not healthy"
+          }
+          $health = Invoke-RestMethod -Uri "http://127.0.0.1:5190/api/health" -MaximumRedirection 0
+          if (-not $health.ok -or $health.productVersion -ne $version -or $health.runtimeMode -ne "windows-task") {
+            throw "Runtime health identity mismatch"
+          }
+
+          $second = Invoke-Installer @("--ensure-service", "--allow-unverified-local-fixture", "--json")
+          if ($second.ExitCode -ne 0 -or $null -eq $second.Payload -or $second.Payload.data.status -ne "reused" -or $second.Payload.data.assetDownloads -ne 0) {
+            throw "Second self-contained install did not reuse the installed Runtime"
+          }
+
+          $record = @{
+            schemaVersion = 1
+            installerSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $installer).Hash.ToLowerInvariant()
+            installerSize = (Get-Item -LiteralPath $installer).Length
+            firstInstall = $first.Payload.data
+            reuse = $second.Payload.data
+            service = $service.data
+            health = $health
+            managedTools = @{ bun = $bunVersion; ffmpeg = $ffmpegVersion; ffprobe = $ffprobeVersion; chrome = $chromeVersion }
+          }
+          $record | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP "native-windows-installer-evidence.json") -Encoding utf8
+
+      - name: Collect Windows service diagnostics before cleanup
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          $diagnostics = Join-Path $env:RUNNER_TEMP "native-windows-installer-diagnostics"
+          New-Item -ItemType Directory -Force -Path $diagnostics | Out-Null
+          $defaultRoot = Join-Path $env:USERPROFILE ".chengfeng-videocut"
+          & schtasks /Query /TN "chengfeng-videocut-studio" /XML 2>&1 |
+            Set-Content -LiteralPath (Join-Path $diagnostics "scheduled-task.xml-or-error.txt") -Encoding utf8
+          & netstat -ano 2>&1 | Select-String -Pattern ":5190" |
+            Set-Content -LiteralPath (Join-Path $diagnostics "port-5190.txt") -Encoding utf8
+          foreach ($name in @("installer-state.json", "managed-tools-state.json", "service/supervisor.json")) {
+            $source = Join-Path $defaultRoot $name
+            if (Test-Path -LiteralPath $source -PathType Leaf) {
+              Copy-Item -LiteralPath $source -Destination (Join-Path $diagnostics ($name -replace "/", "-")) -Force
+            }
+          }
+          $logDirectory = Join-Path $defaultRoot "logs"
+          if (Test-Path -LiteralPath $logDirectory -PathType Container) {
+            Get-ChildItem -LiteralPath $logDirectory -File -Recurse | ForEach-Object {
+              $tail = Get-Content -LiteralPath $_.FullName -Tail 200 -ErrorAction SilentlyContinue
+              $tail | Set-Content -LiteralPath (Join-Path $diagnostics ("log-tail-" + $_.Name)) -Encoding utf8
+            }
+          }
+
+      - name: Upload Windows installer evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-windows-installer-evidence
+          path: |
+            ${{ runner.temp }}/native-windows-source-digests.json
+            ${{ runner.temp }}/native-windows-installer-evidence.json
+            ${{ runner.temp }}/native-windows-installer-diagnostics
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Stop and remove the temporary Windows Product Runtime
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          $ownershipPath = Join-Path $env:RUNNER_TEMP "native-windows-installer-owned-root.json"
+          $defaultRoot = Join-Path $env:USERPROFILE ".chengfeng-videocut"
+          if (-not (Test-Path -LiteralPath $ownershipPath -PathType Leaf)) {
+            Write-Host "No ownership marker; preserving any pre-existing Product Runtime."
+            exit 0
+          }
+          try {
+            $ownership = Get-Content -LiteralPath $ownershipPath -Raw | ConvertFrom-Json
+          } catch {
+            Write-Warning "Unreadable ownership marker; preserving any Product Runtime."
+            exit 0
+          }
+          if ($ownership.schemaVersion -ne 1 -or $ownership.runId -ne $env:GITHUB_RUN_ID -or $ownership.root -ne $defaultRoot) {
+            Write-Warning "Ownership marker does not name this hosted runner root; preserving it."
+            exit 0
+          }
+          $launcher = Join-Path $defaultRoot "bin/chengfeng-videocut.cmd"
+          if (Test-Path -LiteralPath $launcher -PathType Leaf) {
+            & $launcher service stop --json 2>&1 | Write-Host
+          }
+          $taskXml = @(& schtasks /Query /TN "chengfeng-videocut-studio" /XML 2>$null)
+          $taskQueryExit = $LASTEXITCODE
+          if ($taskQueryExit -eq 0 -and (($taskXml -join [Environment]::NewLine) -match [regex]::Escape($launcher))) {
+            schtasks /Delete /TN "chengfeng-videocut-studio" /F 2>$null
+          } else {
+            Write-Host "Scheduled task is absent or not owned by this test root; preserving it."
+          }
+          Remove-Item -LiteralPath $defaultRoot -Recurse -Force -ErrorAction SilentlyContinue

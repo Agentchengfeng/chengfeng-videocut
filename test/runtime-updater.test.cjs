@@ -432,6 +432,16 @@ function invokeEmbedded(executable, home, extraArgs = [], extraEnv = {}) {
   });
 }
 
+function invokeStableLauncher(launcher, args, options = {}) {
+  if (!IS_WINDOWS) return spawnSync(launcher, args, options);
+  const quote = (value) => `"${String(value).replaceAll('"', '""')}"`;
+  return spawnSync(
+    process.env.ComSpec || "cmd.exe",
+    ["/d", "/v:off", "/s", "/c", `"${quote(launcher)} ${args.map(quote).join(" ")}"`],
+    options,
+  );
+}
+
 function addInstallerBootstrapAssets(release, { tamperInstaller = false } = {}) {
   const releaseInstaller = path.join(release, "install.cjs");
   copyFileSync(INSTALLER, releaseInstaller);
@@ -726,11 +736,18 @@ test("macOS shell bootstrap rejects install.cjs changed after SHA256SUMS", {
   assert.equal(existsSync(path.join(home, "runtime-update.lock")), false);
 });
 
-test("real arm64 compiled installer embeds one Runtime/tools payload, rejects an external source, and reuses with zero downloads", {
-  skip: process.platform !== "darwin" || process.arch !== "arm64",
+const COMPILED_EMBEDDED_INSTALLER_TARGETS = {
+  "darwin-arm64": "chengfeng-videocut-installer-macos-arm64",
+  "win32-x64": "chengfeng-videocut-installer-windows-x64.exe",
+};
+
+test("real compiled installer embeds one Runtime/tools payload, rejects an external source, and reuses with zero downloads", {
+  skip: !Object.hasOwn(COMPILED_EMBEDDED_INSTALLER_TARGETS, `${process.platform}-${process.arch}`),
 }, (t) => {
   const { root, home, release, bundle } = fixture(t);
   makeFormalRelease(root, release, bundle);
+  const platformKey = `${process.platform}-${process.arch}`;
+  const installerAsset = COMPILED_EMBEDDED_INSTALLER_TARGETS[platformKey];
   // Compile the real standalone artifact on the workspace release volume,
   // not inside the disposable Runtime fixture under the system temp volume.
   mkdirSync(path.join(ROOT, "release"), { recursive: true });
@@ -738,23 +755,27 @@ test("real arm64 compiled installer embeds one Runtime/tools payload, rejects an
   t.after(() => rmSync(compiledRoot, { recursive: true, force: true }));
   for (const asset of [
     `chengfeng-videocut-runtime-${VERSION}.tar.gz`,
-    `chengfeng-videocut-tools-${VERSION}-darwin-arm64.tar.gz`,
-    `chengfeng-videocut-tools-${VERSION}-darwin-arm64.tar.gz.json`,
+    `chengfeng-videocut-tools-${VERSION}-${platformKey}.tar.gz`,
+    `chengfeng-videocut-tools-${VERSION}-${platformKey}.tar.gz.json`,
   ]) copyFileSync(path.join(release, asset), path.join(compiledRoot, asset));
-  const compiled = path.join(compiledRoot, "chengfeng-videocut-installer-macos-arm64");
+  const compiled = path.join(compiledRoot, installerAsset);
   const built = spawnSync("bun", [path.join(ROOT, "scripts/build-native-installer.ts")], {
     cwd: ROOT,
     encoding: "utf8",
     env: {
       ...process.env,
       CHENGFENG_VIDEOCUT_RELEASE_DIR: compiledRoot,
-      CHENGFENG_VIDEOCUT_INSTALLER_TARGETS: "darwin-arm64",
+      CHENGFENG_VIDEOCUT_INSTALLER_TARGETS: platformKey,
       CHENGFENG_VIDEOCUT_MANAGED_TOOLS_LOCK: path.join(ROOT, "installer/managed-tools.lock.json"),
     },
   });
   assert.equal(built.status, 0, `${built.stdout}\n${built.stderr}`);
-  chmodSync(compiled, 0o755);
-  assert.match(execFileSync("file", [compiled], { encoding: "utf8" }), /Mach-O 64-bit executable arm64/);
+  if (IS_WINDOWS) {
+    assert.equal(readFileSync(compiled).subarray(0, 2).toString("ascii"), "MZ");
+  } else {
+    chmodSync(compiled, 0o755);
+    assert.match(execFileSync("file", [compiled], { encoding: "utf8" }), /Mach-O 64-bit executable arm64/);
+  }
   const rejectedHome = path.join(root, "external-source-rejected");
   const rejected = invokeEmbedded(compiled, rejectedHome, [], {
     CHENGFENG_VIDEOCUT_DOWNLOAD_BASE: "https://invalid.example.test/release",
@@ -772,41 +793,54 @@ test("real arm64 compiled installer embeds one Runtime/tools payload, rejects an
   assert.equal(first.status, 0, `${first.error?.message || ""}\n${first.stderr}`);
   const firstPayload = JSON.parse(first.stdout.trim().split(/\r?\n/).at(-1));
   assert.equal(firstPayload.data.assetDownloads, 0);
-  const launcher = path.join(home, "bin", "chengfeng-videocut");
+  const launcher = path.join(home, "bin", IS_WINDOWS ? "chengfeng-videocut.cmd" : "chengfeng-videocut");
   const metadata = lstatSync(launcher);
   assert.equal(metadata.isFile(), true);
   assert.equal(metadata.isSymbolicLink(), false);
-  assert.equal(metadata.nlink, 1);
-  assert.equal(metadata.mode & 0o777, 0o755);
-  const version = spawnSync(launcher, ["--version"], { encoding: "utf8", env: { ...process.env, PATH: "/usr/bin:/bin" } });
+  if (!IS_WINDOWS) {
+    assert.equal(metadata.nlink, 1);
+    assert.equal(metadata.mode & 0o777, 0o755);
+  }
+  const version = invokeStableLauncher(launcher, ["--version"], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      PATH: IS_WINDOWS ? `${process.env.SystemRoot}\\System32` : "/usr/bin:/bin",
+    },
+  });
   assert.equal(version.status, 0, version.stderr);
   assert.match(version.stdout, new RegExp(VERSION.replaceAll(".", "\\.")));
-  const managedBun = path.join(home, "tools", VERSION, "bun");
+  const managedBun = path.join(home, "tools", VERSION, IS_WINDOWS ? "bun.exe" : "bun");
   const hiddenManagedBun = `${managedBun}.missing`;
   renameSync(managedBun, hiddenManagedBun);
-  const noFallback = spawnSync(launcher, ["--version"], {
+  const noFallback = invokeStableLauncher(launcher, ["--version"], {
     encoding: "utf8",
-    env: { ...process.env, PATH: path.dirname(process.execPath) },
+    env: {
+      ...process.env,
+      PATH: IS_WINDOWS ? `${process.env.SystemRoot}\\System32` : path.dirname(process.execPath),
+    },
   });
   renameSync(hiddenManagedBun, managedBun);
   assert.equal(noFallback.status, 127);
   assert.match(noFallback.stderr, /managed Bun is missing/);
-  unlinkSync(launcher);
-  symlinkSync(path.join("..", "app", "current", "chengfeng-videocut"), launcher, "file");
+  if (!IS_WINDOWS) {
+    unlinkSync(launcher);
+    symlinkSync(path.join("..", "app", "current", "chengfeng-videocut"), launcher, "file");
+  }
   const second = invokeEmbedded(compiled, home);
   assert.equal(second.status, 0, second.stderr);
   const secondPayload = JSON.parse(second.stdout.trim().split(/\r?\n/).at(-1));
   assert.equal(secondPayload.data.status, "reused");
   assert.equal(secondPayload.data.assetDownloads, 0);
   assert.equal(lstatSync(launcher).isSymbolicLink(), false);
-  assert.equal(lstatSync(launcher).nlink, 1);
+  if (!IS_WINDOWS) assert.equal(lstatSync(launcher).nlink, 1);
   unlinkSync(path.join(home, "managed-tools-state.json"));
   const current = invokeEmbedded(compiled, home);
   assert.equal(current.status, 0, current.stderr);
   const currentPayload = JSON.parse(current.stdout.trim().split(/\r?\n/).at(-1));
   assert.equal(currentPayload.data.status, "current");
   assert.equal(currentPayload.data.assetDownloads, 0);
-  const ffmpeg = path.join(home, "tools", VERSION, "ffmpeg");
+  const ffmpeg = path.join(home, "tools", VERSION, IS_WINDOWS ? "ffmpeg.exe" : "ffmpeg");
   writeFileSync(ffmpeg, `${readFileSync(ffmpeg, "utf8")}drift\n`);
   const damaged = invokeEmbedded(compiled, home);
   assert.notEqual(damaged.status, 0);
