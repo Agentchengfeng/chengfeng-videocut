@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   requiredReleaseAssetNames,
+  verifyReleaseAssetManifest,
+  windowsDesktopInstallerName,
   writeReleaseChecksums,
 } from "../../../scripts/release-assets";
 import { checkVersionContract } from "../../../scripts/version-contract";
@@ -37,12 +39,16 @@ describe("release contract", () => {
     expect(installer).toContain('CHENGFENG_VIDEOCUT_EXECUTABLE=%~f0');
   });
 
-  it("keeps generated Electron resources out of the public source archive", async () => {
+  it("keeps developer source archives outside the Windows prerelease asset contract", async () => {
+    expect(requiredReleaseAssetNames(PRODUCT_VERSION)).not.toContain(
+      `chengfeng-videocut-${PRODUCT_VERSION}-source.tar.gz`,
+    );
     const sourcePackager = await readFile(join(rootDir, "scripts/pack-source.ts"), "utf8");
-    expect(sourcePackager).toContain('"dist-resources"');
+    expect(sourcePackager).toContain('join(root, "source-archives")');
+    expect(sourcePackager).not.toContain('join(root, "release")');
   });
 
-  it("copies install.sh and checksums every required portable/tgz asset", async () => {
+  it("copies installers and checksums every portable, tgz, and Windows desktop asset", async () => {
     const fixtureRoot = await mkdtemp(join(tmpdir(), "videocut-release-contract-"));
     cleanupPaths.push(fixtureRoot);
     const releaseDir = join(fixtureRoot, "release");
@@ -54,7 +60,13 @@ describe("release contract", () => {
       (name) => name !== "install.sh" && name !== "install.cjs",
     );
     for (const name of assetNames) {
-      await Bun.write(join(releaseDir, name), `fixture:${name}\n`);
+      const canonicalName =
+        name === "chengfeng-videocut-portable.tar.gz"
+          ? `chengfeng-videocut-${PRODUCT_VERSION}-portable.tar.gz`
+          : name === "chengfeng-videocut.tgz"
+            ? `chengfeng-videocut-${PRODUCT_VERSION}.tgz`
+            : name;
+      await Bun.write(join(releaseDir, name), `fixture:${canonicalName}\n`);
     }
 
     const result = await writeReleaseChecksums({
@@ -63,15 +75,30 @@ describe("release contract", () => {
       version: PRODUCT_VERSION,
     });
     const sums = await readFile(result.checksumPath, "utf8");
-    expect(result.lines).toHaveLength(6);
+    expect(result.lines).toHaveLength(7);
     for (const name of requiredReleaseAssetNames(PRODUCT_VERSION)) {
       expect(sums).toContain(`  ${name}\n`);
     }
+    expect(windowsDesktopInstallerName(PRODUCT_VERSION)).toBe(
+      `Chengfeng-VideoCut-${PRODUCT_VERSION}-win-x64.exe`,
+    );
     const installer = await readFile(join(releaseDir, "install.sh"), "utf8");
     expect(installer).toBe("#!/bin/sh\nVERSION=fixture\n");
     expect(sums).toContain(
       `${createHash("sha256").update(installer).digest("hex")}  install.sh\n`,
     );
+    await expect(
+      verifyReleaseAssetManifest({ releaseDir, version: PRODUCT_VERSION }),
+    ).resolves.toEqual({
+      assetNames: [...requiredReleaseAssetNames(PRODUCT_VERSION)].sort((left, right) =>
+        left.localeCompare(right, "en"),
+      ),
+      checksums: expect.any(Map),
+    });
+    await Bun.write(join(releaseDir, windowsDesktopInstallerName(PRODUCT_VERSION)), "tampered\n");
+    await expect(
+      verifyReleaseAssetManifest({ releaseDir, version: PRODUCT_VERSION }),
+    ).rejects.toThrow(`SHA256 mismatch for ${windowsDesktopInstallerName(PRODUCT_VERSION)}`);
   });
 
   it("fails closed when a required archive is missing", async () => {
@@ -83,5 +110,26 @@ describe("release contract", () => {
     await expect(
       writeReleaseChecksums({ rootDir: fixtureRoot, releaseDir, version: PRODUCT_VERSION }),
     ).rejects.toThrow("Missing chengfeng-videocut");
+  });
+
+  it("rejects a source archive left in the Windows prerelease directory", async () => {
+    const fixtureRoot = await mkdtemp(join(tmpdir(), "videocut-release-source-"));
+    cleanupPaths.push(fixtureRoot);
+    const releaseDir = join(fixtureRoot, "release");
+    await mkdir(releaseDir, { recursive: true });
+    await Bun.write(join(fixtureRoot, "install.sh"), "#!/bin/sh\n");
+    await Bun.write(join(fixtureRoot, "install.cjs"), 'const VERSION = "fixture";\n');
+    for (const name of requiredReleaseAssetNames(PRODUCT_VERSION).filter(
+      (asset) => asset !== "install.sh" && asset !== "install.cjs",
+    )) {
+      await Bun.write(join(releaseDir, name), `fixture:${name}\n`);
+    }
+    await Bun.write(
+      join(releaseDir, `chengfeng-videocut-${PRODUCT_VERSION}-source.tar.gz`),
+      "not a release payload\n",
+    );
+    await expect(
+      writeReleaseChecksums({ rootDir: fixtureRoot, releaseDir, version: PRODUCT_VERSION }),
+    ).rejects.toThrow("Windows prerelease release directory contains unsupported assets");
   });
 });

@@ -6,12 +6,14 @@ import {
   readFile,
   realpath,
   rm,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  installBundledTools,
+  ensureManagedRuntime,
+  stageBundledTools,
   resolveManagedRuntimeLayout,
   runCaptured,
 } from "./managed-runtime.mjs";
@@ -30,7 +32,7 @@ test("resolveManagedRuntimeLayout exposes stable shared Product paths", () => {
   assert.equal(layout.installedCliPath, join(layout.root, "app", "current", "cli.js"));
 });
 
-test("installBundledTools versions the desktop dependencies and points current at them", async () => {
+test("Desktop stages bundled tools outside the Product root before installer activation", async () => {
   const root = await mkdtemp(join(tmpdir(), "chengfeng-managed-tools-"));
   try {
     const source = join(root, "source");
@@ -55,8 +57,7 @@ test("installBundledTools versions the desktop dependencies and points current a
       ffprobe: "ffprobe 7",
     };
     const dataDir = join(root, "data");
-    const layout = await installBundledTools({
-      dataDir,
+    const layout = await stageBundledTools({
       version: "0.4.7",
       platform: process.platform,
       manifest,
@@ -66,14 +67,12 @@ test("installBundledTools versions the desktop dependencies and points current a
     });
 
     assert.equal(await readFile(layout.managedBunPath, "utf8"), "bun");
-    assert.equal(await realpath(layout.toolsCurrentDir), await realpath(layout.toolsVersionDir));
     assert.deepEqual(
       JSON.parse(await readFile(layout.toolsManifestPath, "utf8")),
       manifest,
     );
 
-    await installBundledTools({
-      dataDir,
+    await stageBundledTools({
       version: "0.4.7",
       platform: process.platform,
       manifest,
@@ -81,42 +80,67 @@ test("installBundledTools versions the desktop dependencies and points current a
       bundledFfmpegPath: ffmpeg,
       bundledFfprobePath: ffprobe,
     });
-    assert.equal(await realpath(layout.toolsCurrentDir), await realpath(layout.toolsVersionDir));
+    await assert.rejects(realpath(join(dataDir, "tools", "current")));
+    await assert.rejects(realpath(join(dataDir, "tools", "0.4.7")));
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("installBundledTools refuses to overwrite an unmanaged current directory", async () => {
-  const root = await mkdtemp(join(tmpdir(), "chengfeng-managed-tools-conflict-"));
+test("a failed staged-tool verification leaves the prior shared tools and Runtime current links untouched", {
+  skip: process.platform === "win32",
+}, async () => {
+  const root = await mkdtemp(join(tmpdir(), "chengfeng-managed-tools-rollback-"));
   try {
     const source = join(root, "source");
     const dataDir = join(root, "data");
     await mkdir(source);
-    await mkdir(join(dataDir, "tools", "current"), { recursive: true });
-    const suffix = process.platform === "win32" ? ".exe" : "";
-    const files = ["bun", "ffmpeg", "ffprobe"].map((name) => join(source, `${name}${suffix}`));
-    await Promise.all(files.map((path) => writeFile(path, path)));
+    const previous = await stageBundledTools({
+      version: "0.4.7",
+      platform: process.platform,
+      manifest: {
+        product: "chengfeng-videocut",
+        productVersion: "0.4.7",
+        platform: process.platform,
+        arch: process.arch,
+        bun: "old",
+        ffmpeg: "old",
+        ffprobe: "old",
+      },
+      bundledBunPath: await writeExecutable(source, "bun", "#!/bin/sh\nexit 0\n"),
+      bundledFfmpegPath: await writeExecutable(source, "ffmpeg", "#!/bin/sh\nexit 0\n"),
+      bundledFfprobePath: await writeExecutable(source, "ffprobe", "#!/bin/sh\nexit 0\n"),
+    });
+    await mkdir(join(dataDir, "tools", "0.4.7"), { recursive: true });
+    await symlink("0.4.7", join(dataDir, "tools", "current"));
+    const oldRuntime = join(dataDir, "app", "0.4.7");
+    await mkdir(oldRuntime, { recursive: true });
+    await symlink("0.4.7", join(dataDir, "app", "current"));
+
     await assert.rejects(
-      installBundledTools({
+      ensureManagedRuntime({
         dataDir,
-        version: "0.4.7",
+        version: "0.4.8",
         platform: process.platform,
         manifest: {
           product: "chengfeng-videocut",
-          productVersion: "0.4.7",
+          productVersion: "0.4.8",
           platform: process.platform,
           arch: process.arch,
-          bun: "1",
-          ffmpeg: "1",
-          ffprobe: "1",
+          bun: "new",
+          ffmpeg: "new",
+          ffprobe: "new",
         },
-        bundledBunPath: files[0],
-        bundledFfmpegPath: files[1],
-        bundledFfprobePath: files[2],
+        bundledBunPath: await writeExecutable(source, "new-bun", "#!/bin/sh\nexit 1\n"),
+        bundledFfmpegPath: await writeExecutable(source, "new-ffmpeg", "#!/bin/sh\nexit 0\n"),
+        bundledFfprobePath: await writeExecutable(source, "new-ffprobe", "#!/bin/sh\nexit 0\n"),
+        installerDir: source,
+        installerPath: join(source, "unused-install.cjs"),
       }),
-      /not a managed link/,
+      /Bundled Bun verification failed/,
     );
+    assert.equal(await realpath(join(dataDir, "tools", "current")), await realpath(join(dataDir, "tools", "0.4.7")));
+    assert.equal(await realpath(join(dataDir, "app", "current")), await realpath(oldRuntime));
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -132,3 +156,9 @@ test("runCaptured reports bounded command output", async () => {
   assert.equal(result.stdout, "managed-ok");
   assert.equal(result.overflow, false);
 });
+
+async function writeExecutable(directory, name, contents) {
+  const path = join(directory, name);
+  await writeFile(path, contents);
+  return path;
+}

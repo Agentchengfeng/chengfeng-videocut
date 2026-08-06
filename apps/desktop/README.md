@@ -3,6 +3,10 @@
 This package is an Electron shell for the existing Product Runtime. It does not
 create a second Runtime or a Desktop-only API.
 
+The v0.4.8 controlled prerelease ships a Windows EXE only. This document
+describes source-build support for both operating systems; a macOS CI artifact
+is not evidence of a macOS Desktop release asset.
+
 ```bash
 bun run desktop:test
 bun run desktop:smoke

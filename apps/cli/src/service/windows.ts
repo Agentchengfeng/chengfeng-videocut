@@ -25,6 +25,8 @@ import {
   type StudioServiceCommandResult,
   type StudioServicePaths,
   type StudioServiceStatus,
+  type WindowsSidLookup,
+  type WindowsSidLookupResult,
 } from "./index";
 
 // Windows 托管形态：计划任务只负责「登录自启 + 脱离父进程」，崩溃重启由产品
@@ -34,25 +36,64 @@ export const WINDOWS_TASK_NAME = "chengfeng-videocut-studio";
 
 // 任务的 UserId：工作组机器上 DOMAIN\user 形式会被拒（"No mapping between account
 // names and security IDs"，2026-08-03 真机实测），SID 在域/工作组都成立。
-// PowerShell 冷启动在 Windows CI / Defender 扫描时可能超过 1 秒；同一进程的
-// 登录身份不会变化，因此只解析一次，避免 status/ensure 反复启动 PowerShell。
+// PowerShell 冷启动在 Windows CI / Defender 扫描时可能接近服务测试的 5 秒默认
+// 上限；whoami.exe 是系统原生命令，能以固定 CSV 形态给出同一个 SID。身份不会
+// 在一个 CLI 进程里变化，因此只解析一次。
 let cachedCurrentUserId: string | undefined;
+const WINDOWS_SID_LOOKUP_TIMEOUT_MS = 2_000;
 
-function currentUserId(): string {
-  if (cachedCurrentUserId !== undefined) return cachedCurrentUserId;
+export function parseWindowsUserSid(output: string): string | null {
+  const value = /S-1-[0-9-]+/i.exec(output)?.[0];
+  return value && /^S-1-[0-9-]+$/.test(value) ? value : null;
+}
+
+function windowsWhoamiExecutable(): string {
+  const systemRoot = process.env.SystemRoot?.trim();
+  return systemRoot ? join(systemRoot, "System32", "whoami.exe") : "whoami.exe";
+}
+
+function defaultWindowsSidLookup(): WindowsSidLookupResult {
+  const executable = windowsWhoamiExecutable();
   const sid = spawnSync(
-    "powershell",
-    ["-NoProfile", "-Command", "[Security.Principal.WindowsIdentity]::GetCurrent().User.Value"],
-    { encoding: "utf8" },
+    executable,
+    ["/user", "/fo", "csv", "/nh"],
+    { encoding: "utf8", timeout: WINDOWS_SID_LOOKUP_TIMEOUT_MS, windowsHide: true },
   );
-  const value = (sid.stdout || "").trim();
-  if (/^S-1-[0-9-]+$/.test(value)) {
-    cachedCurrentUserId = value;
-    return cachedCurrentUserId;
+  const spawnError = sid.error;
+  const errorCode = spawnError && typeof spawnError === "object" && "code" in spawnError
+    ? String((spawnError as { code?: unknown }).code)
+    : null;
+  return {
+    executable,
+    stdout: sid.stdout || "",
+    status: sid.status,
+    signal: sid.signal ?? null,
+    errorCode,
+  };
+}
+
+export function resolveWindowsTaskUserId(lookup?: WindowsSidLookup): string {
+  if (lookup === undefined && cachedCurrentUserId !== undefined) return cachedCurrentUserId;
+  const result = (lookup ?? defaultWindowsSidLookup)();
+  const value = parseWindowsUserSid(result.stdout);
+  if (result.status === 0 && result.signal === null && result.errorCode === null && value) {
+    if (lookup === undefined) cachedCurrentUserId = value;
+    return value;
   }
-  const name = process.env.USERNAME || process.env.USER || "";
-  cachedCurrentUserId = name ? `${process.env.COMPUTERNAME || "."}\\${name}` : name;
-  return cachedCurrentUserId;
+  // DOMAIN\\user is rejected on workgroup machines. Do not silently write a
+  // task that Task Scheduler may accept but can never start; expose a bounded,
+  // actionable failure instead.
+  throw new StudioServiceError(
+    "service_unavailable",
+    "Could not resolve the current Windows user SID for the scheduled task",
+    {
+      executable: result.executable,
+      timeoutMs: WINDOWS_SID_LOOKUP_TIMEOUT_MS,
+      status: result.status,
+      signal: result.signal,
+      errorCode: result.errorCode,
+    },
+  );
 }
 const RESPAWN_THROTTLE_MS = 5_000;
 
@@ -88,7 +129,7 @@ function scheduledTaskArguments(launcherPath: string): string {
 
 export function renderStudioScheduledTask(
   paths: StudioServicePaths,
-  userId = currentUserId(),
+  userId = resolveWindowsTaskUserId(),
   commandProcessor = windowsCommandProcessor(),
 ): string {
   // 声明必须与落盘编码一致：文件按 UTF-16LE+BOM 写（schtasks /XML 的要求），
@@ -132,6 +173,24 @@ ${userId ? `      <UserId>${xmlEscape(userId)}</UserId>` : ""}
 `;
 }
 
+function windowsTaskUserId(deps: ResolvedServiceDependencies): string {
+  const injected = deps.windowsTaskUserId;
+  if (injected === undefined) return resolveWindowsTaskUserId(deps.windowsSidLookup);
+  if (/^S-1-[0-9-]+$/.test(injected)) return injected;
+  throw new StudioServiceError(
+    "service_unavailable",
+    "Windows scheduled-task identity must be a SID",
+    { provided: true },
+  );
+}
+
+function renderCurrentStudioScheduledTask(
+  deps: ResolvedServiceDependencies,
+  paths: StudioServicePaths,
+): string {
+  return renderStudioScheduledTask(paths, windowsTaskUserId(deps));
+}
+
 async function writeTaskDefinition(path: string, content: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const temporary = `${path}.${process.pid}.tmp`;
@@ -139,9 +198,17 @@ async function writeTaskDefinition(path: string, content: string): Promise<void>
   await rename(temporary, path);
 }
 
+function taskConfigurationCurrentXml(raw: string, paths: StudioServicePaths): boolean {
+  const userIds = [...raw.matchAll(/<UserId>\s*(S-1-[0-9-]+)\s*<\/UserId>/gi)].map((match) => match[1]);
+  return userIds.length === 2 && userIds[0] === userIds[1] &&
+    raw.includes(`<Command>${xmlEscape(windowsCommandProcessor())}</Command>`) &&
+    raw.includes(`<Arguments>${xmlEscape(scheduledTaskArguments(paths.launcherPath))}</Arguments>`) &&
+    /<LogonType>\s*InteractiveToken\s*<\/LogonType>/i.test(raw);
+}
+
 async function taskConfigurationCurrent(paths: StudioServicePaths): Promise<boolean> {
   try {
-    return await readFile(paths.plistPath, "utf16le") === `\ufeff${renderStudioScheduledTask(paths)}`;
+    return taskConfigurationCurrentXml(await readFile(paths.plistPath, "utf16le"), paths);
   } catch (error) {
     const code = error && typeof error === "object" && "code" in error
       ? String((error as { code?: unknown }).code)
@@ -277,6 +344,11 @@ async function waitUntilWindowsReady(
         url: last.url,
         previousPid,
         observedPid: last.pid,
+        loaded: last.loaded,
+        configured: last.configured,
+        runtimeMode: last.runtimeMode,
+        productVersion: last.productVersion,
+        detail: last.detail,
         stderrLogPath: paths.stderrLogPath,
       },
     );
@@ -330,7 +402,7 @@ async function installWindowsUnlocked(
 
   // schtasks 的 /XML 解析器只接受 UTF-16LE + BOM 的任务定义（即便 XML 声明写着
   // UTF-8）；2026-08-03 Windows 真机首次点火实测：无 BOM 报「无法切换编码」。
-  await writeTaskDefinition(paths.plistPath, renderStudioScheduledTask(paths));
+  await writeTaskDefinition(paths.plistPath, renderCurrentStudioScheduledTask(deps, paths));
   await runSchtasksOrThrow(
     deps,
     ["/Create", "/TN", WINDOWS_TASK_NAME, "/XML", paths.plistPath, "/F"],
@@ -492,32 +564,6 @@ export async function runWindowsStudioServiceCommand(
   }
 }
 
-function findBunExecutable(): string | null {
-  const names = ["bun.exe", "bun.cmd"];
-  for (const entry of (process.env.PATH || "").split(";").filter(Boolean)) {
-    for (const name of names) {
-      const candidate = join(entry, name);
-      try {
-        openSync(candidate, "r");
-        return candidate;
-      } catch {
-        // keep searching
-      }
-    }
-  }
-  const home = process.env.USERPROFILE;
-  if (home) {
-    const fallback = join(home, ".bun", "bin", "bun.exe");
-    try {
-      openSync(fallback, "r");
-      return fallback;
-    } catch {
-      // fall through
-    }
-  }
-  return null;
-}
-
 // 看门狗：直接以 bun 起 server 子进程（child.pid 即 health 报告的 PID），
 // 崩溃 5 秒节流后重拉，日志追加到与 launchd 相同的文件，状态发布到
 // supervisor.json 供 status/stop 交叉验证。任务结束（schtasks /End、注销）
@@ -548,11 +594,10 @@ export async function runStudioSupervisor(paths: StudioServicePaths): Promise<nu
   await mkdir(join(paths.dataDir, "logs"), { recursive: true });
   await mkdir(join(paths.dataDir, "service"), { recursive: true });
   const cliEntry = join(paths.dataDir, "app", "current", "cli.js");
-  const bun = findBunExecutable();
-  if (!bun) {
-    process.stderr.write("找不到 Bun，无法启动 Studio 服务。\n");
-    return 127;
-  }
+  // service supervise is itself launched by the stable .cmd launcher after it
+  // selected a runnable native bun.exe. Reuse that executable so a stale
+  // bun.cmd earlier in PATH cannot redirect this long-lived supervisor.
+  const bun = process.execPath;
 
   let stopping = false;
   let child: ReturnType<typeof spawn> | null = null;

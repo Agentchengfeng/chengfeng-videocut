@@ -53,9 +53,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+      - name: 安装依赖
+        run: bun install --frozen-lockfile
       - name: 构建便携包
         run: |
-          bun install --frozen-lockfile
           bun run package:build
           bun scripts/package-portable.ts
       - name: 组装本地 release 夹具并安装
