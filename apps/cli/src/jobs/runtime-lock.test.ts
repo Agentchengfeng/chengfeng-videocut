@@ -41,6 +41,12 @@ async function runtimePaths(jobsDir: string): Promise<string[]> {
     .sort();
 }
 
+async function garbagePaths(jobsDir: string): Promise<string[]> {
+  return (await readdir(jobsDir))
+    .filter((name) => name.startsWith(".runtime-owner.json.garbage."))
+    .sort();
+}
+
 async function ownerTokens(jobsDir: string): Promise<string[]> {
   const tokens: string[] = [];
   for (const name of await runtimePaths(jobsDir)) {
@@ -133,11 +139,82 @@ describe("RuntimeJobLock stale-owner CAS", () => {
     expect(await runtimePaths(f.jobsDir)).toEqual([]);
   });
 
+  it("serializes release then acquire on one instance without returning an ownerless success", async () => {
+    const f = await fixture();
+    let atRetire!: () => void;
+    let continueRetire!: () => void;
+    let blockOnce = true;
+    const retireStarted = new Promise<void>((resolve) => { atRetire = resolve; });
+    const retireGate = new Promise<void>((resolve) => { continueRetire = resolve; });
+    const lock = new RuntimeJobLock(f.dataDir, {
+      async beforeOwnedLocationRetire() {
+        if (!blockOnce) return;
+        blockOnce = false;
+        atRetire();
+        await retireGate;
+      },
+    });
+    await lock.acquire();
+
+    const releasing = lock.release();
+    await retireStarted;
+    expect(lock.held).toBe(false);
+    let reacquired = false;
+    const acquiring = lock.acquire().then(() => { reacquired = true; });
+    await Bun.sleep(10);
+    expect(reacquired).toBe(false);
+
+    continueRetire();
+    await releasing;
+    await acquiring;
+    expect(lock.held).toBe(true);
+    expect(await ownerTokens(f.jobsDir)).toEqual([lock.token]);
+    expect(await garbagePaths(f.jobsDir)).toEqual([]);
+
+    await lock.release();
+    expect(await runtimePaths(f.jobsDir)).toEqual([]);
+  });
+
+  it("serializes acquire then release on one instance without leaving a lock", async () => {
+    const f = await fixture();
+    let atPublish!: () => void;
+    let continuePublish!: () => void;
+    let blockOnce = true;
+    const published = new Promise<void>((resolve) => { atPublish = resolve; });
+    const publishGate = new Promise<void>((resolve) => { continuePublish = resolve; });
+    const lock = new RuntimeJobLock(f.dataDir, {
+      async afterOwnerPublished() {
+        if (!blockOnce) return;
+        blockOnce = false;
+        atPublish();
+        await publishGate;
+      },
+    });
+
+    let acquireSettled = false;
+    let releaseSettled = false;
+    const acquiring = lock.acquire().then(() => { acquireSettled = true; });
+    await published;
+    const releasing = lock.release().then(() => { releaseSettled = true; });
+    await Bun.sleep(10);
+    expect(acquireSettled).toBe(false);
+    expect(releaseSettled).toBe(false);
+
+    continuePublish();
+    await acquiring;
+    await releasing;
+    expect(lock.held).toBe(false);
+    expect(await runtimePaths(f.jobsDir)).toEqual([]);
+    expect(await garbagePaths(f.jobsDir)).toEqual([]);
+  });
+
   it("preserves an active legacy owner without creating a tombstone", async () => {
     const f = await fixture();
     const active = owner(process.pid);
     const raw = `${JSON.stringify(active)}\n`;
     await writeFile(f.lockPath, raw, { mode: 0o600 });
+    const abandonedGarbage = join(f.jobsDir, `.runtime-owner.json.garbage.${randomUUID()}`);
+    await mkdir(abandonedGarbage);
 
     await expect(new RuntimeJobLock(f.dataDir).acquire()).rejects.toMatchObject({
       code: "job_runtime_conflict",
@@ -145,6 +222,7 @@ describe("RuntimeJobLock stale-owner CAS", () => {
     });
     expect(await readFile(f.lockPath, "utf8")).toBe(raw);
     expect(await runtimePaths(f.jobsDir)).toEqual([".runtime-owner.json"]);
+    expect(await garbagePaths(f.jobsDir)).toEqual([]);
   });
 
   it("fails closed on a damaged canonical lock without moving or deleting it", async () => {
@@ -195,6 +273,34 @@ describe("RuntimeJobLock stale-owner CAS", () => {
     expect(await runtimePaths(f.jobsDir)).toEqual([".runtime-owner.json"]);
     expect(await ownerTokens(f.jobsDir)).toEqual([lock.token]);
     await lock.release();
+  });
+
+  it("moves a tombstone out of the lock namespace before interruptible recursive cleanup", async () => {
+    const f = await fixture();
+    await writeOwnerDirectory(f.lockPath, owner(2_000_000_000));
+    const injected = new Error("crash after tombstone retirement");
+    let retiredGarbage = "";
+    const interrupted = new RuntimeJobLock(f.dataDir, {
+      afterTombstoneRetired(garbagePath) {
+        retiredGarbage = garbagePath;
+        throw injected;
+      },
+    });
+
+    await expect(interrupted.acquire()).rejects.toBe(injected);
+    expect(interrupted.held).toBe(false);
+    expect(await runtimePaths(f.jobsDir)).toEqual([]);
+    expect(await garbagePaths(f.jobsDir)).toHaveLength(1);
+
+    // Model rm having deleted owner.json before the process died. The empty
+    // garbage directory is not a lock and must be cleaned by the next acquire.
+    await rm(join(retiredGarbage, "owner.json"));
+    expect(await readdir(retiredGarbage)).toEqual([]);
+    const replacement = new RuntimeJobLock(f.dataDir);
+    await replacement.acquire();
+    expect(await garbagePaths(f.jobsDir)).toEqual([]);
+    expect(await ownerTokens(f.jobsDir)).toEqual([replacement.token]);
+    await replacement.release();
   });
 
   it("releases itself safely after its canonical directory was displaced to a tombstone", async () => {

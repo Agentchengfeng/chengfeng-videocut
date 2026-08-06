@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { lstat, mkdir, open, readFile, readdir, rename, rm } from "node:fs/promises";
 import { hostname } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { JobStoreError, syncDirectory } from "./store";
 
 interface RuntimeLockOwner {
@@ -21,12 +21,16 @@ interface RuntimeLockRecord {
 export interface RuntimeJobLockHooks {
   afterStaleOwnerRead?: (owner: Readonly<RuntimeLockOwner>) => void | Promise<void>;
   afterStaleOwnerClaimed?: (owner: Readonly<RuntimeLockOwner>, tombstonePath: string) => void | Promise<void>;
+  afterOwnerPublished?: (owner: Readonly<RuntimeLockOwner>) => void | Promise<void>;
+  beforeOwnedLocationRetire?: (owner: Readonly<RuntimeLockOwner>, tombstonePath: string) => void | Promise<void>;
+  afterTombstoneRetired?: (garbagePath: string) => void | Promise<void>;
 }
 
 const OWNER_NAME = "owner.json";
 const LOCK_NAME = ".runtime-owner.json";
 const CANDIDATE_PREFIX = `${LOCK_NAME}.candidate.`;
 const TOMBSTONE_PREFIX = `${LOCK_NAME}.tombstone.`;
+const GARBAGE_PREFIX = `${LOCK_NAME}.garbage.`;
 const MAX_ACQUIRE_ATTEMPTS = 16;
 
 function processExists(pid: number): boolean {
@@ -110,10 +114,6 @@ async function readLockRecord(path: string): Promise<RuntimeLockRecord> {
   };
 }
 
-async function removeLockRecord(record: RuntimeLockRecord): Promise<void> {
-  await rm(record.path, { recursive: record.layout === "directory", force: true });
-}
-
 /**
  * Cross-process singleton for the durable-job registry.
  *
@@ -133,6 +133,7 @@ export class RuntimeJobLock {
   readonly path: string;
   readonly token = randomUUID();
   readonly #hooks: RuntimeJobLockHooks;
+  #lifecycleTail: Promise<void> = Promise.resolve();
   #held = false;
 
   constructor(dataDir: string, hooks: RuntimeJobLockHooks = {}) {
@@ -143,7 +144,15 @@ export class RuntimeJobLock {
 
   get held(): boolean { return this.#held; }
 
-  async acquire(): Promise<void> {
+  acquire(): Promise<void> {
+    return this.#withLifecycle(() => this.#acquire());
+  }
+
+  release(): Promise<void> {
+    return this.#withLifecycle(() => this.#release());
+  }
+
+  async #acquire(): Promise<void> {
     if (this.#held) return;
     await mkdir(this.jobsDirectory, { recursive: true });
     const owner: RuntimeLockOwner = {
@@ -155,6 +164,7 @@ export class RuntimeJobLock {
     };
 
     for (let attempt = 0; attempt < MAX_ACQUIRE_ATTEMPTS; attempt += 1) {
+      await this.#clearGarbage();
       await this.#clearStaleTombstones();
       if (await this.#publishOwner(owner)) {
         try {
@@ -216,22 +226,25 @@ export class RuntimeJobLock {
       } catch (error) {
         // The unique name cannot be reused, so normal failure cleanup cannot
         // remove another contender's lock.
-        await removeLockRecord(claimed).catch((cleanupError) => {
+        await this.#retireTombstone(claimed).catch((cleanupError) => {
           if (!isMissing(cleanupError)) throw cleanupError;
         });
-        await syncDirectory(this.jobsDirectory);
         throw error;
       }
-      await removeLockRecord(claimed).catch((error) => {
+      await this.#retireTombstone(claimed).catch((error) => {
         if (!isMissing(error)) throw error;
       });
-      await syncDirectory(this.jobsDirectory);
     }
     throw new JobStoreError("job_runtime_conflict", "Could not acquire durable job Runtime ownership");
   }
 
-  async release(): Promise<void> {
+  async #release(): Promise<void> {
     if (!this.#held) return;
+    // Calls on this instance are serialized, so clearing the in-memory state
+    // now cannot race a same-instance acquire. If filesystem retirement later
+    // fails, the next acquire must inspect disk instead of returning success
+    // from stale in-memory state.
+    this.#held = false;
     const owner: RuntimeLockOwner = {
       version: 1,
       pid: process.pid,
@@ -240,7 +253,6 @@ export class RuntimeJobLock {
       acquiredAt: "",
     };
     const removed = await this.#removeOwnedLocations(owner);
-    this.#held = false;
     if (removed) return;
 
     let current: RuntimeLockRecord | null = null;
@@ -282,6 +294,7 @@ export class RuntimeJobLock {
       await rename(candidatePath, this.path);
       published = true;
       await syncDirectory(this.jobsDirectory);
+      await this.#hooks.afterOwnerPublished?.(Object.freeze({ ...owner }));
       return true;
     } catch (error) {
       if (published) {
@@ -317,11 +330,45 @@ export class RuntimeJobLock {
       }
       // Tombstone names are never reused, so deleting this exact stale path is
       // immune to the canonical compare-delete race.
-      await removeLockRecord(record).catch((error) => {
+      await this.#retireTombstone(record).catch((error) => {
         if (!isMissing(error)) throw error;
       });
-      await syncDirectory(this.jobsDirectory);
     }
+  }
+
+  async #clearGarbage(): Promise<void> {
+    let removed = false;
+    for (const entry of await readdir(this.jobsDirectory, { withFileTypes: true })) {
+      if (!entry.name.startsWith(GARBAGE_PREFIX)) continue;
+      try {
+        await rm(join(this.jobsDirectory, entry.name), { recursive: true, force: true });
+        removed = true;
+      } catch {
+        // Garbage has already been atomically removed from the ownership
+        // namespace. Cleanup is best-effort and can never block a new owner.
+      }
+    }
+    if (removed) await syncDirectory(this.jobsDirectory).catch(() => undefined);
+  }
+
+  async #retireTombstone(record: RuntimeLockRecord): Promise<void> {
+    const name = basename(record.path);
+    if (join(this.jobsDirectory, name) !== record.path || !name.startsWith(TOMBSTONE_PREFIX)) {
+      throw new JobStoreError("job_runtime_lock_corrupt", "Refusing to retire a path outside the Runtime tombstone namespace", {
+        path: record.path,
+      });
+    }
+    const garbagePath = join(this.jobsDirectory, `${GARBAGE_PREFIX}${randomUUID()}`);
+    try {
+      await rename(record.path, garbagePath);
+      await syncDirectory(this.jobsDirectory);
+    } catch (error) {
+      if (isMissing(error)) return;
+      throw error;
+    }
+    await this.#hooks.afterTombstoneRetired?.(garbagePath);
+    await rm(garbagePath, { recursive: record.layout === "directory", force: true });
+    await syncDirectory(this.jobsDirectory);
   }
 
   async #hasOwnerLocation(owner: RuntimeLockOwner): Promise<boolean> {
@@ -351,7 +398,8 @@ export class RuntimeJobLock {
       await syncDirectory(this.jobsDirectory);
       const claimed = await readLockRecord(cleanupPath);
       if (sameOwner(claimed.owner, owner)) {
-        await removeLockRecord(claimed);
+        await this.#hooks.beforeOwnedLocationRetire?.(Object.freeze({ ...claimed.owner }), cleanupPath);
+        await this.#retireTombstone(claimed);
         removed = true;
       }
       // A mismatched owner remains fenced under its unique tombstone.
@@ -369,12 +417,25 @@ export class RuntimeJobLock {
         throw error;
       }
       if (!sameOwner(record.owner, owner)) continue;
-      await removeLockRecord(record).catch((error) => {
+      await this.#hooks.beforeOwnedLocationRetire?.(Object.freeze({ ...record.owner }), path);
+      await this.#retireTombstone(record).catch((error) => {
         if (!isMissing(error)) throw error;
       });
       removed = true;
     }
     if (removed) await syncDirectory(this.jobsDirectory);
     return removed;
+  }
+
+  async #withLifecycle<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.#lifecycleTail;
+    let release!: () => void;
+    this.#lifecycleTail = new Promise<void>((resolveQueue) => { release = resolveQueue; });
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
   }
 }
