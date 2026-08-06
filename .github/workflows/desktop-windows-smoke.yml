@@ -123,10 +123,12 @@ jobs:
           node release/install.cjs
           if ($LASTEXITCODE -ne 0) { throw "Final release install.cjs exited with $LASTEXITCODE" }
           $launcher = Join-Path $releaseHome 'bin\chengfeng-videocut.cmd'
+          $expectedVersion = (node -p "require('./package.json').version").Trim()
+          if ($LASTEXITCODE -ne 0) { throw "Could not read canonical package.json version with node; exited with $LASTEXITCODE" }
           $actualVersion = (& $launcher --version).Trim()
           if ($LASTEXITCODE -ne 0) { throw "Installed stable launcher exited with $LASTEXITCODE" }
-          if ($actualVersion -ne '0.4.8') {
-            throw "Expected final-release launcher version 0.4.8; got $actualVersion"
+          if ($actualVersion -ne $expectedVersion) {
+            throw "Final-release launcher version mismatch: expected canonical package.json version $expectedVersion; got $actualVersion"
           }
       - name: Preserve checksummed Windows prerelease assets
         uses: actions/upload-artifact@v4
