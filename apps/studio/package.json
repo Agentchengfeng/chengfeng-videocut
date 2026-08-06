@@ -1,6 +1,6 @@
 {
   "name": "@video-workbench/studio",
-  "version": "0.4.8",
+  "version": "0.4.9",
   "private": true,
   "description": "Browser Studio for chengfeng-videocut, powered by HyperFrames",
   "license": "Apache-2.0",

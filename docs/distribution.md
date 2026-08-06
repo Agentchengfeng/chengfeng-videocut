@@ -7,7 +7,7 @@ chengfeng-videocut 的正式二进制分发入口是 GitHub Releases：
 https://github.com/Agentchengfeng/chengfeng-videocut/releases
 
 当前不发布 npm 包，也不使用 `bunx` 作为用户入口。Runtime 便携包和 Windows NSIS
-由同一个版本的 GitHub Release / CI 产物承载。**v0.4.8 是 Windows Desktop 受控测试
+由同一个版本的 GitHub Release / CI 产物承载。**v0.4.9 是 Windows Desktop 受控测试
 prerelease：不附带 macOS DMG。** 仓库可在 macOS CI 构建 DMG，但那不是本次 Release
 资产。桌面包在签名、公证与媒体二进制再分发复核完成前只能标为预发布测试资产。
 
@@ -20,7 +20,7 @@ prerelease：不附带 macOS DMG。** 仓库可在 macOS CI 构建 DMG，但那�
 
 ## Release 资产
 
-v0.4.8 Windows Desktop 受控测试 Release 应提供：
+v0.4.9 Windows Desktop 受控测试 Release 应提供：
 
 - `install.sh`：与该版本绑定的一行安装器副本
 - `install.cjs`：Windows / Node 安装器副本
@@ -32,7 +32,7 @@ v0.4.8 Windows Desktop 受控测试 Release 应提供：
 - `Chengfeng-VideoCut-<version>-win-x64.exe`：Windows 桌面受控测试包；必须由 Windows workflow 完成无提权安装、启动、受管 Runtime、卸载 smoke 后，才可与同一 `SHA256SUMS.txt` 一起下载
 
 稳定文件名便于安装器和 Skills 使用；版本化文件名用于固定版本、审计和回滚。稳定文件名不得跨 Release 静默替换内容。
-macOS DMG 不在 v0.4.8 附件中；未来单独提供 macOS Desktop 测试时，必须另列资产与
+macOS DMG 不在 v0.4.9 附件中；未来单独提供 macOS Desktop 测试时，必须另列资产与
 对应验证证据，不能把 CI artifact 当成已经发布的下载包。
 本次 `release/` 不生成也不接受额外的 source `.tar.gz`；GitHub 自动生成的源码快照
 不属于 Runtime 下载资产，不能混入 `SHA256SUMS.txt` 或本次附件清单。
@@ -60,11 +60,11 @@ launcher 进入，不读取 `.app/Contents/Resources` 或 `%LOCALAPPDATA%\Progra
 
 ### 纯 CLI 路径
 
-v0.4.8 预发布测试使用固定 tag 的安装命令（不是可移动的 `main` 或
+v0.4.9 预发布测试使用固定 tag 的安装命令（不是可移动的 `main` 或
 `releases/latest`）：
 
 ```bash
-curl -fsSL https://github.com/Agentchengfeng/chengfeng-videocut/releases/download/v0.4.8/install.sh | sh
+curl -fsSL https://github.com/Agentchengfeng/chengfeng-videocut/releases/download/v0.4.9/install.sh | sh
 ```
 
 安装器只应从 `Agentchengfeng/chengfeng-videocut` 的 GitHub Release 下载资产，校验 `SHA256SUMS.txt`，并写入产品自己的用户目录。它不得修改用户项目、媒体或其他工具目录。
@@ -141,12 +141,12 @@ LaunchAgent 必须执行便携启动器保留的稳定入口 `~/.chengfeng-video
 5. 确认版本号、Release 标签、便携包内版本和 `CITATION.cff` 一致。
 6. 生成最终 `SHA256SUMS.txt` 后再上传，不得在生成校验值后修改资产。
 7. 保留 Apache-2.0 许可、HyperFrames 上游归属和修改说明。
-8. v0.4.8 的 Windows 桌面资产必须额外通过无提权 NSIS 安装、App 父进程退出后服务
+8. v0.4.9 的 Windows 桌面资产必须额外通过无提权 NSIS 安装、App 父进程退出后服务
    存活、稳定 launcher doctor、显式 stop、端口冲突与卸载验证。未来 macOS Desktop
    资产必须另行通过只读 DMG 安装验证。
 9. 面向正式可用性的桌面包须完成 macOS 签名/公证、Windows 签名，以及随包
    FFmpeg/FFprobe 的 GPL 许可、对应源代码提供方式与第三方通知复核；未完成只能保留
-   为测试资产。v0.4.8 不声称这些工作已完成。
+   为测试资产。v0.4.9 不声称这些工作已完成。
 
 ## 许可与品牌
 

@@ -7,6 +7,7 @@ const defaultRootDir = resolve(import.meta.dir, "..");
 const packageManifestPaths = [
   "package.json",
   "apps/cli/package.json",
+  "apps/desktop/package.json",
   "apps/studio/package.json",
   "packages/contracts/package.json",
   "packages/core/package.json",

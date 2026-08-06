@@ -38,7 +38,7 @@ const { spawn, spawnSync } = require("node:child_process");
 const { fileURLToPath } = require("node:url");
 
 const REPOSITORY = "Agentchengfeng/chengfeng-videocut";
-const VERSION = "0.4.8";
+const VERSION = "0.4.9";
 const ARCHIVE_NAME = "chengfeng-videocut-portable.tar.gz";
 const CHECKSUM_NAME = "SHA256SUMS.txt";
 const ARCHIVE_ROOT_NAME = `chengfeng-videocut-${VERSION}`;

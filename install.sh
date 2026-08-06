@@ -6,7 +6,7 @@ set -eu
 # 各自演化出“先切 current、后验证”的两套语义。
 
 REPOSITORY="Agentchengfeng/chengfeng-videocut"
-VERSION="0.4.8"
+VERSION="0.4.9"
 CHECKSUM_NAME="SHA256SUMS.txt"
 INSTALLER_NAME="install.cjs"
 DOWNLOAD_BASE="${CHENGFENG_VIDEOCUT_DOWNLOAD_BASE:-https://github.com/$REPOSITORY/releases/download/v$VERSION}"

@@ -17,6 +17,7 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
+  buildCutTimeRanges,
   buildEditListFromCuts,
   parseEditListDocument,
   type EditListDocument,
@@ -878,7 +879,12 @@ function materializeCutTranscript(
   };
 }
 
-function buildRanges(
+/**
+ * The pre-canonical initializer used this exact range shape. It exists only to
+ * prove that an on-disk selection is a known legacy artifact before migration;
+ * new writes must use buildCutTimeRanges from core.
+ */
+function legacyBuildRangesForMigrationVerifier(
   words: readonly KouboTranscriptWord[],
   cutWordIds: readonly string[],
 ): Array<{ start: number; end: number }> {
@@ -896,6 +902,26 @@ function buildRanges(
   }
   if (current) ranges.push(current);
   return ranges;
+}
+
+function canonicalCutRangesMigrationCandidate(
+  selection: JsonObject,
+  words: readonly KouboTranscriptWord[],
+): Array<{ start: number; end: number }> | null {
+  if (!Array.isArray(selection.cutWordIds) || !Array.isArray(selection.cutRanges)) return null;
+  if (!selection.cutWordIds.every((id) => typeof id === "string")) return null;
+  const cutWordIds = selection.cutWordIds as string[];
+  if (new Set(cutWordIds).size !== cutWordIds.length) return null;
+  const knownIds = new Set(words.map((word) => word.id));
+  if (cutWordIds.some((id) => !knownIds.has(id))) return null;
+
+  const legacyRanges = legacyBuildRangesForMigrationVerifier(words, cutWordIds);
+  if (JSON.stringify(selection.cutRanges) !== JSON.stringify(legacyRanges)) return null;
+
+  const canonicalRanges = buildCutTimeRanges(words, new Set(cutWordIds));
+  return JSON.stringify(legacyRanges) === JSON.stringify(canonicalRanges)
+    ? null
+    : canonicalRanges;
 }
 
 /**
@@ -1662,7 +1688,7 @@ async function prepareKouboProjectSnapshot(
     existingSelection = {
       schemaVersion: 3,
       cutWordIds: legacyIds,
-      cutRanges: buildRanges(sourceWords, legacyIds),
+      cutRanges: buildCutTimeRanges(sourceWords, new Set(legacyIds)),
     };
   }
   const existingRecord = isObject(existingSelection) ? existingSelection : {};
@@ -1687,6 +1713,14 @@ async function prepareKouboProjectSnapshot(
   let transcriptRaw: string;
   let cutsRaw: string;
   let pausePlanRaw: string | null = null;
+  let legacyCutRanges: Array<{ start: number; end: number }> | null = null;
+  let cutRangesMigration: {
+    from: "legacy-buildRanges";
+    to: "canonical-buildCutTimeRanges";
+    previousCutsRevision: string;
+    nextCutsRevision: string;
+    cutRangeCount: number;
+  } | null = null;
   let pausePlan: NaturalPausePlan | null = existsSync(pausePlanPath)
     ? await readJson<NaturalPausePlan>(pausePlanPath)
     : null;
@@ -1731,7 +1765,7 @@ async function prepareKouboProjectSnapshot(
       ...existingRecord,
       schemaVersion: 3,
       cutWordIds,
-      cutRanges: buildRanges(words, cutWordIds),
+      cutRanges: buildCutTimeRanges(words, new Set(cutWordIds)),
       initialization: nextInitialization,
       updatedAt: now.toISOString(),
     };
@@ -1750,6 +1784,10 @@ async function prepareKouboProjectSnapshot(
     cutWordIds = Array.isArray(existingRecord.cutWordIds)
       ? existingRecord.cutWordIds.map(String)
       : [];
+    legacyCutRanges = canonicalCutRangesMigrationCandidate(
+      existingRecord,
+      transcript.cues.flatMap((cue) => cue.words),
+    );
   }
 
   const visualPlanPath = join(jobDir, "visual-plan.json");
@@ -1825,6 +1863,25 @@ async function prepareKouboProjectSnapshot(
   const existingEditListRaw = existsSync(editListPath)
     ? await readFile(editListPath, "utf8")
     : null;
+  const existingEditList = existingEditListRaw === null
+    ? null
+    : parseEditListDocument(JSON.parse(existingEditListRaw) as unknown);
+  if (legacyCutRanges !== null && existingEditList?.mode === "cuts-derived") {
+    const previousCutsRevision = contentRevision(cutsRaw);
+    const normalizedSelection: JsonObject = {
+      ...existingRecord,
+      cutRanges: legacyCutRanges,
+      updatedAt: now.toISOString(),
+    };
+    cutsRaw = jsonContent(normalizedSelection);
+    cutRangesMigration = {
+      from: "legacy-buildRanges",
+      to: "canonical-buildCutTimeRanges",
+      previousCutsRevision,
+      nextCutsRevision: contentRevision(cutsRaw),
+      cutRangeCount: legacyCutRanges.length,
+    };
+  }
   const editListCandidate = resolveEditListCandidate({
     projectId,
     videoSource,
@@ -1916,6 +1973,7 @@ async function prepareKouboProjectSnapshot(
       autoSelectionCount: autoSelectionIndexes.length,
       naturalPausePolicy: pausePlan?.policy.version ?? null,
       plannedDeleteSeconds: pausePlan?.summary.totalDeletedSeconds ?? 0,
+      ...(cutRangesMigration ? { cutRangesMigration } : {}),
     },
   };
   const eventsPath = join(jobDir, "events.jsonl");
@@ -1927,6 +1985,8 @@ async function prepareKouboProjectSnapshot(
       { path: cutSelectionPath, content: cutsRaw },
     );
     if (pausePlanRaw !== null) writes.push({ path: pausePlanPath, content: pausePlanRaw });
+  } else if (cutRangesMigration) {
+    writes.push({ path: cutSelectionPath, content: cutsRaw });
   }
   if (editListCandidate.changed) {
     writes.push({ path: editListPath, content: editListCandidate.raw });

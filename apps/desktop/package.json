@@ -1,6 +1,6 @@
 {
   "name": "@video-workbench/desktop",
-  "version": "0.4.8",
+  "version": "0.4.9",
   "private": true,
   "description": "Desktop preview using the shared managed chengfeng-videocut Runtime",
   "author": "成峰 / AI产品自由",
