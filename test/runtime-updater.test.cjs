@@ -34,7 +34,7 @@ const { gzipSync } = require("node:zlib");
 const ROOT = path.resolve(__dirname, "..");
 const INSTALLER = path.join(ROOT, "install.cjs");
 const SHELL_INSTALLER = path.join(ROOT, "install.sh");
-const VERSION = "0.4.8";
+const VERSION = "0.4.9";
 const IS_WINDOWS = process.platform === "win32";
 const PROJECT_CONTENT = "project must survive update transaction\n";
 

@@ -7,12 +7,12 @@ chengfeng-videocut 是一个本地优先的口播视频剪辑产品：浏览器�
 ## 下载与安装
 
 正式分发只走 [GitHub Releases](https://github.com/Agentchengfeng/chengfeng-videocut/releases)，
-不发布 npm 包，也不需要 `bunx`。**v0.4.8 是 Windows Desktop 受控测试
+不发布 npm 包，也不需要 `bunx`。**v0.4.9 是 Windows Desktop 受控测试
 prerelease**：本次 Release 提供 Windows 桌面 EXE 与 CLI 便携包，**不提供 macOS
 Desktop DMG**。桌面测试包在完成代码签名、公证与 FFmpeg 再分发复核前只作为预发布
 测试资产。
 
-v0.4.8 桌面预览包：
+v0.4.9 桌面预览包：
 
 - Windows 10/11 x64：NSIS EXE
 - 随包提供 Runtime、Bun、FFmpeg 与 FFprobe，不要求用户修改系统 PATH
@@ -27,7 +27,7 @@ Node.js 20+。Linux 可用 foreground `start` 做开发诊断，常驻 `service`
 macOS CLI Runtime 一行安装（非 Desktop App）：
 
 ```bash
-curl -fsSL https://github.com/Agentchengfeng/chengfeng-videocut/releases/download/v0.4.8/install.sh | sh
+curl -fsSL https://github.com/Agentchengfeng/chengfeng-videocut/releases/download/v0.4.9/install.sh | sh
 ```
 
 安装后可运行：
@@ -51,7 +51,7 @@ launcher；Electron resources 路径不会成为公开 CLI。
 
 ### 手动安装
 
-1. 从 [v0.4.8 prerelease](https://github.com/Agentchengfeng/chengfeng-videocut/releases/tag/v0.4.8) 下载同一版本的 `install.sh`、`chengfeng-videocut-portable.tar.gz` 和 `SHA256SUMS.txt` 到同一目录。
+1. 从 [v0.4.9 prerelease](https://github.com/Agentchengfeng/chengfeng-videocut/releases/tag/v0.4.9) 下载同一版本的 `install.sh`、`chengfeng-videocut-portable.tar.gz` 和 `SHA256SUMS.txt` 到同一目录。
 2. 对照 `SHA256SUMS.txt` 校验下载文件。
 3. 在该目录运行 `CHENGFENG_VIDEOCUT_DOWNLOAD_BASE="file://$PWD" sh ./install.sh`，把 Runtime 落到稳定的 `~/.chengfeng-videocut/bin` 与 `app/current` 布局。
 4. 运行 `~/.chengfeng-videocut/bin/chengfeng-videocut service ensure --open` 启动工作台。
