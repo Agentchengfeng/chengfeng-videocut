@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { DurableJob } from "@video-workbench/contracts";
 import { startStudioServer, type RunningStudioServer } from "./start";
+import { createJobsApi } from "./jobs-api";
 import { runCli } from "../run";
 
 const cleanup: string[] = [];
@@ -60,6 +61,13 @@ async function waitJob(url: string, jobId: string, states: string[], timeout = 3
 }
 
 describe("durable jobs HTTP and real export", () => {
+  it("rejects a non-loopback client before dispatching into the manager", async () => {
+    const handler = createJobsApi({} as never);
+    const response = await handler(new Request("http://127.0.0.1/api/v1/jobs"), "192.168.1.50");
+    expect(response?.status).toBe(403);
+    expect(await response?.json()).toMatchObject({ error: { code: "local_only" } });
+  });
+
   it("enforces conflict/list/cancel, survives Runtime restart, and publishes a real MP4", async () => {
     const f = await fixture();
     let server = await startStudioServer({
@@ -67,6 +75,16 @@ describe("durable jobs HTTP and real export", () => {
     });
     servers.push(server);
     const outputPath = join(f.root, "finished.mp4");
+    const wrongType = await fetch(`${server.url}/api/v1/jobs`, {
+      method: "POST", body: JSON.stringify({ kind: "export", target: "one" }),
+    });
+    expect(wrongType.status).toBe(415);
+    const wrongOrigin = await fetch(`${server.url}/api/v1/jobs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: "https://example.invalid" },
+      body: JSON.stringify({ kind: "export", target: "one" }),
+    });
+    expect(wrongOrigin.status).toBe(403);
     const start = await fetch(`${server.url}/api/v1/jobs`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ kind: "export", target: "one", params: { outputPath, scale: 2, fps: 15 } }),

@@ -532,7 +532,7 @@ export async function startStudioServer(
     // Long video range requests and the Studio event stream must survive the
     // framework's 10-second default idle window.
     idleTimeout: STUDIO_SERVER_IDLE_TIMEOUT_SECONDS,
-    async fetch(request): Promise<Response> {
+    async fetch(request, bunServer): Promise<Response> {
       const url = new URL(request.url);
       try {
         // These product-owned offline dependencies must win before any
@@ -542,7 +542,7 @@ export async function startStudioServer(
         if (url.pathname === "/api/health") {
           return healthResponse(request, staticSnapshot.buildId, runtimeMode, mediaToolsMissing);
         }
-        const jobsResponse = await jobsApi(request);
+        const jobsResponse = await jobsApi(request, bunServer.requestIP(request)?.address);
         if (jobsResponse) return jobsResponse;
         const mediaResponse = await projectMedia(request);
         if (mediaResponse) return mediaResponse;
