@@ -148,6 +148,10 @@ function runStageWithSnapshotReplacement(source, destination, asset, expectedByt
         "chengfeng-videocut-installer-windows-x64.exe",
       ],
       verifyNativeReleaseSecurity: async ({ releaseDir }) => {
+        const sourceDir = process.env.NATIVE_SOURCE;
+        await rename(sourceDir, sourceDir + ".before-replacement");
+        await mkdir(sourceDir);
+        await writeFile(join(sourceDir, asset), "post-snapshot replacement bytes\\n");
         const actual = await readFile(join(releaseDir, asset));
         if (!actual.equals(expected)) throw new Error("security verifier did not receive snapshot bytes");
       },
@@ -156,13 +160,6 @@ function runStageWithSnapshotReplacement(source, destination, asset, expectedByt
     await stageNativeRelease({
       sourceDir: process.env.NATIVE_SOURCE,
       destinationDir: process.env.NATIVE_DESTINATION,
-      testHooks: {
-        afterSnapshot: async ({ sourceDir }) => {
-          await rename(sourceDir, sourceDir + ".before-replacement");
-          await mkdir(sourceDir);
-          await writeFile(join(sourceDir, asset), "post-snapshot replacement bytes\\n");
-        },
-      },
     });
   `;
   return spawnSync("bun", ["-e", program], {
@@ -219,7 +216,7 @@ test("exact VERIFIED content passes structural checks but formal stage blocks wi
 
 test("production stage exposes no injectable security verifier and rejects checkout policy as trust", () => {
   const stageSource = readFileSync(STAGE, "utf8");
-  assert.doesNotMatch(stageSource, /verifySecurity|securityVerifier/);
+  assert.doesNotMatch(stageSource, /testHooks|afterSnapshot|verifySecurity|securityVerifier/);
   const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "videocut-native-release-local-trust-")));
   try {
     const { source } = createNativeSource(root);

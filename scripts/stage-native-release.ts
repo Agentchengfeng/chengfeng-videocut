@@ -26,20 +26,11 @@ import {
 } from "./native-release-signatures";
 
 const moduleRootDir = resolve(import.meta.dir, "..");
-export type StageNativeReleaseTestHooks = {
-  afterSnapshot?: (context: {
-    sourceDir: string;
-    snapshotReleaseDir: string;
-    snapshotAttestationDir?: string;
-  }) => Promise<void>;
-};
-
 export type StageNativeReleaseOptions = {
   rootDir?: string;
   sourceDir?: string;
   destinationDir?: string;
   attestationDir?: string;
-  testHooks?: StageNativeReleaseTestHooks;
 };
 
 type FileState = Awaited<ReturnType<typeof stableFileState>>;
@@ -271,12 +262,6 @@ export async function stageNativeRelease(options: StageNativeReleaseOptions = {}
         );
       }
     }
-
-    await options.testHooks?.afterSnapshot?.({
-      sourceDir: canonicalSource,
-      snapshotReleaseDir,
-      snapshotAttestationDir,
-    });
 
     // Every content, signature, and attestation check below reads only the
     // private snapshot. The mutable input paths are never opened again.
