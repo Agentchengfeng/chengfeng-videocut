@@ -1,12 +1,15 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import {
   access,
+  chmod,
   mkdtemp,
   mkdir,
   readFile,
   readdir,
   realpath,
   rm,
+  stat,
+  symlink,
   utimes,
   writeFile,
 } from "node:fs/promises";
@@ -180,11 +183,90 @@ describe("project store", () => {
         ok: false,
         required: true,
       });
-      expect(result.checks.find((check) => check.name === "chrome")).toMatchObject({
+    } finally {
+      if (previousExecutable === undefined) delete process.env.CHENGFENG_VIDEOCUT_EXECUTABLE;
+      else process.env.CHENGFENG_VIDEOCUT_EXECUTABLE = previousExecutable;
+      if (previousDataDir === undefined) delete process.env.CHENGFENG_VIDEOCUT_DATA_DIR;
+      else process.env.CHENGFENG_VIDEOCUT_DATA_DIR = previousDataDir;
+    }
+  });
+  it("accepts schema v4 managed tools without renderer resources and rejects legacy schemas", async () => {
+    const root = await mkdtemp(join(tmpdir(), "videocut-doctor-tools-v4-"));
+    cleanupPaths.push(root);
+    const version = "0.5.0";
+    const toolsVersion = join(root, "tools", version);
+    const bun = join(toolsVersion, "bin", "bun");
+    const ffmpeg = join(toolsVersion, "bin", "ffmpeg");
+    const ffprobe = join(toolsVersion, "bin", "ffprobe");
+    await mkdir(join(root, "app", "current"), { recursive: true });
+    await mkdir(join(toolsVersion, "bin"), { recursive: true });
+    await Promise.all([
+      writeFile(bun, "#!/bin/sh\nexit 0\n"),
+      writeFile(ffmpeg, "#!/bin/sh\nexit 0\n"),
+      writeFile(ffprobe, "#!/bin/sh\nexit 0\n"),
+      writeFile(join(root, "app", "current", "VERSION"), `${version}\n`),
+    ]);
+    await Promise.all([chmod(bun, 0o755), chmod(ffmpeg, 0o755), chmod(ffprobe, 0o755)]);
+    const records = await Promise.all([
+      ["bin/bun", bun],
+      ["bin/ffmpeg", ffmpeg],
+      ["bin/ffprobe", ffprobe],
+    ].map(async ([relative, absolute]) => {
+      const content = await readFile(absolute!);
+      return { path: relative!, size: (await stat(absolute!)).size, sha256: sha256(content) };
+    }));
+    const manifest = {
+      schemaVersion: 4,
+      product: "chengfeng-videocut-managed-tools",
+      productVersion: version,
+      platform: process.platform,
+      arch: process.arch,
+      distributionMode: "release-ready",
+      licenseStatus: "VERIFIED",
+      executables: {
+        bun: "bin/bun",
+        ffmpeg: "bin/ffmpeg",
+        ffprobe: "bin/ffprobe",
+      },
+      files: records,
+    };
+    await writeFile(join(toolsVersion, "resources-manifest.json"), `${JSON.stringify(manifest)}\n`);
+    await symlink(version, join(root, "tools", "current"), process.platform === "win32" ? "junction" : "dir");
+
+    const previousExecutable = process.env.CHENGFENG_VIDEOCUT_EXECUTABLE;
+    const previousDataDir = process.env.CHENGFENG_VIDEOCUT_DATA_DIR;
+    const previousExecPath = process.execPath;
+    process.env.CHENGFENG_VIDEOCUT_EXECUTABLE = join(root, "app", "chengfeng-videocut");
+    process.env.CHENGFENG_VIDEOCUT_DATA_DIR = root;
+    process.execPath = bun;
+    try {
+      const result = await doctor({ projectsDir: join(root, "projects") });
+      expect(result.checks.find((check) => check.name === "dependencyMode")).toMatchObject({ ok: true });
+      expect(result.checks.some((check) => check.name === "exportRenderer")).toBe(false);
+
+      for (const schemaVersion of [2, 3]) {
+        await writeFile(
+          join(toolsVersion, "resources-manifest.json"),
+          `${JSON.stringify({ ...manifest, schemaVersion })}\n`,
+        );
+        const legacyResult = await doctor({ projectsDir: join(root, "projects") });
+        expect(legacyResult.checks.find((check) => check.name === "dependencyMode")).toMatchObject({
+          ok: false,
+          detail: "resources-manifest is not VERIFIED/release-ready for this platform",
+        });
+      }
+
+      await writeFile(
+        join(toolsVersion, "resources-manifest.json"),
+        `${JSON.stringify({ ...manifest, resources: { exportRenderer: {} } })}\n`,
+      );
+      const resourceResult = await doctor({ projectsDir: join(root, "projects") });
+      expect(resourceResult.checks.find((check) => check.name === "dependencyMode")).toMatchObject({
         ok: false,
-        required: true,
+        detail: "schema 4 resources-manifest must not include renderer resources",
       });
     } finally {
+      process.execPath = previousExecPath;
       if (previousExecutable === undefined) delete process.env.CHENGFENG_VIDEOCUT_EXECUTABLE;
       else process.env.CHENGFENG_VIDEOCUT_EXECUTABLE = previousExecutable;
       if (previousDataDir === undefined) delete process.env.CHENGFENG_VIDEOCUT_DATA_DIR;

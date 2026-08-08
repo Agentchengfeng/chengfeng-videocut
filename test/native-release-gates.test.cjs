@@ -35,34 +35,86 @@ function fileRecord(directory, name, root) {
   };
 }
 
-function writeToolsArchive(root, source, platformKey, { releaseReady = true, executable = true } = {}) {
+function writeToolsArchive(root, source, platformKey, {
+  releaseReady = true,
+  executable = true,
+  schemaVersion = 4,
+  rendererWorkerExecutable,
+  rendererWorkerArguments,
+} = {}) {
   const [platform, arch] = platformKey.split("-");
   const rootName = `chengfeng-videocut-tools-${VERSION}-${platformKey}`;
   const bundle = path.join(root, rootName);
-  mkdirSync(path.join(bundle, "chrome"), { recursive: true });
+  if (![2, 3, 4].includes(schemaVersion)) throw new Error("unsupported fixture schema version");
+  mkdirSync(bundle, { recursive: true });
+  if (schemaVersion === 2) mkdirSync(path.join(bundle, "chrome"), { recursive: true });
   const suffix = platform === "win32" ? ".exe" : "";
   const executables = {
     bun: `bun${suffix}`,
     ffmpeg: `ffmpeg${suffix}`,
     ffprobe: `ffprobe${suffix}`,
-    chrome: `chrome/chrome${suffix}`,
+    ...(schemaVersion === 2 ? { chrome: `chrome/chrome${suffix}` } : {}),
   };
   for (const [key, relative] of Object.entries(executables)) {
     writeFileSync(path.join(bundle, relative), `${platformKey}:${key}\n`);
     if (platform === "darwin" && executable) chmodSync(path.join(bundle, relative), 0o755);
   }
+  let resources;
+  if (schemaVersion === 3) {
+    const rendererRootName = `chengfeng-videocut-export-renderer-${VERSION}-${platformKey}`;
+    const rendererRoot = path.join(root, rendererRootName);
+    const worker = {
+      executable: rendererWorkerExecutable ?? `electron/electron${suffix}`,
+      arguments: rendererWorkerArguments ?? ["app/main.mjs"],
+    };
+    mkdirSync(path.join(rendererRoot, "electron"), { recursive: true });
+    mkdirSync(path.join(rendererRoot, "app"), { recursive: true });
+    writeFileSync(path.join(rendererRoot, "electron", `electron${suffix}`), "fixture electron\n");
+    writeFileSync(path.join(rendererRoot, "app", "main.mjs"), "export {};\n");
+    const rendererManifestPath = path.join(rendererRoot, "renderer-manifest.json");
+    writeFileSync(rendererManifestPath, `${JSON.stringify({
+      schemaVersion: 1,
+      product: "chengfeng-videocut-export-renderer",
+      platform,
+      arch,
+      worker,
+    }, null, 2)}\n`);
+    const rendererArchiveRelative = `resources/chengfeng-videocut-export-renderer-${VERSION}-${platformKey}.tar.gz`;
+    const rendererArchive = path.join(bundle, rendererArchiveRelative);
+    mkdirSync(path.dirname(rendererArchive), { recursive: true });
+    execFileSync("tar", ["-czf", rendererArchive, "-C", root, rendererRootName]);
+    const bytes = readFileSync(rendererArchive);
+    resources = {
+      exportRenderer: {
+        archive: rendererArchiveRelative,
+        sha256: sha256(bytes),
+        size: bytes.length,
+        root: rendererRootName,
+        rendererManifestSha256: sha256(readFileSync(rendererManifestPath)),
+        worker,
+      },
+    };
+  }
   const files = Object.values(executables).map((relative) => {
     const bytes = readFileSync(path.join(bundle, relative));
     return { path: relative, size: bytes.length, sha256: sha256(bytes) };
   });
+  if (schemaVersion === 3) {
+    const relative = resources.exportRenderer.archive;
+    const bytes = readFileSync(path.join(bundle, relative));
+    files.push({ path: relative, size: bytes.length, sha256: sha256(bytes) });
+  }
   writeFileSync(path.join(bundle, "resources-manifest.json"), `${JSON.stringify({
-    schemaVersion: 2,
+    schemaVersion,
     product: "chengfeng-videocut-managed-tools",
     productVersion: VERSION,
     platform,
     arch,
     executables,
-    versions: { bun: "1", ffmpeg: "1", ffprobe: "1", chrome: "1" },
+    versions: schemaVersion === 2
+      ? { bun: "1", ffmpeg: "1", ffprobe: "1", chrome: "1" }
+      : { bun: "1", ffmpeg: "1", ffprobe: "1" },
+    ...(resources ? { resources } : {}),
     distributionMode: releaseReady ? "release-ready" : "local-test-only",
     files,
     licenseStatus: releaseReady ? "VERIFIED" : "UNVERIFIED",
@@ -73,7 +125,13 @@ function writeToolsArchive(root, source, platformKey, { releaseReady = true, exe
   return { asset, root: rootName };
 }
 
-function createNativeSource(testRoot, { releaseReady = true, toolsExecutable = true } = {}) {
+function createNativeSource(testRoot, {
+  releaseReady = true,
+  toolsExecutable = true,
+  toolsSchemaVersion = 4,
+  rendererWorkerExecutable,
+  rendererWorkerArguments,
+} = {}) {
   const source = path.join(testRoot, "source");
   mkdirSync(source, { recursive: true });
   const runtimeRoot = path.join(testRoot, `chengfeng-videocut-${VERSION}`);
@@ -94,6 +152,9 @@ function createNativeSource(testRoot, { releaseReady = true, toolsExecutable = t
     const tools = writeToolsArchive(testRoot, source, platformKey, {
       releaseReady,
       executable: toolsExecutable,
+      schemaVersion: toolsSchemaVersion,
+      rendererWorkerExecutable,
+      rendererWorkerArguments,
     });
     platforms[platformKey] = {
       installerAsset,
@@ -162,6 +223,20 @@ test("exact VERIFIED content passes structural checks but source-controlled form
     assert.equal(readFileSync(path.join(destination, "sentinel.txt"), "utf8"), "do not delete\n");
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("release content verifier rejects legacy Chrome and Electron tool schemas", () => {
+  for (const toolsSchemaVersion of [2, 3]) {
+    const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), `videocut-native-release-legacy-v${toolsSchemaVersion}-`)));
+    try {
+      const { source } = createNativeSource(root, { toolsSchemaVersion });
+      const content = verifyContent(source);
+      assert.notEqual(content.status, 0);
+      assert.match(`${content.stdout}\n${content.stderr}`, /resources-manifest is not VERIFIED\/release-ready\/exact-platform/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   }
 });
 

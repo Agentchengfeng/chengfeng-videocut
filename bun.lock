@@ -19,6 +19,7 @@
       "devDependencies": {
         "@hyperframes/core": "0.7.60",
         "@hyperframes/studio-server": "0.7.60",
+        "@video-workbench/contracts": "workspace:*",
         "@video-workbench/core": "workspace:*",
         "@video-workbench/koubo-adapter": "workspace:*",
         "gsap": "^3.13.0",
@@ -103,13 +104,13 @@
       "name": "@video-workbench/koubo-adapter",
       "version": "0.5.0",
       "dependencies": {
+        "@puppeteer/browsers": "3.0.6",
         "@video-workbench/contracts": "workspace:*",
         "@video-workbench/core": "workspace:*",
       },
     },
   },
   "trustedDependencies": [
-    "electron",
     "ffmpeg-static",
     "@derhuerst/ffprobe-static",
   ],

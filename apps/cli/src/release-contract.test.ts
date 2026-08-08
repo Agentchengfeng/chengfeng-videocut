@@ -53,8 +53,8 @@ async function writeValidNativeRelease(releaseDir: string, stageDir: string): Pr
     const root = join(stageDir, toolsRoot);
     await mkdir(root, { recursive: true });
     const executableNames = platform === "win32"
-      ? { bun: "bun.exe", ffmpeg: "ffmpeg.exe", ffprobe: "ffprobe.exe", chrome: "chrome.exe" }
-      : { bun: "bun", ffmpeg: "ffmpeg", ffprobe: "ffprobe", chrome: "chrome" };
+      ? { bun: "bun.exe", ffmpeg: "ffmpeg.exe", ffprobe: "ffprobe.exe" }
+      : { bun: "bun", ffmpeg: "ffmpeg", ffprobe: "ffprobe" };
     const files = [];
     for (const [name, relative] of Object.entries(executableNames)) {
       const bytes = new TextEncoder().encode(`fixture:${platformKey}:${name}\n`);
@@ -63,7 +63,7 @@ async function writeValidNativeRelease(releaseDir: string, stageDir: string): Pr
       files.push({ path: relative, size: bytes.byteLength, sha256: digest(bytes) });
     }
     await Bun.write(join(root, "resources-manifest.json"), `${JSON.stringify({
-      schemaVersion: 2,
+      schemaVersion: 4,
       product: "chengfeng-videocut-managed-tools",
       productVersion: PRODUCT_VERSION,
       platform,
@@ -123,6 +123,8 @@ describe("release contract", () => {
     expect(installer).toContain('tools\\\\current');
     expect(installer).toContain('MANAGED_TOOLS');
     expect(installer).toContain('CHENGFENG_VIDEOCUT_EXECUTABLE=%~f0');
+    expect(installer).toContain('CHENGFENG_VIDEOCUT_CHROME_PATH=');
+    expect(installer).toContain('unset CHENGFENG_VIDEOCUT_CHROME_PATH');
   });
 
   it("keeps developer source archives outside the Windows prerelease asset contract", async () => {

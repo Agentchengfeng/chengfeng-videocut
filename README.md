@@ -12,11 +12,21 @@ Node、Bun、FFmpeg、FFprobe 或 Chrome。installer 用已校验的
 显式 `service ensure`；多个 Codex 任务复用同一个 Product Runtime。
 
 当前 0.5.0 代码与本机隔离安装已实现，但**公开发布被阻止**：FFmpeg/FFprobe/Bun/
-Chrome Headless Shell 的再分发许可复核、macOS/Windows 签名和 Windows 实机安装尚未
+Chrome for Testing Headless Shell 的来源与使用许可复核、macOS/Windows 签名和 Windows 实机安装尚未
 完成。仓库中的 `UNVERIFIED` 不是免责声明式通过，而是 fail-closed 发布门禁。
 
 正式资产契约见 [docs/distribution.md](docs/distribution.md)。`install.sh`、Node 执行
 `install.cjs` 和 Desktop/Companion 只保留历史兼容或实验用途，不是 0.5.0 用户入口。
+
+### 受管渲染引擎源码预览
+
+`agent/remotion-managed-renderer-20260808` 是可供开发者验证的**源码技术预览分支**，
+不是可安装 Beta，也不与现有公开 Plugin 兼容。首次确认导出含字幕或 HTML 画面层时，
+Runtime 从 Chrome for Testing 取得一个固定版本的 Chrome Headless Shell，校验摘要后
+缓存；它不会安装、扫描或借用用户的 Chrome。后续导出复用缓存。
+
+该分支已在 macOS arm64 上用真实 MP4 跑通完整路径；Windows 仍未做实机验收。测试方式、
+前置条件和网络边界见 [managed renderer source preview](docs/managed-renderer-source-preview.md)。
 
 ## 基本使用
 
@@ -82,6 +92,9 @@ Skills 负责判断与编排，例如转录、口误/重复等语义识别、让
 - 项目文件、媒体、转录和剪切结果不会因为使用本产品而自动上传。
 - 产品不包含分析遥测或使用行为上报。
 - 安装器和版本更新会访问 GitHub。
+- 首次确认导出含字幕或 HTML 画面层时，会从 Chrome for Testing 下载固定的 Headless Shell
+  到 Product 缓存；下载失败时导出 fail-closed，绝不借用系统浏览器。此后命中已验证缓存时
+  不需要该网络请求。
 - 只有用户主动选择 Google Fonts 时，对应字体资源才需要联网加载；这不是核心剪辑流程的依赖。
 - 项目 HTML 中由用户主动加入的远程图片、字体或第三方插件仍会按其原地址联网；产品内置的 GSAP、CustomEase 与 MotionPathPlugin 从本地服务提供。
 - 第三方渲染器、AI 服务或 Skills 是否联网，由其自身配置决定。

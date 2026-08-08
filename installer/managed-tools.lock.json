@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "product": "chengfeng-videocut",
   "productVersion": "0.5.0",
   "tools": {
@@ -13,13 +13,8 @@
     "ffprobe": {
       "version": "6.0",
       "distribution": "@derhuerst/ffprobe-static@5.3.0"
-    },
-    "chrome": {
-      "browser": "chrome-headless-shell",
-      "buildId": "151.0.7922.47",
-      "darwin-arm64ExecutableSha256": "07b8cb204f35a93ce11b547e3a8a740cd43e0220a6f10d7caa90f9913952a3a1"
     }
   },
   "licenseStatus": "UNVERIFIED",
-  "licenseNote": "Bun, FFmpeg, FFprobe and Chrome Headless Shell redistribution review is not complete. A release must keep this status until legal review is recorded."
+  "licenseNote": "Bun, FFmpeg and FFprobe redistribution review is not complete. A release must keep this status until legal review is recorded."
 }

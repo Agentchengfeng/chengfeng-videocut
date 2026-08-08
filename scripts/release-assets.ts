@@ -132,12 +132,20 @@ async function verifyManagedToolsArchive(
     const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as Record<string, any>;
     const [platform, arch] = platformKey.split("-");
     if (
-      manifest.schemaVersion !== 2 || manifest.product !== "chengfeng-videocut-managed-tools" ||
+      manifest.schemaVersion !== 4 ||
+      manifest.product !== "chengfeng-videocut-managed-tools" ||
       manifest.productVersion !== version || manifest.platform !== platform || manifest.arch !== arch ||
       manifest.distributionMode !== "release-ready" || manifest.licenseStatus !== "VERIFIED" ||
       !manifest.executables || !manifest.versions || !Array.isArray(manifest.files)
     ) throw new Error(`${assetName} resources-manifest is not VERIFIED/release-ready/exact-platform`);
-    for (const key of ["bun", "ffmpeg", "ffprobe", "chrome"]) {
+    const executableKeys = ["bun", "ffmpeg", "ffprobe"];
+    if (
+      Object.keys(manifest.executables).sort().join(",") !== executableKeys.join(",")
+    ) throw new Error(`${assetName} schema v4 resources-manifest must expose only bun/ffmpeg/ffprobe`);
+    if (Object.hasOwn(manifest, "resources")) {
+      throw new Error(`${assetName} schema v4 resources-manifest must not contain browser or renderer resources`);
+    }
+    for (const key of executableKeys) {
       const executable = manifest.executables[key];
       if (
         typeof executable !== "string" || !executable || isAbsolute(executable) ||

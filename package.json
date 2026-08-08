@@ -64,7 +64,6 @@
   },
   "trustedDependencies": [
     "@derhuerst/ffprobe-static",
-    "electron",
     "ffmpeg-static"
   ]
 }

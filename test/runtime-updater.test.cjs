@@ -289,38 +289,69 @@ function makeRelease(root, options = {}) {
   return { release, ...packageInfo };
 }
 
-function makeFormalRelease(root, release, bundle) {
+function makeFormalRelease(root, release, bundle, {
+  toolsSchema = 4,
+} = {}) {
   const platformKey = `${process.platform}-${process.arch}`;
   const [platform, arch] = platformKey.split("-");
   const runtimeAsset = `chengfeng-videocut-runtime-${VERSION}.tar.gz`;
   copyFileSync(path.join(release, "chengfeng-videocut-portable.tar.gz"), path.join(release, runtimeAsset));
   const toolsRootName = `chengfeng-videocut-tools-${VERSION}-${platformKey}`;
   const toolsRoot = path.join(root, toolsRootName);
-  mkdirSync(path.join(toolsRoot, "chrome"), { recursive: true });
+  if (![2, 3, 4].includes(toolsSchema)) throw new Error(`unsupported tools schema fixture: ${toolsSchema}`);
+  mkdirSync(toolsRoot, { recursive: true });
+  if (toolsSchema === 2) mkdirSync(path.join(toolsRoot, "chrome"), { recursive: true });
+  if (toolsSchema === 3) mkdirSync(path.join(toolsRoot, "resources"), { recursive: true });
   const suffix = IS_WINDOWS ? ".exe" : "";
   copyFileSync(process.execPath, path.join(toolsRoot, `bun${suffix}`));
   if (!IS_WINDOWS) chmodSync(path.join(toolsRoot, "bun"), 0o755);
   writeExecutable(path.join(toolsRoot, `ffmpeg${suffix}`), "#!/bin/sh\nexit 0\n");
   writeExecutable(path.join(toolsRoot, `ffprobe${suffix}`), "#!/bin/sh\nexit 0\n");
-  writeExecutable(path.join(toolsRoot, "chrome", `chrome${suffix}`), "#!/bin/sh\nexit 0\n");
+  if (toolsSchema === 2) writeExecutable(path.join(toolsRoot, "chrome", `chrome${suffix}`), "#!/bin/sh\nexit 0\n");
   const executableNames = {
     bun: `bun${suffix}`,
     ffmpeg: `ffmpeg${suffix}`,
     ffprobe: `ffprobe${suffix}`,
-    chrome: `chrome/chrome${suffix}`,
   };
-  const files = Object.values(executableNames).map((relative) => {
+  if (toolsSchema === 2) executableNames.chrome = `chrome/chrome${suffix}`;
+  const rendererArchiveRelative = "resources/export-renderer.tar.gz";
+  if (toolsSchema === 3) writeFileSync(path.join(toolsRoot, rendererArchiveRelative), "opaque Electron renderer fixture\n");
+  const files = [
+    ...Object.values(executableNames),
+    ...(toolsSchema === 3 ? [rendererArchiveRelative] : []),
+  ].map((relative) => {
     const bytes = readFileSync(path.join(toolsRoot, relative));
     return { path: relative, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") };
   });
+  const rendererFile = files.find((record) => record.path === rendererArchiveRelative);
   writeFileSync(path.join(toolsRoot, "resources-manifest.json"), `${JSON.stringify({
-    schemaVersion: 2,
+    schemaVersion: toolsSchema,
     product: "chengfeng-videocut-managed-tools",
     productVersion: VERSION,
     platform,
     arch,
     executables: executableNames,
-    versions: { bun: "fixture", ffmpeg: "fixture", ffprobe: "fixture", chrome: "fixture" },
+    versions: {
+      bun: "fixture",
+      ffmpeg: "fixture",
+      ffprobe: "fixture",
+      ...(toolsSchema === 2 ? { chrome: "fixture" } : {}),
+    },
+    ...(toolsSchema === 3 ? {
+      resources: {
+        exportRenderer: {
+          archive: rendererArchiveRelative,
+          sha256: rendererFile.sha256,
+          size: rendererFile.size,
+          root: "chengfeng-videocut-export-renderer-fixture",
+          rendererManifestSha256: "a".repeat(64),
+          worker: {
+            executable: IS_WINDOWS ? "electron/electron.exe" : "electron/Electron.app/Contents/MacOS/Electron",
+            arguments: ["app/main.mjs"],
+          },
+        },
+      },
+    } : {}),
     distributionMode: "local-test-only",
     files,
     licenseStatus: "UNVERIFIED",
@@ -861,6 +892,34 @@ function fixture(t, releaseOptions) {
   const releaseInfo = makeRelease(root, releaseOptions);
   return { root, home, ...releaseInfo };
 }
+
+test("formal schema 4 tools install accepts only Bun, FFmpeg and FFprobe", (t) => {
+  const { root, home, release, bundle } = fixture(t);
+  const formal = makeFormalRelease(root, release, bundle, { toolsSchema: 4 });
+  const result = invokeFormal(process.execPath, home, release, formal);
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  const payload = JSON.parse(result.stdout.trim().split(/\r?\n/).at(-1));
+  assert.equal(payload.ok, true);
+  const toolsManifest = JSON.parse(readFileSync(
+    path.join(home, "tools", VERSION, "resources-manifest.json"),
+    "utf8",
+  ));
+  assert.equal(toolsManifest.schemaVersion, 4);
+  assert.equal(Object.hasOwn(toolsManifest, "resources"), false);
+  assert.equal(Object.hasOwn(toolsManifest.executables, "chrome"), false);
+});
+
+test("formal legacy Chrome and Electron tool archives do not activate", (t) => {
+  for (const toolsSchema of [2, 3]) {
+    const { root, home, release, bundle } = fixture(t);
+    const formal = makeFormalRelease(root, release, bundle, { toolsSchema });
+    const result = invokeFormal(process.execPath, home, release, formal);
+    assert.notEqual(result.status, 0);
+    assert.match(`${result.stdout}\n${result.stderr}`, /schemaVersion 4；旧 Chrome\/Electron 工具包不会被激活/);
+    assert.equal(existsSync(path.join(home, "app", "current")), false);
+    assert.equal(existsSync(path.join(home, "tools", "current")), false);
+  }
+});
 
 test("upgrade validates pending candidate before current, preserves projects, then activates", (t) => {
   const { home, release } = fixture(t);

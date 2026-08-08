@@ -581,6 +581,31 @@ function readManagedToolsTarget() {
   return target;
 }
 
+function isSafeManifestRelativePath(value) {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    !value.startsWith("-") &&
+    !value.includes("\0") &&
+    !path.isAbsolute(value) &&
+    !path.posix.isAbsolute(value) &&
+    !path.win32.isAbsolute(value) &&
+    !/^[A-Za-z]:/.test(value) &&
+    value.split(/[\\/]/).every((part) => part && part !== "." && part !== "..")
+  );
+}
+
+function managedToolsRegularFile(root, relative, label) {
+  if (!isSafeManifestRelativePath(relative)) fail(`受管工具 manifest 的 ${label} 路径无效。`);
+  const candidate = path.resolve(root, relative);
+  assertCanonicalInside(candidate, root, `受管工具 ${label}`);
+  const metadata = lstatSync(candidate);
+  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1) {
+    fail(`受管工具 ${label} 不是单链接普通文件。`);
+  }
+  return { path: candidate, metadata };
+}
+
 function validateExternalToolsSource(source, { allowManagedRoot = false } = {}) {
   if (!source) return null;
   const resolved = path.resolve(source);
@@ -602,72 +627,67 @@ function validateExternalToolsSource(source, { allowManagedRoot = false } = {}) 
   } catch {
     fail("工具来源的 resources-manifest.json 无效。");
   }
-  if (manifest?.schemaVersion === 2) {
-    validateRegularTree(resolved, path.dirname(resolved), "受管工具来源");
+  if (manifest?.schemaVersion !== 4) {
+    fail("受管工具 manifest 必须使用 schemaVersion 4；旧 Chrome/Electron 工具包不会被激活。");
+  }
+  validateRegularTree(resolved, path.dirname(resolved), "受管工具来源");
+  if (
+    manifest.product !== "chengfeng-videocut-managed-tools" ||
+    manifest.productVersion !== VERSION ||
+    manifest.platform !== process.platform ||
+    manifest.arch !== process.arch ||
+    !manifest.executables || typeof manifest.executables !== "object" || Array.isArray(manifest.executables) ||
+    !manifest.versions || typeof manifest.versions !== "object" || Array.isArray(manifest.versions) ||
+    !Array.isArray(manifest.files)
+  ) {
+    fail("受管工具 manifest 与当前 Runtime/平台不一致。");
+  }
+  if (Object.prototype.hasOwnProperty.call(manifest, "resources")) {
+    fail("schemaVersion 4 受管工具不得包含浏览器或 renderer 资源。");
+  }
+  if (Object.keys(manifest.executables).sort().join(",") !== "bun,ffmpeg,ffprobe") {
+    fail("schemaVersion 4 受管工具只能声明 Bun、FFmpeg、FFprobe。");
+  }
+  if (manifest.licenseStatus !== "VERIFIED" && !ALLOW_UNVERIFIED_LOCAL_TOOLS) {
+    fail("受管工具许可状态不是 VERIFIED；公开安装已阻止。仅隔离工程 smoke 可显式允许 UNVERIFIED。");
+  }
+  const requiredKeys = ["bun", "ffmpeg", "ffprobe"];
+  for (const key of requiredKeys) {
+    const { metadata } = managedToolsRegularFile(resolved, manifest.executables[key], key);
+    if (!IS_WINDOWS && (metadata.mode & 0o111) === 0) {
+      fail(`受管工具 ${key} 缺少可执行位；已激活树不会被安装器静默修复。`);
+    }
+  }
+  const actualFiles = new Map();
+  const collect = (directory, prefix = "") => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const absolute = path.join(directory, entry.name);
+      if (entry.isDirectory()) collect(absolute, relative);
+      else if (entry.isFile() && relative !== "resources-manifest.json") {
+        actualFiles.set(relative.replaceAll("\\", "/"), {
+          size: lstatSync(absolute).size,
+          sha256: sha256(absolute),
+        });
+      }
+    }
+  };
+  collect(resolved);
+  if (actualFiles.size !== manifest.files.length) fail("受管工具文件清单数量不一致。");
+  const declaredFiles = new Set();
+  for (const record of manifest.files) {
     if (
-      manifest.product !== "chengfeng-videocut-managed-tools" ||
-      manifest.productVersion !== VERSION ||
-      manifest.platform !== process.platform ||
-      manifest.arch !== process.arch ||
-      !manifest.executables || !manifest.versions || !Array.isArray(manifest.files)
-    ) {
-      fail("受管工具 manifest 与当前 Runtime/平台不一致。");
+      !record || typeof record !== "object" ||
+      !isSafeManifestRelativePath(record.path) || record.path.includes("\\") ||
+      !Number.isSafeInteger(record.size) || record.size < 0 ||
+      typeof record.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(record.sha256) ||
+      declaredFiles.has(record.path)
+    ) fail("受管工具文件清单条目无效。");
+    declaredFiles.add(record.path);
+    const actual = record && actualFiles.get(record.path);
+    if (!actual || actual.size !== record.size || actual.sha256 !== record.sha256) {
+      fail(`受管工具文件校验失败：${record?.path || "未知"}`);
     }
-    if (manifest.licenseStatus !== "VERIFIED" && !ALLOW_UNVERIFIED_LOCAL_TOOLS) {
-      fail("受管工具许可状态不是 VERIFIED；公开安装已阻止。仅隔离工程 smoke 可显式允许 UNVERIFIED。");
-    }
-    const requiredKeys = ["bun", "ffmpeg", "ffprobe", "chrome"];
-    for (const key of requiredKeys) {
-      const relative = manifest.executables[key];
-      if (
-        typeof relative !== "string" || !relative || path.isAbsolute(relative) ||
-        relative.split(/[\\/]/).some((part) => part === "..")
-      ) fail(`受管工具 manifest 的 ${key} 路径无效。`);
-      const executable = path.join(resolved, relative);
-      const metadata = lstatSync(executable);
-      if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1) {
-        fail(`受管工具 ${key} 不是单链接普通文件。`);
-      }
-      assertCanonicalInside(executable, resolved, `受管工具 ${key}`);
-      if (!IS_WINDOWS && (metadata.mode & 0o111) === 0) {
-        fail(`受管工具 ${key} 缺少可执行位；已激活树不会被安装器静默修复。`);
-      }
-    }
-    const actualFiles = new Map();
-    const collect = (directory, prefix = "") => {
-      for (const entry of readdirSync(directory, { withFileTypes: true })) {
-        const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
-        const absolute = path.join(directory, entry.name);
-        if (entry.isDirectory()) collect(absolute, relative);
-        else if (entry.isFile() && relative !== "resources-manifest.json") {
-          actualFiles.set(relative.replaceAll("\\", "/"), {
-            size: lstatSync(absolute).size,
-            sha256: sha256(absolute),
-          });
-        }
-      }
-    };
-    collect(resolved);
-    if (actualFiles.size !== manifest.files.length) fail("受管工具文件清单数量不一致。");
-    for (const record of manifest.files) {
-      const actual = record && actualFiles.get(record.path);
-      if (!actual || actual.size !== record.size || actual.sha256 !== record.sha256) {
-        fail(`受管工具文件校验失败：${record?.path || "未知"}`);
-      }
-    }
-    return sourceReal;
-  }
-  const suffix = IS_WINDOWS ? ".exe" : "";
-  const required = new Set([`bun${suffix}`, `ffmpeg${suffix}`, `ffprobe${suffix}`, "resources-manifest.json"]);
-  const entries = readdirSync(resolved, { withFileTypes: true });
-  if (entries.length !== required.size) fail("Product 受管工具来源只能包含 Bun、FFmpeg、FFprobe 和资源清单。");
-  for (const entry of entries) {
-    if (!required.has(entry.name) || !entry.isFile() || entry.isSymbolicLink()) {
-      fail("Product 受管工具来源包含非普通文件或未知条目。");
-    }
-  }
-  for (const name of required) {
-    if (!lstatSync(path.join(resolved, name)).isFile()) fail(`Product 受管工具来源缺少 ${name}。`);
   }
   return sourceReal;
 }
@@ -1451,6 +1471,11 @@ function failIfTerminationRecoveryIsBlocked(state) {
 }
 
 function resolvedRuntimeEnvironment(bunExecutable, { launcher = null } = {}) {
+  const inheritedEnvironment = { ...process.env };
+  // A browser executable override is a source/test diagnostic seam. An
+  // installed Product Runtime must always select its own verified cache, even
+  // when the shell that launched the installer had this variable set.
+  delete inheritedEnvironment.CHENGFENG_VIDEOCUT_CHROME_PATH;
   const toolDirectories = [path.dirname(path.resolve(bunExecutable))];
   if (installerToolsDirectory) toolDirectories.unshift(installerToolsDirectory);
   for (const tool of [findProgram("ffmpeg"), findProgram("ffprobe")]) {
@@ -1466,13 +1491,10 @@ function resolvedRuntimeEnvironment(bunExecutable, { launcher = null } = {}) {
   }
   const deterministicPath = [...new Set(toolDirectories)].join(path.delimiter);
   return {
-    ...process.env,
+    ...inheritedEnvironment,
     PATH: deterministicPath,
     CHENGFENG_VIDEOCUT_HOME: INSTALL_ROOT,
     CHENGFENG_VIDEOCUT_DATA_DIR: INSTALL_ROOT,
-    ...(installerToolsDirectory
-      ? { CHENGFENG_VIDEOCUT_CHROME_PATH: formalToolsExecutable(installerToolsDirectory, "chrome") }
-      : {}),
     ...(launcher ? { CHENGFENG_VIDEOCUT_EXECUTABLE: launcher } : {}),
   };
 }
@@ -2389,7 +2411,7 @@ function finalizeManagedToolsVersion(transaction, transactionId) {
 
 function managedLauncherContents() {
   if (IS_WINDOWS) {
-    return `@echo off\r\nsetlocal\r\nset "CHENGFENG_VIDEOCUT_EXECUTABLE=%~f0"\r\nfor %%I in ("%~dp0..") do set "CHENGFENG_VIDEOCUT_DATA_DIR=%%~fI"\r\nset "APP_DIR=%~dp0..\\app\\current"\r\nset "MANAGED_TOOLS=%~dp0..\\tools\\current"\r\nset "BUN_EXE=%MANAGED_TOOLS%\\bun.exe"\r\nif not exist "%BUN_EXE%" (\r\n  echo chengfeng-videocut managed Bun is missing: "%BUN_EXE%" 1>&2\r\n  exit /b 127\r\n)\r\nset "PATH=%MANAGED_TOOLS%;%PATH%"\r\n"%BUN_EXE%" "%APP_DIR%\\cli.js" %*\r\nexit /b %ERRORLEVEL%\r\n`;
+    return `@echo off\r\nsetlocal\r\nset "CHENGFENG_VIDEOCUT_EXECUTABLE=%~f0"\r\nset "CHENGFENG_VIDEOCUT_CHROME_PATH="\r\nfor %%I in ("%~dp0..") do set "CHENGFENG_VIDEOCUT_DATA_DIR=%%~fI"\r\nset "APP_DIR=%~dp0..\\app\\current"\r\nset "MANAGED_TOOLS=%~dp0..\\tools\\current"\r\nset "BUN_EXE=%MANAGED_TOOLS%\\bun.exe"\r\nif not exist "%BUN_EXE%" (\r\n  echo chengfeng-videocut managed Bun is missing: "%BUN_EXE%" 1>&2\r\n  exit /b 127\r\n)\r\nset "PATH=%MANAGED_TOOLS%;%PATH%"\r\n"%BUN_EXE%" "%APP_DIR%\\cli.js" %*\r\nexit /b %ERRORLEVEL%\r\n`;
   }
   return `#!/bin/sh
 set -eu
@@ -2404,6 +2426,7 @@ if [ ! -x "$BUN_EXE" ]; then
 fi
 CHENGFENG_VIDEOCUT_EXECUTABLE="$BIN_DIR/chengfeng-videocut"
 CHENGFENG_VIDEOCUT_DATA_DIR="$INSTALL_ROOT"
+unset CHENGFENG_VIDEOCUT_CHROME_PATH
 PATH="$MANAGED_TOOLS\${PATH:+:$PATH}"
 export CHENGFENG_VIDEOCUT_EXECUTABLE CHENGFENG_VIDEOCUT_DATA_DIR PATH
 exec "$BUN_EXE" "$APP_DIR/cli.js" "$@"

@@ -13,6 +13,7 @@
     "test": "bun test"
   },
   "dependencies": {
+    "@puppeteer/browsers": "3.0.6",
     "@video-workbench/contracts": "workspace:*",
     "@video-workbench/core": "workspace:*"
   }

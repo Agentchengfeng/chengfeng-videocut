@@ -187,14 +187,15 @@ export async function renderOverlayFrames(
       // overlay ever touches the film.
       height: plan.output.height + MARKER_STRIP_HEIGHT,
       transparent: true,
+      signal: input.signal,
     });
     await page.goto(`${server.origin}/${OVERLAY_PAGE_NAME}`);
     const readyDeadline = Date.now() + 60_000;
-    while (!(await page.evaluate<boolean>("window.__isReady === true"))) {
+    while (!(await page.isReady())) {
       if (Date.now() > readyDeadline) throw new Error("The overlay page did not become ready");
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    const failure = await page.evaluate<string | undefined>("window.__overlayError");
+    const failure = await page.overlayError();
     if (failure) throw new Error(`The overlay page could not reach a module: ${failure}`);
 
     for (let index = 0; index < plan.frameCount; index += 1) {
@@ -203,7 +204,7 @@ export async function renderOverlayFrames(
       // picture claims to be, and it is what the player shows when the
       // playhead reads that number.
       const time = index / plan.fps;
-      const token = await page.evaluate<number>(`window.__seek(${time.toFixed(6)})`);
+      const token = await page.seek(time);
       // Capture until the picture testifies it is this seek's picture. The
       // marker changes in the same commit as the caption and the layers, so a
       // capture carrying the right token carries the right frame. Every
@@ -211,10 +212,10 @@ export async function renderOverlayFrames(
       // flushes, capture-until-identical — was a guess about the compositor's
       // schedule, and each one shipped a boundary where a quarter second of
       // raw footage flashed through the film.
-      let png: Buffer | null = null;
       const deadline = Date.now() + 10_000;
       for (;;) {
         const shot = await page.screenshot();
+        await writeFile(join(input.framesDirectory, `${String(index).padStart(6, "0")}.png`), shot);
         const color = markerColor(shot);
         if (
           color
@@ -222,14 +223,12 @@ export async function renderOverlayFrames(
           && color.r === (token & 255)
           && color.g === ((token >> 8) & 255)
         ) {
-          png = shot;
           break;
         }
         if (Date.now() > deadline) {
           throw new Error(`Frame ${index} never appeared in a capture (token ${token})`);
         }
       }
-      await writeFile(join(input.framesDirectory, `${String(index).padStart(6, "0")}.png`), png);
       input.onProgress?.(index + 1, plan.frameCount);
     }
   } finally {

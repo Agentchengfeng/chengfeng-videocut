@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ChromeError, findSystemChrome } from "./chrome";
+import { ChromeError, findExplicitChromeOverride } from "./chrome";
 
 const cleanup: string[] = [];
 afterEach(async () => {
@@ -10,53 +10,33 @@ afterEach(async () => {
   await Promise.all(cleanup.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
-async function managedFixture(relative = "chrome/chrome-headless-shell") {
-  const root = await mkdtemp(join(tmpdir(), "videocut-managed-chrome-"));
+async function executableFixture(): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), "videocut-explicit-chrome-"));
   cleanup.push(root);
-  const tools = join(root, "tools/current");
-  const executable = join(tools, relative);
-  await mkdir(join(executable, ".."), { recursive: true });
+  const executable = join(root, "chrome-headless-shell");
   await writeFile(executable, "#!/bin/sh\nexit 0\n");
   await chmod(executable, 0o755);
-  await writeFile(
-    join(tools, "resources-manifest.json"),
-    `${JSON.stringify({
-      schemaVersion: 2,
-      product: "chengfeng-videocut-managed-tools",
-      executables: { chrome: relative },
-    })}\n`,
-  );
-  return { root, executable, tools };
+  return executable;
 }
 
-describe("managed Chrome resolution", () => {
-  it("prefers the fixed managed Chrome without downloading or scanning latest caches", async () => {
-    const fixture = await managedFixture();
-    expect(findSystemChrome({ dataDir: fixture.root, candidates: [] })).toBe(fixture.executable);
+describe("explicit Chrome override", () => {
+  it("uses a developer-supplied executable only when explicitly requested", async () => {
+    const executable = await executableFixture();
+    expect(findExplicitChromeOverride({ configuredPath: executable })).toBe(executable);
   });
 
-  it("rejects a managed manifest traversal", async () => {
-    const fixture = await managedFixture();
-    await writeFile(
-      join(fixture.tools, "resources-manifest.json"),
-      `${JSON.stringify({
-        schemaVersion: 2,
-        product: "chengfeng-videocut-managed-tools",
-        executables: { chrome: "../../secret" },
-      })}\n`,
-    );
-    expect(() => findSystemChrome({ dataDir: fixture.root, candidates: [] })).toThrow(ChromeError);
-  });
-
-  it("fails closed instead of borrowing system Chrome when a Product data root is damaged", async () => {
-    const root = await mkdtemp(join(tmpdir(), "videocut-managed-chrome-missing-"));
-    cleanup.push(root);
-    expect(() => findSystemChrome({ dataDir: root, candidates: ["/bin/sh"] }))
-      .toThrow("缺少受管浏览器 manifest");
+  it("does not scan system Chrome paths when no override is configured", () => {
+    expect(findExplicitChromeOverride()).toBeNull();
   });
 
   it("rejects a relative explicit override", () => {
-    expect(() => findSystemChrome({ configuredPath: "chrome-headless-shell", candidates: [] }))
+    expect(() => findExplicitChromeOverride({ configuredPath: "chrome-headless-shell" }))
       .toThrow("必须是绝对路径");
+  });
+
+  it("rejects a non-executable explicit override", async () => {
+    const executable = await executableFixture();
+    await chmod(executable, 0o644);
+    expect(() => findExplicitChromeOverride({ configuredPath: executable })).toThrow(ChromeError);
   });
 });

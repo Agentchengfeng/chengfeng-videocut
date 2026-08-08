@@ -3,11 +3,9 @@ import { spawnSync } from "node:child_process";
 import {
   chmod,
   copyFile,
-  cp,
   mkdir,
   mkdtemp,
   lstat,
-  realpath,
   readFile,
   readdir,
   rm,
@@ -15,22 +13,22 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, relative, resolve } from "node:path";
+import { join, resolve } from "node:path";
 
 const rootDir = resolve(import.meta.dir, "..");
-const releaseDir = join(rootDir, "release");
+const releaseDir = resolve(process.env.CHENGFENG_VIDEOCUT_TOOLS_OUTPUT_DIR ?? join(rootDir, "release"));
 const rootPackage = JSON.parse(await readFile(join(rootDir, "package.json"), "utf8")) as {
   version: string;
 };
 const lock = JSON.parse(
   await readFile(join(rootDir, "installer/managed-tools.lock.json"), "utf8"),
 ) as {
+  schemaVersion: number;
   productVersion: string;
   tools: {
     bun: { version: string };
     ffmpeg: { version: string };
     ffprobe: { version: string };
-    chrome: { browser: string; buildId: string; "darwin-arm64ExecutableSha256"?: string };
   };
   licenseStatus: string;
   licenseNote: string;
@@ -38,6 +36,9 @@ const lock = JSON.parse(
 
 if (lock.productVersion !== rootPackage.version) {
   throw new Error(`managed-tools.lock.json ${lock.productVersion} != package ${rootPackage.version}`);
+}
+if (lock.schemaVersion !== 2) {
+  throw new Error(`managed-tools.lock.json schema ${lock.schemaVersion} is not the browser-free tools contract`);
 }
 
 const platform = process.env.CHENGFENG_VIDEOCUT_TOOLS_PLATFORM ?? process.platform;
@@ -64,14 +65,6 @@ const bunSource = requiredSource("CHENGFENG_VIDEOCUT_BUN_SOURCE", process.execPa
 // it may have undeclared dylib/DLL dependencies and cannot be a release asset.
 const ffmpegSource = requiredSource("CHENGFENG_VIDEOCUT_FFMPEG_SOURCE");
 const ffprobeSource = requiredSource("CHENGFENG_VIDEOCUT_FFPROBE_SOURCE");
-const chromeRoot = requiredSource("CHENGFENG_VIDEOCUT_CHROME_ROOT");
-const chromeExecutableSource = requiredSource("CHENGFENG_VIDEOCUT_CHROME_EXECUTABLE");
-const canonicalChromeRoot = await realpath(chromeRoot);
-const canonicalChromeExecutable = await realpath(chromeExecutableSource);
-const chromeRelative = relative(canonicalChromeRoot, canonicalChromeExecutable);
-if (!chromeRelative || chromeRelative.startsWith("..") || resolve(canonicalChromeRoot, chromeRelative) !== canonicalChromeExecutable) {
-  throw new Error("Chrome executable must be inside CHENGFENG_VIDEOCUT_CHROME_ROOT");
-}
 
 async function assertSingleLinkRegularFile(path: string, label: string): Promise<void> {
   const metadata = await lstat(path);
@@ -80,35 +73,11 @@ async function assertSingleLinkRegularFile(path: string, label: string): Promise
   }
 }
 
-async function assertRegularSourceTree(directory: string, root = directory): Promise<void> {
-  const canonicalRoot = await realpath(root);
-  const canonicalDirectory = await realpath(directory);
-  const relativeDirectory = relative(canonicalRoot, canonicalDirectory);
-  if (relativeDirectory === ".." || relativeDirectory.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)) {
-    throw new Error("Managed source tree escaped its canonical root");
-  }
-  const directoryMetadata = await lstat(directory);
-  if (!directoryMetadata.isDirectory() || directoryMetadata.isSymbolicLink()) {
-    throw new Error(`Managed source tree contains non-directory root: ${directory}`);
-  }
-  for (const entry of await readdir(directory, { withFileTypes: true })) {
-    const absolute = join(directory, entry.name);
-    const metadata = await lstat(absolute);
-    if (metadata.isSymbolicLink()) throw new Error(`Managed source tree contains symlink: ${absolute}`);
-    if (metadata.isDirectory()) await assertRegularSourceTree(absolute, root);
-    else if (!metadata.isFile() || metadata.nlink !== 1) {
-      throw new Error(`Managed source tree contains hardlink/reparse/special entry: ${absolute}`);
-    }
-  }
-}
-
 await Promise.all([
   assertSingleLinkRegularFile(bunSource, "Bun source"),
   assertSingleLinkRegularFile(ffmpegSource, "FFmpeg source"),
   assertSingleLinkRegularFile(ffprobeSource, "FFprobe source"),
-  assertRegularSourceTree(chromeRoot),
 ]);
-await assertSingleLinkRegularFile(chromeExecutableSource, "Chrome executable source");
 
 function firstVersionLine(command: string, args: string[]): string {
   const result = spawnSync(command, args, { encoding: "utf8", timeout: 30_000, windowsHide: true });
@@ -122,7 +91,6 @@ const versions = {
   bun: firstVersionLine(bunSource, ["--version"]),
   ffmpeg: firstVersionLine(ffmpegSource, ["-version"]),
   ffprobe: firstVersionLine(ffprobeSource, ["-version"]),
-  chrome: firstVersionLine(chromeExecutableSource, ["--version"]),
 };
 if (versions.bun !== lock.tools.bun.version) throw new Error(`Bun version drift: ${versions.bun}`);
 const exactMediaVersion = (tool: "ffmpeg" | "ffprobe", actual: string, expected: string): boolean =>
@@ -133,10 +101,6 @@ if (!exactMediaVersion("ffmpeg", versions.ffmpeg, lock.tools.ffmpeg.version)) {
 if (!exactMediaVersion("ffprobe", versions.ffprobe, lock.tools.ffprobe.version)) {
   throw new Error(`FFprobe version drift: ${versions.ffprobe}`);
 }
-if (versions.chrome !== `Google Chrome for Testing ${lock.tools.chrome.buildId}`) {
-  throw new Error(`Chrome version drift: ${versions.chrome}`);
-}
-
 async function sha256(path: string): Promise<string> {
   return createHash("sha256").update(await readFile(path)).digest("hex");
 }
@@ -155,7 +119,6 @@ const sourceDigests = {
   bun: await sha256(bunSource),
   ffmpeg: await sha256(ffmpegSource),
   ffprobe: await sha256(ffprobeSource),
-  chromeExecutable: await sha256(chromeExecutableSource),
 };
 for (const [key, actual] of Object.entries(sourceDigests)) {
   const envName = `CHENGFENG_VIDEOCUT_${key.replace(/([a-z])([A-Z])/g, "$1_$2").toUpperCase()}_SHA256`;
@@ -164,22 +127,13 @@ for (const [key, actual] of Object.entries(sourceDigests)) {
   if (expected && expected.toLowerCase() !== actual) throw new Error(`${envName} mismatch`);
 }
 
-const expectedChromeSha = platformKey === "darwin-arm64"
-  ? lock.tools.chrome["darwin-arm64ExecutableSha256"]
-  : undefined;
-if (expectedChromeSha && sourceDigests.chromeExecutable !== expectedChromeSha) {
-  throw new Error("Pinned Chrome Headless Shell executable SHA-256 mismatch");
-}
-
 const stageRoot = await mkdtemp(join(tmpdir(), "chengfeng-videocut-tools-"));
 const rootName = `chengfeng-videocut-tools-${rootPackage.version}-${platformKey}`;
 const bundleRoot = join(stageRoot, rootName);
-const chromeTarget = join(bundleRoot, "chrome");
 const executableNames = {
   bun: `bun${suffix}`,
   ffmpeg: `ffmpeg${suffix}`,
   ffprobe: `ffprobe${suffix}`,
-  chrome: join("chrome", chromeRelative),
 };
 
 type FileRecord = { path: string; size: number; sha256: string };
@@ -207,7 +161,6 @@ try {
     copyFile(bunSource, join(bundleRoot, executableNames.bun)),
     copyFile(ffmpegSource, join(bundleRoot, executableNames.ffmpeg)),
     copyFile(ffprobeSource, join(bundleRoot, executableNames.ffprobe)),
-    cp(canonicalChromeRoot, chromeTarget, { recursive: true, force: true, verbatimSymlinks: true }),
   ]);
   await writeFile(
     join(bundleRoot, "THIRD_PARTY-NOTICE-STATUS.txt"),
@@ -217,7 +170,7 @@ try {
     await Promise.all(Object.values(executableNames).map((value) => chmod(join(bundleRoot, value), 0o755)));
   }
   const manifest = {
-    schemaVersion: 2,
+    schemaVersion: 4,
     product: "chengfeng-videocut-managed-tools",
     productVersion: rootPackage.version,
     platform,

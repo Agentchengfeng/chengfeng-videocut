@@ -2,7 +2,7 @@
 
 This file collects the license texts and notices for direct third-party components bundled into chengfeng-videocut. The dependency lockfile records exact resolved versions. Transitive packages remain subject to the license files in their source distributions.
 
-HyperFrames and DOMPurify are used under Apache License 2.0; the complete text is the repository root `LICENSE` and `LICENSES/HyperFrames-Apache-2.0.txt`.
+HyperFrames, DOMPurify and `@puppeteer/browsers` are used under Apache License 2.0; the complete text is the repository root `LICENSE` and `LICENSES/HyperFrames-Apache-2.0.txt`.
 
 ## CodeMirror 6 packages — MIT
 

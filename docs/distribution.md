@@ -17,7 +17,7 @@
       |
       +-- Runtime bundle
       +-- platform tools bundle
-      |     Bun / FFmpeg / FFprobe / Chrome Headless Shell
+      |     Bun / FFmpeg / FFprobe
       |
       v
 ~/.chengfeng-videocut/app/<version> + app/current
@@ -26,6 +26,14 @@
       |
       v
 service ensure -> launchd / Windows Task Scheduler
+
+用户已确认、确实需要字幕或 HTML 画面层的 export
+      |
+      v
+固定 platform + chrome-headless-shell build + archive SHA-256
+      |
+      v
+~/.chengfeng-videocut/cache/renderer-engine/
 ```
 
 ## 0.5.0 Release 契约
@@ -66,7 +74,8 @@ Runtime 自证、完整树摘要、managed tools 文件清单与服务 health/ca
 才推进 `app/current` 和 `tools/current`。失败恢复 last-known-good，项目目录永不进入事务。
 
 同一 manifest 的第二次安装先核对 Runtime/tree/tools/manifest 身份；完全一致时输出
-`assetDownloads: 0`，不重新下载或启动 Chrome。并发安装只有一个持锁者能改 current。
+`assetDownloads: 0`，不重新下载 Runtime 或 tools。渲染引擎是确认 export 时才处理的
+独立缓存，不属于安装交易。并发安装只有一个持锁者能改 current。
 Codex/installer 退出不结束已经交给常驻 Runtime 的长任务。
 
 ## Managed tools
@@ -77,18 +86,18 @@ Codex/installer 退出不结束已经交给常驻 Runtime 的长任务。
 Bun                    1.3.5
 FFmpeg                 6.0
 FFprobe                6.0
-Chrome Headless Shell  151.0.7922.47
 ```
 
-打包必须显式给出四类 source 与 digest；不得从 PATH 选择首个 FFmpeg/FFprobe。复制前对
+打包必须显式给出三类 source 与 digest；不得从 PATH 选择首个 FFmpeg/FFprobe。复制前对
 source 做 canonical + recursive `lstat`，拒绝 symlink、hardlink、reparse point 和特殊
-文件。Chrome executable 必须位于固定 root 内，`--version` 必须精确返回
-`Google Chrome for Testing 151.0.7922.47`。
+文件。
 
-Runtime 导出只要检测到 Product data root，就严格从 `tools/current/resources-manifest.json`
-解析 managed Chrome；manifest 缺失/损坏直接失败，不借系统 Chrome 掩盖。只有没有任何
-Product data root 身份的源码 checkout 才允许 legacy system-Chrome fallback。代码不调用
-Playwright/Puppeteer 下载浏览器。
+Chrome Headless Shell 不属于 `tools/current`，也不随 Runtime installer 分发。用户已确认且
+实际需要叠层的 export 才由 Runtime 自己取得固定的 Chrome for Testing Headless Shell
+（当前 build `151.0.7922.47`），把归档 SHA-256 交给下载器校验，随后在
+`cache/renderer-engine/.pending/` 做目录、版本和 executable 摘要自检，再原子激活。
+缓存损坏、离线或锁不完整都 fail-closed；不扫描、不启动、不修改 Google Chrome、Chromium、
+Edge 或 Electron。代码使用 `@puppeteer/browsers` 下载固定构建，不查询 `latest`。
 
 ## 构建
 
@@ -113,9 +122,10 @@ CHENGFENG_VIDEOCUT_NATIVE_ATTESTATION_DIR=/absolute/attestations \
 - clean macOS arm64/x64 与 Windows x64：无系统 Node/Bun/FFmpeg/Chrome 完整安装
 - manifest/checksum 错误、坏 asset digest、并发安装、崩溃恢复和 last-known-good
 - `--ensure-service` 后真实 launchd / Task Scheduler health 与 capabilities
-- 二次安装 `assetDownloads: 0`，Chrome 不重复下载或启动
+- 首次确认叠层 export 下载固定 Headless Shell，二次 export 命中已验证缓存且不重复下载
 - installer 与工具包 macOS/Windows 签名、公证/信誉路径
-- Bun、FFmpeg、FFprobe、Chrome Headless Shell 的再分发许可、源代码/NOTICE 义务
+- Bun、FFmpeg、FFprobe 的再分发许可、源代码/NOTICE 义务，以及 Chrome for Testing
+  Headless Shell 的下载来源、使用与再分发边界
 
 ### Installer 独立签名门禁
 

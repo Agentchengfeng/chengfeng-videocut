@@ -30,7 +30,12 @@ chengfeng-videocut is not an official HyperFrames or HeyGen product. HyperFrames
 | bpm-detective | Audio tempo analysis | MIT |
 | DOMPurify | HTML sanitization | Apache-2.0 OR MPL-2.0; this distribution relies on the Apache-2.0 option |
 | Mediabunny | Browser media processing | MPL-2.0 |
+| `@puppeteer/browsers` | Downloading and launching the pinned Chrome Headless Shell used only for export overlays | Apache-2.0 |
 | GSAP 3.15.0, including MotionPathPlugin | Animation runtime | GSAP Standard “no charge” license |
+
+`@puppeteer/browsers` is Copyright The Chromium Authors and is available from
+https://github.com/puppeteer/puppeteer/tree/main/packages/browsers. Its Apache License 2.0 text
+is the same license text reproduced in this repository root `LICENSE`.
 
 The GSAP 3.15.0 package identifies its license as “Standard 'no charge' license.” GSAP and MotionPathPlugin are Copyright GreenSock/Webflow and their respective rights holders. Redistribution and use remain subject to https://gsap.com/standard-license/. The Apache-2.0 license for chengfeng-videocut does not replace those terms.
 

@@ -1930,7 +1930,33 @@ export async function correctTranscriptText(
 interface ManagedToolsDoctorResult {
   ok: boolean;
   detail: string;
-  executables: Partial<Record<"bun" | "ffmpeg" | "ffprobe" | "chrome", string>>;
+  executables: Partial<Record<"bun" | "ffmpeg" | "ffprobe", string>>;
+}
+
+function managedRelativePath(value: unknown, label: string): string {
+  if (typeof value !== "string" || !value || value.includes("\0")) {
+    throw new Error(`${label} path is invalid`);
+  }
+  // Manifests use POSIX separators even when the bundle itself is installed on
+  // Windows. Normalize first so a backslash cannot hide an escaping segment on
+  // a host with the other path convention.
+  const normalized = value.replaceAll("\\", "/");
+  if (
+    isAbsolute(value) || isAbsolute(normalized) || /^[A-Za-z]:\//.test(normalized) ||
+    normalized.split("/").some((part) => !part || part === "." || part === "..")
+  ) throw new Error(`${label} path is invalid`);
+  return normalized;
+}
+
+function managedFilePath(root: string, relative: string, label: string): string {
+  const absolute = resolve(root, relative);
+  const escaped = relativePath(root, absolute);
+  if (
+    !escaped || escaped === ".." ||
+    escaped.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) ||
+    isAbsolute(escaped)
+  ) throw new Error(`${label} escaped tools/current`);
+  return absolute;
 }
 
 async function stableFileSha256(
@@ -1982,13 +2008,23 @@ async function inspectInstalledManagedTools(dataDir: string): Promise<ManagedToo
       licenseStatus?: string;
       executables?: Record<string, string>;
       files?: Array<{ path?: string; size?: number; sha256?: string }>;
+      resources?: unknown;
     };
+    const schemaVersion = manifest.schemaVersion;
     if (
-      manifest.schemaVersion !== 2 || manifest.product !== "chengfeng-videocut-managed-tools" ||
+      schemaVersion !== 4 ||
+      manifest.product !== "chengfeng-videocut-managed-tools" ||
       manifest.platform !== process.platform || manifest.arch !== process.arch ||
       manifest.distributionMode !== "release-ready" || manifest.licenseStatus !== "VERIFIED" ||
       !manifest.executables || !Array.isArray(manifest.files)
     ) throw new Error("resources-manifest is not VERIFIED/release-ready for this platform");
+    if (Object.hasOwn(manifest, "resources")) {
+      throw new Error("schema 4 resources-manifest must not include renderer resources");
+    }
+    const requiredExecutables = ["bun", "ffmpeg", "ffprobe"] as const;
+    if (Object.keys(manifest.executables).sort().join(",") !== requiredExecutables.join(",")) {
+      throw new Error("schema 4 resources-manifest must expose only bun, ffmpeg and ffprobe");
+    }
     const runtimeVersion = (await readFile(join(dataDir, "app", "current", "VERSION"), "utf8"))
       .split(/\r?\n/, 1)[0];
     if (!runtimeVersion || manifest.productVersion !== runtimeVersion) {
@@ -2033,13 +2069,9 @@ async function inspectInstalledManagedTools(dataDir: string): Promise<ManagedToo
       }
     }
     const executables: ManagedToolsDoctorResult["executables"] = {};
-    for (const key of ["bun", "ffmpeg", "ffprobe", "chrome"] as const) {
-      const relative = manifest.executables[key];
-      if (
-        typeof relative !== "string" || !relative || isAbsolute(relative) ||
-        relative.split(/[\\/]/).some((part) => part === "..")
-      ) throw new Error(`managed ${key} path is invalid`);
-      const executable = resolve(canonicalCurrent, relative);
+    for (const key of requiredExecutables) {
+      const relative = managedRelativePath(manifest.executables[key], `managed ${key}`);
+      const executable = managedFilePath(canonicalCurrent, relative, `managed ${key}`);
       const canonicalExecutable = await realpath(executable);
       const escaped = relativePath(canonicalCurrent, canonicalExecutable);
       if (!escaped || escaped === ".." || escaped.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)) {
@@ -2055,7 +2087,11 @@ async function inspectInstalledManagedTools(dataDir: string): Promise<ManagedToo
     if (await realpath(process.execPath) !== await realpath(executables.bun!)) {
       throw new Error("Runtime was not launched by tools/current managed Bun");
     }
-    return { ok: true, detail: `VERIFIED ${manifest.productVersion} at ${canonicalCurrent}`, executables };
+    return {
+      ok: true,
+      detail: `VERIFIED ${manifest.productVersion} at ${canonicalCurrent}`,
+      executables,
+    };
   } catch (error) {
     return {
       ok: false,
@@ -2134,14 +2170,6 @@ export async function doctor(
       ok: Boolean(ffprobe),
       required: true,
       detail: ffprobe ?? "ffprobe was not found on PATH",
-    },
-    {
-      name: "chrome",
-      ok: installedMode ? Boolean(managedTools.executables.chrome) : true,
-      required: installedMode,
-      detail: installedMode
-        ? managedTools.executables.chrome ?? "managed Chrome Headless Shell is missing or drifted"
-        : "source-development browser resolution is checked when export starts",
     },
     {
       // Documented in four contracts and checked nowhere: a machine without the

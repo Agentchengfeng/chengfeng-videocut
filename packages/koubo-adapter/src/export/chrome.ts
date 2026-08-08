@@ -19,31 +19,21 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { accessSync, constants, existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { accessSync, constants, lstatSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join } from "node:path";
+import { ensureRendererRuntime, type RendererRuntimeOptions } from "./renderer-runtime";
 
 /**
- * A managed Runtime carries one fixed Chrome Headless Shell. Export never asks
- * Playwright/Puppeteer to download a browser. Explicit developer overrides and
- * legacy system Chrome remain fallbacks for source checkouts only.
+ * Export has one Product-owned Headless Shell, prepared by renderer-runtime.
+ * It never searches for, modifies, or borrows a user's Chrome installation.
+ * The only exception is an explicit developer override for a local diagnosis.
  */
-const CHROME_PATHS = [
-  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-  "/Applications/Chromium.app/Contents/MacOS/Chromium",
-  "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-  "/usr/bin/google-chrome",
-  "/usr/bin/chromium",
-  "/usr/bin/chromium-browser",
-];
-
 export class ChromeError extends Error {}
 
 interface ChromePathOptions {
   configuredPath?: string;
-  dataDir?: string;
-  candidates?: readonly string[];
   platform?: NodeJS.Platform;
 }
 
@@ -58,51 +48,21 @@ function isExecutableFile(path: string, platform: NodeJS.Platform): boolean {
   }
 }
 
-function managedChromePath(dataDir: string | undefined, platform: NodeJS.Platform): string | null {
-  if (!dataDir) return null;
-  const toolsRoot = resolve(dataDir, "tools/current");
-  const manifestPath = join(toolsRoot, "resources-manifest.json");
-  if (!existsSync(manifestPath)) {
-    throw new ChromeError(`Product Runtime 缺少受管浏览器 manifest：${manifestPath}`);
-  }
-  let manifest: { schemaVersion?: number; product?: string; executables?: { chrome?: string } };
-  try {
-    manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as typeof manifest;
-  } catch {
-    throw new ChromeError(`受管浏览器 manifest 无效：${manifestPath}`);
-  }
-  const relative = manifest.executables?.chrome;
-  if (
-    manifest.schemaVersion !== 2 || manifest.product !== "chengfeng-videocut-managed-tools" ||
-    typeof relative !== "string" || !relative || isAbsolute(relative) ||
-    relative.split(/[\\/]/).some((part) => part === "..")
-  ) throw new ChromeError(`受管浏览器 manifest 合同无效：${manifestPath}`);
-  const candidate = resolve(toolsRoot, relative);
-  const canonicalRoot = realpathSync(toolsRoot);
-  const canonicalCandidate = realpathSync(candidate);
-  if (!canonicalCandidate.startsWith(`${canonicalRoot}${process.platform === "win32" ? "\\" : "/"}`)) {
-    throw new ChromeError("受管浏览器路径逃出 tools/current。 ");
-  }
-  if (!isExecutableFile(candidate, platform)) throw new ChromeError(`受管浏览器不可执行：${candidate}`);
-  return candidate;
-}
-
-export function findSystemChrome(options: ChromePathOptions = {}): string | null {
+/**
+ * Test/developer escape hatch only. Product exports do not scan the machine:
+ * an unset override returns null and ChromePage starts the verified cache.
+ */
+export function findExplicitChromeOverride(options: ChromePathOptions = {}): string | null {
   const platform = options.platform ?? process.platform;
   const configuredPath = options.configuredPath ?? process.env.CHENGFENG_VIDEOCUT_CHROME_PATH;
-  if (configuredPath !== undefined) {
-    if (!isAbsolute(configuredPath)) {
-      throw new ChromeError("CHENGFENG_VIDEOCUT_CHROME_PATH 必须是绝对路径。");
-    }
-    if (!isExecutableFile(configuredPath, platform)) {
-      throw new ChromeError(`CHENGFENG_VIDEOCUT_CHROME_PATH 不是可执行普通文件：${configuredPath}`);
-    }
-    return configuredPath;
+  if (configuredPath === undefined) return null;
+  if (!isAbsolute(configuredPath)) {
+    throw new ChromeError("CHENGFENG_VIDEOCUT_CHROME_PATH 必须是绝对路径。");
   }
-  const productDataDir =
-    options.dataDir ?? process.env.CHENGFENG_VIDEOCUT_DATA_DIR ?? process.env.CHENGFENG_VIDEOCUT_HOME;
-  if (productDataDir) return managedChromePath(productDataDir, platform);
-  return (options.candidates ?? CHROME_PATHS).find((path) => isExecutableFile(path, platform)) ?? null;
+  if (!isExecutableFile(configuredPath, platform)) {
+    throw new ChromeError(`CHENGFENG_VIDEOCUT_CHROME_PATH 不是可执行普通文件：${configuredPath}`);
+  }
+  return configuredPath;
 }
 
 interface PendingCall {
@@ -123,6 +83,9 @@ export interface ChromePageOptions {
   transparent: boolean;
   /** Extra seconds to wait for the browser to come up. */
   launchTimeoutMs?: number;
+  /** Product-owned browser cache configuration. Primarily a test seam. */
+  rendererRuntime?: RendererRuntimeOptions;
+  signal?: AbortSignal;
 }
 
 export class ChromePage {
@@ -147,12 +110,17 @@ export class ChromePage {
   }
 
   static async launch(options: ChromePageOptions): Promise<ChromePage> {
-    const executable = findSystemChrome();
-    if (!executable) {
-      throw new ChromeError(
-        "找不到受管 Chrome Headless Shell。请用同一 0.5.0 manifest 修复 Runtime 工具包；导出不会自动下载浏览器。",
-      );
-    }
+    options.signal?.throwIfAborted();
+    const override = findExplicitChromeOverride();
+    const runtime = override
+      ? null
+      : await ensureRendererRuntime({
+        ...options.rendererRuntime,
+        signal: options.signal ?? options.rendererRuntime?.signal,
+      });
+    options.signal?.throwIfAborted();
+    const executable = override ?? runtime?.executablePath;
+    if (!executable) throw new ChromeError("受管渲染引擎未提供可执行文件。 ");
     const profileDir = await mkdtemp(join(tmpdir(), "chengfeng-videocut-export-"));
     const child = spawn(executable, [
       "--headless",
@@ -296,6 +264,36 @@ export class ChromePage {
       throw new ChromeError(exception.exception?.description ?? exception.text ?? "page error");
     }
     return (result.result as { value?: T } | undefined)?.value as T;
+  }
+
+  /** Product overlay readiness acknowledgement, evaluated inside the page. */
+  async isReady(): Promise<boolean> {
+    const value = await this.evaluate<unknown>("Boolean(window.__isReady)");
+    if (typeof value !== "boolean") throw new ChromeError("Overlay returned an invalid readiness value");
+    return value;
+  }
+
+  /** Product overlay error acknowledgement, evaluated inside the page. */
+  async overlayError(): Promise<string | null> {
+    const value = await this.evaluate<unknown>(
+      "typeof window.__overlayError === 'string' ? window.__overlayError : null",
+    );
+    if (value !== null && typeof value !== "string") {
+      throw new ChromeError("Overlay returned an invalid error value");
+    }
+    return value;
+  }
+
+  /** Move the deterministic overlay clock and return its acknowledgement token. */
+  async seek(time: number): Promise<number> {
+    if (!Number.isFinite(time) || time < 0) throw new ChromeError("Overlay seek time must be a non-negative number");
+    const value = await this.evaluate<unknown>(
+      `typeof window.__seek === 'function' ? window.__seek(${JSON.stringify(time)}) : null`,
+    );
+    if (!Number.isSafeInteger(value) || (value as number) < 0) {
+      throw new ChromeError("Overlay returned an invalid seek token");
+    }
+    return value as number;
   }
 
   /** One PNG of the current state of the page, alpha included. */
