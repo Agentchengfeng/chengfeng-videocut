@@ -23,8 +23,13 @@ empty Product cache
   ID and SHA-256; it does not ask for `latest` at runtime.
 - The first run needs network access to that source and downloads roughly
   100 MB. Later exports reuse the verified cache.
-- This branch has been run end-to-end on macOS arm64. Windows has a pinned
-  asset lock but has not yet had a real-machine end-to-end acceptance run.
+- This branch has been run end-to-end on macOS arm64 and a GitHub-hosted
+  Windows x64 runner (Windows Server 2025). The Windows source E2E starts from
+  an empty Product cache, renders a 30-frame subtitle MP4, reads back its
+  video/audio/frame properties, and proves the second engine lookup is a
+  cache hit ([run 31244024390](https://github.com/Agentchengfeng/chengfeng-videocut/actions/runs/31244024390)).
+  It is not a Windows installer, SmartScreen, signature, user-project, or
+  human-listening acceptance run.
 - It is not an installer test: the public Plugin remains on its previous
   Runtime release, and this preview does not ship a Runtime asset, signature,
   or redistribution approval.

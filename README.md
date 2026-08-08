@@ -25,8 +25,10 @@ Chrome for Testing Headless Shell 的来源与使用许可复核、macOS/Windows
 Runtime 从 Chrome for Testing 取得一个固定版本的 Chrome Headless Shell，校验摘要后
 缓存；它不会安装、扫描或借用用户的 Chrome。后续导出复用缓存。
 
-该分支已在 macOS arm64 上用真实 MP4 跑通完整路径；Windows 仍未做实机验收。测试方式、
-前置条件和网络边界见 [managed renderer source preview](docs/managed-renderer-source-preview.md)。
+该分支已在 macOS arm64 与 GitHub-hosted Windows x64 上用真实 MP4 跑通完整路径；Windows
+证据是从空 Product 缓存执行的源码 E2E（[run 31244024390](https://github.com/Agentchengfeng/chengfeng-videocut/actions/runs/31244024390)），
+不是用户安装、签名/SmartScreen 或人耳验收。测试方式、前置条件和网络边界见
+[managed renderer source preview](docs/managed-renderer-source-preview.md)。
 
 ## 基本使用
 
