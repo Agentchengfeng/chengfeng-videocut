@@ -1,6 +1,9 @@
 name: managed-renderer-windows-e2e
 
 on:
+  push:
+    branches:
+      - agent/remotion-managed-renderer-20260808
   workflow_dispatch:
 
 permissions:
