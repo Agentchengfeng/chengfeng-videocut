@@ -36,7 +36,7 @@ const { gzipSync } = require("node:zlib");
 const ROOT = path.resolve(__dirname, "..");
 const INSTALLER = path.join(ROOT, "install.cjs");
 const SHELL_INSTALLER = path.join(ROOT, "install.sh");
-const VERSION = "0.5.0";
+const VERSION = "0.5.1";
 const IS_WINDOWS = process.platform === "win32";
 const PROJECT_CONTENT = "project must survive update transaction\n";
 
@@ -651,7 +651,7 @@ async function startCapabilityServer(t, root, home, {
   writeFileSync(serverScript, `"use strict";
 const http = require("node:http");
 const { createHash } = require("node:crypto");
-const { readFileSync, readdirSync, writeFileSync } = require("node:fs");
+const { readFileSync, readdirSync, renameSync, writeFileSync } = require("node:fs");
 const path = require("node:path");
 const home = process.argv[2];
 const ready = process.argv[3];
@@ -717,11 +717,13 @@ const server = http.createServer((request, response) => {
 });
 server.listen(0, "127.0.0.1", () => {
   const address = server.address();
-  writeFileSync(ready, JSON.stringify({
+  const receipt = ready + ".tmp";
+  writeFileSync(receipt, JSON.stringify({
     url: "http://127.0.0.1:" + address.port,
     pid: process.pid,
     redirectHitPath,
   }));
+  renameSync(receipt, ready);
 });
 for (const signal of ["SIGTERM", "SIGINT"]) process.on(signal, () => server.close(() => process.exit(0)));
 `);

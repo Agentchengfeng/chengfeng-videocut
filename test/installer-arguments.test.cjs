@@ -101,7 +101,7 @@ test("a custom target root cannot take over the user-wide managed service", () =
     assert.notEqual(result.status, 0);
     assert.match(
       `${result.stdout}\n${result.stderr}`,
-      /--ensure-service 只能用于当前用户的默认 Product Runtime 根目录/,
+      /--ensure-service \/ --recover-rollback 只能用于当前用户的默认 Product Runtime 根目录/,
     );
     assert.equal(existsSync(target), false);
   } finally {
@@ -217,8 +217,8 @@ test("formal asset download requires the exact byte size declared by the manifes
     const manifestValue = {
       schemaVersion: 1,
       product: "chengfeng-videocut",
-      productVersion: "0.5.0",
-      releaseTag: "v0.5.0",
+      productVersion: "0.5.1",
+      releaseTag: "v0.5.1",
       distributionMode: "local-test-only",
       runtime: {
         asset: runtimeAsset,

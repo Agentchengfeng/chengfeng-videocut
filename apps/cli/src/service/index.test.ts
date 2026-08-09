@@ -318,6 +318,66 @@ describe("Studio user service", () => {
     expect(state.operations.some((operation) => operation.startsWith("kickstart -k "))).toBe(true);
   });
 
+  it("waits through a transient invalid health response when the restarted job still owns the port", async () => {
+    const home = await testHome();
+    const { state, dependencies } = fakeRuntime(home);
+    const installed = await runStudioServiceCommand("ensure", {}, dependencies);
+    const previousPid = installed.pid;
+    const originalRunCommand = dependencies.runCommand!;
+    const originalFetch = dependencies.fetch!;
+    const originalSleep = dependencies.sleep!;
+    let healthUnavailableAfterKickstart = false;
+
+    const restarted = await runStudioServiceCommand("restart", {}, {
+      ...dependencies,
+      runCommand: async (executable, args) => {
+        const result = await originalRunCommand(executable, args);
+        if (args[0] === "kickstart") healthUnavailableAfterKickstart = true;
+        return result;
+      },
+      fetch: (async (input, init) => {
+        if (healthUnavailableAfterKickstart && String(input).endsWith("/api/health")) {
+          throw new TypeError("the restarting server closed the health connection");
+        }
+        return originalFetch(input, init);
+      }) as typeof globalThis.fetch,
+      sleep: async (milliseconds) => {
+        healthUnavailableAfterKickstart = false;
+        await originalSleep(milliseconds);
+      },
+    });
+
+    expect(previousPid).not.toBeNull();
+    expect(restarted.ready).toBe(true);
+    expect(restarted.pid).not.toBe(previousPid);
+    expect(restarted.pid).toBe(state.pid);
+  });
+
+  it("keeps a transient invalid health response fail-closed when another PID owns the port", async () => {
+    const home = await testHome();
+    const { dependencies } = fakeRuntime(home);
+    await runStudioServiceCommand("ensure", {}, dependencies);
+    const originalRunCommand = dependencies.runCommand!;
+    const originalFetch = dependencies.fetch!;
+    let healthUnavailableAfterKickstart = false;
+
+    await expect(runStudioServiceCommand("restart", {}, {
+      ...dependencies,
+      runCommand: async (executable, args) => {
+        const result = await originalRunCommand(executable, args);
+        if (args[0] === "kickstart") healthUnavailableAfterKickstart = true;
+        return result;
+      },
+      fetch: (async (input, init) => {
+        if (healthUnavailableAfterKickstart && String(input).endsWith("/api/health")) {
+          throw new TypeError("an untrusted listener closed the health connection");
+        }
+        return originalFetch(input, init);
+      }) as typeof globalThis.fetch,
+      getPortOwnerPid: async () => 9999,
+    })).rejects.toMatchObject({ code: "service_port_conflict" });
+  });
+
   it("recreates deleted log directories before starting an installed service", async () => {
     const home = await testHome();
     const { dependencies } = fakeRuntime(home);

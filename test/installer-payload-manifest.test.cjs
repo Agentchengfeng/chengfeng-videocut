@@ -18,7 +18,7 @@ const test = require("node:test");
 
 const ROOT = path.resolve(__dirname, "..");
 const SCRIPT = path.join(ROOT, "scripts/write-installer-payload-manifest.ts");
-const VERSION = "0.5.0";
+const VERSION = "0.5.1";
 const PLATFORM = "darwin-arm64";
 const MANIFEST = "chengfeng-videocut-installer-payload-manifest.json";
 const CHECKSUMS = "chengfeng-videocut-installer-payload-SHA256SUMS.txt";

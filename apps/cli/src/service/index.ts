@@ -744,11 +744,21 @@ async function waitUntilReady(
     if (last.state === "conflict") {
       const launchd = await launchdStatus(deps);
       const health = await probeHealth(deps);
-      const managedTransition = previousPid !== null &&
-        launchd.loaded && Boolean(launchd.pid) && launchd.pid !== previousPid &&
-        health.reachable && health.product === PRODUCT_NAME &&
-        health.reportedRuntimeMode === "launchd" &&
-        health.reportedPid === previousPid;
+      // `kickstart -k` can briefly leave the previous process accepting TCP
+      // while its HTTP handler is closing, or let the replacement process bind
+      // before it can answer `/api/health`.  The pre-restart identity has
+      // already been verified; defer only when OS-level ownership proves this
+      // is still either that PID or launchd's replacement PID.  An unrelated
+      // port owner remains a fail-closed conflict.
+      const managedTransition = previousPid !== null && launchd.loaded && health.reachable && (
+        (Boolean(launchd.pid) && launchd.pid !== previousPid &&
+          health.product === PRODUCT_NAME &&
+          health.reportedRuntimeMode === "launchd" &&
+          health.reportedPid === previousPid) ||
+        (health.product === null && health.portOwnerPid !== null && (
+          health.portOwnerPid === previousPid || health.portOwnerPid === launchd.pid
+        ))
+      );
       if (!managedTransition) assertNoPortConflict(launchd, health);
     }
     await deps.sleep(100);

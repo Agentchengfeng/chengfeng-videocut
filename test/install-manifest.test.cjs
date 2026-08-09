@@ -16,7 +16,7 @@ function sha256(bytes) {
 }
 
 function writeFixture(releaseDir, licenseStatus) {
-  const version = "0.5.0";
+  const version = "0.5.1";
   const runtimeName = `chengfeng-videocut-runtime-${version}.tar.gz`;
   const installerName = "chengfeng-videocut-installer-macos-arm64";
   const toolsName = `chengfeng-videocut-tools-${version}-darwin-arm64.tar.gz`;

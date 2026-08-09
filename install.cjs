@@ -38,7 +38,7 @@ const { spawn, spawnSync } = require("node:child_process");
 const { fileURLToPath, pathToFileURL } = require("node:url");
 
 const REPOSITORY = "Agentchengfeng/chengfeng-videocut";
-const VERSION = "0.5.0";
+const VERSION = "0.5.1";
 const ARCHIVE_NAME = "chengfeng-videocut-portable.tar.gz";
 const CHECKSUM_NAME = "SHA256SUMS.txt";
 const INSTALL_MANIFEST_NAME = "chengfeng-videocut-install-manifest.json";
@@ -1605,7 +1605,7 @@ function sha256(filePath) {
 function installerPlatformKey() {
   const key = `${process.platform}-${process.arch}`;
   if (!["darwin-arm64", "darwin-x64", "win32-x64"].includes(key)) {
-    fail(`0.5.0 原生安装器不支持 ${key}。`);
+    fail(`${VERSION} 原生安装器不支持 ${key}。`);
   }
   return key;
 }
