@@ -26,25 +26,71 @@ jobs:
       - name: Install FFmpeg and FFprobe for the test host
         shell: pwsh
         run: |
-          $url = 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip'
-          $archive = Join-Path $env:RUNNER_TEMP 'ffmpeg-release-essentials.zip'
+          $ErrorActionPreference = 'Stop'
+          # Do not use a mutable `latest` URL here.  These are distinct, pinned
+          # BtbN GitHub Release assets with GitHub-published SHA-256 digests.
+          # They are CI-host fixtures only and are never copied into a Product
+          # Runtime or release asset.
+          $sources = @(
+            @{
+              name = 'BtbN primary (autobuild-2026-08-01-13-21)'
+              url = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-01-13-21/ffmpeg-n7.1.5-12-g1fdbca85aa-win64-gpl-7.1.zip'
+              sha256 = 'ff89b7d1d362f6a5651289cc62c93db021b92c19bf138652542dfb169686d2f1'
+            }
+            @{
+              name = 'BtbN fallback (autobuild-2026-07-31-14-10)'
+              url = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-07-31-14-10/ffmpeg-n7.1.5-12-g1fdbca85aa-win64-gpl-7.1.zip'
+              sha256 = 'c067a1ca58f4fc4449f4bab0890fbcd65cbb3e5f46e066cf9c768e06c0c1d4d9'
+            }
+          )
+          $archive = Join-Path $env:RUNNER_TEMP 'videocut-ci-ffmpeg.zip'
           $destination = Join-Path $env:RUNNER_TEMP 'ffmpeg'
-          $ok = $false
-          foreach ($attempt in 1..3) {
+          $bin = $null
+          $failures = @()
+          foreach ($source in $sources) {
+            $downloaded = $false
+            $lastError = $null
+            # Initial request plus two bounded retries before trying the
+            # separately pinned fallback asset.
+            foreach ($attempt in 1..3) {
+              Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
+              Remove-Item -LiteralPath $destination -Recurse -Force -ErrorAction SilentlyContinue
+              try {
+                Invoke-WebRequest -Uri $source.url -OutFile $archive -TimeoutSec 120 -ErrorAction Stop
+                $actualSha256 = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+                if ($actualSha256 -ne $source.sha256) {
+                  throw "SHA-256 mismatch: expected $($source.sha256), got $actualSha256"
+                }
+                $downloaded = $true
+                break
+              } catch {
+                $lastError = $_.Exception.Message
+                if ($attempt -lt 3) { Start-Sleep -Seconds (10 * $attempt) }
+              }
+            }
+            if (-not $downloaded) {
+              $failures += "$($source.name): download failed after retries ($lastError)"
+              continue
+            }
             try {
-              Invoke-WebRequest $url -OutFile $archive -TimeoutSec 120
-              $ok = $true
+              Expand-Archive -LiteralPath $archive -DestinationPath $destination
+              $roots = @(Get-ChildItem -LiteralPath $destination -Directory)
+              if ($roots.Count -ne 1) { throw 'FFmpeg archive did not contain exactly one root directory' }
+              $candidateBin = Join-Path $roots[0].FullName 'bin'
+              foreach ($tool in @('ffmpeg.exe', 'ffprobe.exe')) {
+                if (-not (Test-Path -LiteralPath (Join-Path $candidateBin $tool) -PathType Leaf)) {
+                  throw "FFmpeg archive is missing $tool"
+                }
+              }
+              $bin = $candidateBin
+              Write-Host "Using $($source.name) with verified SHA-256 $actualSha256"
               break
             } catch {
-              if ($attempt -eq 3) { throw }
-              Start-Sleep -Seconds (10 * $attempt)
+              $failures += "$($source.name): extraction/validation failed ($($_.Exception.Message))"
             }
           }
-          if (-not $ok) { throw 'FFmpeg download failed after retries' }
-          Expand-Archive $archive -DestinationPath $destination
-          $root = Get-ChildItem -Path $destination -Directory | Select-Object -First 1
-          if (-not $root) { throw 'FFmpeg archive did not contain a root directory' }
-          Add-Content $env:GITHUB_PATH (Join-Path $root.FullName 'bin')
+          if (-not $bin) { throw "FFmpeg/FFprobe setup failed. $($failures -join ' | ')" }
+          Add-Content $env:GITHUB_PATH $bin
 
       # Avoid the historical Electron workspace. This is the same developer
       # command advertised by the source preview, now on a real Windows x64 host.
