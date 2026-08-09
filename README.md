@@ -6,17 +6,17 @@ chengfeng-videocut 是一个本地优先的口播视频剪辑产品：浏览器�
 
 ## 下载与安装
 
-0.5.3 的目标入口是 Codex Plugin。Plugin 调用平台原生 installer，用户机器不需要预装
+0.5.4 的目标入口是 Codex Plugin。Plugin 调用平台原生 installer，用户机器不需要预装
 Node、Bun、FFmpeg、FFprobe 或 Chrome。installer 用已校验的
 `chengfeng-videocut-install-manifest.json` 安装 Runtime 与固定版本 managed tools，随后
 显式 `service ensure`；多个 Codex 任务复用同一个 Product Runtime。
 
-当前 0.5.3 代码与本机隔离安装已实现，但**公开发布被阻止**：FFmpeg/FFprobe/Bun/
+当前 0.5.4 代码与本机隔离安装已实现，但**公开发布被阻止**：FFmpeg/FFprobe/Bun/
 Chrome for Testing Headless Shell 的来源与使用许可复核、macOS/Windows 签名和 Windows 实机安装尚未
 完成。仓库中的 `UNVERIFIED` 不是免责声明式通过，而是 fail-closed 发布门禁。
 
 正式资产契约见 [docs/distribution.md](docs/distribution.md)。`install.sh`、Node 执行
-`install.cjs` 和 Desktop/Companion 只保留历史兼容或实验用途，不是 0.5.3 用户入口。
+`install.cjs` 和 Desktop/Companion 只保留历史兼容或实验用途，不是 0.5.4 用户入口。
 
 ### 受管渲染引擎源码预览
 

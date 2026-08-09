@@ -10,6 +10,7 @@ import {
   writeReleaseChecksums,
 } from "../../../scripts/release-assets";
 import { checkVersionContract } from "../../../scripts/version-contract";
+import { doctor } from "@video-workbench/core/node";
 import { PRODUCT_VERSION } from "./output";
 
 const cleanupPaths: string[] = [];
@@ -110,6 +111,26 @@ afterEach(async () => {
 describe("release contract", () => {
   it("keeps every product version surface aligned", async () => {
     expect(await checkVersionContract(rootDir)).toBe(PRODUCT_VERSION);
+  });
+
+  it("keeps Plugin-gated workflow capabilities aligned across doctor and Studio", async () => {
+    const staticCapabilities = JSON.parse(await readFile(
+      join(rootDir, "apps/studio/public/chengfeng-videocut-capabilities.json"),
+      "utf8",
+    )) as {
+      features?: {
+        projectIngestVersion?: number;
+        transcriptPlaybackPagingVersion?: number;
+      };
+    };
+    const runtime = await doctor({ projectsDir: join(rootDir, ".release-contract-projects") });
+    expect(runtime.capabilities).toMatchObject({
+      projectIngestVersion: staticCapabilities.features?.projectIngestVersion,
+      transcriptPlaybackPagingVersion:
+        staticCapabilities.features?.transcriptPlaybackPagingVersion,
+    });
+    expect(runtime.capabilities.projectIngestVersion).toBe(1);
+    expect(runtime.capabilities.transcriptPlaybackPagingVersion).toBe(1);
   });
 
   it("keeps installed CLI commands on the stable install data root", async () => {

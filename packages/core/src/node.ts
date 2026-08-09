@@ -1622,6 +1622,8 @@ export interface DoctorCapabilities {
   editListOperations: readonly ["move", "trim", "split", "delete", "restore", "delete-range", "restore-snapshot"];
   managedArollProjection: true;
   expectedEditListRevision: true;
+  projectIngestVersion: 1;
+  transcriptPlaybackPagingVersion: 1;
   cloudTranscriptionProvider: "volcengine";
   cloudTranscriptionTaskLocalOnly: true;
 }
@@ -2563,6 +2565,8 @@ export async function doctor(
       editListOperations: ["move", "trim", "split", "delete", "restore", "delete-range", "restore-snapshot"],
       managedArollProjection: true,
       expectedEditListRevision: true,
+      projectIngestVersion: 1,
+      transcriptPlaybackPagingVersion: 1,
       cloudTranscriptionProvider: "volcengine",
       cloudTranscriptionTaskLocalOnly: true,
     },

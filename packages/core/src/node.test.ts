@@ -183,6 +183,8 @@ describe("project store", () => {
       serviceCrashRestart: true,
       durableJobsApiVersion: 1,
       durableJobKinds: ["export"],
+      projectIngestVersion: 1,
+      transcriptPlaybackPagingVersion: 1,
       cloudTranscriptionProvider: "volcengine",
       cloudTranscriptionTaskLocalOnly: true,
     });
