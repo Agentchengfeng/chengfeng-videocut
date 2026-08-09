@@ -104,8 +104,8 @@ Edge 或 Electron。代码使用 `@puppeteer/browsers` 下载固定构建，不�
 ```bash
 bun run package:build
 bun run portable:pack
-bun run installer:build
 bun run tools:pack                 # 每个平台在对应 runner 构建
+bun run installer:build            # 需先有 Runtime 与同平台 tools archive + sidecar
 bun run install-manifest:build     # 三个平台资产齐全后
 CHENGFENG_VIDEOCUT_NATIVE_ATTESTATION_DIR=/absolute/attestations \
   bun run release:native:stage     # 签名门禁通过后生成干净目录与统一 SHA256SUMS.txt

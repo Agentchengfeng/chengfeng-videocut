@@ -42,8 +42,11 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $ProgressPreference = "SilentlyContinue"
           $lock = Get-Content "installer/managed-tools.lock.json" -Raw | ConvertFrom-Json
+          $toolNames = @($lock.tools.PSObject.Properties.Name | Sort-Object)
+          if ($lock.schemaVersion -ne 2 -or ($toolNames -join ",") -ne "bun,ffmpeg,ffprobe") {
+            throw "managed-tools.lock.json must be schema 2 with only Bun, FFmpeg and FFprobe"
+          }
           Push-Location "apps/desktop"
           try {
             $ffmpeg = (node -p "require('ffmpeg-static')").Trim()
@@ -58,49 +61,16 @@ jobs:
             }
           }
 
-          $chromeArchive = Join-Path $env:RUNNER_TEMP "chrome-headless-shell-win64.zip"
-          $chromeExtract = Join-Path $env:RUNNER_TEMP "chrome-headless-shell"
-          $chromeUrl = "https://storage.googleapis.com/chrome-for-testing-public/$($lock.tools.chrome.buildId)/win64/chrome-headless-shell-win64.zip"
-          $downloaded = $false
-          foreach ($attempt in 1..3) {
-            try {
-              Remove-Item -LiteralPath $chromeArchive -Force -ErrorAction SilentlyContinue
-              Invoke-WebRequest -Uri $chromeUrl -OutFile $chromeArchive -MaximumRedirection 0
-              if ((Get-Item -LiteralPath $chromeArchive).Length -le 0) { throw "Chrome archive is empty" }
-              $downloaded = $true
-              break
-            } catch {
-              if ($attempt -eq 3) { throw }
-              Start-Sleep -Seconds (10 * $attempt)
-            }
-          }
-          if (-not $downloaded) { throw "Chrome Headless Shell download did not complete" }
-          Expand-Archive -LiteralPath $chromeArchive -DestinationPath $chromeExtract -Force
-          $chromeExecutables = @(
-            Get-ChildItem -LiteralPath $chromeExtract -Filter "chrome-headless-shell.exe" -File -Recurse
-          )
-          if ($chromeExecutables.Count -ne 1) {
-            throw "Expected exactly one Chrome Headless Shell executable; found $($chromeExecutables.Count)"
-          }
-          $chrome = $chromeExecutables[0].FullName
-          $chromeVersion = (& $chrome --version | Select-Object -First 1).Trim()
-          if ($LASTEXITCODE -ne 0 -or $chromeVersion -ne "Google Chrome for Testing $($lock.tools.chrome.buildId)") {
-            throw "Chrome Headless Shell identity mismatch: $chromeVersion"
-          }
-
           $records = @{
             bun = @{ path = $bun; sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $bun).Hash.ToLowerInvariant() }
             ffmpeg = @{ path = $ffmpeg; sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $ffmpeg).Hash.ToLowerInvariant() }
             ffprobe = @{ path = $ffprobe; sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $ffprobe).Hash.ToLowerInvariant() }
-            chrome = @{ path = $chrome; sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $chrome).Hash.ToLowerInvariant() }
           }
           $records | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP "native-windows-source-digests.json") -Encoding utf8
           "CHENGFENG_VIDEOCUT_LOCAL_TOOLS_FIXTURE=1" >> $env:GITHUB_ENV
           "CHENGFENG_VIDEOCUT_BUN_SOURCE=$bun" >> $env:GITHUB_ENV
           "CHENGFENG_VIDEOCUT_FFMPEG_SOURCE=$ffmpeg" >> $env:GITHUB_ENV
           "CHENGFENG_VIDEOCUT_FFPROBE_SOURCE=$ffprobe" >> $env:GITHUB_ENV
-          "CHENGFENG_VIDEOCUT_CHROME_ROOT=$($chromeExecutables[0].DirectoryName)" >> $env:GITHUB_ENV
-          "CHENGFENG_VIDEOCUT_CHROME_EXECUTABLE=$chrome" >> $env:GITHUB_ENV
 
       - name: Build the Windows tools payload and self-contained installer
         shell: pwsh
@@ -177,12 +147,8 @@ jobs:
           $bunVersion = (& (Join-Path $tools "bun.exe") --version | Select-Object -First 1).Trim()
           $ffmpegVersion = (& (Join-Path $tools "ffmpeg.exe") -version | Select-Object -First 1).Trim()
           $ffprobeVersion = (& (Join-Path $tools "ffprobe.exe") -version | Select-Object -First 1).Trim()
-          $chromeExecutables = @(Get-ChildItem -LiteralPath (Join-Path $tools "chrome") -Filter "chrome-headless-shell.exe" -File -Recurse)
-          if ($chromeExecutables.Count -ne 1) { throw "Installed Chrome Headless Shell is missing or duplicated" }
-          $installedChrome = $chromeExecutables[0].FullName
-          $chromeVersion = (& $installedChrome --version | Select-Object -First 1).Trim()
-          if ($bunVersion -ne "1.3.5" -or $ffmpegVersion -notmatch "^ffmpeg version (?:n)?6\\.0" -or $ffprobeVersion -notmatch "^ffprobe version (?:n)?6\\.0" -or $chromeVersion -ne "Google Chrome for Testing 151.0.7922.47") {
-            throw "Installed managed tool identity mismatch: Bun=$bunVersion FFmpeg=$ffmpegVersion FFprobe=$ffprobeVersion Chrome=$chromeVersion"
+          if ($bunVersion -ne "1.3.5" -or $ffmpegVersion -notmatch "^ffmpeg version (?:n)?6\\.0" -or $ffprobeVersion -notmatch "^ffprobe version (?:n)?6\\.0") {
+            throw "Installed managed tool identity mismatch: Bun=$bunVersion FFmpeg=$ffmpegVersion FFprobe=$ffprobeVersion"
           }
 
           $service = (& $launcher service status --json | ConvertFrom-Json)
@@ -207,7 +173,7 @@ jobs:
             reuse = $second.Payload.data
             service = $service.data
             health = $health
-            managedTools = @{ bun = $bunVersion; ffmpeg = $ffmpegVersion; ffprobe = $ffprobeVersion; chrome = $chromeVersion }
+            managedTools = @{ bun = $bunVersion; ffmpeg = $ffmpegVersion; ffprobe = $ffprobeVersion }
           }
           $record | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP "native-windows-installer-evidence.json") -Encoding utf8
 
