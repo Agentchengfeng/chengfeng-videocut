@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { createHash } from "node:crypto";
 import {
   access,
   chmod,
+  lstat,
   mkdtemp,
   mkdir,
   readFile,
@@ -17,6 +19,7 @@ import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  authorizeLocalDevelopmentRuntime,
   doctor,
   inspectProject,
   projectOperationLockPath,
@@ -33,6 +36,31 @@ import {
 import { buildEditListFromCuts } from "./editList";
 
 const cleanupPaths: string[] = [];
+
+async function installerTreeDigest(root: string): Promise<string> {
+  const digest = createHash("sha256");
+  digest.update("chengfeng-videocut-regular-tree-v1\0");
+  const walk = async (directory: string, prefix = ""): Promise<void> => {
+    const entries = (await readdir(directory, { withFileTypes: true }))
+      .sort((left, right) => left.name.localeCompare(right.name));
+    for (const entry of entries) {
+      const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const absolute = join(directory, entry.name);
+      const metadata = await lstat(absolute);
+      const permissions = (metadata.mode & 0o777).toString(8).padStart(3, "0");
+      if (metadata.isDirectory()) {
+        digest.update(`d\0${Buffer.byteLength(relative)}\0${relative}\0${permissions}\0`);
+        await walk(absolute, relative);
+      } else {
+        const bytes = await readFile(absolute);
+        digest.update(`f\0${Buffer.byteLength(relative)}\0${relative}\0${permissions}\0${metadata.size}\0`);
+        digest.update(bytes);
+      }
+    }
+  };
+  await walk(root);
+  return digest.digest("hex");
+}
 
 afterEach(async () => {
   await Promise.all(cleanupPaths.splice(0).map((path) => rm(path, { force: true, recursive: true })));
@@ -237,11 +265,17 @@ describe("project store", () => {
     const previousDataDir = process.env.CHENGFENG_VIDEOCUT_DATA_DIR;
     const previousExecPath = process.execPath;
     process.env.CHENGFENG_VIDEOCUT_EXECUTABLE = join(root, "app", "chengfeng-videocut");
-    process.env.CHENGFENG_VIDEOCUT_DATA_DIR = root;
+      process.env.CHENGFENG_VIDEOCUT_DATA_DIR = root;
     process.execPath = bun;
     try {
       const result = await doctor({ projectsDir: join(root, "projects") });
       expect(result.checks.find((check) => check.name === "dependencyMode")).toMatchObject({ ok: true });
+      expect(result).toMatchObject({
+        healthy: true,
+        developmentMode: false,
+        releaseReady: true,
+        readinessMode: "release-ready",
+      });
       expect(result.checks.some((check) => check.name === "exportRenderer")).toBe(false);
 
       for (const schemaVersion of [2, 3]) {
@@ -265,6 +299,170 @@ describe("project store", () => {
         ok: false,
         detail: "schema 4 resources-manifest must not include renderer resources",
       });
+    } finally {
+      process.execPath = previousExecPath;
+      if (previousExecutable === undefined) delete process.env.CHENGFENG_VIDEOCUT_EXECUTABLE;
+      else process.env.CHENGFENG_VIDEOCUT_EXECUTABLE = previousExecutable;
+      if (previousDataDir === undefined) delete process.env.CHENGFENG_VIDEOCUT_DATA_DIR;
+      else process.env.CHENGFENG_VIDEOCUT_DATA_DIR = previousDataDir;
+    }
+  });
+
+  it("requires an exact persisted authorization for installed local development", async () => {
+    const root = await mkdtemp(join(tmpdir(), "videocut-doctor-local-development-"));
+    cleanupPaths.push(root);
+    const version = "0.5.2";
+    const appVersion = join(root, "app", version);
+    const toolsVersion = join(root, "tools", version);
+    const bun = join(toolsVersion, "bun");
+    const ffmpeg = join(toolsVersion, "ffmpeg");
+    const ffprobe = join(toolsVersion, "ffprobe");
+    await Promise.all([
+      mkdir(appVersion, { recursive: true }),
+      mkdir(toolsVersion, { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(join(appVersion, "VERSION"), `${version}\n`),
+      writeFile(bun, "#!/bin/sh\nexit 0\n"),
+      writeFile(ffmpeg, "#!/bin/sh\nexit 0\n"),
+      writeFile(ffprobe, "#!/bin/sh\nexit 0\n"),
+    ]);
+    await Promise.all([chmod(bun, 0o755), chmod(ffmpeg, 0o755), chmod(ffprobe, 0o755)]);
+    const files = await Promise.all([
+      ["bun", bun],
+      ["ffmpeg", ffmpeg],
+      ["ffprobe", ffprobe],
+    ].map(async ([path, absolute]) => {
+      const bytes = await readFile(absolute!);
+      return { path: path!, size: bytes.byteLength, sha256: sha256(bytes) };
+    }));
+    const resourcesManifest = {
+      schemaVersion: 4,
+      product: "chengfeng-videocut-managed-tools",
+      productVersion: version,
+      platform: process.platform,
+      arch: process.arch,
+      distributionMode: "local-test-only",
+      licenseStatus: "UNVERIFIED",
+      executables: { bun: "bun", ffmpeg: "ffmpeg", ffprobe: "ffprobe" },
+      files,
+    };
+    await writeFile(
+      join(toolsVersion, "resources-manifest.json"),
+      `${JSON.stringify(resourcesManifest)}\n`,
+    );
+    await Promise.all([
+      symlink(version, join(root, "app", "current"), process.platform === "win32" ? "junction" : "dir"),
+      symlink(version, join(root, "tools", "current"), process.platform === "win32" ? "junction" : "dir"),
+    ]);
+    const appTreeDigest = await installerTreeDigest(appVersion);
+    const toolsTreeDigest = await installerTreeDigest(toolsVersion);
+    const runtimeArchiveSha256 = "1".repeat(64);
+    const runtimeBuildId = "2".repeat(16);
+    const toolsInstallManifestSha256 = "3".repeat(64);
+    const toolsArchiveSha256 = "4".repeat(64);
+    await writeFile(join(root, "installer-state.json"), `${JSON.stringify({
+      schemaVersion: 2,
+      transactionId: null,
+      phase: "idle",
+      active: {
+        version,
+        path: appVersion,
+        archiveSha256: runtimeArchiveSha256,
+        buildId: runtimeBuildId,
+        treeDigest: appTreeDigest,
+      },
+      previous: null,
+      pending: null,
+      transaction: null,
+      terminationFailure: null,
+      updatedAt: new Date().toISOString(),
+    })}\n`);
+    await writeFile(join(root, "managed-tools-state.json"), `${JSON.stringify({
+      schemaVersion: 1,
+      productVersion: version,
+      platformKey: `${process.platform}-${process.arch}`,
+      manifestSha256: toolsInstallManifestSha256,
+      archiveSha256: toolsArchiveSha256,
+      path: toolsVersion,
+      treeDigest: toolsTreeDigest,
+      updatedAt: new Date().toISOString(),
+    })}\n`);
+
+    const previousExecutable = process.env.CHENGFENG_VIDEOCUT_EXECUTABLE;
+    const previousDataDir = process.env.CHENGFENG_VIDEOCUT_DATA_DIR;
+    const previousExecPath = process.execPath;
+    process.env.CHENGFENG_VIDEOCUT_EXECUTABLE = join(root, "bin", "chengfeng-videocut");
+    process.env.CHENGFENG_VIDEOCUT_DATA_DIR = root;
+    process.execPath = bun;
+    try {
+      await expect(authorizeLocalDevelopmentRuntime({
+        acknowledged: false,
+        dataDir: root,
+        expectedProductRoot: root,
+      })).rejects.toThrow("--acknowledge-unverified-local-runtime");
+      const ordinary = await doctor({ projectsDir: join(root, "projects") });
+      expect(ordinary).toMatchObject({
+        healthy: false,
+        developmentMode: false,
+        releaseReady: false,
+        readinessMode: "unready",
+      });
+      expect(ordinary.checks.find((check) => check.name === "dependencyMode")?.detail)
+        .toBe("resources-manifest is not VERIFIED/release-ready for this platform");
+
+      const missingAuthorization = await doctor({
+        projectsDir: join(root, "projects"),
+        localDevelopment: true,
+        expectedProductRoot: root,
+      });
+      expect(missingAuthorization.healthy).toBe(false);
+      expect(missingAuthorization.checks.find((check) => check.name === "dependencyMode")?.detail)
+        .toContain("development-runtime-authorization.json");
+
+      const authorized = await authorizeLocalDevelopmentRuntime({
+        acknowledged: true,
+        dataDir: root,
+        expectedProductRoot: root,
+      });
+      expect((await stat(authorized.path)).mode & 0o077).toBe(0);
+      const local = await doctor({
+        projectsDir: join(root, "projects"),
+        localDevelopment: true,
+        expectedProductRoot: root,
+      });
+      expect(local).toMatchObject({
+        healthy: true,
+        developmentMode: true,
+        releaseReady: false,
+        readinessMode: "local-development",
+      });
+      expect(local.checks.find((check) => check.name === "dependencyMode")?.detail)
+        .toContain("NOT release-ready");
+
+      await chmod(authorized.path, 0o644);
+      const permissive = await doctor({
+        projectsDir: join(root, "projects"),
+        localDevelopment: true,
+        expectedProductRoot: root,
+      });
+      expect(permissive.healthy).toBe(false);
+      expect(permissive.checks.find((check) => check.name === "dependencyMode")?.detail)
+        .toContain("mode 0600");
+      await chmod(authorized.path, 0o600);
+
+      const drifted = JSON.parse(await readFile(authorized.path, "utf8"));
+      drifted.runtime.treeDigest = "f".repeat(64);
+      await writeFile(authorized.path, `${JSON.stringify(drifted)}\n`);
+      await chmod(authorized.path, 0o600);
+      const mismatch = await doctor({
+        projectsDir: join(root, "projects"),
+        localDevelopment: true,
+        expectedProductRoot: root,
+      });
+      expect(mismatch).toMatchObject({ healthy: false, releaseReady: false });
+      expect(mismatch.checks.find((check) => check.name === "dependencyMode")?.detail)
+        .toContain("does not match the installed Runtime identity");
     } finally {
       process.execPath = previousExecPath;
       if (previousExecutable === undefined) delete process.env.CHENGFENG_VIDEOCUT_EXECUTABLE;

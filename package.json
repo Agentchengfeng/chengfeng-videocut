@@ -1,6 +1,6 @@
 {
   "name": "chengfeng-videocut-monorepo",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
@@ -22,6 +22,7 @@
     "test:native-release": "bun test test/native-signing-gates.test.ts && node --test test/native-release-gates.test.cjs",
     "cli": "bun apps/cli/src/cli.ts",
     "chengfeng-videocut": "bun apps/cli/src/cli.ts",
+    "development:authorize-runtime": "bun scripts/authorize-local-development.ts --acknowledge-unverified-local-runtime",
     "project:link": "bun scripts/link-project.ts",
     "koubo:link": "bun packages/koubo-adapter/src/cli.ts",
     "release:check": "bun scripts/release-check.ts",

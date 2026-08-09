@@ -112,6 +112,7 @@ export interface ParsedArgs {
    * write semantics: what is submitted is all there is.
    */
   fullSelection: boolean;
+  localDevelopment: boolean;
 }
 
 const VALUE_OPTIONS = new Set([
@@ -162,6 +163,7 @@ const BOOLEAN_OPTIONS = new Set([
   "--replace",
   "--keep-work",
   "--full-selection",
+  "--local-development",
 ]);
 
 function usageError(message: string): never {
@@ -315,6 +317,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     replace: booleanValues.has("--replace"),
     keepWork: booleanValues.has("--keep-work"),
     fullSelection: booleanValues.has("--full-selection"),
+    localDevelopment: booleanValues.has("--local-development"),
     jobKind: values.get("--kind"),
     jobState: values.get("--state"),
     projectFilter: values.get("--project"),
@@ -404,8 +407,10 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
   }
 
   if (positionals[0] === "doctor") {
-    if (positionals.length !== 1) usageError("Usage: chengfeng-videocut doctor [--json]");
-    assertOptions(["--projects-dir"]);
+    if (positionals.length !== 1) {
+      usageError("Usage: chengfeng-videocut doctor [--local-development] [--json]");
+    }
+    assertOptions(["--projects-dir"], ["--local-development"]);
     return { command: "doctor", ...common };
   }
   if (positionals[0] === "inspect") {

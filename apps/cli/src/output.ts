@@ -5,7 +5,7 @@ export const CLI_SCHEMA_VERSION = 1;
 export const PRODUCT_NAME = "chengfeng-videocut";
 export const BRAND_NAME = PRODUCT_NAME;
 export const PACKAGE_NAME = "chengfeng-videocut";
-export const PRODUCT_VERSION = "0.5.1";
+export const PRODUCT_VERSION = "0.5.2";
 
 export interface SuccessEnvelope {
   schemaVersion: number;
@@ -56,11 +56,22 @@ export function errorEnvelope(
   };
 }
 
-export function humanDoctor(data: { healthy: boolean; checks: DoctorCheck[] }): string {
+export function humanDoctor(data: {
+  healthy: boolean;
+  developmentMode: boolean;
+  releaseReady: boolean;
+  checks: DoctorCheck[];
+}): string {
   const lines = data.checks.map(
     (check) => `${check.ok ? "✓" : "✗"} ${check.name}: ${check.detail}`,
   );
-  lines.push(data.healthy ? `${BRAND_NAME} is ready` : `${BRAND_NAME} needs attention`);
+  lines.push(
+    data.healthy && data.developmentMode && !data.releaseReady
+      ? `${BRAND_NAME} is ready for authorized local development; NOT release-ready`
+      : data.healthy
+        ? `${BRAND_NAME} is ready`
+        : `${BRAND_NAME} needs attention`,
+  );
   return lines.join("\n");
 }
 
@@ -97,7 +108,7 @@ Usage:
   chengfeng-videocut service status [--json]
   chengfeng-videocut service logs [--lines <1-1000>] [--json]
   chengfeng-videocut service ensure [--open] [--json]
-  chengfeng-videocut doctor [--json]
+  chengfeng-videocut doctor [--local-development] [--json]
   chengfeng-videocut job start <export> <project> [--out <file.mp4>] [--scale <n>] [--fps <n>] [--keep-work] [--api-base <url>]
   chengfeng-videocut job get <job-id> [--api-base <url>]
   chengfeng-videocut job list [--project <id>] [--kind <kind>] [--state <state>] [--limit <1-100>] [--api-base <url>]

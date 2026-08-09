@@ -15,7 +15,7 @@ import {
   symlink,
 } from "node:fs/promises";
 import { constants as fsConstants, createReadStream, existsSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, userInfo } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, relative as relativePath, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isKnownNaturalPausePolicyVersion } from "@video-workbench/contracts";
@@ -1927,10 +1927,111 @@ export async function correctTranscriptText(
   return serializeProjectOperation(project.directory, apply);
 }
 
+export const LOCAL_DEVELOPMENT_AUTHORIZATION_FILE =
+  "development-runtime-authorization.json" as const;
+
+interface InstalledDevelopmentIdentity {
+  root: string;
+  account: { uid: number | null; username: string };
+  platform: NodeJS.Platform;
+  arch: string;
+  runtime: {
+    version: string;
+    archiveSha256: string;
+    buildId: string;
+    treeDigest: string;
+  };
+  tools: {
+    version: string;
+    installManifestSha256: string;
+    archiveSha256: string;
+    treeDigest: string;
+    resourcesManifestSha256: string;
+  };
+}
+
 interface ManagedToolsDoctorResult {
   ok: boolean;
   detail: string;
   executables: Partial<Record<"bun" | "ffmpeg" | "ffprobe", string>>;
+  releaseReady: boolean;
+  developmentMode: boolean;
+  identity?: InstalledDevelopmentIdentity;
+}
+
+interface LocalDevelopmentAuthorization extends InstalledDevelopmentIdentity {
+  schemaVersion: 1;
+  product: "chengfeng-videocut";
+  purpose: "local-development-unverified-runtime";
+  acknowledged: "UNVERIFIED tools are authorized only for this local development identity";
+  authorizedAt: string;
+}
+
+function exactObjectKeys(value: unknown, expected: readonly string[]): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  return Object.keys(value).sort().join("\0") === [...expected].sort().join("\0");
+}
+
+function exactDigest(value: unknown, length = 64): value is string {
+  return typeof value === "string" && new RegExp(`^[0-9a-f]{${length}}$`).test(value);
+}
+
+async function readStableSingleLinkJson(path: string, label: string): Promise<{ raw: string; value: unknown }> {
+  const before = await lstat(path);
+  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1) {
+    throw new Error(`${label} must be a single-link regular file`);
+  }
+  const raw = await readFile(path, "utf8");
+  const after = await lstat(path);
+  if (
+    !after.isFile() || after.isSymbolicLink() || after.nlink !== 1 ||
+    before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size ||
+    before.mtimeMs !== after.mtimeMs
+  ) throw new Error(`${label} changed while reading`);
+  try {
+    return { raw, value: JSON.parse(raw) as unknown };
+  } catch {
+    throw new Error(`${label} is not valid JSON`);
+  }
+}
+
+async function regularTreeDigest(root: string, label: string): Promise<string> {
+  const digest = createHash("sha256");
+  digest.update("chengfeng-videocut-regular-tree-v1\0");
+  const walk = async (directory: string, prefix = ""): Promise<void> => {
+    const entries = (await readdir(directory, { withFileTypes: true }))
+      .sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
+    for (const entry of entries) {
+      const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const absolute = join(directory, entry.name);
+      const metadata = await lstat(absolute);
+      if (metadata.isSymbolicLink()) throw new Error(`${label} contains symlink: ${relative}`);
+      const permissions = (metadata.mode & 0o777).toString(8).padStart(3, "0");
+      if (metadata.isDirectory()) {
+        const canonical = await realpath(absolute);
+        const escaped = relativePath(root, canonical);
+        if (escaped === ".." || escaped.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)) {
+          throw new Error(`${label} directory escaped: ${relative}`);
+        }
+        digest.update(`d\0${Buffer.byteLength(relative)}\0${relative}\0${permissions}\0`);
+        await walk(absolute, relative);
+      } else if (metadata.isFile() && metadata.nlink === 1) {
+        digest.update(`f\0${Buffer.byteLength(relative)}\0${relative}\0${permissions}\0${metadata.size}\0`);
+        const bytes = await readFile(absolute);
+        const after = await lstat(absolute);
+        if (
+          !after.isFile() || after.isSymbolicLink() || after.nlink !== 1 ||
+          metadata.dev !== after.dev || metadata.ino !== after.ino || metadata.size !== after.size ||
+          metadata.mtimeMs !== after.mtimeMs
+        ) throw new Error(`${label} file changed while hashing: ${relative}`);
+        digest.update(bytes);
+      } else {
+        throw new Error(`${label} contains hardlink, reparse point or special entry: ${relative}`);
+      }
+    }
+  };
+  await walk(root);
+  return digest.digest("hex");
 }
 
 function managedRelativePath(value: unknown, label: string): string {
@@ -1974,7 +2075,157 @@ async function stableFileSha256(
   return digest.digest("hex");
 }
 
-async function inspectInstalledManagedTools(dataDir: string): Promise<ManagedToolsDoctorResult> {
+function defaultProductRoot(): string {
+  return resolve(join(homedir(), ".chengfeng-videocut"));
+}
+
+async function assertLocalDevelopmentRoot(dataDir: string, expectedRoot: string): Promise<string> {
+  if (resolve(dataDir) !== resolve(expectedRoot)) {
+    throw new Error("local development is authorized only for the default Product root");
+  }
+  const metadata = await lstat(dataDir);
+  if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+    throw new Error("local development Product root must be a regular directory");
+  }
+  const canonical = await realpath(dataDir);
+  const expectedCanonical = await realpath(expectedRoot);
+  if (canonical !== expectedCanonical) {
+    throw new Error("local development Product root must be canonical");
+  }
+  return canonical;
+}
+
+async function installedDevelopmentIdentity(
+  dataDir: string,
+  canonicalTools: string,
+  resourcesManifestRaw: string,
+  toolsVersion: string,
+  expectedRoot: string,
+): Promise<InstalledDevelopmentIdentity> {
+  const canonicalRoot = await assertLocalDevelopmentRoot(dataDir, expectedRoot);
+  const installerStateDocument = await readStableSingleLinkJson(
+    join(canonicalRoot, "installer-state.json"),
+    "installer-state.json",
+  );
+  const installerState = installerStateDocument.value;
+  if (!exactObjectKeys(installerState, [
+    "schemaVersion", "transactionId", "phase", "active", "previous", "pending",
+    "transaction", "terminationFailure", "updatedAt",
+  ])) throw new Error("installer-state.json does not have the exact idle schema");
+  if (
+    installerState.schemaVersion !== 2 || installerState.phase !== "idle" ||
+    installerState.transactionId !== null || installerState.pending !== null || installerState.transaction !== null ||
+    (installerState.terminationFailure !== null && installerState.terminationFailure !== undefined)
+  ) throw new Error("installer-state.json is not an idle managed Runtime identity");
+  const active = installerState.active;
+  if (!exactObjectKeys(active, ["version", "path", "archiveSha256", "buildId", "treeDigest"])) {
+    throw new Error("installer-state.json active identity is invalid");
+  }
+  if (
+    typeof active.version !== "string" || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(active.version) ||
+    typeof active.path !== "string" || !exactDigest(active.archiveSha256) ||
+    !exactDigest(active.buildId, 16) || !exactDigest(active.treeDigest)
+  ) throw new Error("installer-state.json active identity fields are invalid");
+  const appCurrent = join(canonicalRoot, "app", "current");
+  const appCurrentMetadata = await lstat(appCurrent);
+  if (!appCurrentMetadata.isSymbolicLink()) throw new Error("app/current must be a managed symlink or junction");
+  const canonicalApp = await realpath(appCurrent);
+  if (
+    canonicalApp !== await realpath(active.path) ||
+    canonicalApp !== join(canonicalRoot, "app", active.version)
+  ) throw new Error("app/current does not match installer-state.json active identity");
+  const appVersion = (await readFile(join(canonicalApp, "VERSION"), "utf8")).split(/\r?\n/, 1)[0];
+  if (appVersion !== active.version || appVersion !== toolsVersion) {
+    throw new Error("app/current, installer state and managed tools versions do not match");
+  }
+  if (await regularTreeDigest(canonicalApp, "app/current") !== active.treeDigest) {
+    throw new Error("app/current tree digest does not match installer-state.json");
+  }
+
+  const toolsStateDocument = await readStableSingleLinkJson(
+    join(canonicalRoot, "managed-tools-state.json"),
+    "managed-tools-state.json",
+  );
+  const toolsState = toolsStateDocument.value;
+  if (!exactObjectKeys(toolsState, [
+    "schemaVersion", "productVersion", "platformKey", "manifestSha256", "archiveSha256",
+    "path", "treeDigest", "updatedAt",
+  ])) throw new Error("managed-tools-state.json identity is invalid");
+  if (
+    toolsState.schemaVersion !== 1 || toolsState.productVersion !== toolsVersion ||
+    typeof toolsState.platformKey !== "string" || typeof toolsState.path !== "string" ||
+    await realpath(toolsState.path) !== canonicalTools || !exactDigest(toolsState.manifestSha256) ||
+    !exactDigest(toolsState.archiveSha256) || !exactDigest(toolsState.treeDigest)
+  ) throw new Error("managed-tools-state.json identity fields are invalid");
+  if (await regularTreeDigest(canonicalTools, "tools/current") !== toolsState.treeDigest) {
+    throw new Error("tools/current tree digest does not match managed-tools-state.json");
+  }
+
+  return {
+    root: canonicalRoot,
+    account: {
+      uid: typeof process.getuid === "function" ? process.getuid() : null,
+      username: userInfo().username,
+    },
+    platform: process.platform,
+    arch: process.arch,
+    runtime: {
+      version: active.version,
+      archiveSha256: active.archiveSha256,
+      buildId: active.buildId,
+      treeDigest: active.treeDigest,
+    },
+    tools: {
+      version: toolsVersion,
+      installManifestSha256: toolsState.manifestSha256,
+      archiveSha256: toolsState.archiveSha256,
+      treeDigest: toolsState.treeDigest,
+      resourcesManifestSha256: sha256(resourcesManifestRaw),
+    },
+  };
+}
+
+function sameIdentityRecord(actual: unknown, expected: Record<string, string | number | null>): boolean {
+  if (!exactObjectKeys(actual, Object.keys(expected))) return false;
+  return Object.entries(expected).every(([key, value]) => actual[key] === value);
+}
+
+async function validateLocalDevelopmentAuthorization(
+  identity: InstalledDevelopmentIdentity,
+): Promise<void> {
+  const authorizationPath = join(identity.root, LOCAL_DEVELOPMENT_AUTHORIZATION_FILE);
+  const metadata = await lstat(authorizationPath);
+  if (
+    !metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1 ||
+    (process.platform !== "win32" && (metadata.mode & 0o077) !== 0)
+  ) throw new Error("local development authorization must be a mode 0600 single-link regular file");
+  if (typeof process.getuid === "function" && metadata.uid !== process.getuid()) {
+    throw new Error("local development authorization must be owned by the current account");
+  }
+  const document = await readStableSingleLinkJson(authorizationPath, "local development authorization");
+  const authorization = document.value;
+  if (!exactObjectKeys(authorization, [
+    "schemaVersion", "product", "purpose", "acknowledged", "authorizedAt", "root", "account",
+    "platform", "arch", "runtime", "tools",
+  ])) throw new Error("local development authorization schema is invalid");
+  if (
+    authorization.schemaVersion !== 1 || authorization.product !== "chengfeng-videocut" ||
+    authorization.purpose !== "local-development-unverified-runtime" ||
+    authorization.acknowledged !==
+      "UNVERIFIED tools are authorized only for this local development identity" ||
+    typeof authorization.authorizedAt !== "string" || !Number.isFinite(Date.parse(authorization.authorizedAt)) ||
+    authorization.root !== identity.root || authorization.platform !== identity.platform ||
+    authorization.arch !== identity.arch ||
+    !sameIdentityRecord(authorization.account, identity.account) ||
+    !sameIdentityRecord(authorization.runtime, identity.runtime) ||
+    !sameIdentityRecord(authorization.tools, identity.tools)
+  ) throw new Error("local development authorization does not match the installed Runtime identity");
+}
+
+async function inspectInstalledManagedTools(
+  dataDir: string,
+  options: { localDevelopment: boolean; expectedProductRoot: string; skipAuthorization?: boolean },
+): Promise<ManagedToolsDoctorResult> {
   const toolsRoot = resolve(dataDir, "tools");
   const current = join(toolsRoot, "current");
   try {
@@ -1998,7 +2249,8 @@ async function inspectInstalledManagedTools(dataDir: string): Promise<ManagedToo
       throw new Error("tools/current target is not a regular directory");
     }
     const manifestPath = join(canonicalCurrent, "resources-manifest.json");
-    const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
+    const manifestRaw = await readFile(manifestPath, "utf8");
+    const manifest = JSON.parse(manifestRaw) as {
       schemaVersion?: number;
       product?: string;
       productVersion?: string;
@@ -2015,9 +2267,18 @@ async function inspectInstalledManagedTools(dataDir: string): Promise<ManagedToo
       schemaVersion !== 4 ||
       manifest.product !== "chengfeng-videocut-managed-tools" ||
       manifest.platform !== process.platform || manifest.arch !== process.arch ||
-      manifest.distributionMode !== "release-ready" || manifest.licenseStatus !== "VERIFIED" ||
       !manifest.executables || !Array.isArray(manifest.files)
     ) throw new Error("resources-manifest is not VERIFIED/release-ready for this platform");
+    const releaseReady =
+      manifest.distributionMode === "release-ready" && manifest.licenseStatus === "VERIFIED";
+    const localDevelopmentEligible =
+      manifest.distributionMode === "local-test-only" && manifest.licenseStatus === "UNVERIFIED";
+    if (!releaseReady && !(options.localDevelopment && localDevelopmentEligible)) {
+      throw new Error("resources-manifest is not VERIFIED/release-ready for this platform");
+    }
+    if (!releaseReady && !localDevelopmentEligible) {
+      throw new Error("resources-manifest trust state is not an allowed Product combination");
+    }
     if (Object.hasOwn(manifest, "resources")) {
       throw new Error("schema 4 resources-manifest must not include renderer resources");
     }
@@ -2087,31 +2348,119 @@ async function inspectInstalledManagedTools(dataDir: string): Promise<ManagedToo
     if (await realpath(process.execPath) !== await realpath(executables.bun!)) {
       throw new Error("Runtime was not launched by tools/current managed Bun");
     }
+    const identity = releaseReady
+      ? undefined
+      : await installedDevelopmentIdentity(
+        dataDir,
+        canonicalCurrent,
+        manifestRaw,
+        manifest.productVersion!,
+        options.expectedProductRoot,
+      );
+    if (identity && !options.skipAuthorization) await validateLocalDevelopmentAuthorization(identity);
     return {
       ok: true,
-      detail: `VERIFIED ${manifest.productVersion} at ${canonicalCurrent}`,
+      detail: releaseReady
+        ? `VERIFIED ${manifest.productVersion} at ${canonicalCurrent}`
+        : `authorized local development ${manifest.productVersion} at ${canonicalCurrent}; NOT release-ready`,
       executables,
+      releaseReady,
+      developmentMode: !releaseReady,
+      ...(identity ? { identity } : {}),
     };
   } catch (error) {
     return {
       ok: false,
       detail: error instanceof Error ? error.message : String(error),
       executables: {},
+      releaseReady: false,
+      developmentMode: false,
     };
   }
 }
 
+export async function authorizeLocalDevelopmentRuntime(options: {
+  acknowledged: boolean;
+  dataDir?: string;
+  expectedProductRoot?: string;
+}): Promise<{ path: string; authorization: LocalDevelopmentAuthorization }> {
+  if (!options.acknowledged) {
+    throw new Error(
+      "authorization requires --acknowledge-unverified-local-runtime; this does not make the Runtime release-ready",
+    );
+  }
+  const expectedProductRoot = resolve(options.expectedProductRoot ?? defaultProductRoot());
+  const dataDir = resolve(options.dataDir ?? productHomeDir());
+  const inspected = await inspectInstalledManagedTools(dataDir, {
+    localDevelopment: true,
+    expectedProductRoot,
+    skipAuthorization: true,
+  });
+  if (!inspected.ok || inspected.releaseReady || !inspected.developmentMode || !inspected.identity) {
+    throw new Error(`installed Runtime is not an exact local-test-only development identity: ${inspected.detail}`);
+  }
+  const authorization: LocalDevelopmentAuthorization = {
+    schemaVersion: 1,
+    product: "chengfeng-videocut",
+    purpose: "local-development-unverified-runtime",
+    acknowledged: "UNVERIFIED tools are authorized only for this local development identity",
+    authorizedAt: new Date().toISOString(),
+    ...inspected.identity,
+  };
+  const target = join(inspected.identity.root, LOCAL_DEVELOPMENT_AUTHORIZATION_FILE);
+  try {
+    const existing = await lstat(target);
+    if (!existing.isFile() || existing.isSymbolicLink() || existing.nlink !== 1) {
+      throw new Error("existing local development authorization is not a single-link regular file");
+    }
+  } catch (error) {
+    if (errorCode(error) !== "ENOENT") throw error;
+  }
+  await atomicWriteText(target, serializeJson(authorization));
+  await chmod(target, 0o600);
+  await validateLocalDevelopmentAuthorization(inspected.identity);
+  return { path: target, authorization };
+}
+
 export async function doctor(
-  options: Pick<ProjectResolutionOptions, "projectsDir"> = {},
-): Promise<{ healthy: boolean; capabilities: DoctorCapabilities; checks: DoctorCheck[] }> {
+  options: Pick<ProjectResolutionOptions, "projectsDir"> & {
+    localDevelopment?: boolean;
+    /** Test seam only. The CLI never overrides the canonical default Product root. */
+    expectedProductRoot?: string;
+  } = {},
+): Promise<{
+  healthy: boolean;
+  developmentMode: boolean;
+  releaseReady: boolean;
+  readinessMode: "release-ready" | "local-development" | "source-development" | "unready";
+  capabilities: DoctorCapabilities;
+  checks: DoctorCheck[];
+}> {
   const projectsDir = resolve(options.projectsDir ?? defaultProjectsDir());
   const productRoot = resolve(fileURLToPath(new URL("../../../", import.meta.url)));
   const packagedStudioIndex = fileURLToPath(new URL("./studio/index.html", import.meta.url));
   const sourceStudioPackage = join(productRoot, "apps/studio/package.json");
   const installedMode = Boolean(process.env.CHENGFENG_VIDEOCUT_EXECUTABLE);
-  const managedTools = installedMode
-    ? await inspectInstalledManagedTools(productHomeDir())
-    : { ok: true, detail: "source-development PATH fallback", executables: {} };
+  const managedTools: ManagedToolsDoctorResult = installedMode
+    ? await inspectInstalledManagedTools(productHomeDir(), {
+      localDevelopment: options.localDevelopment === true,
+      expectedProductRoot: resolve(options.expectedProductRoot ?? defaultProductRoot()),
+    })
+    : options.localDevelopment
+      ? {
+        ok: false,
+        detail: "local development authorization applies only to the installed default Product Runtime",
+        executables: {},
+        releaseReady: false,
+        developmentMode: false,
+      }
+      : {
+        ok: true,
+        detail: "source-development PATH fallback",
+        executables: {},
+        releaseReady: false,
+        developmentMode: false,
+      };
   const [sourceFfmpeg, sourceFfprobe, registryExists, studioExists, transcription] = await Promise.all([
     installedMode ? Promise.resolve(null) : findExecutable("ffmpeg"),
     installedMode ? Promise.resolve(null) : findExecutable("ffprobe"),
@@ -2188,8 +2537,19 @@ export async function doctor(
         : `未配置。设置：chengfeng-videocut config set transcription.apiKey <值>`,
     },
   ];
+  const healthy = checks.every((check) => !check.required || check.ok);
+  const readinessMode = !healthy
+    ? "unready" as const
+    : managedTools.releaseReady
+      ? "release-ready" as const
+      : managedTools.developmentMode
+        ? "local-development" as const
+        : "source-development" as const;
   return {
-    healthy: checks.every((check) => !check.required || check.ok),
+    healthy,
+    developmentMode: healthy && managedTools.developmentMode,
+    releaseReady: healthy && managedTools.releaseReady,
+    readinessMode,
     capabilities: {
       runtimeApiVersion: 1,
       serviceApiVersion: 1,

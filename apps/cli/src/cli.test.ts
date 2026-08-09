@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { serializeProjectOperation } from "@video-workbench/core/node";
 import { runCli, type CliIo } from "./run";
+import { humanDoctor } from "./output";
 import { startStudioServer } from "./server/start";
 
 const cleanupPaths: string[] = [];
@@ -82,6 +83,25 @@ function captureIo(): { io: CliIo; stdout: string[]; stderr: string[] } {
 }
 
 describe("chengfeng-videocut CLI", () => {
+  it("reports the local-development doctor contract and its non-release wording", async () => {
+    const capture = captureIo();
+    const code = await runCli(["doctor", "--local-development", "--json"], { io: capture.io });
+    const payload = JSON.parse(capture.stdout[0]);
+    expect(code).toBe(1);
+    expect(payload.data).toMatchObject({
+      healthy: false,
+      developmentMode: false,
+      releaseReady: false,
+      readinessMode: "unready",
+    });
+    expect(humanDoctor({
+      healthy: true,
+      developmentMode: true,
+      releaseReady: false,
+      checks: [],
+    })).toContain("ready for authorized local development; NOT release-ready");
+  });
+
   it("documents the confirmation-gated render command and stable exit codes", async () => {
     const capture = captureIo();
     const code = await runCli(["--help", "--json"], { io: capture.io });

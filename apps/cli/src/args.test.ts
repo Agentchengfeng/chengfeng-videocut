@@ -52,6 +52,20 @@ describe("start argument parser", () => {
     );
   });
 
+  it("keeps local development authorization explicit and doctor-only", () => {
+    expect(parseArgs(["doctor", "--local-development", "--json"])).toMatchObject({
+      command: "doctor",
+      localDevelopment: true,
+      json: true,
+    });
+    expect(parseArgs(["doctor", "--json"])).toMatchObject({
+      command: "doctor",
+      localDevelopment: false,
+    });
+    expect(() => parseArgs(["start", "--local-development"]))
+      .toThrow("--local-development is not valid for this command");
+  });
+
   it("parses the complete managed service lifecycle", () => {
     for (const action of ["install", "start", "stop", "restart", "status", "ensure"]) {
       expect(parseArgs(["service", action, "--json"])).toMatchObject({

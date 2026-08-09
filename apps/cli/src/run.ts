@@ -857,7 +857,10 @@ export async function runCli(
       return 0;
     }
     if (parsed.command === "doctor") {
-      const data = await doctor({ projectsDir });
+      const data = await doctor({
+        projectsDir,
+        localDevelopment: parsed.localDevelopment,
+      });
       if (parsed.json) io.stdout(JSON.stringify(successEnvelope(parsed.command, data)));
       else io.stdout(humanDoctor(data));
       return data.healthy ? 0 : 1;

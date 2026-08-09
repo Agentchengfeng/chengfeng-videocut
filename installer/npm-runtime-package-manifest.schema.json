@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/Agentchengfeng/chengfeng-videocut/blob/v0.5.1/installer/npm-runtime-package-manifest.schema.json",
+  "$id": "https://github.com/Agentchengfeng/chengfeng-videocut/blob/v0.5.2/installer/npm-runtime-package-manifest.schema.json",
   "title": "Chengfeng VideoCut npm Runtime platform package manifest",
   "type": "object",
   "additionalProperties": false,
