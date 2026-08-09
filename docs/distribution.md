@@ -9,11 +9,17 @@
 ```text
 [Codex Plugin]
       |
-      +-- 已固定 SHA256 的 native installer
-      +-- 已固定 SHA256 的 install manifest
+      +-- 固定 npm package name + version + tarball integrity
+      +-- 直接取得当前 os/cpu 的一个平台 Runtime 数据包
       |
       v
-[compiled installer：无需系统 Node/Bun]
+[npm 平台包：无 lifecycle script、无 bin，不要求用户安装 npm]
+      |
+      +-- package manifest：平台、installer size/SHA256、许可状态
+      +-- payload/compiled installer
+      |
+      v
+[compiled installer：无需系统 Node/Bun，安装期不再联网取件]
       |
       +-- Runtime bundle
       +-- platform tools bundle
@@ -35,6 +41,22 @@ service ensure -> launchd / Windows Task Scheduler
       v
 ~/.chengfeng-videocut/cache/renderer-engine/
 ```
+
+npm registry 在这里是 Product Runtime 平台包的版本化发行仓库，不是用户操作入口。用户只安装
+Codex Plugin；原生 bootstrap 自己选择并获取一个精确平台包，校验 registry tarball integrity 与
+包内 manifest 后，再显式执行原有 native installer。平台包本身只是数据，不允许
+`preinstall` / `install` / `postinstall` 等 lifecycle script，也不暴露 `bin`。
+
+每个平台包只允许以下布局：
+
+```text
+package.json
+chengfeng-videocut-runtime-package.json
+payload/chengfeng-videocut-installer-<exact-platform>
+```
+
+包内 native installer 仍静态内嵌 Product Runtime、Bun、FFmpeg 与 FFprobe。浏览器引擎继续由
+Runtime 在用户确认的实际叠层 export 中按需下载与缓存，不进入 npm Runtime 包。
 
 ## 0.5.1 Release 契约
 
@@ -121,7 +143,20 @@ bun run installer:build            # 需先有 Runtime 与同平台 tools archiv
 bun run install-manifest:build     # 三个平台资产齐全后
 CHENGFENG_VIDEOCUT_NATIVE_ATTESTATION_DIR=/absolute/attestations \
   bun run release:native:stage     # 签名门禁通过后生成干净目录与统一 SHA256SUMS.txt
+
+# 已有 release-ready / VERIFIED install manifest 与 native installer 后，
+# 只在本地暂存 npm 平台包；本仓没有 publish 脚本。
+CHENGFENG_VIDEOCUT_NPM_RUNTIME_STAGE_DIR=/absolute/empty/output \
+  bun run npm-runtime:stage
+bun run npm-runtime:verify -- /absolute/output/darwin-arm64
 ```
+
+`npm-runtime:stage` 默认只接受 `release-ready / VERIFIED` 的 install manifest，并逐个复核
+native installer 的 byte size、SHA-256 与 macOS executable bit；输出目录已存在时拒绝覆盖。
+工程测试必须同时显式设置 `NODE_ENV=test` 与
+`CHENGFENG_VIDEOCUT_NPM_RUNTIME_LOCAL_FIXTURE=1`，产物会固定为
+`local-test-only / UNVERIFIED / private: true`，普通 verifier 仍拒绝它。本仓不提供 npm publish
+命令；发布者身份、registry provenance 与最终 tarball integrity 属于独立受保护发布编排。
 
 `tools:pack` 默认要求 release-ready、许可已验证的显式来源。工程 smoke 只有在显式设置
 `CHENGFENG_VIDEOCUT_LOCAL_TOOLS_FIXTURE=1` 时才接受本地 POC 二进制，并把工具包写成

@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Agentchengfeng/chengfeng-videocut/blob/v0.5.1/installer/npm-runtime-package-manifest.schema.json",
+  "title": "Chengfeng VideoCut npm Runtime platform package manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "product",
+    "productVersion",
+    "platformKey",
+    "npmPackage",
+    "distributionMode",
+    "licenseStatus",
+    "licenseNote",
+    "installer"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "product": { "const": "chengfeng-videocut" },
+    "productVersion": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$"
+    },
+    "platformKey": {
+      "enum": ["darwin-arm64", "darwin-x64", "win32-x64"]
+    },
+    "npmPackage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "os", "cpu"],
+      "properties": {
+        "name": {
+          "enum": [
+            "@chengfeng/videocut-runtime-darwin-arm64",
+            "@chengfeng/videocut-runtime-darwin-x64",
+            "@chengfeng/videocut-runtime-win32-x64"
+          ]
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$"
+        },
+        "os": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "uniqueItems": true,
+          "items": { "enum": ["darwin", "win32"] }
+        },
+        "cpu": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "uniqueItems": true,
+          "items": { "enum": ["arm64", "x64"] }
+        }
+      }
+    },
+    "distributionMode": {
+      "enum": ["release-ready", "local-test-only"]
+    },
+    "licenseStatus": {
+      "enum": ["VERIFIED", "UNVERIFIED"]
+    },
+    "licenseNote": {
+      "type": "string",
+      "minLength": 1
+    },
+    "installer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["asset", "path", "sha256", "size", "executable"],
+      "properties": {
+        "asset": {
+          "type": "string",
+          "pattern": "^[^/\\\\]+$"
+        },
+        "path": {
+          "type": "string",
+          "pattern": "^payload/[^/\\\\]+$"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967296
+        },
+        "executable": {
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "distributionMode": { "const": "release-ready" },
+        "licenseStatus": { "const": "VERIFIED" }
+      }
+    },
+    {
+      "properties": {
+        "distributionMode": { "const": "local-test-only" },
+        "licenseStatus": { "const": "UNVERIFIED" }
+      }
+    }
+  ]
+}
