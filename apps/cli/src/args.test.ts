@@ -223,6 +223,35 @@ describe("start argument parser", () => {
     ])).toThrow("--aspect-ratio is not valid for this command");
   });
 
+  it("parses Product-owned project ingest without raw transcript paths", () => {
+    expect(parseArgs([
+      "project", "ingest", "/tmp/job",
+      "--video", "uploads/talk.mp4",
+      "--language", "zh-CN",
+      "--aspect-ratio", "16:9",
+      "--projects-dir", "/tmp/projects",
+      "--json",
+    ])).toMatchObject({
+      command: "project.ingest",
+      project: "/tmp/job",
+      video: "uploads/talk.mp4",
+      language: "zh-CN",
+      aspectRatio: "16:9",
+      projectsDir: "/tmp/projects",
+      output: undefined,
+      transcript: undefined,
+      json: true,
+    });
+    expect(() => parseArgs([
+      "project", "ingest", "/tmp/job", "--video", "uploads/talk.mp4",
+      "--output", "transcript.json",
+    ])).toThrow("--output is not valid for this command");
+    expect(() => parseArgs([
+      "project", "ingest", "/tmp/job", "--video", "uploads/talk.mp4",
+      "--transcript", "words.json",
+    ])).toThrow("--transcript is not valid for this command");
+  });
+
   it("requires both project and artifact revisions for controlled artifacts", () => {
     const revision = "a".repeat(64);
     expect(parseArgs([

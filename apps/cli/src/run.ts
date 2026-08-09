@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { VideocutError, asVideocutError, parseTranscriptWords } from "@video-workbench/core";
 import {
   createKouboProject,
+  ingestKouboProject,
   prepareKouboProject,
   probeMedia,
   putKouboArtifact,
@@ -958,6 +959,58 @@ export async function runCli(
       };
       if (parsed.json) io.stdout(JSON.stringify(successEnvelope(parsed.command, data)));
       else io.stdout(`Transcribed ${data.wordCount} words to ${data.output}`);
+      return 0;
+    }
+
+    if (parsed.command === "project.ingest") {
+      let url: string | undefined;
+      let registered: boolean | undefined;
+      const ingested = await ingestKouboProject(
+        resolve(cwd, projectInput(parsed.command, parsed.project)),
+        {
+          video: parsed.video as string,
+          language: parsed.language,
+          aspectRatio: parsed.aspectRatio,
+          transcription: await resolveTranscriptionCredentials(),
+          runTranscription: options.runTranscription ?? transcribeKouboVideo,
+          create: {
+            finalize: async (prepared) => {
+              const project = await resolveProject(prepared.directory, { cwd, projectsDir });
+              url = projectUrl(project);
+              const registration = await registerProject(project, projectsDir);
+              if (!registration.registered) {
+                throw new VideocutError(
+                  "project_id_conflict",
+                  `project ingest refuses to reuse an existing registration: ${project.projectId}`,
+                  { projectId: project.projectId, linkPath: registration.linkPath },
+                );
+              }
+              registered = true;
+            },
+          },
+        },
+      );
+      if (url === undefined || registered === undefined) {
+        throw new VideocutError(
+          "io_error",
+          "project ingest completed without registration metadata",
+        );
+      }
+      const data = {
+        projectId: ingested.projectId,
+        directory: ingested.directory,
+        url,
+        registered,
+        canonicalVideo: ingested.canonicalVideo,
+        canonicalTranscript: ingested.canonicalTranscript,
+        indexWritten: ingested.indexWritten,
+        transcriptCueCount: ingested.transcript.cues.length,
+        cutWordCount: ingested.cutWordIds.length,
+        transcription: ingested.transcription,
+        metadata: ingested.metadata,
+      };
+      if (parsed.json) io.stdout(JSON.stringify(successEnvelope(parsed.command, data)));
+      else io.stdout(`${data.url}\nCreated ${data.directory}`);
       return 0;
     }
 

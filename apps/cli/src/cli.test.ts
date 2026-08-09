@@ -11,7 +11,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve, sep } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { serializeProjectOperation } from "@video-workbench/core/node";
 import { runCli, type CliIo } from "./run";
 import { humanDoctor } from "./output";
@@ -173,6 +173,66 @@ describe("chengfeng-videocut CLI", () => {
       ok: true,
       data: { provider: "volcengine", cueCount: 1, wordCount: 2, duration: 3.2 },
     });
+  });
+
+  it("ingests a real task without exposing an ASR output or transcript argument", async () => {
+    const root = await mkdtemp(join(tmpdir(), "chengfeng-videocut-cli-ingest-"));
+    cleanupPaths.push(root);
+    const projectDir = join(root, "ingested-task");
+    const projectsDir = join(root, "registry");
+    const media = "ingest-real-video";
+    await mkdir(join(projectDir, "uploads"), { recursive: true });
+    await writeFile(join(projectDir, "uploads/talk.mp4"), media);
+    const capture = captureIo();
+
+    const code = await runCli([
+      "project", "ingest", projectDir,
+      "--video", "uploads/talk.mp4",
+      "--aspect-ratio", "16:9",
+      "--projects-dir", projectsDir,
+      "--json",
+    ], {
+      io: capture.io,
+      runTranscription: async (jobDir, options) => {
+        expect(options.output).toMatch(/^\.chengfeng-videocut\/ingest\/[a-f0-9]{64}\/source-transcript\.json$/);
+        const output = join(jobDir, options.output);
+        await mkdir(dirname(output), { recursive: true });
+        await writeFile(output, JSON.stringify({
+          schemaVersion: 1,
+          provider: "volcengine",
+          language: "zh-CN",
+          media: {
+            source: options.video,
+            sha256: createHash("sha256").update(media).digest("hex"),
+            duration: 2,
+          },
+          cues: [{ id: "c-1", words: [{ id: "w-1", text: "真实", start: 0, end: 2 }] }],
+        }), { flag: "wx" });
+        return {
+          provider: "volcengine",
+          source: join(jobDir, options.video),
+          output,
+          cueCount: 1,
+          wordCount: 1,
+          duration: 2,
+        };
+      },
+    });
+    const payload = JSON.parse(capture.stdout[0]);
+
+    expect(code, `${capture.stderr.join(" | ")} ${capture.stdout.join(" | ")}`).toBe(0);
+    expect(payload).toMatchObject({
+      command: "project.ingest",
+      ok: true,
+      data: {
+        projectId: "ingested-task",
+        registered: true,
+        canonicalVideo: "input/source.mp4",
+        canonicalTranscript: "剪口播/1_转录/subtitles_words.json",
+        transcription: { role: "source-transcript", provider: "volcengine", reused: false },
+      },
+    });
+    expect(await realpath(join(projectsDir, "ingested-task"))).toBe(await realpath(projectDir));
   });
 
   it("returns revision_required for the legacy cuts apply syntax instead of filling latest EDL", async () => {

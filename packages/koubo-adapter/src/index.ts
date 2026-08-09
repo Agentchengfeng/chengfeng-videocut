@@ -92,5 +92,6 @@ export * from "./cutArtifactState";
 export * from "./artifact";
 export * from "./render";
 export * from "./transcription";
+export * from "./ingest";
 export * from "./scriptAlign";
 export * from "./dictionary";

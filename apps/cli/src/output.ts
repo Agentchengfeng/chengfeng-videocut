@@ -118,6 +118,7 @@ Usage:
   chengfeng-videocut inspect <project> [--json]
   chengfeng-videocut open <project> [--origin <url>] [--json]
   chengfeng-videocut transcribe <job-dir> --video <task-local-path> --output <task-local-path> [--language <code>] [--json]
+  chengfeng-videocut project ingest <job-dir> --video <task-local-path> [--language <code>] [--aspect-ratio <W:H>] [--projects-dir <dir>] [--json]
   chengfeng-videocut project create <job-dir> --video <task-local-path> --transcript <task-local-path> [--aspect-ratio <W:H>] [--projects-dir <dir>] [--json]
   chengfeng-videocut project prepare <job-dir> [--video <task-local-path>] [--transcript <task-local-path>] [--duration <seconds>] [--force-index] [--refresh-transcript] [--json]
   chengfeng-videocut artifact put <project> --type <subtitles|visual-plan|animation-manifest|timeline> --file <file> --expected-project-revision <sha256> --expected-artifact-revision <none|sha256> [--json]
@@ -163,6 +164,7 @@ cuts get returns the independent cut-selection revision required by cuts set.
 cutRanges are derived from transcript.json + cutWordIds; supplied cutRanges are ignored.
 cuts apply requires the exact edit-list revision returned to the user at confirmation time; it never substitutes the current latest revision.
 project create atomically establishes a new project from real task-local video and transcript files, then prepares and registers it. It never overwrites an existing project or injects demo media.
+project ingest is the Product-owned first-run entry: callers provide only a task-local video; Product chooses the hidden ASR staging role, reuses a matching completed stage after a captured create failure, and then runs the same atomic create/register path.
 transcribe extracts task-local source audio, calls the configured Volcengine ASR service, and atomically writes a new task-local word transcript. It requires VOLCENGINE_API_KEY and never creates a project.
 project prepare refreshes an existing canonical project; it does not create project.json.
 render run executes locally and requires --renderer or CHENGFENG_VIDEOCUT_RENDERER_PATH.

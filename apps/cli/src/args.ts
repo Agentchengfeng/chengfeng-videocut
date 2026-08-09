@@ -19,6 +19,7 @@ export type CliCommand =
   | "inspect"
   | "open"
   | "transcribe"
+  | "project.ingest"
   | "project.create"
   | "project.prepare"
   | "artifact.put"
@@ -439,6 +440,25 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     if (!output) usageError("transcribe requires --output <task-local-path>");
     assertOptions(["--video", "--output", "--language"]);
     return { command: "transcribe", project: positionals[1], ...common };
+  }
+  if (positionals[0] === "project" && positionals[1] === "ingest") {
+    if (positionals.length !== 3) {
+      usageError(
+        "Usage: chengfeng-videocut project ingest <job-dir> --video <task-local-path> [--language <code>] [--aspect-ratio <W:H>]",
+      );
+    }
+    const video = values.get("--video");
+    const aspectRatio = values.get("--aspect-ratio");
+    if (!video) usageError("project ingest requires --video <task-local-path>");
+    if (aspectRatio !== undefined && !/^\d+[:：]\d+$/.test(aspectRatio)) {
+      usageError("project ingest --aspect-ratio must be W:H (e.g. 3:4, 16:9, 1:1); omit it to derive from the video");
+    }
+    assertOptions(["--video", "--language", "--aspect-ratio", "--projects-dir"]);
+    return {
+      command: "project.ingest",
+      project: positionals[2],
+      ...common,
+    };
   }
   if (positionals[0] === "project" && positionals[1] === "create") {
     if (positionals.length !== 3) {
