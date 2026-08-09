@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { buildEditListFromCuts } from "@video-workbench/core";
 import { serializeProjectOperation } from "@video-workbench/core/node";
 import { materializeKouboEditListIndex } from "@video-workbench/koubo-adapter";
 import { PRODUCT_VERSION } from "../output";
@@ -92,6 +94,68 @@ async function managedServerFixture() {
 <script>window.__timelines = window.__timelines || {};</script>
 </body></html>`,
   );
+  return fixture;
+}
+
+function digest(content: string): string {
+  return createHash("sha256").update(content).digest("hex");
+}
+
+async function surfaceServerFixture() {
+  const fixture = await serverFixture();
+  const source = "input/source.mp4";
+  const sourceBytes = "surface fixture source";
+  const sourceSha256 = digest(sourceBytes);
+  const transcriptRaw = `${JSON.stringify({
+    schemaVersion: 1,
+    cues: [{
+      id: "cue-1",
+      start: 0,
+      end: 4,
+      words: [{ id: "word-1", text: "测试", start: 0, end: 1 }],
+    }],
+  }, null, 2)}\n`;
+  const cutsRaw = `${JSON.stringify({
+    schemaVersion: 3,
+    cutWordIds: [],
+    cutRanges: [],
+  }, null, 2)}\n`;
+  const editListRaw = `${JSON.stringify(buildEditListFromCuts({
+    projectId: "demo",
+    source,
+    sourceDuration: 4,
+    transcriptRevision: digest(transcriptRaw),
+    cutsRevision: digest(cutsRaw),
+    cutRanges: [],
+  }), null, 2)}\n`;
+  await mkdir(join(fixture.projectDir, "input"), { recursive: true });
+  await Promise.all([
+    writeFile(join(fixture.projectDir, source), sourceBytes),
+    writeFile(join(fixture.projectDir, "transcript.json"), transcriptRaw),
+    writeFile(join(fixture.projectDir, "cut-selection.json"), cutsRaw),
+    writeFile(join(fixture.projectDir, "edit-list.json"), editListRaw),
+    writeFile(join(fixture.projectDir, "workbench.json"), `${JSON.stringify({
+      schemaVersion: 1,
+      projectId: "demo",
+      videoSource: source,
+      sourceSha256,
+    }, null, 2)}\n`),
+    writeFile(join(fixture.projectDir, "project.json"), `${JSON.stringify({
+      jobId: "demo",
+      source: { path: source, sha256: sourceSha256, immutable: true },
+      artifacts: {
+        workbenchEntry: "index.html",
+        workbenchTranscript: "transcript.json",
+        workbenchCutSelection: "cut-selection.json",
+        workbenchEditList: "edit-list.json",
+      },
+      workbench: { projectId: "demo", surface: "koubo" },
+    }, null, 2)}\n`),
+    writeFile(join(fixture.projectDir, "index.html"), `<!doctype html>
+<!-- generated-by: chengfeng-videocut -->
+<main data-edit-list-revision="${digest(editListRaw)}" data-videocut-projection-schema="1" data-videocut-projection-runtime="5"></main>
+`),
+  ]);
   return fixture;
 }
 
@@ -368,6 +432,45 @@ describe("packaged Studio server", () => {
       expect(rejected.headers.get("allow")).toBe("GET, HEAD");
     }
     expect(productHandlerSawVendorRoute).toBe(false);
+  });
+
+  it("classifies only a complete Koubo project for legacy Studio links without writing it", async () => {
+    const fixture = await surfaceServerFixture();
+    const projectFiles = [
+      "project.json",
+      "workbench.json",
+      "transcript.json",
+      "cut-selection.json",
+      "edit-list.json",
+      "index.html",
+      "input/source.mp4",
+    ];
+    const before = await Promise.all(projectFiles.map((file) =>
+      readFile(join(fixture.projectDir, file), "utf8")));
+    const server = await startStudioServer({
+      port: 0,
+      projectsDir: fixture.projectsDir,
+      dataDir: join(fixture.root, "data"),
+      staticDir: fixture.staticDir,
+    });
+    servers.push(server);
+
+    const classified = await fetch(`${server.url}/api/projects/demo/surface`);
+    expect(classified.status).toBe(200);
+    expect(await classified.json()).toEqual({
+      schemaVersion: 1,
+      projectId: "demo",
+      surface: "koubo",
+    });
+    expect((await fetch(`${server.url}/api/projects/missing/surface`)).status).toBe(404);
+    const unsupportedMethod = await fetch(`${server.url}/api/projects/demo/surface`, {
+      method: "POST",
+    });
+    expect(unsupportedMethod.status).toBe(405);
+    expect(unsupportedMethod.headers.get("allow")).toBe("GET");
+    const after = await Promise.all(projectFiles.map((file) =>
+      readFile(join(fixture.projectDir, file), "utf8")));
+    expect(after).toEqual(before);
   });
 
   it("streams byte ranges only from media inside a registered preview project", async () => {

@@ -615,6 +615,11 @@ describe("prepareKouboProject natural-pause migration", () => {
       sha256: digest("fixture-media"),
       immutable: true,
     });
+    expect(project.workbench).toEqual({
+      projectId: "fixture-job",
+      surface: "koubo",
+      url: "http://127.0.0.1:5190/?view=koubo#project/fixture-job",
+    });
     await expect(readFile(join(job, "visual-plan.json"), "utf8")).rejects.toThrow();
   });
 

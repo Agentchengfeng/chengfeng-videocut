@@ -1962,7 +1962,15 @@ async function prepareKouboProjectSnapshot(
     sha256: sourceSha256,
     immutable: true,
   };
-  project.workbench = { projectId, url: `http://127.0.0.1:5190/?view=koubo#project/${encodeURIComponent(projectId)}` };
+  // The URL is the canonical opening path; `surface` lets future Runtime
+  // versions identify a freshly prepared Koubo project without relying on a
+  // hash that generic HyperFrames projects also use.  Legacy projects have no
+  // marker and are classified by the Studio through read-only evidence.
+  project.workbench = {
+    projectId,
+    surface: "koubo",
+    url: `http://127.0.0.1:5190/?view=koubo#project/${encodeURIComponent(projectId)}`,
+  };
   project.updatedAt = now.toISOString();
   preserveUpdatedAtWhenUnchanged(originalProject, project);
   const event = {

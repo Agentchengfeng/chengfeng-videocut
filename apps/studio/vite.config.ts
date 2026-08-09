@@ -88,6 +88,10 @@ function isVideocutTimelineMediaMiddlewareRequest(pathname: string): boolean {
   return /^\/api\/v1\/projects\/[^/]+\/media\/(?:frame|waveform)$/.test(pathname);
 }
 
+function isVideocutProjectSurfaceMiddlewareRequest(pathname: string): boolean {
+  return /^\/api\/projects\/[^/]+\/surface$/.test(pathname);
+}
+
 // ── Vite plugin ──────────────────────────────────────────────────────────────
 
 function devProjectApi(): Plugin {
@@ -109,6 +113,16 @@ function devProjectApi(): Plugin {
       let _api: { fetch: (req: Request) => Promise<Response> } | null = null;
       let _cutsApi: ((request: Request) => Promise<Response | null>) | null = null;
       let _timelineMediaApi: ((request: Request) => Promise<Response | null>) | null = null;
+      let _projectSurfaceApi: ((request: Request) => Promise<Response | null>) | null = null;
+      const getProjectSurfaceApi = async () => {
+        if (!_projectSurfaceApi) {
+          const mod = await server.ssrLoadModule(
+            "./src/server/videocutProjectSurfaceApi.ts",
+          );
+          _projectSurfaceApi = mod.createVideocutProjectSurfaceHandler({ projectsDir: dataDir });
+        }
+        return _projectSurfaceApi;
+      };
       const getTimelineMediaApi = async () => {
         if (!_timelineMediaApi) {
           const mod = await server.ssrLoadModule(
@@ -190,6 +204,37 @@ function devProjectApi(): Plugin {
           await bridgeHonoResponse(response, res);
         } catch (err) {
           console.error("[Studio Timeline media API] Error:", err);
+          if (!res.headersSent) {
+            res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
+            res.end(JSON.stringify({
+              schemaVersion: 1,
+              ok: false,
+              error: { code: "internal_error", message: "Internal server error" },
+            }));
+          }
+        }
+      });
+
+      // A legacy bare project hash is shared with generic HyperFrames links.
+      // The compatibility probe only reads and positively verifies Koubo files;
+      // it must win before the generic API can claim this product route.
+      server.middlewares.use(async (req, res, next) => {
+        const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+        if (!isVideocutProjectSurfaceMiddlewareRequest(url.pathname)) return next();
+        try {
+          const headers: Record<string, string> = {};
+          for (const [key, value] of Object.entries(req.headers)) {
+            if (value != null) headers[key] = Array.isArray(value) ? value.join(", ") : value;
+          }
+          const surfaceApi = await getProjectSurfaceApi();
+          const response = await surfaceApi(new Request(url.toString(), {
+            method: req.method,
+            headers,
+          }));
+          if (!response) return next();
+          await bridgeHonoResponse(response, res);
+        } catch (err) {
+          console.error("[Studio project surface API] Error:", err);
           if (!res.headersSent) {
             res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
             res.end(JSON.stringify({

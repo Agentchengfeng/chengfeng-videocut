@@ -15,6 +15,7 @@ import { createVideocutEditListHandler } from "../../../studio/src/server/videoc
 import { createVideocutSubtitlesHandler } from "../../../studio/src/server/videocutSubtitlesApi";
 import { createVideocutVisualsHandler } from "../../../studio/src/server/videocutVisualsApi";
 import { createVideocutTimelineMediaHandler } from "../../../studio/src/server/videocutTimelineMediaApi";
+import { createVideocutProjectSurfaceHandler } from "../../../studio/src/server/videocutProjectSurfaceApi";
 import { materializeKouboEditListIndex } from "@video-workbench/koubo-adapter";
 import { findExecutable, serializeProjectOperation } from "@video-workbench/core/node";
 import { StudioEventHub } from "./events";
@@ -522,6 +523,10 @@ export async function startStudioServer(
     projectsDir,
     cacheDir: resolve(dataDir, "cache", "timeline-media"),
   });
+  // Old `#project/<id>` bookmarks are ambiguous with generic HyperFrames
+  // projects.  This handler reads and positively verifies the Koubo artifacts;
+  // it must run before the generic API and must never prepare or repair state.
+  const projectSurfaceApi = createVideocutProjectSurfaceHandler({ projectsDir });
   const projectMedia = createProjectMediaHandler({ projectsDir });
   const studioAdapter = createProductionStudioAdapter({ projectsDir, rendersDir });
   const studioApi = createStudioApi(studioAdapter);
@@ -548,6 +553,8 @@ export async function startStudioServer(
         if (mediaResponse) return mediaResponse;
         const timelineMediaResponse = await timelineMediaApi(request);
         if (timelineMediaResponse) return timelineMediaResponse;
+        const projectSurfaceResponse = await projectSurfaceApi(request);
+        if (projectSurfaceResponse) return projectSurfaceResponse;
         const editPreviewArtifactResponse = await editPreviewArtifactApi(request);
         if (editPreviewArtifactResponse) return editPreviewArtifactResponse;
         if (url.pathname.startsWith("/api/") && productApi) {
