@@ -73,6 +73,18 @@ installer 使用 `runtime-update.lock`、`installer-state.json` 与同卷 pendin
 Runtime 自证、完整树摘要、managed tools 文件清单与服务 health/capabilities 全部通过，
 才推进 `app/current` 和 `tools/current`。失败恢复 last-known-good，项目目录永不进入事务。
 
+普通安装绝不覆盖 `rollback_failed` journal。维护恢复必须显式使用同平台的自包含 installer：
+
+```text
+--recover-rollback
+```
+
+它只允许当前用户的默认 Product 根；在锁内验证 journal、旧/候选 Runtime、stable launcher 和旧服务
+身份，只解包并校验 installer 内嵌的 tools payload 来重做回滚。它不会读取外部 manifest/checksum，
+不会下载 Runtime/tools，也不会开始新安装；custom root、source/external installer、篡改 journal、缺失
+候选或损坏内嵌 tools 都必须 fail-closed。恢复成功时 JSON 的 `productVersion` 是实际恢复的旧 Runtime，
+不是 installer 自身的版本。
+
 同一 manifest 的第二次安装先核对 Runtime/tree/tools/manifest 身份；完全一致时输出
 `assetDownloads: 0`，不重新下载 Runtime 或 tools。渲染引擎是确认 export 时才处理的
 独立缓存，不属于安装交易。并发安装只有一个持锁者能改 current。
