@@ -234,6 +234,10 @@ describe("npm Runtime platform package", () => {
     expect(packageJson.os).toEqual(["darwin"]);
     expect(packageJson.cpu).toEqual(["arm64"]);
     expect(packageJson.license).toBe("SEE LICENSE IN LICENSES.md");
+    expect(packageJson.repository).toEqual({
+      type: "git",
+      url: "https://github.com/Agentchengfeng/chengfeng-videocut.git",
+    });
     expect(packageJson.files).toEqual([
       NPM_RUNTIME_PACKAGE_MANIFEST,
       ...NPM_RUNTIME_LEGAL_FILES,

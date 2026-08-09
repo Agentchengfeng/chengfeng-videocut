@@ -197,10 +197,15 @@ jobs:
           "WINDOWS_SIGNING_CERT_THUMBPRINT=$($certificate[0].Thumbprint)" >> $env:GITHUB_ENV
       - name: Verify Authenticode trust, timestamp, EKU, and pinned publisher
         run: bun run release:native:verify:windows -- "$PWD/release"
+      - name: Write the native-Windows verification receipt for independent attestation
+        shell: pwsh
+        run: bun run release:native:write:windows-receipt -- "$PWD/release" "$PWD/release/chengfeng-videocut-windows-authenticode-receipt.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: native-release-windows-signed-installer
-          path: release/chengfeng-videocut-installer-windows-x64.exe
+          path: |
+            release/chengfeng-videocut-installer-windows-x64.exe
+            release/chengfeng-videocut-windows-authenticode-receipt.json
           if-no-files-found: error
       - name: Remove certificate from the runner
         if: always()

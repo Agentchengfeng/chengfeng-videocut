@@ -9,7 +9,9 @@ import {
   validateNativeSigningPolicy,
   verifyInstallerAttestations,
   verifyMacInstallerSignatures,
+  verifyWindowsAuthenticodeReceipt,
   verifyWindowsInstallerSignature,
+  WINDOWS_AUTHENTICODE_RECEIPT,
 } from "../scripts/native-release-signatures";
 
 const temporaryRoots: string[] = [];
@@ -259,6 +261,104 @@ describe("Windows native installer signature gate", () => {
 });
 
 describe("protected cross-platform attestation summary", () => {
+  test("requires an independently attested native-Windows Authenticode receipt bound to exact bytes", async () => {
+    const { releaseDir, attestationDir } = await fixture();
+    const installerBytes = await readFile(join(releaseDir, WINDOWS_ASSET));
+    const sourceDigest = "1".repeat(40);
+    const signingPolicySha256 = "3".repeat(64);
+    await writeFile(join(attestationDir, WINDOWS_AUTHENTICODE_RECEIPT), `${JSON.stringify({
+      schemaVersion: 1,
+      kind: "chengfeng-videocut-windows-authenticode-verification",
+      productVersion: "0.5.0",
+      releaseTag: "v0.5.0",
+      sourceDigest,
+      platform: "win32",
+      verifier: "Get-AuthenticodeSignature",
+      signingPolicySha256,
+      workflowRun: {
+        repository: "Agentchengfeng/chengfeng-videocut",
+        runId: "123456",
+        runAttempt: 1,
+        workflowRef: "Agentchengfeng/chengfeng-videocut/.github/workflows/native-release-signing.yml@refs/tags/v0.5.0",
+        environment: "native-release",
+      },
+      installer: {
+        asset: WINDOWS_ASSET,
+        sha256: createHash("sha256").update(installerBytes).digest("hex"),
+        size: installerBytes.length,
+      },
+    }, null, 2)}\n`);
+    await writeFile(join(attestationDir, `${WINDOWS_AUTHENTICODE_RECEIPT}.attestation.json`), "{\"bundle\":true}\n");
+    const calls: string[][] = [];
+    await verifyWindowsAuthenticodeReceipt({
+      releaseDir,
+      attestationDir,
+      version: "0.5.0",
+      sourceDigest,
+      signingPolicySha256,
+      expectedWorkflowRunId: "123456",
+      policy: policy(),
+      runner: async (command, args) => {
+        calls.push([command, ...args]);
+        return { status: 0, stdout: "[{\"verificationResult\":{}}]", stderr: "" };
+      },
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].slice(0, 3)).toEqual(["gh", "attestation", "verify"]);
+    expect(calls[0].some((argument) => argument.endsWith(`/${WINDOWS_AUTHENTICODE_RECEIPT}`))).toBe(true);
+    expect(calls[0]).toContain("--deny-self-hosted-runners");
+
+    const receiptPath = join(attestationDir, WINDOWS_AUTHENTICODE_RECEIPT);
+    const copiedReceipt = JSON.parse(await readFile(receiptPath, "utf8"));
+    copiedReceipt.workflowRun.runId = "999999";
+    await writeFile(receiptPath, `${JSON.stringify(copiedReceipt)}\n`);
+    await expect(verifyWindowsAuthenticodeReceipt({
+      releaseDir,
+      attestationDir,
+      version: "0.5.0",
+      sourceDigest,
+      signingPolicySha256,
+      expectedWorkflowRunId: "123456",
+      policy: policy(),
+      runner: async () => ({ status: 0, stdout: "[{}]", stderr: "" }),
+    })).rejects.toThrow(/expected protected workflow run/);
+  });
+
+  test("rejects a Windows receipt copied from different installer bytes", async () => {
+    const { releaseDir, attestationDir } = await fixture();
+    const sourceDigest = "1".repeat(40);
+    const signingPolicySha256 = "3".repeat(64);
+    await writeFile(join(attestationDir, WINDOWS_AUTHENTICODE_RECEIPT), `${JSON.stringify({
+      schemaVersion: 1,
+      kind: "chengfeng-videocut-windows-authenticode-verification",
+      productVersion: "0.5.0",
+      releaseTag: "v0.5.0",
+      sourceDigest,
+      platform: "win32",
+      verifier: "Get-AuthenticodeSignature",
+      signingPolicySha256,
+      workflowRun: {
+        repository: "Agentchengfeng/chengfeng-videocut",
+        runId: "123456",
+        runAttempt: 1,
+        workflowRef: "Agentchengfeng/chengfeng-videocut/.github/workflows/native-release-signing.yml@refs/tags/v0.5.0",
+        environment: "native-release",
+      },
+      installer: { asset: WINDOWS_ASSET, sha256: "f".repeat(64), size: 1 },
+    })}\n`);
+    await writeFile(join(attestationDir, `${WINDOWS_AUTHENTICODE_RECEIPT}.attestation.json`), "{}\n");
+    await expect(verifyWindowsAuthenticodeReceipt({
+      releaseDir,
+      attestationDir,
+      version: "0.5.0",
+      sourceDigest,
+      signingPolicySha256,
+      expectedWorkflowRunId: "123456",
+      policy: policy(),
+      runner: async () => ({ status: 0, stdout: "[{}]", stderr: "" }),
+    })).rejects.toThrow(/exact installer bytes/);
+  });
+
   test("binds each exact installer to repo, signer workflow, tag, and GitHub-hosted runner", async () => {
     const { releaseDir, attestationDir } = await fixture();
     const calls: string[][] = [];

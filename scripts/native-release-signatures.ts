@@ -8,6 +8,7 @@ const MAC_INSTALLERS = [
   "chengfeng-videocut-installer-macos-x64",
 ] as const;
 const WINDOWS_INSTALLER = "chengfeng-videocut-installer-windows-x64.exe";
+export const WINDOWS_AUTHENTICODE_RECEIPT = "chengfeng-videocut-windows-authenticode-receipt.json";
 const ALL_INSTALLERS = [...MAC_INSTALLERS, WINDOWS_INSTALLER] as const;
 const EXPECTED_MAC_IDENTIFIERS = {
   "chengfeng-videocut-installer-macos-arm64":
@@ -265,6 +266,29 @@ type WindowsSignatureReport = {
   hasTrustedTimestamp?: unknown;
 };
 
+export type WindowsAuthenticodeReceipt = {
+  schemaVersion: 1;
+  kind: "chengfeng-videocut-windows-authenticode-verification";
+  productVersion: string;
+  releaseTag: string;
+  sourceDigest: string;
+  platform: "win32";
+  verifier: "Get-AuthenticodeSignature";
+  signingPolicySha256: string;
+  workflowRun: {
+    repository: "Agentchengfeng/chengfeng-videocut";
+    runId: string;
+    runAttempt: number;
+    workflowRef: string;
+    environment: "native-release";
+  };
+  installer: {
+    asset: typeof WINDOWS_INSTALLER;
+    sha256: string;
+    size: number;
+  };
+};
+
 export async function verifyWindowsInstallerSignature(options: {
   rootDir: string;
   releaseDir: string;
@@ -306,6 +330,105 @@ export async function verifyWindowsInstallerSignature(options: {
     report.certificateSha256.toLowerCase() !== options.policy.windows.certificateSha256.toLowerCase() ||
     report.hasCodeSigningEku !== true || report.hasTrustedTimestamp !== true
   ) throw new Error("Windows Authenticode signer identity or trust result is not pinned and valid");
+}
+
+function exactObjectKeys(value: Record<string, unknown>, expected: readonly string[], label: string): void {
+  const actual = Object.keys(value).sort();
+  const wanted = [...expected].sort();
+  if (actual.join("\0") !== wanted.join("\0")) throw new Error(`${label} keys are not exact`);
+}
+
+export async function verifyWindowsAuthenticodeReceipt(options: {
+  releaseDir: string;
+  attestationDir: string;
+  version: string;
+  sourceDigest: string;
+  signingPolicySha256: string;
+  expectedWorkflowRunId: string;
+  policy: NativeSigningPolicy;
+  runner?: CommandRunner;
+}): Promise<void> {
+  validateNativeSigningPolicy(options.policy);
+  if (!/^[a-f0-9]{40,64}$/.test(options.sourceDigest)) {
+    throw new Error("Windows Authenticode receipt source digest must be the exact release commit");
+  }
+  if (!/^[a-f0-9]{64}$/.test(options.signingPolicySha256)) {
+    throw new Error("Windows Authenticode receipt signing policy digest is invalid");
+  }
+  const attestationDir = await canonicalAttestationDirectory(options.attestationDir);
+  const receiptPath = join(attestationDir, WINDOWS_AUTHENTICODE_RECEIPT);
+  const bundlePath = join(attestationDir, `${WINDOWS_AUTHENTICODE_RECEIPT}.attestation.json`);
+  await assertSingleLinkFile(receiptPath, "Windows Authenticode verification receipt");
+  await assertSingleLinkFile(bundlePath, "Windows Authenticode receipt attestation bundle");
+  const receipt = JSON.parse(await readFile(receiptPath, "utf8")) as Record<string, unknown>;
+  exactObjectKeys(receipt, [
+    "schemaVersion", "kind", "productVersion", "releaseTag", "sourceDigest", "platform",
+    "verifier", "signingPolicySha256", "workflowRun", "installer",
+  ], "Windows Authenticode receipt");
+  if (
+    receipt.schemaVersion !== 1 ||
+    receipt.kind !== "chengfeng-videocut-windows-authenticode-verification" ||
+    receipt.productVersion !== options.version ||
+    receipt.releaseTag !== `v${options.version}` ||
+    receipt.sourceDigest !== options.sourceDigest ||
+    receipt.platform !== "win32" ||
+    receipt.verifier !== "Get-AuthenticodeSignature" ||
+    receipt.signingPolicySha256 !== options.signingPolicySha256
+  ) throw new Error("Windows Authenticode receipt identity is not exact");
+  if (!receipt.workflowRun || typeof receipt.workflowRun !== "object" || Array.isArray(receipt.workflowRun)) {
+    throw new Error("Windows Authenticode receipt workflow run is invalid");
+  }
+  const workflowRun = receipt.workflowRun as Record<string, unknown>;
+  exactObjectKeys(workflowRun, ["repository", "runId", "runAttempt", "workflowRef", "environment"],
+    "Windows Authenticode receipt workflow run");
+  if (
+    workflowRun.repository !== "Agentchengfeng/chengfeng-videocut" ||
+    workflowRun.runId !== options.expectedWorkflowRunId ||
+    !/^[1-9][0-9]*$/.test(options.expectedWorkflowRunId) ||
+    !Number.isSafeInteger(workflowRun.runAttempt) || Number(workflowRun.runAttempt) < 1 ||
+    workflowRun.workflowRef !==
+      `Agentchengfeng/chengfeng-videocut/.github/workflows/native-release-signing.yml@refs/tags/v${options.version}` ||
+    workflowRun.environment !== "native-release"
+  ) throw new Error("Windows Authenticode receipt is not bound to the expected protected workflow run");
+  if (!receipt.installer || typeof receipt.installer !== "object" || Array.isArray(receipt.installer)) {
+    throw new Error("Windows Authenticode receipt installer record is invalid");
+  }
+  const installer = receipt.installer as Record<string, unknown>;
+  exactObjectKeys(installer, ["asset", "sha256", "size"], "Windows Authenticode receipt installer");
+  const installerPath = join(options.releaseDir, WINDOWS_INSTALLER);
+  await assertSingleLinkFile(installerPath, WINDOWS_INSTALLER);
+  const installerBytes = await readFile(installerPath);
+  const installerSha256 = createHash("sha256").update(installerBytes).digest("hex");
+  if (
+    installer.asset !== WINDOWS_INSTALLER ||
+    installer.sha256 !== installerSha256 ||
+    installer.size !== installerBytes.length
+  ) throw new Error("Windows Authenticode receipt does not bind the exact installer bytes");
+
+  const runner = options.runner ?? defaultRunner;
+  const args = [
+    "attestation", "verify", receiptPath,
+    "--bundle", bundlePath,
+    "--repo", options.policy.githubAttestation.repository,
+    "--signer-workflow", options.policy.githubAttestation.signerWorkflow,
+    "--signer-digest", options.policy.githubAttestation.signerDigest,
+    "--source-ref", `refs/tags/v${options.version}`,
+    "--source-digest", options.sourceDigest,
+    "--predicate-type", "https://slsa.dev/provenance/v1",
+    "--format", "json",
+  ];
+  if (options.policy.githubAttestation.denySelfHostedRunners) args.push("--deny-self-hosted-runners");
+  const result = await runner("gh", args);
+  assertCommand(result, "Windows Authenticode receipt GitHub attestation verification");
+  let verified: unknown;
+  try {
+    verified = JSON.parse(result.stdout);
+  } catch {
+    throw new Error("Windows Authenticode receipt attestation verifier returned invalid JSON");
+  }
+  if (!Array.isArray(verified) || verified.length < 1) {
+    throw new Error("Windows Authenticode receipt has no verified GitHub artifact attestation");
+  }
 }
 
 async function canonicalAttestationDirectory(path: string): Promise<string> {
@@ -386,13 +509,21 @@ export async function verifyNativeReleaseSecurity(options: {
   attestationDir?: string;
   runner?: CommandRunner;
   platform?: NodeJS.Platform;
+  expectedWorkflowRunId?: string;
 }): Promise<void> {
   const policy = options.policyPath
     ? await readNativeSigningPolicyFile(options.policyPath)
     : await readNativeSigningPolicy(options.rootDir);
+  const policyPath = options.policyPath ?? join(options.rootDir, "installer/native-release-signing-policy.json");
+  const signingPolicySha256 = createHash("sha256").update(await readFile(policyPath)).digest("hex");
   const attestationDir = options.attestationDir ?? process.env.CHENGFENG_VIDEOCUT_NATIVE_ATTESTATION_DIR;
   if (!attestationDir) {
     throw new Error("CHENGFENG_VIDEOCUT_NATIVE_ATTESTATION_DIR is required for public native staging");
+  }
+  const expectedWorkflowRunId = options.expectedWorkflowRunId ??
+    process.env.CHENGFENG_VIDEOCUT_NATIVE_WORKFLOW_RUN_ID;
+  if (!expectedWorkflowRunId || !/^[1-9][0-9]*$/.test(expectedWorkflowRunId)) {
+    throw new Error("CHENGFENG_VIDEOCUT_NATIVE_WORKFLOW_RUN_ID is required for public native staging");
   }
   await verifyMacInstallerSignatures({
     releaseDir: options.releaseDir,
@@ -412,6 +543,19 @@ export async function verifyNativeReleaseSecurity(options: {
     attestationDir,
     version: options.version,
     sourceDigest,
+    policy,
+    runner,
+  });
+  // Authenticode trust can only be established on native Windows. The protected,
+  // independently-attested receipt binds that native result to these exact bytes,
+  // source commit and signing policy before a macOS stage may aggregate packages.
+  await verifyWindowsAuthenticodeReceipt({
+    releaseDir: options.releaseDir,
+    attestationDir,
+    version: options.version,
+    sourceDigest,
+    signingPolicySha256,
+    expectedWorkflowRunId,
     policy,
     runner,
   });

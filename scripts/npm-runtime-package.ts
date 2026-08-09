@@ -97,6 +97,10 @@ const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const ALL_PLATFORM_KEYS = Object.keys(NPM_RUNTIME_TARGETS).sort();
 const REQUIRED_SBOM_PACKAGES = ["chengfeng-videocut", "bun", "ffmpeg", "ffprobe"] as const;
+const NPM_RUNTIME_REPOSITORY = {
+  type: "git",
+  url: "https://github.com/Agentchengfeng/chengfeng-videocut.git",
+} as const;
 
 function check(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -336,6 +340,7 @@ function packageJsonFor(
     version: manifest.npmPackage.version,
     description: `Managed Chengfeng VideoCut Product Runtime payload for ${manifest.platformKey}`,
     license: "SEE LICENSE IN LICENSES.md",
+    repository: NPM_RUNTIME_REPOSITORY,
     os: manifest.npmPackage.os,
     cpu: manifest.npmPackage.cpu,
     files: npmPackageFiles(manifest),
@@ -350,7 +355,7 @@ async function verifyPackageJson(
 ): Promise<void> {
   check(isRecord(value), "package.json must be an object");
   const localFixture = manifest.distributionMode === "local-test-only";
-  const keys = ["name", "version", "description", "license", "os", "cpu", "files",
+  const keys = ["name", "version", "description", "license", "repository", "os", "cpu", "files",
     localFixture ? "private" : "publishConfig"];
   exactKeys(value, keys, "package.json");
   check(!Object.hasOwn(value, "scripts") && !Object.hasOwn(value, "bin"),
@@ -360,6 +365,8 @@ async function verifyPackageJson(
   check(value.description === `Managed Chengfeng VideoCut Product Runtime payload for ${manifest.platformKey}`,
     "package.json description is not exact");
   check(value.license === "SEE LICENSE IN LICENSES.md", "package.json composite license pointer is not exact");
+  check(JSON.stringify(value.repository) === JSON.stringify(NPM_RUNTIME_REPOSITORY),
+    "package.json repository is not exact for npm provenance");
   check(JSON.stringify(value.os) === JSON.stringify(manifest.npmPackage.os), "package.json os is not exact");
   check(JSON.stringify(value.cpu) === JSON.stringify(manifest.npmPackage.cpu), "package.json cpu is not exact");
   check(JSON.stringify(value.files) === JSON.stringify(npmPackageFiles(manifest)),

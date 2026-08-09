@@ -72,7 +72,7 @@ installer SHA-256 绑定起来。SBOM 不替代许可证文本、NOTICE 或 FFmp
 包内 native installer 仍静态内嵌 Product Runtime、Bun、FFmpeg 与 FFprobe。浏览器引擎继续由
 Runtime 在用户确认的实际叠层 export 中按需下载与缓存，不进入 npm Runtime 包。
 
-## 0.5.1 Release 契约
+## 0.5.1 上游 native build 契约
 
 同一个 `SHA256SUMS.txt` 必须覆盖且只覆盖以下八个资产：
 
@@ -85,23 +85,27 @@ Runtime 在用户确认的实际叠层 export 中按需下载与缓存，不进�
 - `chengfeng-videocut-tools-0.5.1-darwin-x64.tar.gz`
 - `chengfeng-videocut-tools-0.5.1-win32-x64.tar.gz`
 
-Plugin 必须固定 native installer SHA256 与 install manifest SHA256。installer 的正式调用
-合同是：
+上述八个资产是 Runtime 仓库在 native build、签名与受保护汇总阶段内部使用的上游合同，
+不是 Plugin 的下载合同。上游 self-contained installer 仍用 install manifest 与
+`SHA256SUMS.txt` 把编译时内嵌的 Runtime/tools 输入绑定起来。
+
+## Plugin 消费合同
+
+Plugin 不再直接消费 GitHub installer、install manifest 或 `SHA256SUMS.txt`。它必须按当前
+`os/cpu` 固定一个 npm 平台 package name、精确 version 与 registry 返回的 tarball SRI，解包后
+先验证受控布局和 `chengfeng-videocut-runtime-package.json`，再用 manifest 中的 installer
+byte size / SHA-256 复核 `payload/` 内的 self-contained installer。三层身份都一致才允许执行：
 
 ```text
---manifest <versioned URL or verified local fixture>
---checksum-file <already verified SHA256SUMS.txt>
 --target-root <absolute managed root>
 --ensure-service
 --json
 ```
 
-未知参数、重复参数、多余位置参数、相对 target root、文件系统根、用户 HOME 或 HOME
-祖先都 fail-closed；target root 自身或任一已有路径组件是 symlink/junction/reparse point
-时，也在第一次创建目录或写文件前拒绝。`--checksum-file` 必须包含 manifest 的精确摘要；
-manifest 再声明 Runtime/tools 资产名、根目录、SHA256 与精确 byte size，不能自证。
-manifest/checksum 有独立小体积上限，Runtime/tools 按声明大小流式、有界下载，实际字节数
-必须完全一致后才允许做摘要与解压校验。
+Plugin 不给 self-contained installer 传 `--manifest` 或 `--checksum-file`，installer 安装时也不再
+联网取 Runtime/tools。未知参数、重复参数、多余位置参数、相对 target root、文件系统根、用户
+HOME 或 HOME 祖先仍 fail-closed；target root 自身或任一已有路径组件是
+symlink/junction/reparse point 时，也在第一次创建目录或写文件前拒绝。
 
 ## 安装事务
 
@@ -156,6 +160,7 @@ bun run tools:pack                 # 每个平台在对应 runner 构建
 bun run installer:build            # 需先有 Runtime 与同平台 tools archive + sidecar
 bun run install-manifest:build     # 三个平台资产齐全后
 CHENGFENG_VIDEOCUT_NATIVE_ATTESTATION_DIR=/absolute/attestations \
+CHENGFENG_VIDEOCUT_NATIVE_WORKFLOW_RUN_ID=<protected-native-run-id> \
   bun run release:native:stage     # 签名门禁通过后生成干净目录与统一 SHA256SUMS.txt
 
 # 只有受保护 native security stage、release-ready / VERIFIED 内容和平台 SPDX SBOM
@@ -168,9 +173,12 @@ bun run npm-runtime:verify -- /absolute/output/darwin-arm64
 
 `npm-runtime:stage` 默认只接受 `release-ready / VERIFIED` 的 install manifest，逐个复核
 native installer 的 byte size、SHA-256 与 macOS executable bit，并执行与 native stage 相同的
-Developer ID / 公证、独立 attestation 与固定发布者身份验证。一个手工把 JSON 改成 VERIFIED 的
-目录不能产生公开 npm 包。当前受保护发布编排尚未建立，checkout policy 明确为
-`UNCONFIGURED`，所以正式 npm stage 仍会在写入前停止。
+Developer ID / 公证、独立 attestation 与固定发布者身份验证。Windows Authenticode 只能在原生
+Windows runner 建立；跨平台 stage 还必须验证独立受保护流程签发的 Windows verification receipt，
+该 receipt 逐字节绑定 Windows installer、release commit 与 signing policy，并有独立 GitHub
+artifact attestation。一个手工把 JSON 改成 VERIFIED、或只带普通 receipt sidecar 的目录都不能
+产生公开 npm 包。当前受保护发布编排尚未建立，checkout policy 明确为 `UNCONFIGURED`，所以正式
+npm stage 仍会在写入前停止。
 
 正式 stage 还要求每个平台存在
 `chengfeng-videocut-sbom-<version>-<platform>.spdx.json`，并把仓库中现有许可材料逐字节复制、
@@ -179,8 +187,8 @@ Developer ID / 公证、独立 attestation 与固定发布者身份验证。一�
 工程测试必须同时显式设置 `NODE_ENV=test` 与
 `CHENGFENG_VIDEOCUT_NPM_RUNTIME_LOCAL_FIXTURE=1`，产物会固定为
 `local-test-only / UNVERIFIED / private: true`，仍必须携带法律材料与结构有效的 fixture SPDX
-SBOM，普通 verifier 继续拒绝它。本仓不提供 npm publish
-命令；发布者身份、registry provenance 与最终 tarball integrity 属于独立受保护发布编排。
+SBOM，普通 verifier 继续拒绝它。本仓普通脚本不提供 npm publish 命令；发布只允许进入下面的
+手动 Trusted Publishing workflow。
 
 正式法律材料还必须在 `THIRD_PARTY_NOTICES.md` 与 `THIRD_PARTY_LICENSES.md` 中实际覆盖
 Bun、FFmpeg 和 FFprobe；只有文件名存在不算完成。当前仓库尚未收齐这些工具的已审核许可文本，
@@ -216,19 +224,45 @@ Bun、FFmpeg 和 FFprobe；只有文件名存在不算完成。当前仓库尚�
 - Windows executable 只能在原生 Windows runner 用 `Get-AuthenticodeSignature` 验证：状态
   `Valid`、签名类型 `Authenticode`、固定证书 Subject/叶证书 SHA256、Code Signing EKU 与
   可信时间戳缺一不可。
-- 跨平台汇总不接受普通 JSON sidecar。`.github/workflows/native-release-signing.yml` 只在
-  GitHub-hosted 的精确 `v<version>` tag、受保护的 `native-release` environment 中，在原生
-  验证通过后用 GitHub OIDC/Sigstore `actions/attest` 对 installer 本体生成 artifact
-  attestation。最终 macOS stage 用 `gh attestation verify` 对同一文件字节校验 repository、
-  signer workflow、精确 tag、当前 Release commit digest 与 GitHub-hosted runner；任一 bundle
-  缺失、伪造、来自旧 tag 移动前的 commit 或对应不同字节都 fail-closed。
+- 跨平台汇总不接受普通 JSON sidecar。`.github/workflows/native-release-signing.yml` 在
+  GitHub-hosted 的精确 `v<version>` tag、受保护的 `native-release` environment 中完成原生签名
+  验证，并把 Windows native verification receipt 连同 installer 交给版本库外的独立受保护
+  attestation builder；本仓不能给自己的 Release 授权。独立 builder 必须对三个 installer 和
+  Windows receipt 生成 GitHub artifact attestation。最终 macOS stage 用 `gh attestation verify`
+  对同一文件字节校验 repository、独立 signer workflow、精确 tag、当前 Release commit digest 与
+  GitHub-hosted runner；任一 bundle 缺失、伪造、来自旧 tag 移动前的 commit 或对应不同字节都
+  fail-closed。
 
-PR 和手动 workflow 只跑门禁测试；只有 tag 触发签名/公证/attestation jobs。Tag 模式缺
+PR 和手动 native workflow 只跑门禁测试；只有 tag 触发签名、公证与受保护 handoff jobs。Tag 模式缺
 Developer ID、Apple Notary、Authenticode 证书或受保护 environment secrets 时必须失败，
 不会降级为 unsigned。attestation bundles 是发布过程证据，不进入八个最终资产，也不能
 代替平台原生签名验证。macOS job 用 tar 传递签名后的 executable 与 bundles，因为普通
 GitHub Actions artifact 上传会归一化文件 mode；最终 stage 解包后仍会再次要求 executable
 bit、签名和 Gatekeeper 全部成立。
+
+### npm Trusted Publishing（设计已落地，发布仍未启用）
+
+`.github/workflows/npm-runtime-trusted-publish.yml` 只有 `workflow_dispatch`，不会因 push、tag、PR、
+Release 或定时任务自动发布。操作人必须同时提供精确 `v<version>` tag 与对应的受保护 native run
+ID；workflow 会把 checkout commit、tag、根 `package.json` version 和 native run 的
+`head_sha/head_branch/workflow path` 绑定，再下载唯一命名的 protected handoff。随后重新执行 native
+security、法律材料、SBOM、平台包 exact-layout / SHA-256 verifier 与 `npm pack --dry-run`，全部通过后
+才把三包送入最后的 publish job。
+
+最后 job 使用受保护的 `npm-runtime-release` environment、GitHub-hosted runner、Node 24.6.0 与
+npm 11.6.2；只有这个 job 有 `id-token: write`，没有 `NPM_TOKEN` 或 `NODE_AUTH_TOKEN`，命令固定为
+`npm publish --ignore-scripts --access public --provenance`。三个 npm package 必须分别在 npm 后台把
+Trusted Publisher 配成仓库 `Agentchengfeng/chengfeng-videocut`、workflow 文件
+`npm-runtime-trusted-publish.yml`、environment `npm-runtime-release`，并只允许 publish。平台包
+`package.json.repository` 也必须精确指向同一 GitHub 仓库，供 provenance 绑定。
+
+正式启用前仍有两个不可省略的外部门禁：一是把 signing policy 从 `UNCONFIGURED` 改为经审核的
+真实发布者/独立 signer 固定值；二是由独立受保护 orchestrator 产出包含 release、attestations、
+platform SBOM 的 `native-release-protected-stage.tar.gz`。当前任一项都未完成，所以 workflow 会在
+publish 之前 fail-closed；不得为了“测试版”加 token、unsigned fallback、跳过 Windows receipt 或
+把 local-test-only / UNVERIFIED 包发布出去。npm 的三个 publish 调用不是原子事务，workflow 会在
+第一次 publish 前先确认三个精确版本都不存在；若发布中途网络失败，必须人工审计 registry 状态，
+不能重用同一个 semver 假装整批回滚。
 
 当前许可状态是 **UNVERIFIED**。POC 的 `ffmpeg-static@5.3.0` 实际 FFmpeg 6.0 配置含
 GPL/nonfree，只可用于本机工程 smoke，绝不能作为公开资产。没有合规媒体二进制时构建/

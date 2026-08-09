@@ -1,0 +1,205 @@
+name: npm-runtime-trusted-publish
+
+# Manual, tag-bound design only. This workflow remains intentionally unusable
+# while installer/native-release-signing-policy.json is UNCONFIGURED and while
+# the protected native orchestrator does not provide the exact handoff artifact.
+# npm authentication must be configured as Trusted Publishing for this exact
+# workflow filename and the npm-runtime-release environment; no npm token is used.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Exact immutable Product tag, for example v0.5.1
+        required: true
+        type: string
+      protected_native_run_id:
+        description: Successful protected native-release run containing the verified handoff tar
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: npm-runtime-trusted-publish-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  source-and-policy-gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      source_digest: ${{ steps.source.outputs.digest }}
+      version: ${{ steps.source.outputs.version }}
+    steps:
+      - name: Validate the requested tag before checkout
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          PROTECTED_NATIVE_RUN_ID: ${{ inputs.protected_native_run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
+          [[ "$PROTECTED_NATIVE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.5
+      - run: bun install --frozen-lockfile
+      - id: source
+        name: Bind the tag, Product version, and immutable commit
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          version="$(bun -e 'console.log((await Bun.file("package.json").json()).version)')"
+          test "$RELEASE_TAG" = "v$version"
+          digest="$(git rev-parse HEAD)"
+          test "$digest" = "$(git rev-list -n 1 "$RELEASE_TAG^{commit}")"
+          test -z "$(git status --porcelain --untracked-files=no)"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Run npm Runtime and native security regression gates
+        run: |
+          bun run test:native-release
+          bun run test:npm-runtime-package
+      - name: Require reviewed native publisher and independent attestation identities
+        run: bun -e 'const {readNativeSigningPolicy}=await import("./scripts/native-release-signatures.ts"); await readNativeSigningPolicy(process.cwd())'
+
+  stage-and-verify:
+    needs: source-and-policy-gate
+    runs-on: macos-14
+    timeout-minutes: 25
+    environment: npm-runtime-release
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.5
+      - run: bun install --frozen-lockfile
+      - name: Verify the protected native run identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROTECTED_NATIVE_RUN_ID: ${{ inputs.protected_native_run_id }}
+          EXPECTED_DIGEST: ${{ needs.source-and-policy-gate.outputs.source_digest }}
+          EXPECTED_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          run_json="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PROTECTED_NATIVE_RUN_ID")"
+          test "$(jq -r .conclusion <<<"$run_json")" = success
+          test "$(jq -r .head_sha <<<"$run_json")" = "$EXPECTED_DIGEST"
+          test "$(jq -r .head_branch <<<"$run_json")" = "$EXPECTED_TAG"
+          test "$(jq -r .path <<<"$run_json")" = ".github/workflows/native-release-signing.yml"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: native-release-protected-stage
+          path: protected-native-handoff
+          run-id: ${{ inputs.protected_native_run_id }}
+          github-token: ${{ github.token }}
+      - name: Unpack the exact protected handoff
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find protected-native-handoff -type f | wc -l | tr -d ' ')" = 1
+          test -f protected-native-handoff/native-release-protected-stage.tar.gz
+          mkdir protected-native-stage
+          tar -xzf protected-native-handoff/native-release-protected-stage.tar.gz -C protected-native-stage
+          test -d protected-native-stage/release
+          test -d protected-native-stage/attestations
+          test -d protected-native-stage/sbom
+      - name: Re-run native security, legal, SBOM, and exact-byte package gates
+        shell: bash
+        env:
+          CHENGFENG_VIDEOCUT_NATIVE_ATTESTATION_DIR: ${{ github.workspace }}/protected-native-stage/attestations
+          CHENGFENG_VIDEOCUT_NATIVE_WORKFLOW_RUN_ID: ${{ inputs.protected_native_run_id }}
+          CHENGFENG_VIDEOCUT_NPM_RUNTIME_STAGE_DIR: ${{ runner.temp }}/npm-runtime-stage
+          CHENGFENG_VIDEOCUT_NPM_RUNTIME_SBOM_DIR: ${{ github.workspace }}/protected-native-stage/sbom
+          CHENGFENG_VIDEOCUT_RELEASE_DIR: ${{ github.workspace }}/protected-native-stage/release
+        run: |
+          set -euo pipefail
+          bun run release:native:verify:stage -- "$CHENGFENG_VIDEOCUT_RELEASE_DIR"
+          bun run npm-runtime:stage
+          for platform in darwin-arm64 darwin-x64 win32-x64; do
+            bun run npm-runtime:verify -- "$CHENGFENG_VIDEOCUT_NPM_RUNTIME_STAGE_DIR/$platform"
+            npm pack --ignore-scripts --dry-run --json "$CHENGFENG_VIDEOCUT_NPM_RUNTIME_STAGE_DIR/$platform" >/dev/null
+          done
+          tar -czf npm-runtime-verified-stage.tar.gz -C "$RUNNER_TEMP" npm-runtime-stage
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: npm-runtime-verified-stage-${{ inputs.tag }}
+          path: npm-runtime-verified-stage.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-with-oidc:
+    needs:
+      - source-and-policy-gate
+      - stage-and-verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: npm-runtime-release
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.6.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.5
+      - run: bun install --frozen-lockfile
+      - name: Install a Trusted Publishing-capable npm CLI
+        run: npm install --global npm@11.6.2
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: npm-runtime-verified-stage-${{ inputs.tag }}
+          path: verified-stage-transport
+      - name: Re-verify exact packages and preflight all versions before any publish
+        shell: bash
+        env:
+          EXPECTED_VERSION: ${{ needs.source-and-policy-gate.outputs.version }}
+        run: |
+          set -euo pipefail
+          test "$(node --version)" = v24.6.0
+          test "$(npm --version)" = 11.6.2
+          mkdir verified-stage
+          tar -xzf verified-stage-transport/npm-runtime-verified-stage.tar.gz -C verified-stage
+          for platform in darwin-arm64 darwin-x64 win32-x64; do
+            package_dir="$PWD/verified-stage/npm-runtime-stage/$platform"
+            bun run npm-runtime:verify -- "$package_dir"
+            test "$(node -p "require('$package_dir/package.json').version")" = "$EXPECTED_VERSION"
+            package_name="$(node -p "require('$package_dir/package.json').name")"
+            if npm view "$package_name@$EXPECTED_VERSION" version >/dev/null 2>&1; then
+              echo "$package_name@$EXPECTED_VERSION already exists; refusing a partial or repeated publish" >&2
+              exit 1
+            fi
+          done
+      - name: Publish the three verified data-only packages with npm provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          for platform in darwin-arm64 darwin-x64 win32-x64; do
+            npm publish "$PWD/verified-stage/npm-runtime-stage/$platform" --ignore-scripts --access public --provenance
+          done
