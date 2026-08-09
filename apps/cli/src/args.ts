@@ -104,6 +104,8 @@ export interface ParsedArgs {
   jobState?: string;
   projectFilter?: string;
   jobLimit?: number;
+  /** Opaque, revision-bound continuation token for transcript playback. */
+  playbackCursor?: string;
   /**
    * `cuts set`: submit the checkbox truth instead of a semantic overlay.
    *
@@ -155,6 +157,7 @@ const VALUE_OPTIONS = new Set([
   "--state",
   "--project",
   "--limit",
+  "--cursor",
 ]);
 
 const BOOLEAN_OPTIONS = new Set([
@@ -835,10 +838,17 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
   }
   if (positionals[0] === "transcript" && positionals[1] === "playback") {
     if (positionals.length !== 3) {
-      usageError("Usage: chengfeng-videocut transcript playback <project>");
+      usageError(
+        "Usage: chengfeng-videocut transcript playback <project> [--limit <1-100>] [--cursor <opaque>]",
+      );
     }
-    assertOptions(["--projects-dir", "--output-dir"]);
-    return { command: "transcript.playback", project: positionals[2], ...common };
+    assertOptions(["--projects-dir", "--output-dir", "--limit", "--cursor"]);
+    return {
+      command: "transcript.playback",
+      project: positionals[2],
+      playbackCursor: values.get("--cursor"),
+      ...common,
+    };
   }
   if (positionals[0] === "cuts" && positionals[1] === "get") {
     if (positionals.length !== 3) {

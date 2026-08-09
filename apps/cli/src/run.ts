@@ -318,6 +318,147 @@ function objectRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+const PLAYBACK_CURSOR_SCHEMA_VERSION = 1;
+const DEFAULT_PLAYBACK_PAGE_LIMIT = 64;
+// The native MCP deliberately rejects a stream above 32 KiB. Keep the Product
+// response comfortably below that contract instead of weakening the MCP guard.
+const MAX_PLAYBACK_PAGE_RESPONSE_BYTES = 24 * 1024;
+
+interface PlaybackCursor {
+  schemaVersion: 1;
+  projectId: string;
+  transcriptRevision: string;
+  editListRevision: string | null;
+  nextIndex: number;
+}
+
+function encodePlaybackCursor(cursor: PlaybackCursor): string {
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+}
+
+function decodePlaybackCursor(value: string): PlaybackCursor {
+  if (!/^[A-Za-z0-9_-]{1,2048}$/.test(value)) {
+    throw new VideocutError("invalid_argument", "transcript playback --cursor is malformed");
+  }
+  let parsed: unknown;
+  try {
+    const raw = Buffer.from(value, "base64url").toString("utf8");
+    if (Buffer.from(raw, "utf8").toString("base64url") !== value) throw new Error("not canonical");
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    throw new VideocutError("invalid_argument", "transcript playback --cursor is malformed");
+  }
+  const record = objectRecord(parsed);
+  const expectedKeys = [
+    "editListRevision",
+    "nextIndex",
+    "projectId",
+    "schemaVersion",
+    "transcriptRevision",
+  ];
+  if (
+    record === null
+    || Object.keys(record).sort().join(",") !== expectedKeys.join(",")
+    || record.schemaVersion !== PLAYBACK_CURSOR_SCHEMA_VERSION
+    || typeof record.projectId !== "string"
+    || !/^[a-f0-9]{64}$/.test(String(record.transcriptRevision))
+    || (record.editListRevision !== null && !/^[a-f0-9]{64}$/.test(String(record.editListRevision)))
+    || !Number.isSafeInteger(record.nextIndex)
+    || (record.nextIndex as number) < 0
+  ) {
+    throw new VideocutError("invalid_argument", "transcript playback --cursor is malformed");
+  }
+  return {
+    schemaVersion: 1,
+    projectId: record.projectId,
+    transcriptRevision: record.transcriptRevision as string,
+    editListRevision: record.editListRevision as string | null,
+    nextIndex: record.nextIndex as number,
+  };
+}
+
+function playbackPage(input: {
+  playback: ReturnType<typeof buildPlaybackTranscript>;
+  transcriptRevision: string;
+  editListRevision: string | null;
+  limit?: number;
+  cursor?: string;
+}) {
+  const limit = input.limit ?? DEFAULT_PLAYBACK_PAGE_LIMIT;
+  let startIndex = 0;
+  if (input.cursor !== undefined) {
+    const cursor = decodePlaybackCursor(input.cursor);
+    if (
+      cursor.projectId !== input.playback.projectId
+      || cursor.transcriptRevision !== input.transcriptRevision
+      || cursor.editListRevision !== input.editListRevision
+    ) {
+      throw new VideocutError(
+        "revision_conflict",
+        "transcript playback changed; restart from the first page",
+        {
+          reason: "playback_cursor_stale",
+          projectId: input.playback.projectId,
+        },
+      );
+    }
+    startIndex = cursor.nextIndex;
+  }
+  if (startIndex > input.playback.stream.length) {
+    throw new VideocutError("invalid_argument", "transcript playback --cursor is outside this stream");
+  }
+
+  const build = (stream: typeof input.playback.stream, endIndex: number) => {
+    const nextCursor = endIndex < input.playback.stream.length
+      ? encodePlaybackCursor({
+        schemaVersion: 1,
+        projectId: input.playback.projectId,
+        transcriptRevision: input.transcriptRevision,
+        editListRevision: input.editListRevision,
+        nextIndex: endIndex,
+      })
+      : null;
+    return {
+      ...input.playback,
+      stream,
+      transcriptRevision: input.transcriptRevision,
+      editListRevision: input.editListRevision,
+      page: {
+        startIndex,
+        endIndex,
+        totalEntries: input.playback.stream.length,
+        limit,
+        nextCursor,
+      },
+    };
+  };
+
+  const entries: typeof input.playback.stream = [];
+  let endIndex = startIndex;
+  while (endIndex < input.playback.stream.length && entries.length < limit) {
+    entries.push(input.playback.stream[endIndex]!);
+    const candidate = build(entries, endIndex + 1);
+    if (
+      Buffer.byteLength(
+        JSON.stringify(successEnvelope("transcript.playback", candidate)),
+        "utf8",
+      ) > MAX_PLAYBACK_PAGE_RESPONSE_BYTES
+    ) {
+      entries.pop();
+      if (entries.length === 0) {
+        throw new VideocutError(
+          "invalid_transcript",
+          "One playback entry exceeds the safe Product response limit",
+          { reason: "playback_entry_too_large", entryIndex: endIndex },
+        );
+      }
+      break;
+    }
+    endIndex += 1;
+  }
+  return build(entries, endIndex);
+}
+
 interface EditListApiResult {
   projectId: string;
   exists?: boolean;
@@ -1695,8 +1836,15 @@ export async function runCli(
         parseTranscriptWords(transcript.value),
         editList?.value ?? null,
       );
-      if (parsed.json) io.stdout(JSON.stringify(successEnvelope(parsed.command, playback)));
-      else io.stdout(JSON.stringify(playback, null, 2));
+      const data = playbackPage({
+        playback,
+        transcriptRevision: transcript.revision,
+        editListRevision: editList?.revision ?? null,
+        limit: parsed.jobLimit,
+        cursor: parsed.playbackCursor,
+      });
+      if (parsed.json) io.stdout(JSON.stringify(successEnvelope(parsed.command, data)));
+      else io.stdout(JSON.stringify(data, null, 2));
       return 0;
     }
     if (parsed.command === "cuts.get") {

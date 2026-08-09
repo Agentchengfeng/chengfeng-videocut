@@ -125,7 +125,7 @@ Usage:
   chengfeng-videocut workflow get <project> [--api-base <url>] [--json]
   chengfeng-videocut workflow transition <project> --action <start-final|confirm-storyboard|confirm-animation|confirm-timeline> --expected-revision <sha256> --confirmed [--file <config.json>] [--api-base <url>] [--json]
   chengfeng-videocut render run <project> --expected-revision <sha256> --confirmed [--renderer <absolute-file>] [--projects-dir <dir>] [--output-dir <dir>] [--json]
-  chengfeng-videocut transcript playback <project> [--json]
+  chengfeng-videocut transcript playback <project> [--limit <1-100>] [--cursor <opaque>] [--json]
   chengfeng-videocut transcript retranscribe <project> --output <file> [--language <code>] [--json]
   chengfeng-videocut transcript align <project> --script <file> [--json]
   chengfeng-videocut transcript dictionary <project> --dictionary <file> [--dry-run] [--json]
@@ -149,7 +149,7 @@ config stores machine-wide settings in ~/.chengfeng-videocut/config.json at mode
 Project may be an absolute directory or an id registered in the Workbench.
 cuts set writes through the running product API; --dry-run performs a local read-only calculation.
 transcript correct fixes what the transcript says without touching when it says it: word ids, word count and every timestamp must come out identical, or the write is refused. A mis-heard proper noun is not surplus speech, so cutting cannot repair it.
-transcript playback flattens the transcript into what the audience hears, in that order, with removed speech marked. Judging repetition depends on heard adjacency, so this is the only correct input for a semantic pass — assembling it by hand gets it wrong silently.
+transcript playback flattens the transcript into what the audience hears, in that order, with removed speech marked. It returns a bounded page and a revision-bound nextCursor; semantic passes must read pages until nextCursor is null, never assemble source transcript order by hand. A changed transcript or edit list invalidates an old cursor rather than mixing two playback versions silently.
 transcript retranscribe transcribes the cut itself, without exporting it first: it concatenates only the kept ranges' audio and sends that. The times that come back are already on the cut timeline, because the audio that went in is the cut — nothing maps between timelines. This is what subtitles need.
 export burns the whole film: the cut, the push-ins, the subtitles and the HTML layers, in one file. Everything before it is annotation and nothing else in the product writes a picture. The overlay is drawn by the same browser engine, from the same CSS and the same modules the preview uses, one frame at a time — so the file is the preview rather than an agreement with it. --scale defaults to 2: the footage gains no detail from an upscale, but the subtitles and modules are redrawn at the output size and those are the parts a viewer reads. --dry-run prints the plan (length, frame count, screens, layers, push-ins) without encoding anything.
 visual add places an HTML layer over the footage for the span of the subtitle screens named by --cues. The layer stores those screens' word ids, never seconds, so it moves with the cut instead of drifting off it. The module is a project-relative .html that must already exist; the preview drives it by seeking, so it must render a deterministic frame for any instant rather than playing on its own clock.

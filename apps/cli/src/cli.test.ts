@@ -1190,4 +1190,96 @@ describe("chengfeng-videocut CLI", () => {
     expect(payload.data.duration).toBe(3);
   });
 
+  it("pages a long heard-order transcript below the MCP output bound and rejects a stale cursor", async () => {
+    const { projectDir, projectsDir } = await fixture();
+    await registerFixture(projectDir, projectsDir);
+    const words = Array.from({ length: 240 }, (_, index) => ({
+      id: `word-${index}`,
+      text: `第${index}个词`,
+      start: index,
+      end: index + 0.5,
+    }));
+    await writeFile(join(projectDir, "transcript.json"), JSON.stringify({
+      schemaVersion: 1,
+      cues: [{ id: "long-heard-order", words }],
+    }));
+    await writeFile(join(projectDir, "edit-list.json"), JSON.stringify({
+      schemaVersion: 1,
+      projectId: "demo",
+      sourceDuration: 240,
+      baseCutsRevision: "a".repeat(64),
+      baseTranscriptRevision: "b".repeat(64),
+      mode: "cuts-derived",
+      duration: 240,
+      segments: [{
+        id: "all",
+        source: "input/source.mp4",
+        sourceStart: 0,
+        sourceEnd: 240,
+        timelineStart: 0,
+        trackId: "a-roll",
+        playbackRate: 1,
+      }],
+    }));
+
+    const first = captureIo();
+    const firstCode = await runCli([
+      "transcript", "playback", "demo",
+      "--limit", "64",
+      "--projects-dir", projectsDir,
+      "--json",
+    ], { io: first.io });
+
+    expect(firstCode, `${first.stderr.join(" | ")} ${first.stdout.join(" | ")}`).toBe(0);
+    expect(Buffer.byteLength(first.stdout[0]!, "utf8")).toBeLessThan(32 * 1024);
+    const firstPayload = JSON.parse(first.stdout[0]!) as {
+      data: {
+        stream: Array<{ id: string }>;
+        transcriptRevision: string;
+        page: { startIndex: number; endIndex: number; totalEntries: number; nextCursor: string | null };
+      };
+    };
+    expect(firstPayload.data.stream).toHaveLength(64);
+    expect(firstPayload.data.stream[0]).toMatchObject({ id: "word-0" });
+    expect(firstPayload.data.page).toMatchObject({
+      startIndex: 0,
+      endIndex: 64,
+      totalEntries: 240,
+    });
+    expect(firstPayload.data.page.nextCursor).toEqual(expect.any(String));
+
+    const second = captureIo();
+    const secondCode = await runCli([
+      "transcript", "playback", "demo",
+      "--cursor", firstPayload.data.page.nextCursor as string,
+      "--projects-dir", projectsDir,
+      "--json",
+    ], { io: second.io });
+    expect(secondCode, second.stderr.join(" | ")).toBe(0);
+    const secondPayload = JSON.parse(second.stdout[0]!) as {
+      data: { stream: Array<{ id: string }>; page: { startIndex: number; endIndex: number } };
+    };
+    expect(secondPayload.data.stream[0]).toMatchObject({ id: "word-64" });
+    expect(secondPayload.data.page).toMatchObject({ startIndex: 64, endIndex: 128 });
+
+    await writeFile(join(projectDir, "transcript.json"), JSON.stringify({
+      schemaVersion: 1,
+      cues: [{ id: "changed-heard-order", words: [...words, {
+        id: "word-240", text: "新词", start: 240, end: 240.5,
+      }] }],
+    }));
+    const stale = captureIo();
+    const staleCode = await runCli([
+      "transcript", "playback", "demo",
+      "--cursor", firstPayload.data.page.nextCursor as string,
+      "--projects-dir", projectsDir,
+      "--json",
+    ], { io: stale.io });
+    expect(staleCode).toBe(5);
+    expect(JSON.parse(stale.stdout[0]!)).toMatchObject({
+      ok: false,
+      error: { code: "revision_conflict", details: { reason: "playback_cursor_stale" } },
+    });
+  });
+
 });

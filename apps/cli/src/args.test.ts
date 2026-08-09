@@ -252,6 +252,27 @@ describe("start argument parser", () => {
     ])).toThrow("--transcript is not valid for this command");
   });
 
+  it("parses a bounded transcript playback page and rejects unrelated cursor options", () => {
+    expect(parseArgs([
+      "transcript", "playback", "demo",
+      "--limit", "64",
+      "--cursor", "eyJzY2hlbWFWZXJzaW9uIjoxfQ",
+      "--json",
+    ])).toMatchObject({
+      command: "transcript.playback",
+      project: "demo",
+      jobLimit: 64,
+      playbackCursor: "eyJzY2hlbWFWZXJzaW9uIjoxfQ",
+      json: true,
+    });
+    expect(() => parseArgs([
+      "transcript", "playback", "demo", "--limit", "101",
+    ])).toThrow("--limit must be an integer from 1 to 100");
+    expect(() => parseArgs([
+      "transcript", "dictionary", "demo", "--cursor", "not-allowed",
+    ])).toThrow("--cursor is not valid for this command");
+  });
+
   it("requires both project and artifact revisions for controlled artifacts", () => {
     const revision = "a".repeat(64);
     expect(parseArgs([
