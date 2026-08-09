@@ -131,6 +131,7 @@ if (args[0] === '--version') {
 }
 if (args[0] === 'service') {
   const action = args[1];
+  const startsService = action === 'ensure' || action === 'restart';
   if (process.env.CHENGFENG_VIDEOCUT_TEST_SERVICE_LOG) {
     require('node:fs').appendFileSync(
       process.env.CHENGFENG_VIDEOCUT_TEST_SERVICE_LOG,
@@ -138,14 +139,40 @@ if (args[0] === 'service') {
     );
   }
   const isStatus = action === 'status';
-  // The fault models service ensure itself.  A timed-out ensure command may
-  // still need a subsequent healthy service stop during rollback.
-  if (action === 'ensure' && ${hangOnEnsure}) hangIgnoringTermination();
-  if (action === 'ensure' && ${spamOnEnsure}) spamIgnoringTermination();
+  // The fault models the candidate lifecycle request itself. A timed-out
+  // ensure/restart may still need a subsequent healthy service stop during
+  // rollback.
+  if (startsService && ${hangOnEnsure}) hangIgnoringTermination();
+  if (startsService && ${spamOnEnsure}) spamIgnoringTermination();
   const failEnsureOncePath = process.env.CHENGFENG_VIDEOCUT_TEST_FAIL_ENSURE_ONCE_PATH;
-  const failEnsureOnce = !isStatus && action === 'ensure' && failEnsureOncePath &&
+  const failEnsureOnce = !isStatus && startsService && failEnsureOncePath &&
     !require('node:fs').existsSync(failEnsureOncePath);
   if (failEnsureOnce) require('node:fs').writeFileSync(failEnsureOncePath, 'failed');
+  if (
+    action === 'ensure' &&
+    ${JSON.stringify(version !== VERSION)} &&
+    process.env.CHENGFENG_VIDEOCUT_TEST_REQUIRE_LEGACY_LAUNCHER_ON_OLD_ENSURE === '1'
+  ) {
+    const launcher = process.env.CHENGFENG_VIDEOCUT_EXECUTABLE;
+    let legacy = false;
+    try {
+      const fs = require('node:fs');
+      const path = require('node:path');
+      const root = path.dirname(path.dirname(launcher));
+      const managedBun = path.join(root, 'tools', 'current', process.platform === 'win32' ? 'bun.exe' : 'bun');
+      legacy = process.platform === 'win32'
+        ? fs.readFileSync(launcher, 'utf8').includes('where bun.exe')
+        : fs.lstatSync(launcher).isSymbolicLink() &&
+          fs.readlinkSync(launcher) === '../app/current/chengfeng-videocut';
+      legacy = legacy && fs.existsSync(managedBun);
+    } catch {
+      legacy = false;
+    }
+    if (!legacy) {
+      console.error('old service was restored before its legacy stable launcher');
+      process.exit(42);
+    }
+  }
   const present = isStatus ? ${statusPresent} : true;
   const healthy = isStatus ? ${statusPresent} : (${ensureHealthy} && !failEnsureOnce);
   const pid = Number(process.env.CHENGFENG_VIDEOCUT_TEST_SERVICE_PID || process.pid);
@@ -174,7 +201,7 @@ if (args[0] === 'service') {
       studioBuildId,
     },
   };
-  if (!isStatus && action === 'ensure' && ${version === VERSION} &&
+  if (!isStatus && startsService && ${version === VERSION} &&
     process.env.CHENGFENG_VIDEOCUT_TEST_ENSURE_INVALID_AFTER_START === '1') {
     console.log('candidate service started but installer reply is invalid');
     process.exit(17);
@@ -423,7 +450,7 @@ function makeFormalRelease(root, release, bundle, {
   return { manifestPath, checksumPath };
 }
 
-function invokeFormal(executable, home, release, formal) {
+function invokeFormal(executable, home, release, formal, extraArgs = [], extraEnv = {}) {
   return spawnSync(executable, [
     ...(executable === process.execPath ? [INSTALLER] : []),
     "--manifest", formal.manifestPath,
@@ -431,10 +458,13 @@ function invokeFormal(executable, home, release, formal) {
     "--target-root", home,
     "--allow-unverified-local-fixture",
     "--json",
+    ...extraArgs,
   ], {
     env: {
       ...process.env,
+      HOME: path.dirname(home),
       CHENGFENG_VIDEOCUT_DOWNLOAD_BASE: pathToFileURL(release).href.replace(/\/$/, ""),
+      ...extraEnv,
     },
     encoding: "utf8",
   });
@@ -456,6 +486,68 @@ function invokeEmbedded(executable, home, extraArgs = [], extraEnv = {}) {
   ], {
     env: {
       ...env,
+      CHENGFENG_VIDEOCUT_ALLOW_UNVERIFIED_LOCAL_TOOLS: "1",
+      ...extraEnv,
+    },
+    encoding: "utf8",
+  });
+}
+
+function makeEmbeddedPayload(root, formal, { missingRuntimePayload = false } = {}) {
+  const manifest = JSON.parse(readFileSync(formal.manifestPath, "utf8"));
+  const platformKey = `${process.platform}-${process.arch}`;
+  const embeddedChecksum = path.join(root, "embedded-installer-payload-SHA256SUMS.txt");
+  const manifestBytes = readFileSync(formal.manifestPath);
+  writeFileSync(
+    embeddedChecksum,
+    [
+      `${createHash("sha256").update(manifestBytes).digest("hex")}  chengfeng-videocut-installer-payload-manifest.json`,
+      `${manifest.runtime.sha256}  ${manifest.runtime.asset}`,
+      `${manifest.platforms[platformKey].tools.sha256}  ${manifest.platforms[platformKey].tools.asset}`,
+    ].join("\n") + "\n",
+  );
+  return {
+    schemaVersion: 1,
+    platformKey,
+    manifestPath: formal.manifestPath,
+    checksumPath: embeddedChecksum,
+    runtimePath: missingRuntimePayload
+      ? path.join(root, "runtime-payload-must-not-be-read.tar.gz")
+      : path.join(path.dirname(formal.manifestPath), manifest.runtime.asset),
+    toolsPath: path.join(
+      path.dirname(formal.manifestPath),
+      manifest.platforms[platformKey].tools.asset,
+    ),
+  };
+}
+
+function invokeEmbeddedPayload(home, payload, extraArgs = [], extraEnv = {}) {
+  const env = { ...process.env };
+  for (const key of [
+    "CHENGFENG_VIDEOCUT_INSTALL_MANIFEST",
+    "CHENGFENG_VIDEOCUT_MANIFEST_CHECKSUM_FILE",
+    "CHENGFENG_VIDEOCUT_DOWNLOAD_BASE",
+    "CHENGFENG_VIDEOCUT_MANAGED_TOOLS_SOURCE_DIR",
+  ]) delete env[key];
+  return spawnSync(process.execPath, [
+    "-e",
+    `globalThis.__CHENGFENG_VIDEOCUT_EMBEDDED_PAYLOAD__ = Object.freeze(JSON.parse(process.env.CHENGFENG_VIDEOCUT_TEST_EMBEDDED_PAYLOAD));
+const installer = require(process.env.CHENGFENG_VIDEOCUT_TEST_INSTALLER);
+Promise.resolve(installer.main()).catch((error) => {
+  installer.reportMainFailure(error);
+  process.exitCode = 1;
+});`,
+    "--",
+    "--target-root", home,
+    "--allow-unverified-local-fixture",
+    "--json",
+    ...extraArgs,
+  ], {
+    env: {
+      ...env,
+      HOME: path.dirname(home),
+      CHENGFENG_VIDEOCUT_TEST_EMBEDDED_PAYLOAD: JSON.stringify(payload),
+      CHENGFENG_VIDEOCUT_TEST_INSTALLER: INSTALLER,
       CHENGFENG_VIDEOCUT_ALLOW_UNVERIFIED_LOCAL_TOOLS: "1",
       ...extraEnv,
     },
@@ -519,11 +611,15 @@ function installEnv(home, release, extra = {}) {
   };
 }
 
-function invoke(home, release, extra = {}) {
-  return spawnSync(process.execPath, [INSTALLER], {
+function invokeWithArgs(home, release, args = [], extra = {}) {
+  return spawnSync(process.execPath, [INSTALLER, ...args], {
     env: installEnv(home, release, extra),
     encoding: "utf8",
   });
+}
+
+function invoke(home, release, extra = {}) {
+  return invokeWithArgs(home, release, [], extra);
 }
 
 async function waitForPath(candidate, predicate = () => true, timeoutMilliseconds = 5_000) {
@@ -708,8 +804,36 @@ function createManagedTools(home, { oldVersion = "0.4.7", candidateVersion = VER
   const suffix = IS_WINDOWS ? ".exe" : "";
   for (const directory of [oldTools, candidateTools]) {
     mkdirSync(directory, { recursive: true });
-    for (const name of ["bun", "ffmpeg", "ffprobe"]) writeFileSync(path.join(directory, `${name}${suffix}`), "tool");
-    writeFileSync(path.join(directory, "resources-manifest.json"), "{}\n");
+    const executables = Object.fromEntries(
+      ["bun", "ffmpeg", "ffprobe"].map((name) => [name, `${name}${suffix}`]),
+    );
+    for (const [name, relative] of Object.entries(executables)) {
+      writeExecutable(
+        path.join(directory, relative),
+        name === "bun"
+          ? `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} "$@"\n`
+          : "#!/bin/sh\nexit 0\n",
+      );
+    }
+    const files = Object.values(executables).map((relative) => {
+      const bytes = readFileSync(path.join(directory, relative));
+      return {
+        path: relative,
+        size: bytes.length,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+      };
+    });
+    writeFileSync(path.join(directory, "resources-manifest.json"), `${JSON.stringify({
+      schemaVersion: 4,
+      product: "chengfeng-videocut-managed-tools",
+      productVersion: VERSION,
+      platform: process.platform,
+      arch: process.arch,
+      executables,
+      versions: { bun: "fixture", ffmpeg: "fixture", ffprobe: "fixture" },
+      files,
+      licenseStatus: "VERIFIED",
+    })}\n`);
   }
   symlinkSync(oldVersion, path.join(toolsRoot, "current"));
   return { toolsRoot, oldTools, candidateTools };
@@ -1378,7 +1502,7 @@ test("same-version Desktop service failure restores the old tools link and manag
   assert.equal(readState(home).phase, "idle");
   assert.deepEqual(readFileSync(serviceLog, "utf8").trim().split("\n"), [
     `${VERSION}:status`,
-    `${VERSION}:ensure`,
+    `${VERSION}:restart`,
     `${VERSION}:stop`,
     `${VERSION}:ensure`,
   ]);
@@ -1445,7 +1569,7 @@ test("candidate ensure invalid reply still stops the first-run service and rolls
   ]);
 });
 
-test("candidate ensure invalid reply stops the candidate and restores an existing service", async (t) => {
+test("candidate restart invalid reply stops the candidate and restores an existing service", async (t) => {
   const { root, home, release } = fixture(t, { service: "managed" });
   const old = createLegacyRuntime(home, { service: "managed" });
   const { oldTools, candidateTools, toolsRoot } = createManagedTools(home);
@@ -1463,12 +1587,48 @@ test("candidate ensure invalid reply stops the candidate and restores an existin
     CHENGFENG_VIDEOCUT_TEST_FAIL_TOOLS_CLEANUP_UNTIL_SERVICE_STOPPED: "1",
   });
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /新 Runtime service ensure 失败/);
+  assert.match(result.stderr, /新 Runtime service restart 失败/);
   assert.equal(currentTarget(home), old.runtime);
   assert.equal(path.resolve(toolsRoot, readlinkSync(path.join(toolsRoot, "current"))), oldTools);
   assert.deepEqual(readFileSync(serviceLog, "utf8").trim().split("\n"), [
     "0.4.7:status",
-    `${VERSION}:ensure`,
+    `${VERSION}:restart`,
+    `${VERSION}:stop`,
+    "0.4.7:ensure",
+  ]);
+});
+
+test("rollback restores the legacy launcher and keeps candidate tools until the old service is healthy", {
+  skip: IS_WINDOWS,
+}, async (t) => {
+  const { root, home, release } = fixture(t, { service: "fail" });
+  const old = createLegacyRuntime(home, { service: "managed" });
+  const launcher = createLegacyStableLauncher(home, old.runtime);
+  const { toolsRoot, candidateTools } = createManagedTools(home);
+  unlinkSync(path.join(toolsRoot, "current"));
+  const server = await startCapabilityServer(t, root, home);
+  const serviceLog = path.join(root, "legacy-rollback-service-actions.log");
+
+  const result = invoke(home, release, {
+    CHENGFENG_VIDEOCUT_INSTALLER_ENSURE_SERVICE: "1",
+    CHENGFENG_VIDEOCUT_MANAGED_TOOLS_SOURCE_DIR: candidateTools,
+    CHENGFENG_VIDEOCUT_TEST_SERVICE_URL: server.url,
+    CHENGFENG_VIDEOCUT_TEST_SERVICE_PID: String(server.pid),
+    CHENGFENG_VIDEOCUT_TEST_SERVICE_LOG: serviceLog,
+    CHENGFENG_VIDEOCUT_TEST_REQUIRE_LEGACY_LAUNCHER_ON_OLD_ENSURE: "1",
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.doesNotMatch(result.stderr, /自动回滚不完整/);
+  assert.equal(currentTarget(home), old.runtime);
+  assert.equal(lstatSync(launcher).isSymbolicLink(), true);
+  assert.equal(readlinkSync(launcher), path.join("..", "app", "current", "chengfeng-videocut"));
+  assert.equal(existsSync(path.join(toolsRoot, "current")), false);
+  assert.equal(existsSync(path.join(toolsRoot, VERSION)), false);
+  assert.equal(readState(home).phase, "idle");
+  assert.deepEqual(readFileSync(serviceLog, "utf8").trim().split("\n"), [
+    "0.4.7:status",
+    `${VERSION}:restart`,
     `${VERSION}:stop`,
     "0.4.7:ensure",
   ]);
@@ -1798,7 +1958,7 @@ test("managed service health failure restores old version, build, PID identity a
   assert.equal(existsSync(path.join(home, "app", VERSION)), false);
   assert.deepEqual(readFileSync(serviceLog, "utf8").trim().split("\n"), [
     "0.4.7:status",
-    `${VERSION}:ensure`,
+    `${VERSION}:restart`,
     `${VERSION}:stop`,
     "0.4.7:ensure",
   ]);
@@ -1842,9 +2002,12 @@ test("candidate service redirect is not followed and the old service is restored
   assertProjectPreserved(home);
 });
 
-test("rollback failure remains explicit in the single journal and refuses later overwrite", async (t) => {
+test("rollback failure remains explicit but restores the legacy stable launcher before holding the journal", {
+  skip: IS_WINDOWS,
+}, async (t) => {
   const { root, home, release } = fixture(t, { service: "fail" });
   const old = createLegacyRuntime(home, { service: "managed-restore-fail" });
+  const launcher = createLegacyStableLauncher(home, old.runtime);
   const server = await startCapabilityServer(t, root, home);
   const environment = {
     CHENGFENG_VIDEOCUT_TEST_SERVICE_URL: server.url,
@@ -1855,9 +2018,186 @@ test("rollback failure remains explicit in the single journal and refuses later 
   assert.match(result.stderr, /自动回滚不完整/);
   assert.equal(currentTarget(home), old.runtime);
   assert.equal(readState(home).phase, "rollback_failed");
+  assert.equal(lstatSync(launcher).isSymbolicLink(), true);
+  assert.equal(readlinkSync(launcher), path.join("..", "app", "current", "chengfeng-videocut"));
   const retry = invoke(home, release, environment);
   assert.notEqual(retry.status, 0);
   assert.match(retry.stderr, /回滚未完成/);
+});
+
+test("explicit embedded rollback recovery restores a legacy Runtime after the old bug deleted candidate tools", {
+  skip: IS_WINDOWS,
+}, async (t) => {
+  const { root, home, release, bundle } = fixture(t, { service: "fail" });
+  const old = createLegacyRuntime(home, { service: "managed-restore-fail" });
+  const launcher = createLegacyStableLauncher(home, old.runtime);
+  const { toolsRoot, oldTools, candidateTools } = createManagedTools(home);
+  // The 0.4.x Runtime had no managed tools. The candidate's tool tree was
+  // temporary and, in the historical bad rollback order, got deleted before
+  // the old service could be restarted.
+  unlinkSync(path.join(toolsRoot, "current"));
+  rmSync(oldTools, { recursive: true, force: true });
+  const server = await startCapabilityServer(t, root, home);
+  const serviceLog = path.join(root, "recover-rollback-service-actions.log");
+  const environment = {
+    CHENGFENG_VIDEOCUT_INSTALLER_ENSURE_SERVICE: "1",
+    CHENGFENG_VIDEOCUT_MANAGED_TOOLS_SOURCE_DIR: candidateTools,
+    CHENGFENG_VIDEOCUT_TEST_SERVICE_URL: server.url,
+    CHENGFENG_VIDEOCUT_TEST_SERVICE_PID: String(server.pid),
+    CHENGFENG_VIDEOCUT_TEST_SERVICE_LOG: serviceLog,
+  };
+  const failed = invoke(home, release, environment);
+  assert.notEqual(failed.status, 0);
+  assert.match(failed.stderr, /自动回滚不完整/);
+  assert.equal(readState(home).phase, "rollback_failed");
+  assert.equal(currentTarget(home), old.runtime);
+  assert.equal(existsSync(path.join(toolsRoot, VERSION)), true);
+  assert.equal(existsSync(path.join(toolsRoot, "current")), true);
+
+  // Model the exact pre-fix residue: candidate tools have already been
+  // removed, but candidate app/ and the rollback_failed journal remain.
+  unlinkSync(path.join(toolsRoot, "current"));
+  rmSync(path.join(toolsRoot, VERSION), { recursive: true, force: true });
+  assert.equal(existsSync(path.join(toolsRoot, VERSION)), false);
+  assert.equal(existsSync(path.join(toolsRoot, "current")), false);
+
+  // The first old-service start was deliberately faulted. Its exact Studio
+  // identity stays the same; only the test service operation is allowed to
+  // succeed for the explicit repair pass.
+  writeExecutable(path.join(old.runtime, "cli.js"), fakeCli({
+    version: "0.4.7",
+    service: "managed",
+    buildId: old.buildId,
+  }));
+  const formal = makeFormalRelease(root, release, bundle);
+  const embeddedPayload = makeEmbeddedPayload(root, formal, { missingRuntimePayload: true });
+  const serializedFailedState = readFileSync(path.join(home, "installer-state.json"), "utf8");
+
+  const noPayload = invokeWithArgs(home, release, [
+    "--target-root", home,
+    "--recover-rollback",
+    "--json",
+  ], {
+    ...environment,
+    HOME: path.dirname(home),
+  });
+  assert.notEqual(noPayload.status, 0);
+  assert.match(noPayload.stdout, /含已校验受管工具 payload/);
+  assert.equal(readFileSync(path.join(home, "installer-state.json"), "utf8"), serializedFailedState);
+
+  const unreadableExternalFormal = invokeFormal(
+    process.execPath,
+    home,
+    release,
+    {
+      manifestPath: path.join(root, "manifest-must-not-be-read.json"),
+      checksumPath: path.join(root, "checksum-must-not-be-read.txt"),
+    },
+    ["--recover-rollback"],
+  );
+  assert.notEqual(unreadableExternalFormal.status, 0);
+  assert.match(unreadableExternalFormal.stdout, /含已校验受管工具 payload/);
+  assert.equal(readFileSync(path.join(home, "installer-state.json"), "utf8"), serializedFailedState);
+
+  const recoveryEnvironment = { ...environment };
+  delete recoveryEnvironment.CHENGFENG_VIDEOCUT_MANAGED_TOOLS_SOURCE_DIR;
+  const tamperedToolsPath = path.join(root, "tampered-embedded-tools.tar.gz");
+  writeFileSync(
+    tamperedToolsPath,
+    Buffer.concat([readFileSync(embeddedPayload.toolsPath), Buffer.from("tampered")]),
+  );
+  const unverifiedToolsPayload = { ...embeddedPayload, toolsPath: tamperedToolsPath };
+  const unverifiedTools = invokeEmbeddedPayload(
+    home,
+    unverifiedToolsPayload,
+    ["--recover-rollback"],
+    recoveryEnvironment,
+  );
+  assert.notEqual(unverifiedTools.status, 0);
+  assert.match(unverifiedTools.stdout, /大小与安装 manifest 不一致|SHA-256 与安装 manifest 不一致/);
+  assert.equal(readFileSync(path.join(home, "installer-state.json"), "utf8"), serializedFailedState);
+
+  const recovered = invokeEmbeddedPayload(
+    home,
+    embeddedPayload,
+    ["--recover-rollback"],
+    recoveryEnvironment,
+  );
+  assert.equal(recovered.status, 0, `${recovered.stdout}\n${recovered.stderr}`);
+  const payload = JSON.parse(recovered.stdout.trim().split(/\r?\n/).at(-1));
+  assert.equal(payload.command, "runtime.recover_rollback");
+  assert.equal(payload.data.status, "rollback_recovered");
+  assert.equal(payload.data.productVersion, "0.4.7");
+  assert.equal(payload.data.assetDownloads, 0);
+  assert.equal(currentTarget(home), old.runtime);
+  assert.equal(readState(home).phase, "idle");
+  assert.equal(readState(home).active.version, "0.4.7");
+  assert.equal(lstatSync(launcher).isSymbolicLink(), true);
+  assert.equal(readlinkSync(launcher), path.join("..", "app", "current", "chengfeng-videocut"));
+  assert.equal(existsSync(path.join(home, "app", VERSION)), false);
+  assert.equal(existsSync(path.join(toolsRoot, VERSION)), false);
+  assert.equal(existsSync(path.join(toolsRoot, "current")), false);
+  assert.deepEqual(readFileSync(serviceLog, "utf8").trim().split("\n"), [
+    "0.4.7:status",
+    `${VERSION}:restart`,
+    `${VERSION}:stop`,
+    "0.4.7:ensure",
+    `${VERSION}:stop`,
+    "0.4.7:ensure",
+    "0.4.7:status",
+  ]);
+  assertProjectPreserved(home);
+});
+
+test("explicit rollback recovery rejects a tampered journal and custom target root without mutation", {
+  skip: IS_WINDOWS,
+}, (t) => {
+  const { root, home, release, bundle } = fixture(t);
+  const old = createLegacyRuntime(home, { service: "managed" });
+  const formal = makeFormalRelease(root, release, bundle);
+  const embeddedPayload = makeEmbeddedPayload(root, formal, { missingRuntimePayload: true });
+  const tampered = {
+    schemaVersion: 2,
+    transactionId: "tampered-rollback",
+    phase: "rollback_failed",
+    active: { version: "0.4.7", path: old.runtime },
+    previous: null,
+    pending: null,
+    transaction: {
+      oldActive: { version: "0.4.7", path: old.runtime },
+      oldPrevious: null,
+      serviceBefore: null,
+      serviceEnsureStarted: false,
+      launcherBefore: { kind: "unknown" },
+      toolsBefore: null,
+      toolsSource: null,
+      toolsCandidate: null,
+    },
+    terminationFailure: null,
+    rollbackError: "fixture rollback failure",
+    updatedAt: new Date().toISOString(),
+  };
+  const statePath = path.join(home, "installer-state.json");
+  writeFileSync(statePath, `${JSON.stringify(tampered)}\n`);
+  const serializedTamperedState = readFileSync(statePath, "utf8");
+
+  const rejected = invokeEmbeddedPayload(home, embeddedPayload, ["--recover-rollback"]);
+  assert.notEqual(rejected.status, 0);
+  assert.match(rejected.stdout, /launcherBefore 无效/);
+  assert.equal(readFileSync(statePath, "utf8"), serializedTamperedState);
+  assert.equal(currentTarget(home), old.runtime);
+
+  const customRoot = path.join(root, "custom", ".chengfeng-videocut");
+  const customRootRejected = invokeEmbeddedPayload(
+    customRoot,
+    embeddedPayload,
+    ["--recover-rollback"],
+    { HOME: path.join(root, "another-user") },
+  );
+  assert.notEqual(customRootRejected.status, 0);
+  assert.match(customRootRejected.stdout, /自定义 --target-root 不得接管全局/);
+  assert.equal(existsSync(customRoot), false);
+  assert.equal(readFileSync(statePath, "utf8"), serializedTamperedState);
 });
 
 for (const stalledPath of ["/api/health", "/chengfeng-videocut-capabilities.json"]) {
@@ -1884,7 +2224,7 @@ for (const stalledPath of ["/api/health", "/chengfeng-videocut-capabilities.json
   });
 }
 
-test("new service ensure that ignores SIGTERM is hard-bounded and rolls back", async (t) => {
+test("new service restart that ignores SIGTERM is hard-bounded and rolls back", async (t) => {
   const { root, home, release } = fixture(t, { service: "hang" });
   const old = createLegacyRuntime(home, { service: "managed" });
   const server = await startCapabilityServer(t, root, home);
@@ -1898,7 +2238,7 @@ test("new service ensure that ignores SIGTERM is hard-bounded and rolls back", a
   });
   const elapsed = Date.now() - startedAt;
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /新 Runtime service ensure.*(?:ETIMEDOUT|SIGTERM)/);
+  assert.match(result.stderr, /新 Runtime service restart.*(?:ETIMEDOUT|SIGTERM)/);
   assert.ok(elapsed < 5_000, `service CLI timeout exceeded outer bound: ${elapsed}ms`);
   const hangingPid = Number(readFileSync(pidFile, "utf8"));
   await waitForProcessExit(hangingPid);
@@ -1910,7 +2250,7 @@ test("new service ensure that ignores SIGTERM is hard-bounded and rolls back", a
   assertProjectPreserved(home);
 });
 
-test("new service output is bounded and spam rolls back without retaining the lock", async (t) => {
+test("new service restart output is bounded and spam rolls back without retaining the lock", async (t) => {
   const { root, home, release } = fixture(t, { service: "spam" });
   const old = createLegacyRuntime(home, { service: "managed" });
   const server = await startCapabilityServer(t, root, home);
@@ -1924,7 +2264,7 @@ test("new service output is bounded and spam rolls back without retaining the lo
   });
   const elapsed = Date.now() - startedAt;
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /新 Runtime service ensure.*ENOBUFS/);
+  assert.match(result.stderr, /新 Runtime service restart.*ENOBUFS/);
   assert.ok(result.stderr.length < 10_000, `diagnostic output was not bounded: ${result.stderr.length}`);
   assert.ok(elapsed < 5_000, `service output overflow exceeded outer bound: ${elapsed}ms`);
   const spammingPid = Number(readFileSync(pidFile, "utf8"));

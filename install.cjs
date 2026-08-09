@@ -57,6 +57,7 @@ function parseInstallerArguments(argv) {
     checksumFile: null,
     json: false,
     ensureService: false,
+    recoverRollback: false,
     allowUnverifiedLocalFixture: false,
   };
   const valueOptions = new Set(["--manifest", "--target-root", "--checksum-file"]);
@@ -83,6 +84,7 @@ function parseInstallerArguments(argv) {
     }
     if (argument === "--json") options.json = true;
     else if (argument === "--ensure-service") options.ensureService = true;
+    else if (argument === "--recover-rollback") options.recoverRollback = true;
     else if (argument === "--allow-unverified-local-fixture") options.allowUnverifiedLocalFixture = true;
     else fail(`未知安装器参数：${argument}`);
   }
@@ -153,6 +155,11 @@ const EXECUTABLE_TERMINATION_GRACE_MS = 1_000;
 const ENSURE_MANAGED_SERVICE =
   INSTALLER_OPTIONS.ensureService ||
   process.env.CHENGFENG_VIDEOCUT_INSTALLER_ENSURE_SERVICE === "1";
+// A rollback_failed journal is deliberately not retried by ordinary installs.
+// This separate, explicit command has a much narrower contract: it may only
+// restore the recorded old Runtime using an already verified embedded tools
+// payload; it never begins a new Runtime/tools installation.
+const RECOVER_ROLLBACK = INSTALLER_OPTIONS.recoverRollback;
 const MANAGED_TOOLS_SOURCE_DIR = process.env.CHENGFENG_VIDEOCUT_MANAGED_TOOLS_SOURCE_DIR || null;
 const DEFAULT_PRODUCT_INSTALL_ROOT = path.resolve(HOME_RESOLVED, ".chengfeng-videocut");
 const COMPILED_INSTALLER_VERSION =
@@ -181,10 +188,10 @@ if (COMPILED_INSTALLER_VERSION && COMPILED_INSTALLER_VERSION !== VERSION) {
 // Plugin installs always target the user's canonical Product root.
 function assertManagedServiceUsesDefaultRoot() {
   if (
-    ENSURE_MANAGED_SERVICE &&
+    (ENSURE_MANAGED_SERVICE || RECOVER_ROLLBACK) &&
     INSTALL_ROOT_COMPARABLE !== comparablePath(DEFAULT_PRODUCT_INSTALL_ROOT)
   ) {
-    fail("--ensure-service 只能用于当前用户的默认 Product Runtime 根目录；自定义 --target-root 不得接管全局 5190 / 用户级服务。");
+    fail("--ensure-service / --recover-rollback 只能用于当前用户的默认 Product Runtime 根目录；自定义 --target-root 不得接管全局 5190 / 用户级服务。");
   }
 }
 
@@ -211,14 +218,14 @@ function progress(message) {
   (INSTALLER_OPTIONS.json ? process.stderr : process.stdout).write(message);
 }
 
-function reportSuccess(status, assetDownloads, message) {
+function reportSuccess(status, assetDownloads, message, { productVersion = VERSION } = {}) {
   if (INSTALLER_OPTIONS.json) {
     process.stdout.write(`${JSON.stringify({
       schemaVersion: 1,
       product: "chengfeng-videocut",
-      command: "runtime.install",
+      command: RECOVER_ROLLBACK ? "runtime.recover_rollback" : "runtime.install",
       ok: true,
-      data: { status, productVersion: VERSION, targetRoot: INSTALL_ROOT, assetDownloads },
+      data: { status, productVersion, targetRoot: INSTALL_ROOT, assetDownloads },
     })}\n`);
   } else {
     process.stdout.write(message);
@@ -2637,6 +2644,20 @@ function restoreLauncher(snapshot) {
   flushDirectoryIfSupported(BIN_ROOT, "launcher_restore");
 }
 
+function assertLauncherMatchesSnapshot(snapshot) {
+  // `restoreLauncher()` is the mutation. This is deliberately a separate
+  // postcondition for the explicit recovery command, so a successful exit
+  // cannot merely mean that the rollback code returned without throwing.
+  validateLauncherSnapshot(snapshot);
+  const observed = launcherKind();
+  if (observed !== snapshot.kind) {
+    fail("回滚后的稳定 launcher 与 journal 快照不一致。");
+  }
+  if (snapshot.kind === "legacy_link" && readlinkSync(BIN_LINK) !== LEGACY_POSIX_LAUNCHER_TARGET) {
+    fail("回滚后的 legacy 稳定 launcher 目标不一致。");
+  }
+}
+
 function parseCliJson(result, command) {
   if (result.error || result.status !== 0) {
     throw executableFailure(`${command} 失败`, result);
@@ -2815,17 +2836,23 @@ async function verifyManagedService(
   expectedCapabilities,
   expectedBuildId,
   onEnsureStarted = null,
+  { forceRestart = false } = {},
 ) {
   const budget = createServiceVerificationBudget("新 Runtime 服务验证");
+  // `service ensure` intentionally returns an already healthy managed service
+  // unchanged.  During a Runtime/tools activation that process still belongs to
+  // the previous `app/current`/PATH generation, so it cannot prove the
+  // candidate.  A first install has no prior service and must retain ensure.
+  const action = forceRestart ? "restart" : "ensure";
   if (onEnsureStarted) onEnsureStarted();
   const service = parseCliJson(
     await runCliAt(
       candidate,
       bunExecutable,
-      ["service", "ensure", "--json"],
+      ["service", action, "--json"],
       remainingServiceBudget(budget),
     ),
-    "新 Runtime service ensure",
+    `新 Runtime service ${action}`,
   );
   assertServiceIdentity(service, {
     version: VERSION,
@@ -2905,12 +2932,16 @@ function setIdleFromRollback(state) {
   state.transactionId = null;
   state.transaction = null;
   state.terminationFailure = null;
+  delete state.rollbackError;
   writeState(state);
 }
 
 async function rollbackActivatedTransaction(state, bunExecutable, { reason = "失败" } = {}) {
   const old = state.transaction?.oldActive ?? state.previous;
   const candidate = state.pending ?? state.active;
+  // An explicit retry starts from rollback_failed. That diagnostic is only
+  // valid in that phase; remove it before durably entering rolling_back.
+  delete state.rollbackError;
   state.phase = "rolling_back";
   writeState(state);
   try {
@@ -2921,6 +2952,15 @@ async function rollbackActivatedTransaction(state, bunExecutable, { reason = "�
     }
     if (old) switchCurrent(old.path, state.transactionId || randomUUID());
     else clearCurrentForFirstInstall(state.transactionId || randomUUID());
+    // The managed service definition always starts through BIN_LINK. Restore
+    // the old launcher before asking the old service to start; otherwise a
+    // newly-written strict launcher can require tools/current after rollback
+    // has removed it. Keep candidate tools available through service restore
+    // as well: a strict pre-existing launcher still needs a runnable Bun.
+    restoreLauncher(state.transaction?.launcherBefore);
+    if (state.transaction?.serviceBefore) {
+      await restoreService(old, bunExecutable, state.transaction.serviceBefore);
+    }
     if (state.transaction?.toolsSource || state.transaction?.toolsCandidate || state.transaction?.toolsBefore) {
       const toolsBefore = state.transaction?.toolsBefore || null;
       const toolsTransactionId = state.transactionId || randomUUID();
@@ -2937,10 +2977,6 @@ async function rollbackActivatedTransaction(state, bunExecutable, { reason = "�
         restoreManagedToolsVersion(state.transaction, state.transactionId);
       }
     }
-    if (state.transaction?.serviceBefore) {
-      await restoreService(old, bunExecutable, state.transaction.serviceBefore);
-    }
-    restoreLauncher(state.transaction?.launcherBefore);
     if (candidate && pathExists(candidate.path) && !sameRuntime(candidate, old)) removeManagedDirectory(candidate.path);
     setIdleFromRollback(state);
   } catch (error) {
@@ -2952,6 +2988,128 @@ async function rollbackActivatedTransaction(state, bunExecutable, { reason = "�
     }
     writeState(state);
     throw new Error(`${reason}；自动回滚不完整，已保留 journal：${state.rollbackError}`);
+  }
+}
+
+function assertExplicitRollbackRecoveryState(state) {
+  if (state.phase !== "rollback_failed") {
+    fail("--recover-rollback 只接受 rollback_failed 安装 journal；不会猜测其他事务阶段。");
+  }
+  const transaction = state.transaction;
+  const old = transaction?.oldActive ?? state.previous;
+  const candidate = state.pending ?? state.active;
+  if (!old || !transaction?.serviceBefore) {
+    fail("--recover-rollback 只支持已记录旧 Runtime 服务身份的回滚现场。");
+  }
+  if (
+    !candidate || candidate.version !== VERSION ||
+    path.resolve(candidate.path) !== path.resolve(TARGET_DIR)
+  ) {
+    fail("--recover-rollback 的候选 Runtime 身份不是当前安装器可恢复的受管版本。");
+  }
+  if (
+    !sameRuntime(state.active, candidate) && !sameRuntime(state.active, old)
+  ) {
+    fail("rollback_failed journal 的 active Runtime 不在已记录的旧/候选集合中。");
+  }
+  if (state.previous && !sameRuntime(state.previous, old)) {
+    fail("rollback_failed journal 的 previous Runtime 与旧 Runtime 快照不一致。");
+  }
+  if (!pathExists(candidate.path)) {
+    fail("rollback_failed 的候选 Runtime 已缺失；不会执行无法停止候选服务的恢复。");
+  }
+  assertCanonicalManagedDirectory(candidate.path, "rollback_failed 候选 Runtime");
+  if (!candidate.buildId || !candidate.treeDigest) {
+    fail("rollback_failed 的候选 Runtime 缺少已验证 build/tree 身份。");
+  }
+  const candidateInfo = validateCandidateLayout(candidate.path, APP_ROOT);
+  if (
+    candidateInfo.buildId !== candidate.buildId ||
+    candidateInfo.treeDigest !== candidate.treeDigest
+  ) {
+    fail("rollback_failed 的候选 Runtime 内容身份已漂移；不会运行或删除它。");
+  }
+  assertCanonicalManagedDirectory(old.path, "rollback_failed 旧 Runtime");
+  for (const [relative, label] of [
+    ["cli.js", "旧 Runtime cli.js"],
+    [path.join("studio", "index.html"), "旧 Runtime Studio"],
+    [path.join("studio", "chengfeng-videocut-capabilities.json"), "旧 Runtime 能力合同"],
+    ["chengfeng-videocut", "旧 Runtime 启动器"],
+  ]) assertRequiredRegularFile(old.path, relative, label);
+  const observedCurrent = readCurrentTarget();
+  if (!observedCurrent) {
+    fail("rollback_failed 现场缺少 app/current；不会猜测应恢复到哪个 Runtime。");
+  }
+  const observedRef = runtimeRefFromPath(observedCurrent);
+  if (!sameRuntime(observedRef, old) && !sameRuntime(observedRef, candidate)) {
+    fail("rollback_failed 的 app/current 不在已记录的旧/候选 Runtime 集合中。");
+  }
+  return { old, candidate, serviceBefore: transaction.serviceBefore, launcherBefore: transaction.launcherBefore };
+}
+
+async function recoverRollbackFailedTransaction(formalContext) {
+  // An external manifest proves metadata, but it does not provide a local,
+  // already-verified Bun/FFmpeg/FFprobe payload. Recovery must never respond
+  // to a broken transaction by downloading a new Runtime or tools archive.
+  if (!formalContext?.embeddedPayload) {
+    fail("--recover-rollback 只接受含已校验受管工具 payload 的自包含正式安装器；不会下载 Runtime 或 tools。");
+  }
+  if (!pathExists(INSTALL_ROOT)) {
+    fail("--recover-rollback 找不到现有 Product Runtime 根目录；不会创建新安装。");
+  }
+  assertSafeInstallRootPath(INSTALL_ROOT);
+  assertInstallRootLayout();
+
+  const releaseLock = acquireUpdateLock();
+  try {
+    assertInstallRootLayout({ requireHeldLock: true });
+    if (!pathExists(STATE_PATH)) {
+      fail("--recover-rollback 找不到 installer-state.json；不会猜测回滚现场。");
+    }
+    const state = readState();
+    const recovery = assertExplicitRollbackRecoveryState(state);
+
+    // This only copies the tool archive embedded in the installer to its own
+    // temporary directory, then verifies the manifest and every file. Deliberately
+    // do not call the Runtime-asset counterpart here. It happens under the
+    // update lock only after the exact rollback_failed scene is accepted.
+    const formalToolsRoot = await downloadAndExtractManifestAsset(
+      formalContext,
+      formalContext.tools,
+      "回滚恢复受管工具包",
+    );
+    validateExternalToolsSource(formalToolsRoot);
+    installerToolsDirectory = formalToolsRoot;
+    const bunExecutable = formalToolsExecutable(formalToolsRoot, "bun");
+    await assertSupportedBun(bunExecutable);
+    await rollbackActivatedTransaction(state, bunExecutable, { reason: "显式 Runtime 回滚恢复" });
+
+    const recovered = readState();
+    if (recovered.phase !== "idle" || !sameRuntime(recovered.active, recovery.old)) {
+      fail("显式 Runtime 回滚恢复没有回到记录的旧 Runtime idle 状态。");
+    }
+    assertCurrentMatches(recovered);
+    assertLauncherMatchesSnapshot(recovery.launcherBefore);
+    const restoredService = await inspectManagedService(recovered.active, bunExecutable);
+    if (!restoredService) {
+      fail("显式 Runtime 回滚恢复后旧 Runtime 服务未处于受管健康状态。");
+    }
+    if (
+      restoredService.productVersion !== recovery.serviceBefore.productVersion ||
+      restoredService.studioBuildId !== recovery.serviceBefore.studioBuildId ||
+      restoredService.runtimeMode !== recovery.serviceBefore.runtimeMode ||
+      stableJson(restoredService.capabilities) !== stableJson(recovery.serviceBefore.capabilities)
+    ) {
+      fail("显式 Runtime 回滚恢复后的旧服务身份与 journal 快照不一致。");
+    }
+    reportSuccess(
+      "rollback_recovered",
+      0,
+      `chengfeng-videocut 已恢复到 ${recovered.active.version}；未下载或安装新的 Runtime/tools。\n`,
+      { productVersion: recovered.active.version },
+    );
+  } finally {
+    releaseLock();
   }
 }
 
@@ -2989,6 +3147,7 @@ async function activateSameVersionManagedTools(state, bunExecutable, candidateIn
           state.transaction.serviceEnsureStarted = true;
           writeState(state);
         },
+        { forceRestart: Boolean(state.transaction.serviceBefore) },
       );
     }
   } catch (error) {
@@ -3373,6 +3532,7 @@ async function runInstaller(formalContext) {
               state.transaction.serviceEnsureStarted = true;
               writeState(state);
             },
+            { forceRestart: Boolean(state.transaction.serviceBefore) },
           );
         }
       } catch (error) {
@@ -3418,7 +3578,13 @@ async function main() {
   let formalContext = null;
   try {
     assertManagedServiceUsesDefaultRoot();
+    // An explicit repair is offline by contract. Reject source/external
+    // installers before they can even retrieve a manifest or checksum.
+    if (RECOVER_ROLLBACK && !embeddedPayload()) {
+      fail("--recover-rollback 只接受含已校验受管工具 payload 的自包含正式安装器；不会下载 Runtime 或 tools。");
+    }
     formalContext = await loadFormalInstallContext();
+    if (RECOVER_ROLLBACK) return await recoverRollbackFailedTransaction(formalContext);
     return await runInstaller(formalContext);
   } finally {
     if (formalContext?.tmpDir && pathExists(formalContext.tmpDir)) {
@@ -3433,7 +3599,7 @@ function reportMainFailure(error) {
     process.stdout.write(`${JSON.stringify({
       schemaVersion: 1,
       product: "chengfeng-videocut",
-      command: "runtime.install",
+      command: RECOVER_ROLLBACK ? "runtime.recover_rollback" : "runtime.install",
       ok: false,
       error: { code: "installation_failed", message },
     })}\n`);
