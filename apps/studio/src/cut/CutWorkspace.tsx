@@ -11,8 +11,8 @@ import { useProjectEditList } from "../components/useProjectEditList";
 import { useProjectSubtitles } from "../components/useProjectSubtitles";
 import { useKouboTranscript } from "../extensions/koubo/useKouboTranscript";
 import { CutFeaturePanel, type CutFeatureTab } from "./features/CutFeaturePanel";
-import { CutInspector } from "./inspector/CutInspector";
 import { SubtitlePane } from "./subtitle/SubtitlePane";
+import { SubtitleStyleSection } from "./subtitle/SubtitleStyleSection";
 import type { ActiveSubtitle } from "./subtitle/SubtitleOverlay";
 import type { ActiveVisual } from "./visual/VisualOverlay";
 import { useProjectVisuals } from "./visual/useProjectVisuals";
@@ -219,6 +219,13 @@ export function CutWorkspace({
   const cutSelection = useProjectCutSelection(projectId, transcript.cues);
   const subtitles = useProjectSubtitles(projectId);
   const [featureTab, setFeatureTab] = useState<CutFeatureTab>("koubo");
+  const subtitleStyleAvailable = subtitles.document !== null;
+  // A subtitle document can disappear after a reload or a project switch.
+  // Never keep the person on the now-nonexistent style surface; this leaves
+  // the player and timeline mounted because only the left pane state changes.
+  const activeFeatureTab = featureTab === "subtitle-style" && !subtitleStyleAvailable
+    ? "subtitle"
+    : featureTab;
   const [selectedSubtitleCueId, setSelectedSubtitleCueId] = useState<string | null>(null);
   const artifact = usePreviewArtifact(projectId, editList.revision);
   const artifactSource = artifact.state.source
@@ -262,6 +269,10 @@ export function CutWorkspace({
   const cutSelectionUpdateRef = useRef(cutSelection.updateCutWordIds);
   editListPatchRef.current = editList.patchOperation;
   cutSelectionUpdateRef.current = cutSelection.updateCutWordIds;
+
+  useEffect(() => {
+    if (activeFeatureTab !== featureTab) setFeatureTab(activeFeatureTab);
+  }, [activeFeatureTab, featureTab]);
 
   const syncUndoDepth = useCallback(() => {
     setUndoDepth(undoCommandsRef.current.length);
@@ -571,7 +582,7 @@ export function CutWorkspace({
         transcript={transcriptForPanel}
         cutSelection={transcriptCutSelection}
         onSeek={seek}
-        activeTab={featureTab}
+        activeTab={activeFeatureTab}
         onTabChange={setFeatureTab}
         subtitleProblemCount={subtitles.stale.length}
         subtitleContent={
@@ -583,6 +594,8 @@ export function CutWorkspace({
             onSeek={seek}
           />
         }
+        subtitleStyleContent={<SubtitleStyleSection subtitles={subtitles} />}
+        subtitleStyleAvailable={subtitleStyleAvailable}
       />
 
       <SubtitlePlaybackMarker
@@ -617,8 +630,6 @@ export function CutWorkspace({
         visualLayers={overlayLayers}
         activeVisualLayerId={activeVisual?.layerId ?? null}
       />
-
-      <CutInspector subtitles={subtitles} />
 
       <CutTimeline
         visualLayers={timelineVisualLayers}

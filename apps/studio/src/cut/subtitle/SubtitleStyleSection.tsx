@@ -1,4 +1,4 @@
-import { useId, type CSSProperties } from "react";
+import type { CSSProperties } from "react";
 import {
   matchSubtitleStylePreset,
   SUBTITLE_STYLE_PRESETS,
@@ -24,9 +24,9 @@ function previewStyle(style: SubtitleStyle): CSSProperties {
 }
 
 /**
- * The style group of the properties column's 字幕 tab.
+ * The contents of the left workspace's 字幕样式 tab.
  *
- * Four looks, one of them on. Not eight sliders: eight decisions to reach one
+ * Six looks, one of them on. Not eight sliders: eight decisions to reach one
  * result, seven of which only ever moved together. And not a per-screen
  * override either — one document, one look, so there is no second place for the
  * same setting to disagree with itself and no way back to build.
@@ -34,37 +34,31 @@ function previewStyle(style: SubtitleStyle): CSSProperties {
  * Each tile is drawn in the look it names, because the label is not the choice.
  */
 export function SubtitleStyleSection({ subtitles }: SubtitleStyleSectionProps) {
-  const id = useId();
   const document = subtitles.document;
   if (!document) return null;
 
   const active = matchSubtitleStylePreset(document.style);
 
   return (
-    <div className="cf-cut-inspector__group" aria-labelledby={`${id}-title`}>
-      {/* 字幕 is the tab above; repeating it here would name the group after
-          the column it already sits in. This says which of 字幕's parameters
-          these are — 位置、时长 can join without either heading moving. */}
-      <h3 id={`${id}-title`} className="cf-cut-inspector__group-title">样式</h3>
-
-      <div className="cf-cut-inspector__presets" role="radiogroup" aria-label="字幕样式">
+    <div className="cf-cut-subtitle-style-section">
+      <div className="cf-cut-subtitle-style-section__presets" role="radiogroup" aria-label="字幕样式">
         {SUBTITLE_STYLE_PRESETS.map((preset) => (
           <button
             key={preset.id}
             type="button"
             role="radio"
-            className="cf-cut-inspector__preset"
+            className="cf-cut-subtitle-style-section__preset"
             aria-checked={active?.id === preset.id}
             onClick={() => subtitles.setStyle(preset.style)}
           >
             <span
-              className="cf-cut-inspector__preset-sample"
+              className="cf-cut-subtitle-style-section__preset-sample"
               style={previewStyle(preset.style)}
               aria-hidden="true"
             >
               字幕
             </span>
-            <span className="cf-cut-inspector__preset-label">{preset.label}</span>
+            <span className="cf-cut-subtitle-style-section__preset-label">{preset.label}</span>
           </button>
         ))}
       </div>

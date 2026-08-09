@@ -149,9 +149,7 @@ select:focus-visible,
   grid-template-columns:
     var(--cf-cut-transcript-width, 320px)
     3px
-    minmax(420px, 1fr)
-    3px
-    var(--cf-cut-inspector-width, 264px);
+    minmax(420px, 1fr);
   /* HyperFrames' two-lane canvas is 242px plus a 33px toolbar. Keep the pane
      at or above that source geometry instead of clipping its bottom breathing
      area and making both tracks look pinned to the bottom edge. */
@@ -172,11 +170,6 @@ select:focus-visible,
 
 .cf-cut-workspace > .cf-cut-player {
   grid-column: 3;
-  grid-row: 1;
-}
-
-.cf-cut-workspace > .cf-cut-inspector {
-  grid-column: 5;
   grid-row: 1;
 }
 
@@ -1043,208 +1036,37 @@ select:focus-visible,
   text-align: center;
 }
 
-/* Inspector ------------------------------------------------------- */
+/* Subtitle style -------------------------------------------------- */
 
-.cf-cut-inspector {
-  display: flex;
-  flex-direction: column;
-  background: var(--panel);
-}
-
-/* The properties column navigates by feature with the same strip as the column
-   on the left, so it borrows those rules wholesale and changes one thing: 4px
-   here plus the tab's own 10px puts the labels on the same 14px left edge as
-   the controls below. There is no 参数 heading above it — the strip already
-   says what the column holds, and the column on the left has no heading
-   either. */
-.cf-cut-inspector__tabs {
-  padding: 0 4px;
-}
-
-.cf-cut-inspector__body {
-  min-height: 0;
-  flex: 1 1 auto;
+/* It is a first-class left-pane mode, not a narrow right-side inspector. The
+   scroll boundary belongs to this pane so the tab strip and the other modes
+   stay fixed while someone compares looks. */
+.cf-cut-feature-content--subtitle-style {
+  display: block;
   overflow-x: hidden;
   overflow-y: auto;
-  padding: 4px 14px 20px;
   scrollbar-gutter: stable;
 }
 
-.cf-cut-inspector__group,
-.cf-cut-inspector__section,
-.cf-cut-inspector fieldset {
+.cf-cut-subtitle-style-panel {
   min-width: 0;
-  margin: 0;
-  padding: 14px 0;
-  border: 0;
-  border-bottom: 1px solid var(--hairline);
+  padding: 18px 14px 20px;
 }
 
-.cf-cut-inspector__group:last-child,
-.cf-cut-inspector__section:last-child,
-.cf-cut-inspector fieldset:last-child {
-  border-bottom: 0;
-}
-
-.cf-cut-inspector__group-title,
-.cf-cut-inspector__section > h2,
-.cf-cut-inspector__section > h3,
-.cf-cut-inspector legend {
-  width: 100%;
-  margin: 0 0 10px;
-  padding: 0;
-  color: var(--text-2);
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 16px;
-}
-
-.cf-cut-inspector__help,
-.cf-cut-inspector__status {
-  margin: -4px 0 10px;
-  color: var(--text-4);
-  font-size: 10px;
-  line-height: 15px;
-}
-
-.cf-cut-inspector__status {
-  margin: 0;
-}
-
-.cf-cut-inspector__control {
-  display: grid;
-  grid-template-columns: minmax(72px, 0.8fr) minmax(0, 1fr);
-  align-items: center;
-  gap: 10px;
-  min-height: 34px;
-  color: var(--text-2);
-  font-size: 11px;
-}
-
-.cf-cut-inspector__control > span:first-child,
-.cf-cut-inspector__control > label:first-child {
-  color: var(--text-3);
-}
-
-.cf-cut-inspector__control {
+.cf-cut-subtitle-style-section {
   min-width: 0;
-}
-
-/* Scoped to the body, not the column: the feature tabs above it are buttons
-   too, and this rule was drawing each of them as a bordered, rounded control —
-   a tab strip that looked nothing like the identical strip on the left. */
-.cf-cut-inspector__body button,
-.cf-cut-inspector__body select {
-  min-height: 28px;
-  border: 1px solid #303036;
-  border-radius: 6px;
-  background: var(--panel-input);
-  color: var(--text-1);
-  font-size: 11px;
-}
-
-.cf-cut-inspector__body button {
-  padding: 0 9px;
-  cursor: pointer;
-}
-
-.cf-cut-inspector__mute[aria-pressed="true"] {
-  border-color: rgb(60 230 172 / 30%);
-  background: rgb(60 230 172 / 10%);
-  color: var(--mint);
-}
-
-.cf-cut-inspector__body button:hover:not(:disabled),
-.cf-cut-inspector__body select:hover:not(:disabled) {
-  border-color: #52525b;
-  background: var(--panel-hover);
-}
-
-.cf-cut-inspector__body button:disabled,
-.cf-cut-inspector__body select:disabled,
-.cf-cut-inspector__body input:disabled {
-  color: var(--text-5);
-  cursor: default;
-  opacity: 0.6;
-}
-
-.cf-cut-inspector input[type="range"] {
-  width: 100%;
-  min-width: 0;
-  height: 24px;
-  margin: 0;
-  accent-color: var(--mint);
-}
-
-.cf-cut-inspector select {
-  width: 100%;
-  min-width: 0;
-  padding: 0 7px;
-}
-
-.cf-cut-inspector__range {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 38px;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-
-.cf-cut-inspector__range output {
-  color: var(--text-2);
-  font: 10px ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-variant-numeric: tabular-nums;
-  text-align: right;
-}
-
-.cf-cut-inspector__facts {
-  display: grid;
-  grid-template-columns: minmax(72px, 0.8fr) minmax(0, 1fr);
-  gap: 8px 10px;
-  min-width: 0;
-  margin: 0;
-  font-size: 11px;
-  line-height: 16px;
-}
-
-.cf-cut-inspector__facts > div {
-  display: contents;
-}
-
-.cf-cut-inspector dt,
-.cf-cut-inspector dd {
-  min-width: 0;
-  margin: 0;
-}
-
-.cf-cut-inspector dt {
-  color: var(--text-4);
-}
-
-.cf-cut-inspector dd {
-  overflow-wrap: anywhere;
-  color: var(--text-2);
-  font-variant-numeric: tabular-nums;
-}
-
-.cf-cut-inspector [role="alert"] {
-  margin: 8px 0 0;
-  color: #fca5a5;
-  font-size: 10px;
-  line-height: 15px;
 }
 
 /* Whole looks, not the fields a look is made of. Each tile shows the result,
    because that is what the choice is actually about — a label alone would make
-   a person click all four to find out what they mean. */
-.cf-cut-inspector__presets {
+   a person click every option to find out what it means. */
+.cf-cut-subtitle-style-section__presets {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 6px;
-  margin-top: 2px;
 }
 
-.cf-cut-inspector__preset {
+.cf-cut-subtitle-style-section__preset {
   display: flex;
   min-height: 54px;
   flex-direction: column;
@@ -1255,16 +1077,18 @@ select:focus-visible,
   border: 1px solid #232327;
   border-radius: 6px;
   background: #08080a;
+  color: var(--text-1);
   cursor: pointer;
+  font-size: 11px;
   transition: border-color 120ms ease, background-color 120ms ease;
 }
 
-.cf-cut-inspector__preset:hover {
+.cf-cut-subtitle-style-section__preset:hover {
   border-color: #303036;
   background: rgb(255 255 255 / 2.5%);
 }
 
-.cf-cut-inspector__preset[aria-checked="true"] {
+.cf-cut-subtitle-style-section__preset[aria-checked="true"] {
   border-color: rgb(60 230 172 / 40%);
   background: rgb(60 230 172 / 6%);
 }
@@ -1272,23 +1096,18 @@ select:focus-visible,
 /* Padding, radius and line height come from the style being sampled — the same
    generator the frame uses. A rule here would be a second opinion about the
    look, and the two had already disagreed. */
-.cf-cut-inspector__preset-sample {
+.cf-cut-subtitle-style-section__preset-sample {
   white-space: nowrap;
 }
 
-.cf-cut-inspector__preset-label {
+.cf-cut-subtitle-style-section__preset-label {
   color: var(--text-4);
   font-size: 10px;
   font-weight: 400;
 }
 
-.cf-cut-inspector__preset[aria-checked="true"] .cf-cut-inspector__preset-label {
+.cf-cut-subtitle-style-section__preset[aria-checked="true"] .cf-cut-subtitle-style-section__preset-label {
   color: var(--text-2);
-}
-
-.cf-cut-inspector__reset {
-  width: 100%;
-  margin-top: 10px;
 }
 
 /* Subtitles on the video ------------------------------------------ */
@@ -2233,12 +2052,12 @@ select:focus-visible,
 @media (width < 960px) {
   .cf-cut-workspace {
     grid-template-columns: clamp(260px, 34vw, 300px) minmax(0, 1fr);
-    grid-template-rows: minmax(240px, 1fr) 160px clamp(276px, 32vh, 320px);
+    grid-template-rows: minmax(240px, 1fr) clamp(276px, 32vh, 320px);
   }
 
   .cf-cut-workspace > .cf-cut-feature-panel {
     grid-column: 1;
-    grid-row: 1 / 3;
+    grid-row: 1;
   }
 
   .cf-cut-workspace > .cf-cut-player {
@@ -2250,14 +2069,9 @@ select:focus-visible,
     display: none;
   }
 
-  .cf-cut-workspace > .cf-cut-inspector {
-    grid-column: 2;
-    grid-row: 2;
-  }
-
   .cf-cut-workspace > .cf-cut-timeline {
     grid-column: 1 / -1;
-    grid-row: 3;
+    grid-row: 2;
   }
 
   .cf-cut-brand p,

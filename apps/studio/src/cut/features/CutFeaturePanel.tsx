@@ -4,13 +4,17 @@ import {
   type KouboTranscriptPaneProps,
 } from "../transcript/KouboTranscriptPane";
 
-export type CutFeatureTab = "koubo" | "subtitle";
+export type CutFeatureTab = "koubo" | "subtitle" | "subtitle-style";
 
 export interface CutFeaturePanelProps extends KouboTranscriptPaneProps {
   activeTab: CutFeatureTab;
   onTabChange: (tab: CutFeatureTab) => void;
   /** Rendered in place of the transcript when the 字幕 tab is active. */
   subtitleContent: ReactNode;
+  /** Rendered when the 字幕样式 tab is active. */
+  subtitleStyleContent: ReactNode;
+  /** A style is only meaningful after the project has a subtitle document. */
+  subtitleStyleAvailable: boolean;
   /** Number of screens the cut broke, shown on the 字幕 tab. Zero shows nothing. */
   subtitleProblemCount: number;
 }
@@ -36,15 +40,17 @@ const TABS: Array<{ id: CutFeatureTab; label: string }> = [
   // script. Naming it after the job removes the ambiguity.
   { id: "koubo", label: "剪口播" },
   { id: "subtitle", label: "字幕" },
+  { id: "subtitle-style", label: "字幕样式" },
 ];
 
 /**
  * Local feature navigation for the talking-head editor.
  *
- * Both tabs work on the same words, at different grain and for different
+ * 剪口播 and 字幕 work on the same words at different grain and for different
  * reasons: one decides word by word what survives, the other decides screen by
- * screen what is written. Putting them in one column under a tab strip is the
- * admission that they are two modes of the same place.
+ * screen what is written. 字幕样式 is the document-wide look for those screens.
+ * Putting all three in one column under a tab strip keeps them as modes of the
+ * same workspace instead of making the look a detached side inspector.
  *
  * Switching tabs must not disturb playback. That falls out of only swapping
  * this column's contents — the player is a sibling and never unmounts.
@@ -56,10 +62,21 @@ export const CutFeaturePanel = memo(function CutFeaturePanel({
   activeTab,
   onTabChange,
   subtitleContent,
+  subtitleStyleContent,
+  subtitleStyleAvailable,
   subtitleProblemCount,
   ...transcriptProps
 }: CutFeaturePanelProps) {
   const id = useId();
+  // Do not leave an active, empty panel behind during a subtitle reload. The
+  // workspace persists this fallback too; deriving it here makes this present
+  // render safe before React runs that effect.
+  const displayedTab = activeTab === "subtitle-style" && !subtitleStyleAvailable
+    ? "subtitle"
+    : activeTab;
+  const visibleTabs = subtitleStyleAvailable
+    ? TABS
+    : TABS.filter((tab) => tab.id !== "subtitle-style");
   const tabId = (tab: CutFeatureTab) => `cut-feature-${tab}-tab-${id}`;
   const panelId = (tab: CutFeatureTab) => `cut-feature-${tab}-panel-${id}`;
 
@@ -67,20 +84,20 @@ export const CutFeaturePanel = memo(function CutFeaturePanel({
     <aside
       className="cf-cut-feature-panel"
       data-testid="cut-feature-panel"
-      data-active-tab={activeTab}
+      data-active-tab={displayedTab}
       aria-label="功能区"
     >
       <div className="cf-cut-feature-tabs" role="tablist" aria-label="剪辑功能">
-        {TABS.map((tab) => (
+        {visibleTabs.map((tab) => (
           <button
             key={tab.id}
             id={tabId(tab.id)}
             className="cf-cut-feature-tab"
             type="button"
             role="tab"
-            aria-selected={activeTab === tab.id}
+            aria-selected={displayedTab === tab.id}
             aria-controls={panelId(tab.id)}
-            tabIndex={activeTab === tab.id ? 0 : -1}
+            tabIndex={displayedTab === tab.id ? 0 : -1}
             onClick={() => onTabChange(tab.id)}
           >
             {tab.label}
@@ -97,17 +114,18 @@ export const CutFeaturePanel = memo(function CutFeaturePanel({
       </div>
 
       {/*
-        Both panels stay mounted; only the inactive one is hidden. Unmounting
-        the transcript would throw away its scroll position, and a person
-        flipping between the two tabs to compare a line would land back at the
-        top of an 800-line document every time.
+        Available panels stay mounted while tabs switch; only the inactive one
+        is hidden. The style panel is removed only when its subtitle document
+        no longer exists. Unmounting the transcript would throw away its scroll
+        position, and a person flipping between the tabs to compare a line or
+        adjust its look would land back at the top of an 800-line document.
       */}
       <section
         id={panelId("koubo")}
         className="cf-cut-feature-content"
         role="tabpanel"
         aria-labelledby={tabId("koubo")}
-        hidden={activeTab !== "koubo"}
+        hidden={displayedTab !== "koubo"}
         tabIndex={0}
       >
         <KouboTranscriptTabPanel {...transcriptProps} />
@@ -118,11 +136,26 @@ export const CutFeaturePanel = memo(function CutFeaturePanel({
         className="cf-cut-feature-content"
         role="tabpanel"
         aria-labelledby={tabId("subtitle")}
-        hidden={activeTab !== "subtitle"}
+        hidden={displayedTab !== "subtitle"}
         tabIndex={0}
       >
         {subtitleContent}
       </section>
+
+      {subtitleStyleAvailable && (
+        <section
+          id={panelId("subtitle-style")}
+          className="cf-cut-feature-content cf-cut-feature-content--subtitle-style"
+          role="tabpanel"
+          aria-labelledby={tabId("subtitle-style")}
+          hidden={displayedTab !== "subtitle-style"}
+          tabIndex={0}
+        >
+          <div className="cf-cut-subtitle-style-panel">
+            {subtitleStyleContent}
+          </div>
+        </section>
+      )}
     </aside>
   );
 });

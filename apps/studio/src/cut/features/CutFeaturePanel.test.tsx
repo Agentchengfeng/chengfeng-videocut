@@ -67,9 +67,10 @@ afterEach(() => {
 function renderPanel(
   onSeek = vi.fn(),
   overrides: Partial<{
-    activeTab: "koubo" | "subtitle";
-    onTabChange: (tab: "koubo" | "subtitle") => void;
+    activeTab: "koubo" | "subtitle" | "subtitle-style";
+    onTabChange: (tab: "koubo" | "subtitle" | "subtitle-style") => void;
     subtitleProblemCount: number;
+    subtitleStyleAvailable: boolean;
   }> = {},
 ) {
   const host = document.createElement("div");
@@ -88,6 +89,8 @@ function renderPanel(
       onTabChange={onTabChange}
       subtitleProblemCount={overrides.subtitleProblemCount ?? 0}
       subtitleContent={<div data-testid="subtitle-pane" />}
+      subtitleStyleContent={<div data-testid="subtitle-style-pane" />}
+      subtitleStyleAvailable={overrides.subtitleStyleAvailable ?? true}
     />,
   ));
 
@@ -95,7 +98,7 @@ function renderPanel(
 }
 
 describe("CutFeaturePanel", () => {
-  it("exposes two real local feature tabs with bidirectional APG relationships", () => {
+  it("exposes three real local feature tabs with bidirectional APG relationships", () => {
     const { host, root } = renderPanel();
 
     const tablist = host.querySelector<HTMLElement>('[role="tablist"]');
@@ -103,22 +106,24 @@ describe("CutFeaturePanel", () => {
     const panels = Array.from(host.querySelectorAll<HTMLElement>('[role="tabpanel"]'));
 
     expect(tablist?.getAttribute("aria-label")).toBe("剪辑功能");
-    expect(tabs).toHaveLength(2);
-    expect(tabs.map((tab) => tab.tagName)).toEqual(["BUTTON", "BUTTON"]);
-    expect(tabs.map((tab) => tab.type)).toEqual(["button", "button"]);
-    expect(tabs.map((tab) => tab.textContent?.trim())).toEqual(["剪口播", "字幕"]);
-    expect(tabs.map((tab) => tab.getAttribute("aria-selected"))).toEqual(["true", "false"]);
+    expect(tabs).toHaveLength(3);
+    expect(tabs.map((tab) => tab.tagName)).toEqual(["BUTTON", "BUTTON", "BUTTON"]);
+    expect(tabs.map((tab) => tab.type)).toEqual(["button", "button", "button"]);
+    expect(tabs.map((tab) => tab.textContent?.trim())).toEqual(["剪口播", "字幕", "字幕样式"]);
+    expect(tabs.map((tab) => tab.getAttribute("aria-selected"))).toEqual(["true", "false", "false"]);
     // Roving tabindex: only the selected tab is in the tab order.
-    expect(tabs.map((tab) => tab.tabIndex)).toEqual([0, -1]);
+    expect(tabs.map((tab) => tab.tabIndex)).toEqual([0, -1, -1]);
     expect(tabs.map((tab) => tab.getAttribute("aria-controls")))
       .toEqual(panels.map((panel) => panel.id));
     expect(panels.map((panel) => panel.getAttribute("aria-labelledby")))
       .toEqual(tabs.map((tab) => tab.id));
     expect(panels[0]?.contains(host.querySelector('[data-testid="koubo-transcript"]'))).toBe(true);
     expect(panels[1]?.contains(host.querySelector('[data-testid="subtitle-pane"]'))).toBe(true);
-    // Both stay mounted so switching tabs does not reset either scroll position.
+    expect(panels[2]?.contains(host.querySelector('[data-testid="subtitle-style-pane"]'))).toBe(true);
+    // All panes stay mounted so switching tabs does not reset their state or scroll position.
     expect(panels[0]?.hidden).toBe(false);
     expect(panels[1]?.hidden).toBe(true);
+    expect(panels[2]?.hidden).toBe(true);
     expect(host.textContent).not.toMatch(/素材|特效|贴纸/);
 
     act(() => root.unmount());
@@ -128,15 +133,15 @@ describe("CutFeaturePanel", () => {
     const onTabChange = vi.fn();
     const { host, root } = renderPanel(vi.fn(), { onTabChange });
 
-    const subtitleTab = Array.from(host.querySelectorAll<HTMLButtonElement>('[role="tab"]'))[1];
+    const subtitleStyleTab = Array.from(host.querySelectorAll<HTMLButtonElement>('[role="tab"]'))[2];
     act(() => {
-      subtitleTab?.click();
+      subtitleStyleTab?.click();
     });
 
-    expect(onTabChange).toHaveBeenCalledWith("subtitle");
+    expect(onTabChange).toHaveBeenCalledWith("subtitle-style");
     // The panel owns presentation only; which tab is active belongs to the
     // workspace, alongside playback state that must survive the switch.
-    expect(subtitleTab?.getAttribute("aria-selected")).toBe("false");
+    expect(subtitleStyleTab?.getAttribute("aria-selected")).toBe("false");
 
     act(() => root.unmount());
   });
@@ -148,6 +153,21 @@ describe("CutFeaturePanel", () => {
     expect(badge?.textContent).toBe("3");
     expect(badge?.getAttribute("aria-label")).toBe("3 屏字幕被剪辑改动");
     expect(host.textContent).not.toMatch(/可能|过期/);
+
+    act(() => root.unmount());
+  });
+
+  it("removes the 字幕样式 tab and pane when no subtitle document exists", () => {
+    const { host, root } = renderPanel(vi.fn(), {
+      activeTab: "subtitle-style",
+      subtitleStyleAvailable: false,
+    });
+    const tabs = Array.from(host.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+
+    expect(tabs.map((tab) => tab.textContent?.trim())).toEqual(["剪口播", "字幕"]);
+    expect(tabs.map((tab) => tab.getAttribute("aria-selected"))).toEqual(["false", "true"]);
+    expect(host.querySelector(".cf-cut-feature-content--subtitle-style")).toBeNull();
+    expect(host.querySelector('[data-testid="subtitle-style-pane"]')).toBeNull();
 
     act(() => root.unmount());
   });

@@ -3,7 +3,14 @@
 import { act } from "react";
 import { readFileSync } from "node:fs";
 import { createRoot } from "react-dom/client";
-import { applyEditListOperation, type EditListDocument, type EditListOperation } from "@video-workbench/core";
+import {
+  applyEditListOperation,
+  DEFAULT_SUBTITLE_STYLE,
+  SUBTITLE_STYLE_PRESETS,
+  type EditListDocument,
+  type EditListOperation,
+  type SubtitleDocument,
+} from "@video-workbench/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /** The real transport hands React a ref it can also notice; a stub must be callable too. */
@@ -1234,7 +1241,7 @@ describe("CutWorkspace single-page layout contract", () => {
     act(() => root.unmount());
   });
 
-  it("keeps transcript, Player, properties column, and full-width Timeline under one owner", () => {
+  it("keeps transcript, Player, and full-width Timeline under one owner", () => {
     const host = document.createElement("div");
     document.body.append(host);
     const root = createRoot(host);
@@ -1253,21 +1260,17 @@ describe("CutWorkspace single-page layout contract", () => {
       "cut-feature-panel",
       "transcript-width-resizer",
       "cut-player",
-      // One column for "the properties of whatever is selected". Subtitle style
-      // lives here, and so will storyboard and animation parameters; none of
-      // them opens a column of its own.
-      null,
       "cut-timeline",
     ]);
     expect(workspace?.querySelector("[data-testid='transcript-width-resizer']")?.getAttribute("role")).toBe(
       "separator",
     );
-    expect(workspace?.querySelector(".cf-cut-inspector")).not.toBeNull();
+    expect(workspace?.querySelector(".cf-cut-inspector")).toBeNull();
     expect(workspace?.querySelector(".cf-cut-program")).toBeNull();
     // Renamed from 文稿: this pane decides what survives, and the tab beside it
     // is also a script.
-    // Scoped to the left column: the properties column carries a strip of its
-    // own now, and an unscoped query would silently start asserting both.
+    // With no subtitle document, the style surface must not advertise an empty
+    // place to go; the document-present case is covered by the next test.
     expect(
       Array.from(workspace?.querySelectorAll('.cf-cut-feature-panel [role="tab"]') ?? [])
         .map((tab) => tab.textContent),
@@ -1283,13 +1286,137 @@ describe("CutWorkspace single-page layout contract", () => {
     const css = readFileSync("src/cut/cut.css", "utf8");
     expect(css).toContain("var(--cf-cut-transcript-width, 320px)");
     expect(css).toContain("minmax(420px, 1fr)");
-    expect(css).toContain("var(--cf-cut-inspector-width, 264px)");
+    expect(css).not.toContain("cf-cut-inspector-width");
+    expect(css).not.toContain(".cf-cut-inspector");
     expect(css).toContain("column-gap: 0;");
     expect(css).toContain("row-gap: 3px;");
     expect(css).toContain(".cf-cut-workspace > .cf-cut-timeline");
     expect(css).toContain("grid-column: 1 / -1");
     expect(css).toContain("@media (width < 960px)");
     expect(css).toContain(".cf-cut-transcript-resizer {\n    display: none;");
+  });
+
+  it("switches left feature modes without remounting Player or Timeline", () => {
+    const setStyle = vi.fn();
+    harness.useProjectSubtitles.mockReturnValue({
+      projectId: "layout-contract",
+      document: {
+        schemaVersion: 1,
+        projectId: "layout-contract",
+        baseTranscriptRevision: revision,
+        style: DEFAULT_SUBTITLE_STYLE,
+        cues: [],
+      },
+      revision,
+      timings: [],
+      stale: [],
+      loading: false,
+      ready: true,
+      saveState: "idle",
+      error: null,
+      reload: vi.fn(async () => undefined),
+      save: vi.fn(),
+      setCueText: vi.fn(),
+      setStyle,
+      mergeWithPrevious: vi.fn(),
+      splitAt: vi.fn(),
+    });
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+
+    act(() => root.render(
+      <CutWorkspace
+        projectId="layout-contract"
+        initialTimelineTime={2.5}
+        onTimelineTimeCommit={vi.fn()}
+      />,
+    ));
+
+    const playerBefore = host.querySelector('[data-testid="cut-player"]');
+    const timelineBefore = host.querySelector('[data-testid="cut-timeline"]');
+    const tabs = Array.from(host.querySelectorAll<HTMLButtonElement>('.cf-cut-feature-panel [role="tab"]'));
+    const subtitleStyleTab = tabs.find((tab) => tab.textContent === "字幕样式");
+    if (!playerBefore || !timelineBefore || !subtitleStyleTab) {
+      throw new Error("Expected the stable player, timeline, and 字幕样式 tab");
+    }
+
+    act(() => subtitleStyleTab.click());
+
+    expect(subtitleStyleTab.getAttribute("aria-selected")).toBe("true");
+    const secondLook = Array.from(host.querySelectorAll<HTMLButtonElement>('[role="radio"]'))[1];
+    act(() => secondLook?.click());
+    expect(setStyle).toHaveBeenCalledWith(SUBTITLE_STYLE_PRESETS[1]?.style);
+    expect(host.querySelector('[data-testid="cut-player"]')).toBe(playerBefore);
+    expect(host.querySelector('[data-testid="cut-timeline"]')).toBe(timelineBefore);
+
+    act(() => root.unmount());
+  });
+
+  it("drops the style tab and lands on 字幕 when the subtitle document disappears", () => {
+    let subtitleDocument: SubtitleDocument | null = {
+      schemaVersion: 1,
+      projectId: "layout-contract",
+      baseTranscriptRevision: revision,
+      style: DEFAULT_SUBTITLE_STYLE,
+      cues: [],
+    };
+    harness.useProjectSubtitles.mockImplementation(() => ({
+      projectId: "layout-contract",
+      document: subtitleDocument,
+      revision: subtitleDocument ? revision : "none",
+      timings: [],
+      stale: [],
+      loading: false,
+      ready: true,
+      saveState: "idle",
+      error: null,
+      reload: vi.fn(async () => undefined),
+      save: vi.fn(),
+      setCueText: vi.fn(),
+      setStyle: vi.fn(),
+      mergeWithPrevious: vi.fn(),
+      splitAt: vi.fn(),
+    }));
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+
+    act(() => root.render(
+      <CutWorkspace
+        projectId="layout-contract"
+        initialTimelineTime={2.5}
+        onTimelineTimeCommit={vi.fn()}
+      />,
+    ));
+
+    const playerBefore = host.querySelector('[data-testid="cut-player"]');
+    const timelineBefore = host.querySelector('[data-testid="cut-timeline"]');
+    const styleTab = Array.from(host.querySelectorAll<HTMLButtonElement>('[role="tab"]'))
+      .find((tab) => tab.textContent === "字幕样式");
+    if (!playerBefore || !timelineBefore || !styleTab) {
+      throw new Error("Expected the stable player, timeline, and available 字幕样式 tab");
+    }
+    act(() => styleTab.click());
+    expect(styleTab.getAttribute("aria-selected")).toBe("true");
+
+    subtitleDocument = null;
+    act(() => root.render(
+      <CutWorkspace
+        projectId="layout-contract"
+        initialTimelineTime={2.5}
+        onTimelineTimeCommit={vi.fn()}
+      />,
+    ));
+
+    const tabs = Array.from(host.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
+    expect(tabs.map((tab) => tab.textContent?.trim())).toEqual(["剪口播", "字幕"]);
+    expect(tabs.map((tab) => tab.getAttribute("aria-selected"))).toEqual(["false", "true"]);
+    expect(host.querySelector(".cf-cut-feature-content--subtitle-style")).toBeNull();
+    expect(host.querySelector('[data-testid="cut-player"]')).toBe(playerBefore);
+    expect(host.querySelector('[data-testid="cut-timeline"]')).toBe(timelineBefore);
+
+    act(() => root.unmount());
   });
 
   it("does not keep a second playback-shortcut owner in the workspace", () => {
