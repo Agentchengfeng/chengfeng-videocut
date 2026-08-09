@@ -1,5 +1,7 @@
 #!/usr/bin/env bun
-import { authorizeLocalDevelopmentRuntime } from "@video-workbench/core/node";
+// This is a source-only repository tool. Import the source entry point directly
+// so it works in a clean worktree before workspace package symlinks exist.
+import { authorizeLocalDevelopmentRuntime } from "../packages/core/src/node.ts";
 
 const ACKNOWLEDGE = "--acknowledge-unverified-local-runtime";
 
