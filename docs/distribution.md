@@ -15,7 +15,8 @@
       v
 [npm 平台包：无 lifecycle script、无 bin，不要求用户安装 npm]
       |
-      +-- package manifest：平台、installer size/SHA256、许可状态
+      +-- package manifest：平台、installer / legal / SBOM size + SHA256、许可状态
+      +-- 复合许可索引、NOTICE、第三方许可和平台 SPDX SBOM
       +-- payload/compiled installer
       |
       v
@@ -52,8 +53,21 @@ Codex Plugin；原生 bootstrap 自己选择并获取一个精确平台包，校
 ```text
 package.json
 chengfeng-videocut-runtime-package.json
+LICENSES.md
+LICENSE
+NOTICE.md
+MODIFICATIONS.md
+THIRD_PARTY_NOTICES.md
+THIRD_PARTY_LICENSES.md
+LICENSES/HyperFrames-Apache-2.0.txt
+SBOM.spdx.json
 payload/chengfeng-videocut-installer-<exact-platform>
 ```
+
+`package.json` 使用 `SEE LICENSE IN LICENSES.md`，不把整个 bundled binary 笼统声明为
+Apache-2.0。package manifest 对上述每份法律材料和 SPDX SBOM 记录精确 byte size 与 SHA-256；
+SBOM 至少要把 Product、Bun、FFmpeg、FFprobe 及 native installer 的关系、版本、来源、许可和
+installer SHA-256 绑定起来。SBOM 不替代许可证文本、NOTICE 或 FFmpeg 等组件的源码义务。
 
 包内 native installer 仍静态内嵌 Product Runtime、Bun、FFmpeg 与 FFprobe。浏览器引擎继续由
 Runtime 在用户确认的实际叠层 export 中按需下载与缓存，不进入 npm Runtime 包。
@@ -144,19 +158,33 @@ bun run install-manifest:build     # 三个平台资产齐全后
 CHENGFENG_VIDEOCUT_NATIVE_ATTESTATION_DIR=/absolute/attestations \
   bun run release:native:stage     # 签名门禁通过后生成干净目录与统一 SHA256SUMS.txt
 
-# 已有 release-ready / VERIFIED install manifest 与 native installer 后，
-# 只在本地暂存 npm 平台包；本仓没有 publish 脚本。
+# 只有受保护 native security stage、release-ready / VERIFIED 内容和平台 SPDX SBOM
+# 同时通过后才允许暂存正式 npm 平台包；本仓没有 publish 脚本。
 CHENGFENG_VIDEOCUT_NPM_RUNTIME_STAGE_DIR=/absolute/empty/output \
+CHENGFENG_VIDEOCUT_NPM_RUNTIME_SBOM_DIR=/absolute/platform-sboms \
   bun run npm-runtime:stage
 bun run npm-runtime:verify -- /absolute/output/darwin-arm64
 ```
 
-`npm-runtime:stage` 默认只接受 `release-ready / VERIFIED` 的 install manifest，并逐个复核
-native installer 的 byte size、SHA-256 与 macOS executable bit；输出目录已存在时拒绝覆盖。
+`npm-runtime:stage` 默认只接受 `release-ready / VERIFIED` 的 install manifest，逐个复核
+native installer 的 byte size、SHA-256 与 macOS executable bit，并执行与 native stage 相同的
+Developer ID / 公证、独立 attestation 与固定发布者身份验证。一个手工把 JSON 改成 VERIFIED 的
+目录不能产生公开 npm 包。当前受保护发布编排尚未建立，checkout policy 明确为
+`UNCONFIGURED`，所以正式 npm stage 仍会在写入前停止。
+
+正式 stage 还要求每个平台存在
+`chengfeng-videocut-sbom-<version>-<platform>.spdx.json`，并把仓库中现有许可材料逐字节复制、
+摘要后放入受控 allowlist；缺文件、SBOM 身份/组件/关系不完整或任何摘要漂移都会拒绝。
+输出目录已存在时同样拒绝覆盖。
 工程测试必须同时显式设置 `NODE_ENV=test` 与
 `CHENGFENG_VIDEOCUT_NPM_RUNTIME_LOCAL_FIXTURE=1`，产物会固定为
-`local-test-only / UNVERIFIED / private: true`，普通 verifier 仍拒绝它。本仓不提供 npm publish
+`local-test-only / UNVERIFIED / private: true`，仍必须携带法律材料与结构有效的 fixture SPDX
+SBOM，普通 verifier 继续拒绝它。本仓不提供 npm publish
 命令；发布者身份、registry provenance 与最终 tarball integrity 属于独立受保护发布编排。
+
+正式法律材料还必须在 `THIRD_PARTY_NOTICES.md` 与 `THIRD_PARTY_LICENSES.md` 中实际覆盖
+Bun、FFmpeg 和 FFprobe；只有文件名存在不算完成。当前仓库尚未收齐这些工具的已审核许可文本，
+所以即使手工改变 manifest 状态，正式 npm stage 也会在 native security gate 之前 fail-closed。
 
 `tools:pack` 默认要求 release-ready、许可已验证的显式来源。工程 smoke 只有在显式设置
 `CHENGFENG_VIDEOCUT_LOCAL_TOOLS_FIXTURE=1` 时才接受本地 POC 二进制，并把工具包写成

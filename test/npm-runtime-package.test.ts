@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   NPM_RUNTIME_PACKAGE_MANIFEST,
+  NPM_RUNTIME_LEGAL_FILES,
+  NPM_RUNTIME_SBOM,
   NPM_RUNTIME_TARGETS,
   stageNpmRuntimePackages,
   verifyNpmRuntimePackage,
@@ -98,6 +100,68 @@ async function fixture(options: {
       },
       tools,
     };
+    const installerSha256 = sha256(bytes);
+    await writeFile(
+      join(releaseDir, `chengfeng-videocut-sbom-${VERSION}-${platformKey}.spdx.json`),
+      `${JSON.stringify({
+        spdxVersion: "SPDX-2.3",
+        dataLicense: "CC0-1.0",
+        SPDXID: "SPDXRef-DOCUMENT",
+        name: `chengfeng-videocut-runtime-${VERSION}-${platformKey}`,
+        documentNamespace: `https://example.invalid/spdx/${VERSION}/${platformKey}/fixture`,
+        creationInfo: {
+          created: "2026-08-10T00:00:00Z",
+          creators: ["Tool: chengfeng-videocut-test-fixture"],
+        },
+        packages: [
+          {
+            name: "chengfeng-videocut",
+            SPDXID: "SPDXRef-Package-Product",
+            versionInfo: VERSION,
+            licenseDeclared: "Apache-2.0",
+            downloadLocation: `https://example.invalid/chengfeng-videocut/${VERSION}`,
+          },
+          {
+            name: "bun",
+            SPDXID: "SPDXRef-Package-Bun",
+            versionInfo: "1.3.5",
+            licenseDeclared: "MIT",
+            downloadLocation: "https://example.invalid/bun/1.3.5",
+          },
+          {
+            name: "ffmpeg",
+            SPDXID: "SPDXRef-Package-FFmpeg",
+            versionInfo: "6.0",
+            licenseDeclared: "LGPL-2.1-or-later",
+            downloadLocation: "https://example.invalid/ffmpeg/6.0",
+          },
+          {
+            name: "ffprobe",
+            SPDXID: "SPDXRef-Package-FFprobe",
+            versionInfo: "6.0",
+            licenseDeclared: "LGPL-2.1-or-later",
+            downloadLocation: "https://example.invalid/ffmpeg/6.0",
+          },
+        ],
+        files: [{
+          fileName: `payload/${target.installerAsset}`,
+          SPDXID: "SPDXRef-File-Installer",
+          checksums: [{ algorithm: "SHA256", checksumValue: installerSha256 }],
+        }],
+        relationships: [
+          {
+            spdxElementId: "SPDXRef-DOCUMENT",
+            relationshipType: "DESCRIBES",
+            relatedSpdxElement: "SPDXRef-Package-Product",
+          },
+          ...["Installer", "Bun", "FFmpeg", "FFprobe"].map((name) => ({
+            spdxElementId: "SPDXRef-Package-Product",
+            relationshipType: "CONTAINS",
+            relatedSpdxElement: `SPDXRef-${name === "Installer" ? "File" : "Package"}-${name}`,
+          })),
+        ],
+      }, null, 2)}\n`,
+    );
   }
   const releaseReady = options.releaseReady === true;
   let runtime = {
@@ -137,43 +201,43 @@ afterEach(async () => {
 
 describe("npm Runtime platform package", () => {
   test("stages one data-only platform package with an exact layout and installer digest", async () => {
-    const value = await fixture({ releaseReady: true, allPlatforms: true });
+    const value = await fixture();
     const receipts = await stageNpmRuntimePackages({
       rootDir: ROOT,
       releaseDir: value.releaseDir,
       outputDir: value.outputDir,
       platformKeys: [PLATFORM],
+      allowLocalFixture: true,
     });
     expect(receipts).toHaveLength(1);
     const packageDir = join(value.outputDir, PLATFORM);
-    const manifest = await verifyNpmRuntimePackage({ packageDir });
-    expect(manifest).toEqual({
-      schemaVersion: 1,
-      product: "chengfeng-videocut",
-      productVersion: VERSION,
-      platformKey: PLATFORM,
-      npmPackage: {
-        name: "@chengfeng/videocut-runtime-darwin-arm64",
-        version: VERSION,
-        os: ["darwin"],
-        cpu: ["arm64"],
-      },
-      distributionMode: "release-ready",
-      licenseStatus: "VERIFIED",
-      licenseNote: "explicit test fixture; never publish",
-      installer: {
-        asset: "chengfeng-videocut-installer-macos-arm64",
-        path: "payload/chengfeng-videocut-installer-macos-arm64",
-        sha256: sha256(Buffer.from(`fixture native installer:${PLATFORM}\n`)),
-        size: Buffer.byteLength(`fixture native installer:${PLATFORM}\n`),
-        executable: true,
-      },
+    const manifest = await verifyNpmRuntimePackage({ packageDir, allowLocalFixture: true });
+    expect(manifest.npmPackage).toEqual({
+      name: "@chengfeng/videocut-runtime-darwin-arm64",
+      version: VERSION,
+      os: ["darwin"],
+      cpu: ["arm64"],
+    });
+    expect(manifest.distributionMode).toBe("local-test-only");
+    expect(manifest.licenseStatus).toBe("UNVERIFIED");
+    expect(manifest.legal.files.map((record) => record.path)).toEqual([...NPM_RUNTIME_LEGAL_FILES]);
+    expect(manifest.sbom.path).toBe(NPM_RUNTIME_SBOM);
+    expect(manifest.sbom.format).toBe("SPDX-2.3");
+    expect(manifest.installer).toEqual({
+      asset: "chengfeng-videocut-installer-macos-arm64",
+      path: "payload/chengfeng-videocut-installer-macos-arm64",
+      sha256: sha256(Buffer.from(`fixture native installer:${PLATFORM}\n`)),
+      size: Buffer.byteLength(`fixture native installer:${PLATFORM}\n`),
+      executable: true,
     });
     const packageJson = JSON.parse(await readFile(join(packageDir, "package.json"), "utf8"));
     expect(packageJson.os).toEqual(["darwin"]);
     expect(packageJson.cpu).toEqual(["arm64"]);
+    expect(packageJson.license).toBe("SEE LICENSE IN LICENSES.md");
     expect(packageJson.files).toEqual([
       NPM_RUNTIME_PACKAGE_MANIFEST,
+      ...NPM_RUNTIME_LEGAL_FILES,
+      NPM_RUNTIME_SBOM,
       "payload/chengfeng-videocut-installer-macos-arm64",
     ]);
     expect(packageJson).not.toHaveProperty("scripts");
@@ -181,12 +245,13 @@ describe("npm Runtime platform package", () => {
   });
 
   test("npm pack dry-run contains only the allowlisted data files", async () => {
-    const value = await fixture({ releaseReady: true, allPlatforms: true });
+    const value = await fixture();
     await stageNpmRuntimePackages({
       rootDir: ROOT,
       releaseDir: value.releaseDir,
       outputDir: value.outputDir,
       platformKeys: [PLATFORM],
+      allowLocalFixture: true,
     });
     const packageDir = join(value.outputDir, PLATFORM);
     const packed = spawnSync("npm", ["pack", "--ignore-scripts", "--dry-run", "--json"], {
@@ -198,6 +263,8 @@ describe("npm Runtime platform package", () => {
     expect(report).toHaveLength(1);
     expect(report[0].files.map((file: { path: string }) => file.path).sort()).toEqual([
       NPM_RUNTIME_PACKAGE_MANIFEST,
+      ...NPM_RUNTIME_LEGAL_FILES,
+      NPM_RUNTIME_SBOM,
       "package.json",
       "payload/chengfeng-videocut-installer-macos-arm64",
     ].sort());
@@ -230,26 +297,29 @@ describe("npm Runtime platform package", () => {
     expect(packageJson).not.toHaveProperty("publishConfig");
   });
 
-  test("rejects any file outside the three-file package allowlist", async () => {
-    const value = await fixture({ releaseReady: true, allPlatforms: true });
+  test("rejects any file outside the controlled package allowlist", async () => {
+    const value = await fixture();
     await stageNpmRuntimePackages({
       rootDir: ROOT,
       releaseDir: value.releaseDir,
       outputDir: value.outputDir,
       platformKeys: [PLATFORM],
+      allowLocalFixture: true,
     });
     const packageDir = join(value.outputDir, PLATFORM);
     await writeFile(join(packageDir, "postinstall.js"), "throw new Error('must never run');\n");
-    await expect(verifyNpmRuntimePackage({ packageDir })).rejects.toThrow(/unexpected file: postinstall\.js/);
+    await expect(verifyNpmRuntimePackage({ packageDir, allowLocalFixture: true }))
+      .rejects.toThrow(/unexpected file: postinstall\.js/);
   });
 
   test("rejects lifecycle/bin metadata and installer tampering", async () => {
-    const value = await fixture({ releaseReady: true, allPlatforms: true });
+    const value = await fixture();
     await stageNpmRuntimePackages({
       rootDir: ROOT,
       releaseDir: value.releaseDir,
       outputDir: value.outputDir,
       platformKeys: [PLATFORM],
+      allowLocalFixture: true,
     });
     const packageDir = join(value.outputDir, PLATFORM);
     const packageJsonPath = join(packageDir, "package.json");
@@ -257,17 +327,97 @@ describe("npm Runtime platform package", () => {
     packageJson.scripts = { postinstall: "node postinstall.js" };
     packageJson.bin = { "chengfeng-videocut": "payload/chengfeng-videocut-installer-macos-arm64" };
     await writeFile(packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`);
-    await expect(verifyNpmRuntimePackage({ packageDir })).rejects.toThrow(/package\.json keys are not exact/);
+    await expect(verifyNpmRuntimePackage({ packageDir, allowLocalFixture: true }))
+      .rejects.toThrow(/package\.json keys are not exact/);
 
     delete packageJson.scripts;
     delete packageJson.bin;
     await writeFile(packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`);
     await writeFile(join(packageDir, "payload/chengfeng-videocut-installer-macos-arm64"), "tampered\n");
-    await expect(verifyNpmRuntimePackage({ packageDir })).rejects.toThrow(/size\/SHA256 does not match/);
+    await expect(verifyNpmRuntimePackage({ packageDir, allowLocalFixture: true }))
+      .rejects.toThrow(/size\/SHA256 does not match/);
+  });
+
+  test("rejects missing or tampered legal material and SBOM", async () => {
+    const missing = await fixture();
+    await rm(join(missing.releaseDir, `chengfeng-videocut-sbom-${VERSION}-${PLATFORM}.spdx.json`));
+    await expect(stageNpmRuntimePackages({
+      rootDir: ROOT,
+      releaseDir: missing.releaseDir,
+      outputDir: missing.outputDir,
+      platformKeys: [PLATFORM],
+      allowLocalFixture: true,
+    })).rejects.toThrow(/SBOM|no such file/i);
+
+    const value = await fixture();
+    await stageNpmRuntimePackages({
+      rootDir: ROOT,
+      releaseDir: value.releaseDir,
+      outputDir: value.outputDir,
+      platformKeys: [PLATFORM],
+      allowLocalFixture: true,
+    });
+    const packageDir = join(value.outputDir, PLATFORM);
+    await writeFile(join(packageDir, "NOTICE.md"), "tampered notice\n");
+    await expect(verifyNpmRuntimePackage({ packageDir, allowLocalFixture: true }))
+      .rejects.toThrow(/NOTICE\.md size\/SHA256/);
+  });
+
+  test("rejects an SPDX document that omits a managed tool", async () => {
+    const value = await fixture();
+    const path = join(value.releaseDir, `chengfeng-videocut-sbom-${VERSION}-${PLATFORM}.spdx.json`);
+    const sbom = JSON.parse(await readFile(path, "utf8"));
+    sbom.packages = sbom.packages.filter((entry: { name: string }) => entry.name !== "ffprobe");
+    await writeFile(path, `${JSON.stringify(sbom, null, 2)}\n`);
+    await expect(stageNpmRuntimePackages({
+      rootDir: ROOT,
+      releaseDir: value.releaseDir,
+      outputDir: value.outputDir,
+      platformKeys: [PLATFORM],
+      allowLocalFixture: true,
+    })).rejects.toThrow(/missing package ffprobe/);
+  });
+
+  test("a crafted VERIFIED directory cannot bypass protected native security verification", async () => {
+    const value = await fixture({ releaseReady: true, allPlatforms: true });
+    const formalRoot = join(value.root, "formal-root");
+    await mkdir(join(formalRoot, "installer"), { recursive: true });
+    await mkdir(join(formalRoot, "LICENSES"), { recursive: true });
+    await writeFile(join(formalRoot, "package.json"), `${JSON.stringify({ version: VERSION })}\n`);
+    const toolsLock = JSON.parse(await readFile(join(ROOT, "installer/managed-tools.lock.json"), "utf8"));
+    toolsLock.licenseStatus = "VERIFIED";
+    toolsLock.licenseNote = "explicit test fixture; never publish";
+    await writeFile(
+      join(formalRoot, "installer/managed-tools.lock.json"),
+      `${JSON.stringify(toolsLock, null, 2)}\n`,
+    );
+    await copyFile(
+      join(ROOT, "installer/native-release-signing-policy.json"),
+      join(formalRoot, "installer/native-release-signing-policy.json"),
+    );
+    for (const path of NPM_RUNTIME_LEGAL_FILES) {
+      const bytes = await readFile(join(ROOT, path));
+      await writeFile(join(formalRoot, path), bytes);
+    }
+    await writeFile(
+      join(formalRoot, "THIRD_PARTY_NOTICES.md"),
+      `${await readFile(join(ROOT, "THIRD_PARTY_NOTICES.md"), "utf8")}\nBun FFmpeg FFprobe test coverage.\n`,
+    );
+    await writeFile(
+      join(formalRoot, "THIRD_PARTY_LICENSES.md"),
+      `${await readFile(join(ROOT, "THIRD_PARTY_LICENSES.md"), "utf8")}\n## Bun test fixture\nMIT\n\n## FFmpeg / FFprobe test fixture\nLGPL\n`,
+    );
+    await expect(stageNpmRuntimePackages({
+      rootDir: formalRoot,
+      releaseDir: value.releaseDir,
+      outputDir: value.outputDir,
+      platformKeys: [PLATFORM],
+    })).rejects.toThrow(/UNCONFIGURED|attestation|publisher/i);
+    await expect(lstat(value.outputDir)).rejects.toThrow();
   });
 
   test("does not overwrite an existing stage destination", async () => {
-    const value = await fixture({ releaseReady: true, allPlatforms: true });
+    const value = await fixture();
     await mkdir(value.outputDir);
     await writeFile(join(value.outputDir, "sentinel.txt"), "preserve\n");
     await expect(stageNpmRuntimePackages({
@@ -275,6 +425,7 @@ describe("npm Runtime platform package", () => {
       releaseDir: value.releaseDir,
       outputDir: value.outputDir,
       platformKeys: [PLATFORM],
+      allowLocalFixture: true,
     })).rejects.toThrow(/stage destination already exists/);
     expect(await readFile(join(value.outputDir, "sentinel.txt"), "utf8")).toBe("preserve\n");
   });

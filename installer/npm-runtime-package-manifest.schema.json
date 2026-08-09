@@ -13,6 +13,8 @@
     "distributionMode",
     "licenseStatus",
     "licenseNote",
+    "legal",
+    "sbom",
     "installer"
   ],
   "properties": {
@@ -67,6 +69,38 @@
       "type": "string",
       "minLength": 1
     },
+    "legal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["files"],
+      "properties": {
+        "files": {
+          "type": "array",
+          "minItems": 7,
+          "maxItems": 7,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/file" }
+        }
+      }
+    },
+    "sbom": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "format", "sha256", "size"],
+      "properties": {
+        "path": { "const": "SBOM.spdx.json" },
+        "format": { "const": "SPDX-2.3" },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967296
+        }
+      }
+    },
     "installer": {
       "type": "object",
       "additionalProperties": false,
@@ -91,6 +125,35 @@
         },
         "executable": {
           "type": "boolean"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "size"],
+      "properties": {
+        "path": {
+          "enum": [
+            "LICENSES.md",
+            "LICENSE",
+            "NOTICE.md",
+            "MODIFICATIONS.md",
+            "THIRD_PARTY_NOTICES.md",
+            "THIRD_PARTY_LICENSES.md",
+            "LICENSES/HyperFrames-Apache-2.0.txt"
+          ]
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967296
         }
       }
     }

@@ -18,6 +18,7 @@ const receipts = await stageNpmRuntimePackages({
   rootDir,
   releaseDir,
   outputDir: resolve(output),
+  sbomDir: process.env.CHENGFENG_VIDEOCUT_NPM_RUNTIME_SBOM_DIR,
   platformKeys: parseNpmRuntimeTargets(process.env.CHENGFENG_VIDEOCUT_NPM_RUNTIME_TARGETS),
   allowLocalFixture,
 });
