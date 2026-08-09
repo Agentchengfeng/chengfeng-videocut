@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { lstat, mkdir, readFile, realpath, stat } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { VideocutError } from "@video-workbench/core";
 import { serializeProjectOperation } from "@video-workbench/core/node";
 import {
   createKouboProject,
+  normalizeKouboTranscript,
   type CreateKouboProjectOptions,
   type CreatedKouboProject,
 } from "./project";
@@ -37,6 +38,12 @@ export interface IngestKouboProjectOptions {
     "video" | "output" | "language"
   >;
   create?: Omit<CreateKouboProjectOptions, "video" | "transcript" | "aspectRatio">;
+  /**
+   * Product registration authority for a response-loss retry. Existing files
+   * are never accepted as success until the caller proves this exact directory
+   * is still the registered project identity.
+   */
+  verifyExisting?: (project: CreatedKouboProject) => void | Promise<void>;
   /** Test/embedding seam; the public Product contract still owns the staging role. */
   runTranscription?: typeof transcribeKouboVideo;
 }
@@ -46,6 +53,7 @@ export interface IngestKouboProjectResult extends CreatedKouboProject {
     role: "source-transcript";
     provider: "volcengine";
     reused: boolean;
+    reusedProject: boolean;
   };
 }
 
@@ -219,6 +227,169 @@ async function assertFreshProjectState(jobDir: string): Promise<void> {
   }
 }
 
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+async function readManagedJson(path: string): Promise<unknown> {
+  try {
+    const info = await lstat(path);
+    if (!info.isFile() || info.isSymbolicLink()) throw new Error("not a regular managed file");
+    return JSON.parse(await readFile(path, "utf8")) as unknown;
+  } catch (error) {
+    throw new VideocutError(
+      "project_id_conflict",
+      `project ingest cannot verify an existing managed project artifact: ${path}`,
+      { path, cause: error instanceof Error ? error.message : String(error) },
+    );
+  }
+}
+
+async function assertManagedFile(path: string): Promise<void> {
+  try {
+    const info = await lstat(path);
+    if (!info.isFile() || info.isSymbolicLink() || info.size === 0) {
+      throw new Error("not a non-empty regular managed file");
+    }
+  } catch (error) {
+    throw new VideocutError(
+      "project_id_conflict",
+      `project ingest cannot verify an existing managed project artifact: ${path}`,
+      { path, cause: error instanceof Error ? error.message : String(error) },
+    );
+  }
+}
+
+/**
+ * Recognizes only a fully-created Product project for response-loss recovery.
+ * Any missing, foreign, symlinked, source-mismatched, or config-mismatched
+ * state remains a conflict and is never repaired or overwritten here.
+ */
+async function verifyExistingProject(input: {
+  jobDir: string;
+  mediaSha256: string;
+  stage: string;
+  video: string;
+  language: string;
+  verifyRegistration?: IngestKouboProjectOptions["verifyExisting"];
+}): Promise<CreatedKouboProject> {
+  if (!input.verifyRegistration) {
+    throw new VideocutError(
+      "project_id_conflict",
+      "project ingest requires Product registration verification before reusing an existing project",
+      { projectId: basename(input.jobDir), reason: "ingest_registration_unverified" },
+    );
+  }
+
+  const projectId = basename(input.jobDir);
+  const videoExtension = extname(input.video).toLowerCase();
+  const canonicalVideo = `input/source${videoExtension}`;
+  const canonicalTranscript = "剪口播/1_转录/subtitles_words.json";
+  for (const name of [...MANAGED_PROJECT_OUTPUTS, canonicalVideo]) {
+    await assertManagedFile(join(input.jobDir, name));
+  }
+  const [projectValue, metadataValue, transcriptValue, canonicalTranscriptValue, cutsValue] =
+    await Promise.all([
+      readManagedJson(join(input.jobDir, "project.json")),
+      readManagedJson(join(input.jobDir, "workbench.json")),
+      readManagedJson(join(input.jobDir, "transcript.json")),
+      readManagedJson(join(input.jobDir, canonicalTranscript)),
+      readManagedJson(join(input.jobDir, "cut-selection.json")),
+    ]);
+  const project = record(projectValue);
+  const metadata = record(metadataValue);
+  const source = record(project?.source);
+  const workbench = record(project?.workbench);
+  const cuts = record(cutsValue);
+  const transcript = record(transcriptValue);
+  const canonical = record(canonicalTranscriptValue);
+  const transcriptMedia = record(transcript?.media);
+  const canonicalMedia = record(canonical?.media);
+  const cutWordIds = Array.isArray(cuts?.cutWordIds) && cuts.cutWordIds.every((id) => typeof id === "string")
+    ? cuts.cutWordIds as string[]
+    : null;
+  const canonicalVideoSha256 = await sha256File(join(input.jobDir, canonicalVideo));
+  const normalizedTranscript = normalizeKouboTranscript(transcriptValue);
+  const wordIdentity = (value: unknown) => JSON.stringify(
+    normalizeKouboTranscript(value).cues.flatMap((cue) => cue.words),
+  );
+  const transcriptMatches = wordIdentity(transcriptValue) === wordIdentity(canonicalTranscriptValue);
+
+  if (
+    !project || !metadata || !transcript || !canonical || !cutWordIds
+    || project.jobId !== projectId
+    || project.inputVideo !== canonicalVideo
+    || source?.path !== canonicalVideo
+    || source?.sha256 !== input.mediaSha256
+    || source?.immutable !== true
+    || canonicalVideoSha256 !== input.mediaSha256
+    || workbench?.projectId !== projectId
+    || workbench?.surface !== "koubo"
+    || metadata.projectId !== projectId
+    || metadata.jobDir !== input.jobDir
+    || metadata.videoSource !== canonicalVideo
+    || metadata.sourceSha256 !== input.mediaSha256
+    || metadata.transcriptSource !== canonicalTranscript
+    || transcriptMedia?.sha256 !== input.mediaSha256
+    || canonicalMedia?.sha256 !== input.mediaSha256
+    || !transcriptMatches
+    || !Array.isArray(transcript.cues)
+    || transcript.cues.length === 0
+  ) {
+    throw new VideocutError(
+      "project_id_conflict",
+      "project ingest refuses an existing project whose Product identity or immutable source does not match",
+      {
+        projectId,
+        reason: "ingest_existing_project_mismatch",
+        projectJobId: project?.jobId,
+        projectInputVideo: project?.inputVideo,
+        projectSourcePath: source?.path,
+        projectSourceSha256: source?.sha256,
+        metadataProjectId: metadata?.projectId,
+        metadataJobDir: metadata?.jobDir,
+        metadataVideoSource: metadata?.videoSource,
+        metadataSourceSha256: metadata?.sourceSha256,
+        metadataTranscriptSource: metadata?.transcriptSource,
+        canonicalVideoSha256,
+        requestedSourceSha256: input.mediaSha256,
+        transcriptMatches,
+      },
+    );
+  }
+
+  await assertReusableStage({
+    jobDir: input.jobDir,
+    stage: input.stage,
+    video: input.video,
+    mediaSha256: input.mediaSha256,
+    language: input.language,
+  });
+  const stageValue = await readManagedJson(join(input.jobDir, input.stage));
+  if (wordIdentity(transcriptValue) !== wordIdentity(stageValue)) {
+    throw new VideocutError(
+      "project_id_conflict",
+      "project ingest refuses an existing project whose retained Product stage changed",
+      { projectId, reason: "ingest_existing_stage_mismatch" },
+    );
+  }
+
+  const existing: CreatedKouboProject = {
+    projectId,
+    directory: input.jobDir,
+    metadata,
+    transcript: normalizedTranscript,
+    cutWordIds,
+    indexWritten: false,
+    canonicalVideo,
+    canonicalTranscript,
+  };
+  await input.verifyRegistration(existing);
+  return existing;
+}
+
 /**
  * Turns one real task-local video into a registered Product project without
  * exposing the raw ASR output name. A completed matching stage survives a
@@ -240,6 +411,28 @@ export async function ingestKouboProject(
     ...identity,
   });
 
+  const hasManagedProjectState = (await Promise.all(
+    MANAGED_PROJECT_OUTPUTS.map((name) => directoryEntryExists(join(jobDir, name))),
+  )).some(Boolean);
+  if (hasManagedProjectState) {
+    const existing = await verifyExistingProject({
+      jobDir,
+      mediaSha256: media.sha256,
+      stage,
+      video: options.video,
+      language: identity.language,
+      verifyRegistration: options.verifyExisting,
+    });
+    return {
+      ...existing,
+      transcription: {
+        role: "source-transcript",
+        provider: "volcengine",
+        reused: true,
+        reusedProject: true,
+      },
+    };
+  }
   await assertFreshProjectState(jobDir);
   const stageDirectory = join(jobDir, dirname(stage));
   await mkdir(stageDirectory, { recursive: true });
@@ -272,18 +465,46 @@ export async function ingestKouboProject(
     return false;
   });
 
-  const created = await createKouboProject(jobDir, {
-    ...options.create,
-    video: options.video,
-    transcript: stage,
-    aspectRatio: options.aspectRatio,
-  });
+  let created: CreatedKouboProject;
+  try {
+    created = await createKouboProject(jobDir, {
+      ...options.create,
+      video: options.video,
+      transcript: stage,
+      aspectRatio: options.aspectRatio,
+    });
+  } catch (error) {
+    // Two identical callers may both observe the fresh state before ASR. The
+    // stage lock prevents duplicate transcription; the project lock lets one
+    // create/register first. Recheck only that captured post-stage conflict,
+    // and only through the same strict identity + registration verifier used
+    // for a later response-loss retry.
+    if (errorCode(error) !== "project_id_conflict" || !options.verifyExisting) throw error;
+    const existing = await verifyExistingProject({
+      jobDir,
+      mediaSha256: media.sha256,
+      stage,
+      video: options.video,
+      language: identity.language,
+      verifyRegistration: options.verifyExisting,
+    });
+    return {
+      ...existing,
+      transcription: {
+        role: "source-transcript",
+        provider: "volcengine",
+        reused: true,
+        reusedProject: true,
+      },
+    };
+  }
   return {
     ...created,
     transcription: {
       role: "source-transcript",
       provider: "volcengine",
       reused: reusedStage,
+      reusedProject: false,
     },
   };
 }

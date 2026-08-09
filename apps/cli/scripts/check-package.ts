@@ -134,6 +134,14 @@ export async function checkPackage(cliDir = defaultCliDir): Promise<number> {
     "Studio capability must explicitly enable managed timeline editing",
   );
   check(
+    capabilities.features?.projectIngestVersion === 1,
+    "Studio capability must explicitly enable Product-owned project ingest v1",
+  );
+  check(
+    capabilities.features?.transcriptPlaybackPagingVersion === 1,
+    "Studio capability must explicitly enable transcript playback paging v1",
+  );
+  check(
     ["move", "trim", "split", "delete", "restore", "delete-range", "restore-snapshot"].every((operation) =>
       capabilities.features?.managedTimelineOperations?.includes(operation)),
     "Studio capability is missing a managed timeline operation",

@@ -5,7 +5,7 @@ export const CLI_SCHEMA_VERSION = 1;
 export const PRODUCT_NAME = "chengfeng-videocut";
 export const BRAND_NAME = PRODUCT_NAME;
 export const PACKAGE_NAME = "chengfeng-videocut";
-export const PRODUCT_VERSION = "0.5.2";
+export const PRODUCT_VERSION = "0.5.3";
 
 export interface SuccessEnvelope {
   schemaVersion: number;
@@ -164,7 +164,7 @@ cuts get returns the independent cut-selection revision required by cuts set.
 cutRanges are derived from transcript.json + cutWordIds; supplied cutRanges are ignored.
 cuts apply requires the exact edit-list revision returned to the user at confirmation time; it never substitutes the current latest revision.
 project create atomically establishes a new project from real task-local video and transcript files, then prepares and registers it. It never overwrites an existing project or injects demo media.
-project ingest is the Product-owned first-run entry: callers provide only a task-local video; Product chooses the hidden ASR staging role, reuses a matching completed stage after a captured create failure, and then runs the same atomic create/register path.
+project ingest is the Product-owned first-run entry: callers provide only a task-local video; Product chooses the hidden ASR staging role, reuses a matching completed stage after a captured create failure, and then runs the same atomic create/register path. If the caller lost a successful response, repeating the same command returns the existing project only after its immutable source, Product identity, and registration all match; partial or foreign state is rejected.
 transcribe extracts task-local source audio, calls the configured Volcengine ASR service, and atomically writes a new task-local word transcript. It requires VOLCENGINE_API_KEY and never creates a project.
 project prepare refreshes an existing canonical project; it does not create project.json.
 render run executes locally and requires --renderer or CHENGFENG_VIDEOCUT_RENDERER_PATH.

@@ -404,7 +404,7 @@ function playbackPage(input: {
     }
     startIndex = cursor.nextIndex;
   }
-  if (startIndex > input.playback.stream.length) {
+  if (input.cursor !== undefined && startIndex >= input.playback.stream.length) {
     throw new VideocutError("invalid_argument", "transcript playback --cursor is outside this stream");
   }
 
@@ -1114,6 +1114,18 @@ export async function runCli(
           aspectRatio: parsed.aspectRatio,
           transcription: await resolveTranscriptionCredentials(),
           runTranscription: options.runTranscription ?? transcribeKouboVideo,
+          verifyExisting: async (existing) => {
+            const project = await resolveProject(existing.directory, { cwd, projectsDir });
+            if (project.projectId !== existing.projectId) {
+              throw new VideocutError(
+                "project_id_conflict",
+                `Existing project identity changed during ingest retry: ${existing.projectId}`,
+              );
+            }
+            await assertRegisteredProject({ project, cwd, projectsDir });
+            url = projectUrl(project);
+            registered = true;
+          },
           create: {
             finalize: async (prepared) => {
               const project = await resolveProject(prepared.directory, { cwd, projectsDir });

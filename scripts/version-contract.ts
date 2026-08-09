@@ -87,10 +87,24 @@ export async function checkVersionContract(rootDir = defaultRootDir): Promise<st
       join(rootDir, "apps/studio/public/chengfeng-videocut-capabilities.json"),
       "utf8",
     ),
-  ) as { studioVersion?: string };
+  ) as {
+    studioVersion?: string;
+    features?: {
+      projectIngestVersion?: number;
+      transcriptPlaybackPagingVersion?: number;
+    };
+  };
   check(
     capabilities.studioVersion === PRODUCT_VERSION,
     `Studio capability version ${String(capabilities.studioVersion)} does not match ${PRODUCT_VERSION}`,
+  );
+  check(
+    capabilities.features?.projectIngestVersion === 1,
+    "Studio capabilities must declare Product-owned project ingest v1",
+  );
+  check(
+    capabilities.features?.transcriptPlaybackPagingVersion === 1,
+    "Studio capabilities must declare transcript playback paging v1",
   );
 
   check(

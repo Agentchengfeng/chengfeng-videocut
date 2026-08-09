@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -9,6 +9,18 @@ import {
 import type { TranscribeKouboVideoOptions, TranscribeKouboVideoResult } from "./transcription";
 
 const cleanup: string[] = [];
+
+const MANAGED_RETRY_FILES = [
+  "project.json",
+  "transcript.json",
+  "cut-selection.json",
+  "edit-list.json",
+  "index.html",
+  "workbench.json",
+  "events.jsonl",
+  "input/source.mp4",
+  "剪口播/1_转录/subtitles_words.json",
+] as const;
 
 afterEach(async () => {
   await Promise.all(cleanup.splice(0).map((path) => rm(path, { recursive: true, force: true })));
@@ -85,7 +97,12 @@ describe("Product-owned project ingest", () => {
       projectId: "first-run",
       canonicalVideo: "input/source.mp4",
       canonicalTranscript: "剪口播/1_转录/subtitles_words.json",
-      transcription: { role: "source-transcript", provider: "volcengine", reused: false },
+      transcription: {
+        role: "source-transcript",
+        provider: "volcengine",
+        reused: false,
+        reusedProject: false,
+      },
     });
     expect(JSON.parse(await readFile(join(f.job, "transcript.json"), "utf8")))
       .toMatchObject({ cues: [{ words: [{ id: "word-real" }] }] });
@@ -178,6 +195,113 @@ describe("Product-owned project ingest", () => {
       .toMatchObject({ jobId: "concurrent-ingest", inputVideo: "input/source.mp4" });
     expect(JSON.parse(await readFile(join(f.job, "transcript.json"), "utf8")))
       .toMatchObject({ cues: [{ words: [{ id: "word-real" }] }] });
+  });
+
+  it("returns the registered winner to an identical concurrent Product caller", async () => {
+    const f = await fixture("concurrent-verified-ingest");
+    const calls: TranscribeKouboVideoOptions[] = [];
+    const writeStage = fakeTranscriber(f.bytes, calls);
+    let registered = false;
+    const request = () => ingestKouboProject(f.job, {
+      video: "uploads/talk.mp4",
+      aspectRatio: "16:9",
+      runTranscription: async (jobDir, options) => {
+        await Bun.sleep(25);
+        return writeStage(jobDir, options);
+      },
+      verifyExisting: async (existing) => {
+        expect(registered).toBe(true);
+        expect(existing.projectId).toBe("concurrent-verified-ingest");
+      },
+      create: {
+        ...createOptions,
+        finalize: () => { registered = true; },
+      },
+    });
+
+    const results = await Promise.all([request(), request()]);
+    expect(calls).toHaveLength(1);
+    expect(results.map((result) => result.projectId)).toEqual([
+      "concurrent-verified-ingest",
+      "concurrent-verified-ingest",
+    ]);
+    expect(results.filter((result) => result.transcription.reusedProject)).toHaveLength(1);
+  });
+
+  it("returns a strictly verified existing project after a successful response was lost", async () => {
+    const f = await fixture("response-loss-retry");
+    const calls: TranscribeKouboVideoOptions[] = [];
+    const runTranscription = fakeTranscriber(f.bytes, calls);
+    const first = await ingestKouboProject(f.job, {
+      video: "uploads/talk.mp4",
+      aspectRatio: "16:9",
+      runTranscription,
+      create: createOptions,
+    });
+    const before = await Promise.all(MANAGED_RETRY_FILES.map(async (name) => [
+      name,
+      await readFile(join(f.job, name)),
+    ] as const));
+    let verified = 0;
+
+    const retried = await ingestKouboProject(f.job, {
+      video: "uploads/talk.mp4",
+      aspectRatio: "16:9",
+      runTranscription,
+      verifyExisting: async (existing) => {
+        verified += 1;
+        expect(existing.projectId).toBe(first.projectId);
+        expect(existing.directory).toBe(await realpath(f.job));
+      },
+      create: createOptions,
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(verified).toBe(1);
+    expect(retried.transcription).toMatchObject({ reused: true, reusedProject: true });
+    for (const [name, bytes] of before) {
+      expect(await readFile(join(f.job, name))).toEqual(bytes);
+    }
+  });
+
+  it("rejects response-loss reuse when source or registration identity is not exact", async () => {
+    const f = await fixture("response-loss-foreign");
+    const calls: TranscribeKouboVideoOptions[] = [];
+    const runTranscription = fakeTranscriber(f.bytes, calls);
+    await ingestKouboProject(f.job, {
+      video: "uploads/talk.mp4",
+      aspectRatio: "16:9",
+      runTranscription,
+      create: createOptions,
+    });
+    const projectBefore = await readFile(join(f.job, "project.json"));
+
+    await expect(ingestKouboProject(f.job, {
+      video: "uploads/talk.mp4",
+      aspectRatio: "16:9",
+      runTranscription,
+      verifyExisting: () => {
+        throw new Error("registered id points elsewhere");
+      },
+      create: createOptions,
+    })).rejects.toThrow("registered id points elsewhere");
+    expect(calls).toHaveLength(1);
+    expect(await readFile(join(f.job, "project.json"))).toEqual(projectBefore);
+
+    await writeFile(f.video, "different-source-bytes");
+    let registrationChecked = false;
+    await expect(ingestKouboProject(f.job, {
+      video: "uploads/talk.mp4",
+      aspectRatio: "16:9",
+      runTranscription,
+      verifyExisting: () => { registrationChecked = true; },
+      create: createOptions,
+    })).rejects.toMatchObject({
+      code: "project_id_conflict",
+      details: { reason: "ingest_existing_project_mismatch" },
+    });
+    expect(registrationChecked).toBe(false);
+    expect(await readFile(join(f.job, "project.json"))).toEqual(projectBefore);
   });
 
   it("fails closed when the retained stage belongs to different media", async () => {

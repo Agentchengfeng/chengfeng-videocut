@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/Agentchengfeng/chengfeng-videocut/blob/v0.5.2/installer/runtime-install-manifest.schema.json",
+  "$id": "https://github.com/Agentchengfeng/chengfeng-videocut/blob/v0.5.3/installer/runtime-install-manifest.schema.json",
   "title": "Chengfeng VideoCut Runtime install manifest",
   "type": "object",
   "additionalProperties": false,

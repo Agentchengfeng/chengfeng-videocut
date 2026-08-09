@@ -184,6 +184,37 @@ describe("chengfeng-videocut CLI", () => {
     await mkdir(join(projectDir, "uploads"), { recursive: true });
     await writeFile(join(projectDir, "uploads/talk.mp4"), media);
     const capture = captureIo();
+    let transcriptionCalls = 0;
+
+    const runTranscription = async (jobDir: string, options: {
+      video: string;
+      output: string;
+      language?: string;
+    }) => {
+      transcriptionCalls += 1;
+      expect(options.output).toMatch(/^\.chengfeng-videocut\/ingest\/[a-f0-9]{64}\/source-transcript\.json$/);
+      const output = join(jobDir, options.output);
+      await mkdir(dirname(output), { recursive: true });
+      await writeFile(output, JSON.stringify({
+        schemaVersion: 1,
+        provider: "volcengine",
+        language: "zh-CN",
+        media: {
+          source: options.video,
+          sha256: createHash("sha256").update(media).digest("hex"),
+          duration: 2,
+        },
+        cues: [{ id: "c-1", words: [{ id: "w-1", text: "真实", start: 0, end: 2 }] }],
+      }), { flag: "wx" });
+      return {
+        provider: "volcengine" as const,
+        source: join(jobDir, options.video),
+        output,
+        cueCount: 1,
+        wordCount: 1,
+        duration: 2,
+      };
+    };
 
     const code = await runCli([
       "project", "ingest", projectDir,
@@ -193,30 +224,7 @@ describe("chengfeng-videocut CLI", () => {
       "--json",
     ], {
       io: capture.io,
-      runTranscription: async (jobDir, options) => {
-        expect(options.output).toMatch(/^\.chengfeng-videocut\/ingest\/[a-f0-9]{64}\/source-transcript\.json$/);
-        const output = join(jobDir, options.output);
-        await mkdir(dirname(output), { recursive: true });
-        await writeFile(output, JSON.stringify({
-          schemaVersion: 1,
-          provider: "volcengine",
-          language: "zh-CN",
-          media: {
-            source: options.video,
-            sha256: createHash("sha256").update(media).digest("hex"),
-            duration: 2,
-          },
-          cues: [{ id: "c-1", words: [{ id: "w-1", text: "真实", start: 0, end: 2 }] }],
-        }), { flag: "wx" });
-        return {
-          provider: "volcengine",
-          source: join(jobDir, options.video),
-          output,
-          cueCount: 1,
-          wordCount: 1,
-          duration: 2,
-        };
-      },
+      runTranscription,
     });
     const payload = JSON.parse(capture.stdout[0]);
 
@@ -233,6 +241,30 @@ describe("chengfeng-videocut CLI", () => {
       },
     });
     expect(await realpath(join(projectsDir, "ingested-task"))).toBe(await realpath(projectDir));
+
+    const beforeRetry = await Promise.all([
+      "project.json", "transcript.json", "events.jsonl", "workbench.json",
+    ].map(async (name) => [name, await readFile(join(projectDir, name))] as const));
+    const retryCapture = captureIo();
+    const retryCode = await runCli([
+      "project", "ingest", projectDir,
+      "--video", "uploads/talk.mp4",
+      "--aspect-ratio", "16:9",
+      "--projects-dir", projectsDir,
+      "--json",
+    ], { io: retryCapture.io, runTranscription });
+    expect(retryCode, retryCapture.stdout.join(" | ")).toBe(0);
+    expect(transcriptionCalls).toBe(1);
+    expect(JSON.parse(retryCapture.stdout[0])).toMatchObject({
+      data: {
+        projectId: "ingested-task",
+        registered: true,
+        transcription: { reused: true, reusedProject: true },
+      },
+    });
+    for (const [name, bytes] of beforeRetry) {
+      expect(await readFile(join(projectDir, name))).toEqual(bytes);
+    }
   });
 
   it("returns revision_required for the legacy cuts apply syntax instead of filling latest EDL", async () => {
@@ -1248,6 +1280,54 @@ describe("chengfeng-videocut CLI", () => {
     });
     expect(firstPayload.data.page.nextCursor).toEqual(expect.any(String));
 
+    const cursorRecord = JSON.parse(
+      Buffer.from(firstPayload.data.page.nextCursor as string, "base64url").toString("utf8"),
+    ) as Record<string, unknown>;
+    const tamperedCursor = Buffer.from(JSON.stringify({
+      ...cursorRecord,
+      unexpectedField: "must-not-be-accepted",
+    }), "utf8").toString("base64url");
+    const tampered = captureIo();
+    expect(await runCli([
+      "transcript", "playback", "demo",
+      "--cursor", tamperedCursor,
+      "--projects-dir", projectsDir,
+      "--json",
+    ], { io: tampered.io })).toBe(2);
+    expect(JSON.parse(tampered.stdout[0]!)).toMatchObject({
+      ok: false,
+      error: { code: "invalid_argument" },
+    });
+
+    const endCursorPayload = {
+      schemaVersion: 1,
+      projectId: firstPayload.data.page.nextCursor
+        ? cursorRecord.projectId
+        : "demo",
+      transcriptRevision: cursorRecord.transcriptRevision,
+      editListRevision: cursorRecord.editListRevision,
+      nextIndex: 240,
+      totalEntries: 240,
+    };
+    const endCursor = Buffer.from(JSON.stringify({
+      schemaVersion: endCursorPayload.schemaVersion,
+      projectId: endCursorPayload.projectId,
+      transcriptRevision: endCursorPayload.transcriptRevision,
+      editListRevision: endCursorPayload.editListRevision,
+      nextIndex: endCursorPayload.nextIndex,
+    }), "utf8").toString("base64url");
+    const outside = captureIo();
+    expect(await runCli([
+      "transcript", "playback", "demo",
+      "--cursor", endCursor,
+      "--projects-dir", projectsDir,
+      "--json",
+    ], { io: outside.io })).toBe(2);
+    expect(JSON.parse(outside.stdout[0]!)).toMatchObject({
+      ok: false,
+      error: { code: "invalid_argument" },
+    });
+
     const second = captureIo();
     const secondCode = await runCli([
       "transcript", "playback", "demo",
@@ -1279,6 +1359,81 @@ describe("chengfeng-videocut CLI", () => {
     expect(JSON.parse(stale.stdout[0]!)).toMatchObject({
       ok: false,
       error: { code: "revision_conflict", details: { reason: "playback_cursor_stale" } },
+    });
+  });
+
+  it("returns one valid empty first page and never invents a continuation cursor", async () => {
+    const { projectDir, projectsDir } = await fixture();
+    await registerFixture(projectDir, projectsDir);
+    await writeFile(join(projectDir, "transcript.json"), JSON.stringify({
+      schemaVersion: 1,
+      cues: [{
+        id: "fully-removed",
+        words: [{ id: "removed-word", text: "不播", start: 0, end: 1 }],
+      }],
+    }));
+    const capture = captureIo();
+    const code = await runCli([
+      "transcript", "playback", "demo",
+      "--projects-dir", projectsDir,
+      "--json",
+    ], { io: capture.io });
+    expect(code, capture.stdout.join(" | ")).toBe(0);
+    expect(JSON.parse(capture.stdout[0]!)).toMatchObject({
+      data: {
+        stream: [],
+        page: {
+          startIndex: 0,
+          endIndex: 0,
+          totalEntries: 0,
+          nextCursor: null,
+        },
+      },
+    });
+  });
+
+  it("fails with a bounded Product error when one playback entry alone is oversized", async () => {
+    const { projectDir, projectsDir } = await fixture();
+    await registerFixture(projectDir, projectsDir);
+    await writeFile(join(projectDir, "transcript.json"), JSON.stringify({
+      schemaVersion: 1,
+      cues: [{
+        id: "oversized",
+        words: [{ id: "oversized-word", text: "大".repeat(30_000), start: 0, end: 1 }],
+      }],
+    }));
+    await writeFile(join(projectDir, "edit-list.json"), JSON.stringify({
+      schemaVersion: 1,
+      projectId: "demo",
+      sourceDuration: 1,
+      baseCutsRevision: "a".repeat(64),
+      baseTranscriptRevision: "b".repeat(64),
+      mode: "cuts-derived",
+      duration: 1,
+      segments: [{
+        id: "all",
+        source: "input/source.mp4",
+        sourceStart: 0,
+        sourceEnd: 1,
+        timelineStart: 0,
+        trackId: "a-roll",
+        playbackRate: 1,
+      }],
+    }));
+    const capture = captureIo();
+    const code = await runCli([
+      "transcript", "playback", "demo",
+      "--projects-dir", projectsDir,
+      "--json",
+    ], { io: capture.io });
+    expect(code).toBe(4);
+    expect(Buffer.byteLength(capture.stdout[0]!, "utf8")).toBeLessThan(32 * 1024);
+    expect(JSON.parse(capture.stdout[0]!)).toMatchObject({
+      ok: false,
+      error: {
+        code: "invalid_transcript",
+        details: { reason: "playback_entry_too_large", entryIndex: 0 },
+      },
     });
   });
 
