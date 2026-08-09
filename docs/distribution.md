@@ -2,7 +2,7 @@
 
 ## 用户入口
 
-0.5.0 只有一个目标入口：Codex Plugin。Plugin 内原生 STDIO MCP 是无状态 bootstrap，
+0.5.1 只有一个目标入口：Codex Plugin。Plugin 内原生 STDIO MCP 是无状态 bootstrap，
 它调用本仓库的编译 installer；Product Runtime 仍是唯一状态、服务、Studio 与长任务
 拥有者。原生 MCP 不是第二 Runtime，也不叫 Companion。
 
@@ -36,18 +36,18 @@ service ensure -> launchd / Windows Task Scheduler
 ~/.chengfeng-videocut/cache/renderer-engine/
 ```
 
-## 0.5.0 Release 契约
+## 0.5.1 Release 契约
 
 同一个 `SHA256SUMS.txt` 必须覆盖且只覆盖以下八个资产：
 
 - `chengfeng-videocut-install-manifest.json`
-- `chengfeng-videocut-runtime-0.5.0.tar.gz`
+- `chengfeng-videocut-runtime-0.5.1.tar.gz`
 - `chengfeng-videocut-installer-macos-arm64`
 - `chengfeng-videocut-installer-macos-x64`
 - `chengfeng-videocut-installer-windows-x64.exe`
-- `chengfeng-videocut-tools-0.5.0-darwin-arm64.tar.gz`
-- `chengfeng-videocut-tools-0.5.0-darwin-x64.tar.gz`
-- `chengfeng-videocut-tools-0.5.0-win32-x64.tar.gz`
+- `chengfeng-videocut-tools-0.5.1-darwin-arm64.tar.gz`
+- `chengfeng-videocut-tools-0.5.1-darwin-x64.tar.gz`
+- `chengfeng-videocut-tools-0.5.1-win32-x64.tar.gz`
 
 Plugin 必须固定 native installer SHA256 与 install manifest SHA256。installer 的正式调用
 合同是：
@@ -170,5 +170,5 @@ bit、签名和 Gatekeeper 全部成立。
 当前许可状态是 **UNVERIFIED**。POC 的 `ffmpeg-static@5.3.0` 实际 FFmpeg 6.0 配置含
 GPL/nonfree，只可用于本机工程 smoke，绝不能作为公开资产。没有合规媒体二进制时构建/
 发布必须失败。签名 policy 当前也是 **UNCONFIGURED**，没有写入任何虚构发布者身份；
-Windows x64、macOS x64、真实调度器、真实证书签名/公证与许可尚未验证，因此 0.5.0
+Windows x64、macOS x64、真实调度器、真实证书签名/公证与许可尚未验证，因此 0.5.1
 不得发布为稳定可用版本。当前本机的正式 stage 应在复制/删除目标目录前明确 BLOCKED。
