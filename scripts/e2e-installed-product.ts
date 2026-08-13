@@ -21,6 +21,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { RUNTIME_DOCTOR_CAPABILITIES } from "../packages/contracts/src/index";
 import { NPM_RUNTIME_TARGETS, type NpmRuntimePlatformKey } from "./npm-runtime-package";
 
 type JsonRecord = Record<string, unknown>;
@@ -638,7 +639,7 @@ async function authorizeLocalDevelopment(home: string, tmp: string, projectsDir:
     throw new Error(`doctor local-development contract not ready: ${JSON.stringify(data)}`);
   }
   const capabilities = jsonObject(data.capabilities) ?? {};
-  if (capabilities.projectIngestVersion !== 1 || capabilities.transcriptPlaybackPagingVersion !== 1) {
+  if (JSON.stringify(capabilities) !== JSON.stringify(RUNTIME_DOCTOR_CAPABILITIES)) {
     throw new Error(`doctor capabilities drift: ${JSON.stringify(capabilities)}`);
   }
   stages.push({

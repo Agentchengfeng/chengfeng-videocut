@@ -169,12 +169,12 @@ describe("operation audit store", () => {
     await expect(store.admit({
       ...baseAdmission,
       operationId: "absolute-path",
-      target: { projectId: "demo", projectPath: "/Users/chengfeng/demo" },
+      target: { projectId: "demo", projectPath: "/private/tmp/demo" },
     })).rejects.toMatchObject({ code: "operation_audit_invalid_field" });
     await expect(store.admit({
       ...baseAdmission,
       operationId: "absolute-actor",
-      actor: "/Users/chengfeng/cli",
+      actor: "/private/tmp/cli",
     })).rejects.toMatchObject({ code: "operation_audit_invalid_field" });
     const admitted = await store.admit({ ...baseAdmission, operationId: "sensitive-key" });
     await expect(store.finishSucceeded(admitted.operationId, {

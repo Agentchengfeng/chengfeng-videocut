@@ -38,10 +38,10 @@ describe("assertWorkbenchProjectManifest", () => {
 
 describe("Runtime capability and command contract", () => {
   test("projects the Studio capability manifest from the Runtime contract", () => {
-    expect(createStudioCapabilityManifest("0.5.4")).toEqual({
+    expect(createStudioCapabilityManifest("0.5.8")).toEqual({
       schemaVersion: 1,
       product: "chengfeng-videocut",
-      studioVersion: "0.5.4",
+      studioVersion: "0.5.8",
       features: {
         topLevelViews: ["storyboard", "preview", "koubo"],
         legacyWorkbenchPanel: false,
@@ -114,12 +114,12 @@ describe("Runtime capability and command contract", () => {
   });
 
   test("exports the cross-repository Plugin contract snapshot", () => {
-    const snapshot = createRuntimePluginContractSnapshot("0.5.4");
+    const snapshot = createRuntimePluginContractSnapshot("0.5.8");
     expect(snapshot).toMatchObject({
       schemaVersion: 1,
       product: "chengfeng-videocut",
-      runtimeVersion: "0.5.4",
-      minimumRuntimeVersion: "0.5.4",
+      runtimeVersion: "0.5.8",
+      minimumRuntimeVersion: "0.5.8",
       capabilities: {
         projectIngestVersion: 1,
         transcriptPlaybackPagingVersion: 1,
