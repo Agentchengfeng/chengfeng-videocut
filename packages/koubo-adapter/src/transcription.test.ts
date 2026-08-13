@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { parseTranscriptWords } from "@video-workbench/core";
-import { buildCutAudioArgs, buildVolcengineTranscript, transcribeKouboVideo } from "./transcription";
+import { buildCutAudioArgs, buildVolcengineTranscript, transcribeKouboVideo, transcribeProjectCut } from "./transcription";
 
 const cleanup: string[] = [];
 
@@ -47,15 +47,19 @@ const probe = async () => ({
   height: 720,
 });
 
-async function checkpointFiles(job: string): Promise<string[]> {
-  const directory = join(job, ".chengfeng-videocut", "transcription-checkpoints");
+async function checkpointFilesAt(root: string): Promise<string[]> {
+  const directory = join(root, ".chengfeng-videocut", "transcription-checkpoints");
   return (await readdir(directory))
     .filter((name) => name.endsWith(".json"))
     .map((name) => join(directory, name));
 }
 
+async function checkpointFiles(job: string): Promise<string[]> {
+  return checkpointFilesAt(job);
+}
+
 async function readCheckpoint(job: string): Promise<Record<string, unknown>> {
-  const files = await checkpointFiles(job);
+  const files = await checkpointFilesAt(job);
   expect(files).toHaveLength(1);
   return JSON.parse(await readFile(files[0] as string, "utf8")) as Record<string, unknown>;
 }
@@ -190,7 +194,7 @@ describe("Volcengine Runtime transcription", () => {
       pollIntervalMs: 0,
       dependencies: {
         probe,
-        extractAudio: async (_input, output) => { await writeFile(output, "fixture-audio"); },
+        extractAudio: async () => { throw new Error("retry must not extract audio"); },
         fetch: async (url, init) => {
           if (url.endsWith("/submit")) throw new Error("retry must not submit again");
           queryCalls += 1;
@@ -243,7 +247,7 @@ describe("Volcengine Runtime transcription", () => {
       pollIntervalMs: 0,
       dependencies: {
         probe,
-        extractAudio: async (_input, output) => { await writeFile(output, "fixture-audio"); },
+        extractAudio: async () => { throw new Error("timeout recovery must not extract audio"); },
         fetch: async (url, init) => {
           if (url.endsWith("/submit")) throw new Error("timeout recovery must not submit");
           queryCalls += 1;
@@ -395,6 +399,225 @@ describe("Volcengine Runtime transcription", () => {
         uuid: () => { throw new Error("retry must not mint a request id"); },
       },
     });
+  });
+
+  it("resumes cut retranscription without duplicate submit", async () => {
+    const { job, video } = await fixture();
+    const output = join(job, "cut", "transcript.json");
+    const ranges = [{ start: 0, end: 1 }, { start: 2, end: 3 }];
+    let submitCalls = 0;
+    await expect(transcribeProjectCut({
+      source: video,
+      ranges,
+      output,
+      apiKey: "test-key",
+      pollIntervalMs: 0,
+      dependencies: {
+        probe,
+        extractCutAudio: async (_source, _ranges, audio) => { await writeFile(audio, "fixture-cut-audio"); },
+        fetch: async (url, init) => {
+          if (url.endsWith("/submit")) {
+            submitCalls += 1;
+            expect((init.headers as Record<string, string>)["X-Api-Request-Id"]).toBe("cut-request-pending");
+            return response(null, "20000000", { "x-tt-logid": "cut-log-pending" });
+          }
+          expect((init.headers as Record<string, string>)["X-Api-Request-Id"]).toBe("cut-request-pending");
+          return response({}, "20000001");
+        },
+        uuid: () => "cut-request-pending",
+        checkpointEvent: (event) => {
+          if (event.event === "after-query-pending-checkpoint") {
+            throw new Error("simulated cut restart after pending query");
+          }
+        },
+      },
+    })).rejects.toThrow("simulated cut restart after pending query");
+    expect(submitCalls).toBe(1);
+    expect(await readCheckpoint(dirname(output))).toMatchObject({
+      requestId: "cut-request-pending",
+      phase: "polling",
+      queryAttempts: 1,
+      logid: "cut-log-pending",
+      identity: {
+        source: "cut-source",
+        output: "transcript.json",
+        cutDuration: 2,
+      },
+    });
+
+    let retryExtractCalls = 0;
+    let retryQueryCalls = 0;
+    await transcribeProjectCut({
+      source: video,
+      ranges,
+      output,
+      apiKey: "test-key",
+      pollIntervalMs: 0,
+      dependencies: {
+        probe,
+        extractCutAudio: async () => {
+          retryExtractCalls += 1;
+          throw new Error("retry must not extract cut audio");
+        },
+        fetch: async (url, init) => {
+          if (url.endsWith("/submit")) throw new Error("cut retry must not submit");
+          retryQueryCalls += 1;
+          expect((init.headers as Record<string, string>)["X-Api-Request-Id"]).toBe("cut-request-pending");
+          expect((init.headers as Record<string, string>)["X-Tt-Logid"]).toBe("cut-log-pending");
+          return completedQuery();
+        },
+        uuid: () => { throw new Error("cut retry must not mint a request id"); },
+      },
+    });
+    expect(submitCalls).toBe(1);
+    expect(retryExtractCalls).toBe(0);
+    expect(retryQueryCalls).toBe(1);
+    expect(await readCheckpoint(dirname(output))).toMatchObject({ phase: "completed" });
+  });
+
+  it("recovers a valid cut checkpoint by query when ffmpeg audio extraction is unavailable", async () => {
+    const { job, video } = await fixture();
+    const output = join(job, "cut-audio-unavailable", "transcript.json");
+    const ranges = [{ start: 0, end: 1 }];
+    await expect(transcribeProjectCut({
+      source: video,
+      ranges,
+      output,
+      apiKey: "test-key",
+      pollIntervalMs: 0,
+      dependencies: {
+        probe,
+        extractCutAudio: async (_source, _ranges, audio) => { await writeFile(audio, "fixture-cut-audio"); },
+        fetch: async () => { throw new Error("provider must not run before simulated checkpoint crash"); },
+        uuid: () => "cut-request-before-submit",
+        checkpointEvent: (event) => {
+          if (event.event === "after-initial-checkpoint") {
+            throw new Error("simulated cut restart before submit");
+          }
+        },
+      },
+    })).rejects.toThrow("simulated cut restart before submit");
+    expect(await readCheckpoint(dirname(output))).toMatchObject({
+      requestId: "cut-request-before-submit",
+      phase: "submitting",
+    });
+
+    let retryExtractCalls = 0;
+    let queryCalls = 0;
+    const result = await transcribeProjectCut({
+      source: video,
+      ranges,
+      output,
+      apiKey: "test-key",
+      pollIntervalMs: 0,
+      dependencies: {
+        probe,
+        extractCutAudio: async () => {
+          retryExtractCalls += 1;
+          throw new Error("ffmpeg unavailable");
+        },
+        fetch: async (url, init) => {
+          if (url.endsWith("/submit")) throw new Error("checkpoint recovery must not submit");
+          queryCalls += 1;
+          expect((init.headers as Record<string, string>)["X-Api-Request-Id"]).toBe("cut-request-before-submit");
+          return completedQuery();
+        },
+        uuid: () => { throw new Error("checkpoint recovery must not mint a request id"); },
+      },
+    });
+    expect(result.wordCount).toBeGreaterThan(0);
+    expect(retryExtractCalls).toBe(0);
+    expect(queryCalls).toBe(1);
+    expect(await readCheckpoint(dirname(output))).toMatchObject({ phase: "completed" });
+  });
+
+  it("blocks cut recovery after cumulative poll budget is exhausted across restarts", async () => {
+    const { job, video } = await fixture();
+    const output = join(job, "cut-budget", "transcript.json");
+    const ranges = [{ start: 0, end: 1 }];
+    let queryCalls = 0;
+    await expect(transcribeProjectCut({
+      source: video,
+      ranges,
+      output,
+      apiKey: "test-key",
+      pollIntervalMs: 0,
+      maxPollAttempts: 2,
+      dependencies: {
+        probe,
+        extractCutAudio: async (_source, _ranges, audio) => { await writeFile(audio, "fixture-cut-audio"); },
+        fetch: async (url) => {
+          if (url.endsWith("/submit")) return response(null, "20000000", { "x-tt-logid": "cut-log-budget" });
+          queryCalls += 1;
+          return response({}, "20000001");
+        },
+        uuid: () => "cut-request-budget",
+        checkpointEvent: (event) => {
+          if (event.event === "after-query-pending-checkpoint") {
+            throw new Error("simulated restart after first poll attempt");
+          }
+        },
+      },
+    })).rejects.toThrow("simulated restart after first poll attempt");
+    expect(await readCheckpoint(dirname(output))).toMatchObject({
+      phase: "polling",
+      queryAttempts: 1,
+    });
+
+    await expect(transcribeProjectCut({
+      source: video,
+      ranges,
+      output,
+      apiKey: "test-key",
+      pollIntervalMs: 0,
+      maxPollAttempts: 2,
+      dependencies: {
+        probe,
+        extractCutAudio: async () => { throw new Error("budget retry must not extract cut audio"); },
+        fetch: async (url) => {
+          if (url.endsWith("/submit")) throw new Error("budget retry must not submit");
+          queryCalls += 1;
+          return response({}, "20000001");
+        },
+        uuid: () => { throw new Error("budget retry must not mint a request id"); },
+      },
+    })).rejects.toMatchObject({
+      code: "cloud_transcription_failed",
+      details: {
+        kind: "poll_budget_exhausted",
+        checkpointPhase: "recovery_blocked",
+        queryAttempts: 2,
+        maxPollAttempts: 2,
+      },
+    });
+    expect(await readCheckpoint(dirname(output))).toMatchObject({
+      phase: "recovery_blocked",
+      queryAttempts: 2,
+      error: { kind: "poll_budget_exhausted" },
+    });
+
+    const blockedAt = queryCalls;
+    await expect(transcribeProjectCut({
+      source: video,
+      ranges,
+      output,
+      apiKey: "test-key",
+      pollIntervalMs: 0,
+      maxPollAttempts: 2,
+      dependencies: {
+        probe,
+        extractCutAudio: async () => { throw new Error("blocked retry must not extract cut audio"); },
+        fetch: async () => {
+          queryCalls += 1;
+          return completedQuery();
+        },
+        uuid: () => { throw new Error("blocked retry must not mint a request id"); },
+      },
+    })).rejects.toMatchObject({
+      code: "cloud_transcription_failed",
+      details: { checkpointPhase: "recovery_blocked" },
+    });
+    expect(queryCalls).toBe(blockedAt);
   });
 
   it("queries again after provider completion if the process exits before output publish", async () => {

@@ -48,10 +48,11 @@ interface TranscriptionCheckpointIdentity {
   output: string;
   mediaSha256: string;
   mediaDuration: number;
-  audioFormat: string;
   language: string;
   modelName: string;
   resourceId: string;
+  cutRangesSha256?: string;
+  cutDuration?: number;
 }
 
 interface TranscriptionCheckpointError {
@@ -417,16 +418,29 @@ function assertCheckpointIdentity(value: unknown, path: string): TranscriptionCh
       { path },
     );
   }
+  const cutRangesSha256 = value.cutRangesSha256 === undefined
+    ? undefined
+    : typeof value.cutRangesSha256 === "string" ? value.cutRangesSha256 : "";
+  if (cutRangesSha256 !== undefined && !/^[a-f0-9]{64}$/.test(cutRangesSha256)) {
+    throw new VideocutError(
+      "cloud_transcription_checkpoint_corrupt",
+      "Transcription checkpoint cut range identity is invalid",
+      { path },
+    );
+  }
   return {
     provider: "volcengine",
     source: assertTaskRelativeIdentityPath(value.source, path, "source"),
     output: assertTaskRelativeIdentityPath(value.output, path, "output"),
     mediaSha256,
     mediaDuration: assertPositiveNumber(value.mediaDuration, path, "mediaDuration"),
-    audioFormat: safeToken(value.audioFormat, "audioFormat"),
     language: safeToken(value.language, "language"),
     modelName: safeToken(value.modelName, "modelName"),
     resourceId: safeToken(value.resourceId, "resourceId"),
+    ...(cutRangesSha256 ? { cutRangesSha256 } : {}),
+    ...(value.cutDuration === undefined
+      ? {}
+      : { cutDuration: assertPositiveNumber(value.cutDuration, path, "cutDuration") }),
   };
 }
 
@@ -621,10 +635,11 @@ function identityMismatch(
     "output",
     "mediaSha256",
     "mediaDuration",
-    "audioFormat",
     "language",
     "modelName",
     "resourceId",
+    "cutRangesSha256",
+    "cutDuration",
   ] as const;
   for (const key of keys) {
     if (expected[key] !== actual[key]) return key;
@@ -656,7 +671,9 @@ function terminalCheckpointError(checkpoint: TranscriptionCheckpoint, path: stri
   if (checkpoint.phase === "terminal_provider_failure") {
     return providerError("Volcengine transcription checkpoint already contains a terminal provider failure", {
       checkpointPhase: checkpoint.phase,
+      queryAttempts: checkpoint.queryAttempts,
       path,
+      ...(checkpoint.logid ? { logid: checkpoint.logid } : {}),
       ...(checkpoint.error ? { checkpointError: checkpoint.error } : {}),
     });
   }
@@ -664,13 +681,20 @@ function terminalCheckpointError(checkpoint: TranscriptionCheckpoint, path: stri
     return new VideocutError(
       "cloud_transcription_cancelled",
       "Volcengine transcription checkpoint is cancelled",
-      { checkpointPhase: checkpoint.phase, path },
+      {
+        checkpointPhase: checkpoint.phase,
+        queryAttempts: checkpoint.queryAttempts,
+        path,
+        ...(checkpoint.logid ? { logid: checkpoint.logid } : {}),
+      },
     );
   }
   if (checkpoint.phase === "recovery_blocked") {
     return providerError("Volcengine transcription checkpoint requires manual recovery", {
       checkpointPhase: checkpoint.phase,
+      queryAttempts: checkpoint.queryAttempts,
       path,
+      ...(checkpoint.logid ? { logid: checkpoint.logid } : {}),
       ...(checkpoint.error ? { checkpointError: checkpoint.error } : {}),
     });
   }
@@ -707,6 +731,21 @@ async function prepareTranscriptionCheckpoint(
     await writeTranscriptionCheckpoint(path, checkpoint);
     await dependencies.checkpointEvent({ event: "after-initial-checkpoint", path, checkpoint });
     return { path, record: checkpoint, created: true };
+  });
+}
+
+async function loadExistingTranscriptionCheckpoint(
+  root: string,
+  identity: TranscriptionCheckpointIdentity,
+): Promise<TranscriptionCheckpointHandle | null> {
+  const directory = join(root, TRANSCRIPTION_CHECKPOINT_DIRECTORY);
+  await ensurePrivateDirectoryInside(root, directory);
+  const path = checkpointPathForOutput(root, resolve(root, identity.output));
+  return serializeProjectOperation(directory, async () => {
+    const existing = await readTranscriptionCheckpoint(path);
+    if (!existing) return null;
+    assertReusableCheckpoint(existing, identity, path);
+    return { path, record: existing, created: false };
   });
 }
 
@@ -751,6 +790,7 @@ function checkpointDetails(handle: TranscriptionCheckpointHandle | undefined): R
   return {
     requestId: handle.record.requestId,
     checkpointPhase: handle.record.phase,
+    queryAttempts: handle.record.queryAttempts,
     ...(handle.record.logid ? { logid: handle.record.logid } : {}),
   };
 }
@@ -995,6 +1035,12 @@ function rounded(value: number): number {
   return Math.round(value * 1_000) / 1_000;
 }
 
+function cutRangesDigest(ranges: readonly { start: number; end: number }[]): string {
+  return sha256String(JSON.stringify(
+    ranges.map((range) => ({ start: rounded(range.start), end: rounded(range.end) })),
+  ));
+}
+
 async function sha256File(path: string): Promise<string> {
   const hash = createHash("sha256");
   await new Promise<void>((resolvePromise, reject) => {
@@ -1068,7 +1114,7 @@ export function buildVolcengineTranscript(input: {
 }
 
 async function submitAndPoll(input: {
-  audio: string;
+  audio?: string;
   audioFormat?: string;
   apiKey: string;
   resourceId: string;
@@ -1081,8 +1127,8 @@ async function submitAndPoll(input: {
   dependencies: TranscriptionDependencies;
   checkpoint?: TranscriptionCheckpointHandle;
 }): Promise<unknown> {
-  const audioData = await readFile(input.audio);
-  const requestId = input.checkpoint?.record.requestId ?? input.dependencies.uuid();
+  const checkpoint = input.checkpoint;
+  const requestId = checkpoint?.record.requestId ?? input.dependencies.uuid();
   const providerHeaders = (logid?: string) => ({
     "Content-Type": "application/json",
     "X-Api-Key": input.apiKey,
@@ -1092,7 +1138,6 @@ async function submitAndPoll(input: {
     ...(logid ? { "X-Tt-Logid": logid } : {}),
   });
 
-  const checkpoint = input.checkpoint;
   if (checkpoint) {
     const terminal = terminalCheckpointError(checkpoint.record, checkpoint.path);
     if (terminal) throw terminal;
@@ -1100,6 +1145,13 @@ async function submitAndPoll(input: {
 
   let logid = checkpoint?.record.logid;
   if (!checkpoint || checkpoint.created) {
+    if (!input.audio) {
+      throw new VideocutError(
+        "invalid_argument",
+        "Volcengine submit requires extracted audio when no reusable checkpoint exists",
+      );
+    }
+    const audioData = await readFile(input.audio);
     let submit: FetchLikeResponse;
     try {
       submit = await requestProvider(input.dependencies, "submit", VOLCENGINE_SUBMIT_URL, {
@@ -1211,7 +1263,30 @@ async function submitAndPoll(input: {
     logid = updated.logid;
   }
 
-  for (let attempt = 1; attempt <= input.maxPollAttempts; attempt += 1) {
+  let volatileQueryAttempts = 0;
+  while (true) {
+    const previousAttempts = checkpoint ? checkpoint.record.queryAttempts : volatileQueryAttempts;
+    if (previousAttempts >= input.maxPollAttempts) {
+      const details = {
+        kind: "poll_budget_exhausted",
+        stage: "query" as const,
+        recoverable: false,
+      };
+      if (checkpoint) {
+        await updateTranscriptionCheckpoint(checkpoint, input.dependencies, {
+          phase: "recovery_blocked",
+          queryAttempts: previousAttempts,
+          error: details,
+        });
+      }
+      throw providerError("Volcengine transcription timed out", {
+        maxPollAttempts: input.maxPollAttempts,
+        queryAttempts: previousAttempts,
+        ...details,
+        ...checkpointDetails(checkpoint),
+      });
+    }
+    const attempt = previousAttempts + 1;
     try {
       await sleepWithCancellation(input.dependencies, input.pollIntervalMs, input.signal);
     } catch (error) {
@@ -1245,6 +1320,8 @@ async function submitAndPoll(input: {
             queryAttempts: attempt,
             error: error.details,
           });
+        } else {
+          volatileQueryAttempts = attempt;
         }
         if (error.kind === "external_cancel") {
           throw new VideocutError("cloud_transcription_cancelled", "Volcengine transcription was cancelled", {
@@ -1298,6 +1375,8 @@ async function submitAndPoll(input: {
           lastProviderStatus: status,
           error: null,
         }, "after-query-pending-checkpoint");
+      } else {
+        volatileQueryAttempts = attempt;
       }
       continue;
     }
@@ -1331,11 +1410,21 @@ async function submitAndPoll(input: {
     const words = timedWords(payload);
     if (words.length > 0) {
       if (checkpoint) {
+        await updateTranscriptionCheckpoint(checkpoint, input.dependencies, {
+          phase: "polling",
+          queryAttempts: attempt,
+          ...(logid ? { logid } : {}),
+          lastHttpStatus: query.status,
+          lastProviderStatus: status,
+          error: null,
+        });
         await input.dependencies.checkpointEvent({
           event: "after-provider-completed-before-output",
           path: checkpoint.path,
           checkpoint: checkpoint.record,
         });
+      } else {
+        volatileQueryAttempts = attempt;
       }
       return payload;
     }
@@ -1362,23 +1451,6 @@ async function submitAndPoll(input: {
       ...checkpointDetails(checkpoint),
     });
   }
-
-  const details = {
-    kind: "poll_budget_exhausted",
-    stage: "query" as const,
-    recoverable: false,
-  };
-  if (checkpoint) {
-    await updateTranscriptionCheckpoint(checkpoint, input.dependencies, {
-      phase: "recovery_blocked",
-      error: details,
-    });
-  }
-  throw providerError("Volcengine transcription timed out", {
-    maxPollAttempts: input.maxPollAttempts,
-    ...details,
-    ...checkpointDetails(checkpoint),
-  });
 }
 
 async function completeTranscriptionCheckpoint(
@@ -1497,6 +1569,8 @@ export interface TranscribeProjectCutOptions {
 export async function transcribeProjectCut(
   options: TranscribeProjectCutOptions,
 ): Promise<TranscribeKouboVideoResult> {
+  const source = resolve(options.source);
+  const output = resolve(options.output);
   const ranges = options.ranges.filter((range) => range.end > range.start);
   if (ranges.length === 0) {
     throw new VideocutError("invalid_argument", "The edit list keeps nothing to transcribe");
@@ -1511,48 +1585,92 @@ export async function transcribeProjectCut(
   const dependencies = { ...defaultDependencies(), ...options.dependencies };
   const extractCutAudio = options.dependencies?.extractCutAudio
     ?? runCutAudioWithFallback;
-  const media = await dependencies.probe(options.source);
+  const media = await dependencies.probe(source);
   if (!media.hasAudio) {
-    throw new VideocutError("media_has_no_audio", "Source video has no audio stream", { source: options.source });
+    throw new VideocutError("media_has_no_audio", "Source video has no audio stream", { source });
   }
+  if (!(media.duration > 0)) {
+    throw new VideocutError("invalid_argument", "Source video must have a positive duration", { source });
+  }
+  const language = (options.language ?? DEFAULT_LANGUAGE).trim() || DEFAULT_LANGUAGE;
+  const resourceId = (options.resourceId ?? process.env.VOLCENGINE_ASR_RESOURCE_ID ?? DEFAULT_RESOURCE_ID).trim() || DEFAULT_RESOURCE_ID;
+  const modelName = (options.modelName ?? process.env.VOLCENGINE_ASR_MODEL_NAME ?? DEFAULT_MODEL_NAME).trim() || DEFAULT_MODEL_NAME;
+  const pollIntervalMs = nonNegativeFinite(options.pollIntervalMs, DEFAULT_POLL_INTERVAL_MS, "pollIntervalMs");
+  const maxPollAttempts = positiveInteger(options.maxPollAttempts, DEFAULT_MAX_POLL_ATTEMPTS, "maxPollAttempts");
+  const requestTimeoutMs = positiveInteger(options.requestTimeoutMs, DEFAULT_REQUEST_TIMEOUT_MS, "requestTimeoutMs");
+  const mediaSha256 = await sha256File(source);
   const duration = ranges.reduce((total, range) => total + (range.end - range.start), 0);
-  const temporaryDirectory = await mkdtemp(join(tmpdir(), "chengfeng-videocut-cut-audio-"));
-  const audio = join(temporaryDirectory, "audio.mp3");
-  try {
-    const audioFormat = (await extractCutAudio(options.source, ranges, audio)) ?? "mp3";
-    const result = await submitAndPoll({
-      audio,
-      audioFormat,
+  await mkdir(dirname(output), { recursive: true });
+  const checkpointRoot = await realpath(dirname(output));
+  const checkpointOutput = join(checkpointRoot, basename(output));
+  const identity: TranscriptionCheckpointIdentity = {
+    provider: "volcengine",
+    source: "cut-source",
+    output: relativeTaskPath(checkpointRoot, checkpointOutput),
+    mediaSha256,
+    mediaDuration: rounded(media.duration),
+    language,
+    modelName,
+    resourceId,
+    cutRangesSha256: cutRangesDigest(ranges),
+    cutDuration: rounded(duration),
+  };
+  let checkpoint = await loadExistingTranscriptionCheckpoint(checkpointRoot, identity);
+  let result: unknown;
+  if (checkpoint) {
+    result = await submitAndPoll({
       apiKey,
-      resourceId: (options.resourceId ?? process.env.VOLCENGINE_ASR_RESOURCE_ID ?? DEFAULT_RESOURCE_ID).trim() || DEFAULT_RESOURCE_ID,
-      modelName: (options.modelName ?? process.env.VOLCENGINE_ASR_MODEL_NAME ?? DEFAULT_MODEL_NAME).trim() || DEFAULT_MODEL_NAME,
-      language: (options.language ?? DEFAULT_LANGUAGE).trim() || DEFAULT_LANGUAGE,
-      pollIntervalMs: nonNegativeFinite(options.pollIntervalMs, DEFAULT_POLL_INTERVAL_MS, "pollIntervalMs"),
-      maxPollAttempts: positiveInteger(options.maxPollAttempts, DEFAULT_MAX_POLL_ATTEMPTS, "maxPollAttempts"),
-      requestTimeoutMs: positiveInteger(options.requestTimeoutMs, DEFAULT_REQUEST_TIMEOUT_MS, "requestTimeoutMs"),
+      resourceId,
+      modelName,
+      language,
+      pollIntervalMs,
+      maxPollAttempts,
+      requestTimeoutMs,
       signal: options.signal,
       dependencies,
+      checkpoint,
     });
-    const document = buildVolcengineTranscript({
-      result,
-      language: (options.language ?? DEFAULT_LANGUAGE).trim() || DEFAULT_LANGUAGE,
-      duration,
-    });
-    await mkdir(dirname(options.output), { recursive: true });
-    const temporary = `${options.output}.tmp-${process.pid}`;
-    await writeFile(temporary, `${JSON.stringify(document, null, 2)}\n`, "utf8");
-    await rename(temporary, options.output);
-    return {
-      provider: "volcengine",
-      source: options.source,
-      output: options.output,
-      cueCount: document.cues.length,
-      wordCount: document.cues.flatMap((cue) => cue.words).length,
-      duration,
-    };
-  } finally {
-    await rm(temporaryDirectory, { recursive: true, force: true });
+  } else {
+    const temporaryDirectory = await mkdtemp(join(tmpdir(), "chengfeng-videocut-cut-audio-"));
+    const audio = join(temporaryDirectory, "audio.mp3");
+    try {
+      const audioFormat = (await extractCutAudio(source, ranges, audio)) ?? "mp3";
+      checkpoint = await prepareTranscriptionCheckpoint(checkpointRoot, identity, dependencies);
+      result = await submitAndPoll({
+        audio,
+        audioFormat,
+        apiKey,
+        resourceId,
+        modelName,
+        language,
+        pollIntervalMs,
+        maxPollAttempts,
+        requestTimeoutMs,
+        signal: options.signal,
+        dependencies,
+        checkpoint,
+      });
+    } finally {
+      await rm(temporaryDirectory, { recursive: true, force: true });
+    }
   }
+  const document = buildVolcengineTranscript({
+    result,
+    language,
+    duration,
+  });
+  const temporary = `${output}.tmp-${process.pid}`;
+  await writeFile(temporary, `${JSON.stringify(document, null, 2)}\n`, "utf8");
+  await rename(temporary, output);
+  await completeTranscriptionCheckpoint(checkpoint, dependencies);
+  return {
+    provider: "volcengine",
+    source,
+    output,
+    cueCount: document.cues.length,
+    wordCount: document.cues.flatMap((cue) => cue.words).length,
+    duration,
+  };
 }
 
 export async function transcribeKouboVideo(
@@ -1584,24 +1702,20 @@ export async function transcribeKouboVideo(
   const maxPollAttempts = positiveInteger(options.maxPollAttempts, DEFAULT_MAX_POLL_ATTEMPTS, "maxPollAttempts");
   const requestTimeoutMs = positiveInteger(options.requestTimeoutMs, DEFAULT_REQUEST_TIMEOUT_MS, "requestTimeoutMs");
   const mediaSha256 = await sha256File(source);
-  const temporaryDirectory = await mkdtemp(join(tmpdir(), "chengfeng-videocut-transcribe-"));
-  const audio = join(temporaryDirectory, "audio.mp3");
-  try {
-    const audioFormat = (await dependencies.extractAudio(source, audio)) ?? "mp3";
-    const checkpoint = await prepareTranscriptionCheckpoint(root, {
-      provider: "volcengine",
-      source: relativeTaskPath(root, source),
-      output: relativeTaskPath(root, output),
-      mediaSha256,
-      mediaDuration: rounded(media.duration),
-      audioFormat,
-      language,
-      modelName,
-      resourceId,
-    }, dependencies);
-    const result = await submitAndPoll({
-      audio,
-      audioFormat,
+  const identity: TranscriptionCheckpointIdentity = {
+    provider: "volcengine",
+    source: relativeTaskPath(root, source),
+    output: relativeTaskPath(root, output),
+    mediaSha256,
+    mediaDuration: rounded(media.duration),
+    language,
+    modelName,
+    resourceId,
+  };
+  let checkpoint = await loadExistingTranscriptionCheckpoint(root, identity);
+  let result: unknown;
+  if (checkpoint) {
+    result = await submitAndPoll({
       apiKey,
       resourceId,
       modelName,
@@ -1613,28 +1727,49 @@ export async function transcribeKouboVideo(
       dependencies,
       checkpoint,
     });
-    const document = buildVolcengineTranscript({
-      result,
-      language,
-      duration: media.duration,
-      media: {
-        source: options.video,
-        sha256: mediaSha256,
-        duration: media.duration,
-      },
-    });
-    await writeTranscriptAtomically(root, output, document);
-    await completeTranscriptionCheckpoint(checkpoint, dependencies);
-    const wordCount = document.cues.flatMap((cue) => cue.words).length;
-    return {
-      provider: "volcengine",
-      source,
-      output,
-      cueCount: document.cues.length,
-      wordCount,
-      duration: media.duration,
-    };
-  } finally {
-    await rm(temporaryDirectory, { recursive: true, force: true });
+  } else {
+    const temporaryDirectory = await mkdtemp(join(tmpdir(), "chengfeng-videocut-transcribe-"));
+    const audio = join(temporaryDirectory, "audio.mp3");
+    try {
+      const audioFormat = (await dependencies.extractAudio(source, audio)) ?? "mp3";
+      checkpoint = await prepareTranscriptionCheckpoint(root, identity, dependencies);
+      result = await submitAndPoll({
+        audio,
+        audioFormat,
+        apiKey,
+        resourceId,
+        modelName,
+        language,
+        pollIntervalMs,
+        maxPollAttempts,
+        requestTimeoutMs,
+        signal: options.signal,
+        dependencies,
+        checkpoint,
+      });
+    } finally {
+      await rm(temporaryDirectory, { recursive: true, force: true });
+    }
   }
+  const document = buildVolcengineTranscript({
+    result,
+    language,
+    duration: media.duration,
+    media: {
+      source: options.video,
+      sha256: mediaSha256,
+      duration: media.duration,
+    },
+  });
+  await writeTranscriptAtomically(root, output, document);
+  await completeTranscriptionCheckpoint(checkpoint, dependencies);
+  const wordCount = document.cues.flatMap((cue) => cue.words).length;
+  return {
+    provider: "volcengine",
+    source,
+    output,
+    cueCount: document.cues.length,
+    wordCount,
+    duration: media.duration,
+  };
 }
