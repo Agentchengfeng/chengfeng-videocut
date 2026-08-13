@@ -47,6 +47,7 @@
     "npm-runtime:stage": "bun scripts/stage-npm-runtime-package.ts",
     "npm-runtime:verify": "bun scripts/verify-npm-runtime-package.ts",
     "test:npm-runtime-package": "bun test test/npm-runtime-package.test.ts test/npm-trusted-publish-workflow.test.ts",
+    "e2e:installed-product": "bun scripts/e2e-installed-product.ts",
     "desktop:prepare": "bun run --cwd apps/desktop prepare:desktop",
     "desktop:test": "bun run --cwd apps/desktop test",
     "desktop:smoke": "bun run --cwd apps/desktop smoke",
