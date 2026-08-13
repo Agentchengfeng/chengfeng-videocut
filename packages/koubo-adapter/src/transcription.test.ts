@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseTranscriptWords } from "@video-workbench/core";
@@ -11,11 +11,17 @@ afterEach(async () => {
   await Promise.all(cleanup.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
-function response(payload: unknown, status = "20000000") {
+function response(payload: unknown, status = "20000000", extraHeaders: Record<string, string> = {}) {
   return {
     ok: true,
     status: 200,
-    headers: { get: (name: string) => name.toLowerCase() === "x-api-status-code" ? status : null },
+    headers: {
+      get: (name: string) => {
+        const key = name.toLowerCase();
+        if (key === "x-api-status-code") return status;
+        return extraHeaders[key] ?? null;
+      },
+    },
     json: async () => payload,
   };
 }
@@ -40,6 +46,27 @@ const probe = async () => ({
   width: 1280,
   height: 720,
 });
+
+async function checkpointFiles(job: string): Promise<string[]> {
+  const directory = join(job, ".chengfeng-videocut", "transcription-checkpoints");
+  return (await readdir(directory))
+    .filter((name) => name.endsWith(".json"))
+    .map((name) => join(directory, name));
+}
+
+async function readCheckpoint(job: string): Promise<Record<string, unknown>> {
+  const files = await checkpointFiles(job);
+  expect(files).toHaveLength(1);
+  return JSON.parse(await readFile(files[0] as string, "utf8")) as Record<string, unknown>;
+}
+
+function completedQuery() {
+  return response({
+    result: {
+      utterances: [{ words: [{ text: "你", start_time: 0, end_time: 200 }] }],
+    },
+  });
+}
 
 describe("Volcengine Runtime transcription", () => {
   it("maps a completed Volcengine response to stable words and task-local output", async () => {
@@ -98,6 +125,440 @@ describe("Volcengine Runtime transcription", () => {
     ]);
     expect(transcript.cues[0].words.every((word: { id: string }) => /^\w+-[a-f0-9]{20}$/.test(word.id)))
       .toBe(true);
+    const files = await checkpointFiles(job);
+    const checkpointStat = await lstat(files[0] as string);
+    const checkpoint = JSON.parse(await readFile(files[0] as string, "utf8"));
+    expect(checkpointStat.isFile()).toBe(true);
+    expect(checkpointStat.nlink).toBe(1);
+    if (process.platform !== "win32") expect(checkpointStat.mode & 0o077).toBe(0);
+    expect(checkpoint).toMatchObject({
+      kind: "volcengine-transcription-execution",
+      requestId: "request-id",
+      phase: "completed",
+      identity: {
+        provider: "volcengine",
+        output: "cloud/transcript.json",
+        language: "zh-CN",
+        modelName: "bigmodel",
+      },
+    });
+    const checkpointRaw = JSON.stringify(checkpoint);
+    expect(checkpointRaw).not.toContain("test-key");
+    expect(checkpointRaw).not.toContain("fixture-audio");
+    expect(checkpointRaw).not.toContain("你好");
+  });
+
+  it("resumes from a checkpoint written before submit without minting a new request id", async () => {
+    const { job } = await fixture();
+    let uuidCalls = 0;
+    let submitCalls = 0;
+    await expect(transcribeKouboVideo(job, {
+      video: "uploads/source.mp4",
+      output: "cloud/transcript.json",
+      apiKey: "test-key",
+      pollIntervalMs: 0,
+      dependencies: {
+        probe,
+        extractAudio: async (_input, output) => { await writeFile(output, "fixture-audio"); },
+        fetch: async (url) => {
+          if (url.endsWith("/submit")) submitCalls += 1;
+          throw new Error("provider must not be reached before the simulated crash");
+        },
+        uuid: () => {
+          uuidCalls += 1;
+          return "request-before-submit";
+        },
+        checkpointEvent: (event) => {
+          if (event.event === "after-initial-checkpoint") {
+            throw new Error("simulated process exit before submit");
+          }
+        },
+      },
+    })).rejects.toThrow("simulated process exit before submit");
+    expect(uuidCalls).toBe(1);
+    expect(submitCalls).toBe(0);
+    expect(await readCheckpoint(job)).toMatchObject({
+      requestId: "request-before-submit",
+      phase: "submitting",
+    });
+
+    let queryCalls = 0;
+    const result = await transcribeKouboVideo(job, {
+      video: "uploads/source.mp4",
+      output: "cloud/transcript.json",
+      apiKey: "test-key",
+      pollIntervalMs: 0,
+      dependencies: {
+        probe,
+        extractAudio: async (_input, output) => { await writeFile(output, "fixture-audio"); },
+        fetch: async (url, init) => {
+          if (url.endsWith("/submit")) throw new Error("retry must not submit again");
+          queryCalls += 1;
+          expect((init.headers as Record<string, string>)["X-Api-Request-Id"]).toBe("request-before-submit");
+          return completedQuery();
+        },
+        uuid: () => { throw new Error("retry must not mint a request id"); },
+      },
+    });
+    expect(result.wordCount).toBeGreaterThan(0);
+    expect(queryCalls).toBe(1);
+    expect(await readCheckpoint(job)).toMatchObject({ phase: "completed" });
+  });
+
+  it("marks a submit timeout as submitting_uncertain and retries by query only", async () => {
+    const { job } = await fixture();
+    await expect(transcribeKouboVideo(job, {
+      video: "uploads/source.mp4",
+      output: "cloud/transcript.json",
+      apiKey: "test-key",
+      pollIntervalMs: 0,
+      requestTimeoutMs: 1,
+      dependencies: {
+        probe,
+        extractAudio: async (_input, output) => { await writeFile(output, "fixture-audio"); },
+        fetch: async (_url, init) => {
+          const signal = init.signal as AbortSignal;
+          return await new Promise<never>((_, reject) => {
+            if (signal.aborted) reject(signal.reason);
+            signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+          });
+        },
+        uuid: () => "request-timeout",
+      },
+    })).rejects.toMatchObject({
+      code: "cloud_transcription_failed",
+      details: { kind: "request_timeout", stage: "submit", checkpointPhase: "submitting_uncertain" },
+    });
+    expect(await readCheckpoint(job)).toMatchObject({
+      requestId: "request-timeout",
+      phase: "submitting_uncertain",
+      error: { kind: "request_timeout", stage: "submit" },
+    });
+
+    let queryCalls = 0;
+    await transcribeKouboVideo(job, {
+      video: "uploads/source.mp4",
+      output: "cloud/transcript.json",
+      apiKey: "test-key",
+      pollIntervalMs: 0,
+      dependencies: {
+        probe,
+        extractAudio: async (_input, output) => { await writeFile(output, "fixture-audio"); },
+        fetch: async (url, init) => {
+          if (url.endsWith("/submit")) throw new Error("timeout recovery must not submit");
+          queryCalls += 1;
+          expect((init.headers as Record<string, string>)["X-Api-Request-Id"]).toBe("request-timeout");
+          return completedQuery();
+        },
+        uuid: () => { throw new Error("timeout recovery must not mint a request id"); },
+      },
+    });
+    expect(queryCalls).toBe(1);
+  });
+
+  it("does not use logid if the process exits before the logid checkpoint is written", async () => {
+    const { job } = await fixture();
+    await expect(transcribeKouboVideo(job, {
+      video: "uploads/source.mp4",
+      output: "cloud/transcript.json",
+      apiKey: "test-key",
+      pollIntervalMs: 0,
+      dependencies: {
+        probe,
+        extractAudio: async (_input, output) => { await writeFile(output, "fixture-audio"); },
+        fetch: async (url) => {
+          if (url.endsWith("/submit")) return response(null, "20000000", { "x-tt-logid": "log-before" });
+          throw new Error("query must not run before simulated crash");
+        },
+        uuid: () => "request-log-before",
+        checkpointEvent: (event) => {
+          if (event.event === "after-submit-accepted-before-logid-checkpoint") {
+            throw new Error("simulated process exit before logid checkpoint");
+          }
+        },
+      },
+    })).rejects.toThrow("simulated process exit before logid checkpoint");
+    expect(await readCheckpoint(job)).toMatchObject({
+      requestId: "request-log-before",
+      phase: "submitting",
+    });
+
+    await transcribeKouboVideo(job, {
+      video: "uploads/source.mp4",
+      output: "cloud/transcript.json",
+      apiKey: "test-key",
+      pollIntervalMs: 0,
+      dependencies: {
+        probe,
+        extractAudio: async (_input, output) => { await writeFile(output, "fixture-audio"); },
+        fetch: async (url, init) => {
+          if (url.endsWith("/submit")) throw new Error("retry must not submit");
+          expect((init.headers as Record<string, string>)["X-Tt-Logid"]).toBeUndefined();
+          return completedQuery();
+        },
+        uuid: () => { throw new Error("retry must not mint a request id"); },
+      },
+    });
+  });
+
+  it("persists logid atomically and sends it on resumed query", async () => {
+    const { job } = await fixture();
+    await expect(transcribeKouboVideo(job, {
+      video: "uploads/source.mp4",
+      output: "cloud/transcript.json",
+      apiKey: "test-key",
+      pollIntervalMs: 0,
+      dependencies: {
+        probe,
+        extractAudio: async (_input, output) => { await writeFile(output, "fixture-audio"); },
+        fetch: async (url) => {
+          if (url.endsWith("/submit")) return response(null, "20000000", { "x-tt-logid": "log-after" });
+          throw new Error("query must not run before simulated crash");
+        },
+        uuid: () => "request-log-after",
+        checkpointEvent: (event) => {
+          if (event.event === "after-logid-checkpoint") {
+            throw new Error("simulated process exit after logid checkpoint");
+          }
+        },
+      },
+    })).rejects.toThrow("simulated process exit after logid checkpoint");
+    expect(await readCheckpoint(job)).toMatchObject({
+      requestId: "request-log-after",
+      phase: "polling",
+      logid: "log-after",
+    });
+
+    await transcribeKouboVideo(job, {
+      video: "uploads/source.mp4",
+      output: "cloud/transcript.json",
+      apiKey: "test-key",
+      pollIntervalMs: 0,
+      dependencies: {
+        probe,
+        extractAudio: async (_input, output) => { await writeFile(output, "fixture-audio"); },
+        fetch: async (url, init) => {
+          if (url.endsWith("/submit")) throw new Error("retry must not submit");
+          expect((init.headers as Record<string, string>)["X-Tt-Logid"]).toBe("log-after");
+          return completedQuery();
+        },
+        uuid: () => { throw new Error("retry must not mint a request id"); },
+      },
+    });
+  });
+
+  it("resumes a pending query checkpoint without duplicate submit", async () => {
+    const { job } = await fixture();
+    let submitCalls = 0;
+    await expect(transcribeKouboVideo(job, {
+      video: "uploads/source.mp4",
+      output: "cloud/transcript.json",
+      apiKey: "test-key",
+      pollIntervalMs: 0,
+      dependencies: {
+        probe,
+        extractAudio: async (_input, output) => { await writeFile(output, "fixture-audio"); },
+        fetch: async (url) => {
+          if (url.endsWith("/submit")) {
+            submitCalls += 1;
+            return response(null, "20000000", { "x-tt-logid": "log-pending" });
+          }
+          return response({}, "20000001");
+        },
+        uuid: () => "request-pending",
+        checkpointEvent: (event) => {
+          if (event.event === "after-query-pending-checkpoint") {
+            throw new Error("simulated process exit after pending query");
+          }
+        },
+      },
+    })).rejects.toThrow("simulated process exit after pending query");
+    expect(submitCalls).toBe(1);
+    expect(await readCheckpoint(job)).toMatchObject({
+      phase: "polling",
+      queryAttempts: 1,
+      logid: "log-pending",
+    });
+
+    await transcribeKouboVideo(job, {
+      video: "uploads/source.mp4",
+      output: "cloud/transcript.json",
+      apiKey: "test-key",
+      pollIntervalMs: 0,
+      dependencies: {
+        probe,
+        extractAudio: async (_input, output) => { await writeFile(output, "fixture-audio"); },
+        fetch: async (url) => {
+          if (url.endsWith("/submit")) throw new Error("retry must not submit");
+          return completedQuery();
+        },
+        uuid: () => { throw new Error("retry must not mint a request id"); },
+      },
+    });
+  });
+
+  it("queries again after provider completion if the process exits before output publish", async () => {
+    const { job } = await fixture();
+    await expect(transcribeKouboVideo(job, {
+      video: "uploads/source.mp4",
+      output: "cloud/transcript.json",
+      apiKey: "test-key",
+      pollIntervalMs: 0,
+      dependencies: {
+        probe,
+        extractAudio: async (_input, output) => { await writeFile(output, "fixture-audio"); },
+        fetch: async (url) => url.endsWith("/submit")
+          ? response(null)
+          : completedQuery(),
+        uuid: () => "request-before-output",
+        checkpointEvent: (event) => {
+          if (event.event === "after-provider-completed-before-output") {
+            throw new Error("simulated process exit before output");
+          }
+        },
+      },
+    })).rejects.toThrow("simulated process exit before output");
+    await expect(readFile(join(job, "cloud", "transcript.json"), "utf8")).rejects.toThrow();
+    expect(await readCheckpoint(job)).toMatchObject({ phase: "polling" });
+
+    await transcribeKouboVideo(job, {
+      video: "uploads/source.mp4",
+      output: "cloud/transcript.json",
+      apiKey: "test-key",
+      pollIntervalMs: 0,
+      dependencies: {
+        probe,
+        extractAudio: async (_input, output) => { await writeFile(output, "fixture-audio"); },
+        fetch: async (url) => {
+          if (url.endsWith("/submit")) throw new Error("retry must not submit");
+          return completedQuery();
+        },
+        uuid: () => { throw new Error("retry must not mint a request id"); },
+      },
+    });
+    expect(await readCheckpoint(job)).toMatchObject({ phase: "completed" });
+  });
+
+  it("fails closed on a damaged checkpoint without overwriting it", async () => {
+    const { job } = await fixture();
+    await expect(transcribeKouboVideo(job, {
+      video: "uploads/source.mp4",
+      output: "cloud/transcript.json",
+      apiKey: "test-key",
+      dependencies: {
+        probe,
+        extractAudio: async (_input, output) => { await writeFile(output, "fixture-audio"); },
+        fetch: async () => { throw new Error("provider must not run"); },
+        uuid: () => "request-corrupt",
+        checkpointEvent: (event) => {
+          if (event.event === "after-initial-checkpoint") throw new Error("stop after checkpoint");
+        },
+      },
+    })).rejects.toThrow("stop after checkpoint");
+    const [checkpoint] = await checkpointFiles(job);
+    await writeFile(checkpoint as string, "not-json\n");
+    await expect(transcribeKouboVideo(job, {
+      video: "uploads/source.mp4",
+      output: "cloud/transcript.json",
+      apiKey: "test-key",
+      dependencies: {
+        probe,
+        extractAudio: async (_input, output) => { await writeFile(output, "fixture-audio"); },
+        fetch: async () => { throw new Error("provider must not run after corruption"); },
+      },
+    })).rejects.toMatchObject({ code: "cloud_transcription_checkpoint_corrupt" });
+    expect(await readFile(checkpoint as string, "utf8")).toBe("not-json\n");
+  });
+
+  it("rejects reuse when media or ASR configuration changed under the same output", async () => {
+    const cases: Array<{
+      name: string;
+      mutate?: (video: string) => Promise<void>;
+      options?: Partial<Parameters<typeof transcribeKouboVideo>[1]>;
+      field: string;
+    }> = [
+      { name: "media", mutate: (video) => writeFile(video, "changed-video"), field: "mediaSha256" },
+      { name: "language", options: { language: "en-US" }, field: "language" },
+      { name: "model", options: { modelName: "other-model" }, field: "modelName" },
+      { name: "resource", options: { resourceId: "other-resource" }, field: "resourceId" },
+    ];
+    for (const item of cases) {
+      const { job, video } = await fixture();
+      await expect(transcribeKouboVideo(job, {
+        video: "uploads/source.mp4",
+        output: "cloud/transcript.json",
+        apiKey: "test-key",
+        dependencies: {
+          probe,
+          extractAudio: async (_input, output) => { await writeFile(output, "fixture-audio"); },
+          fetch: async () => { throw new Error("provider must not run"); },
+          uuid: () => `request-${item.name}`,
+          checkpointEvent: (event) => {
+            if (event.event === "after-initial-checkpoint") throw new Error(`checkpoint ${item.name}`);
+          },
+        },
+      })).rejects.toThrow(`checkpoint ${item.name}`);
+      await item.mutate?.(video);
+      await expect(transcribeKouboVideo(job, {
+        video: "uploads/source.mp4",
+        output: "cloud/transcript.json",
+        apiKey: "test-key",
+        ...item.options,
+        dependencies: {
+          probe,
+          extractAudio: async (_input, output) => { await writeFile(output, "fixture-audio"); },
+          fetch: async () => { throw new Error("provider must not run after identity mismatch"); },
+          uuid: () => { throw new Error("identity mismatch must not mint a new request id"); },
+        },
+      })).rejects.toMatchObject({
+        code: "cloud_transcription_checkpoint_mismatch",
+        details: { field: item.field },
+      });
+    }
+  });
+
+  it("serializes concurrent retries so only one submit and one request id are created", async () => {
+    const { job } = await fixture();
+    let submitCalls = 0;
+    let queryCalls = 0;
+    let uuidCalls = 0;
+    const run = () => transcribeKouboVideo(job, {
+      video: "uploads/source.mp4",
+      output: "cloud/transcript.json",
+      apiKey: "test-key",
+      pollIntervalMs: 0,
+      maxPollAttempts: 4,
+      dependencies: {
+        probe,
+        extractAudio: async (_input, output) => { await writeFile(output, "fixture-audio"); },
+        fetch: async (url) => {
+          if (url.endsWith("/submit")) {
+            submitCalls += 1;
+            return response(null, "20000000", { "x-tt-logid": "log-concurrent" });
+          }
+          queryCalls += 1;
+          return completedQuery();
+        },
+        uuid: () => {
+          uuidCalls += 1;
+          return "request-concurrent";
+        },
+      },
+    });
+
+    const settled = await Promise.allSettled([run(), run()]);
+    expect(submitCalls).toBe(1);
+    expect(uuidCalls).toBe(1);
+    expect(queryCalls).toBeGreaterThanOrEqual(1);
+    expect(settled.some((item) => item.status === "fulfilled")).toBe(true);
+    expect(settled.every((item) =>
+      item.status === "fulfilled" ||
+      (item.reason as { code?: string }).code === "invalid_argument")).toBe(true);
+    expect(await readCheckpoint(job)).toMatchObject({
+      requestId: "request-concurrent",
+      phase: "completed",
+      logid: "log-concurrent",
+    });
   });
 
   it("generates identical transcript identity from identical provider words", () => {
@@ -154,7 +615,40 @@ describe("Volcengine Runtime transcription", () => {
       code: "cloud_transcription_failed",
       details: { stage: "submit", causeType: "Error" },
     });
+    expect(await readCheckpoint(job)).toMatchObject({
+      phase: "recovery_blocked",
+      error: { kind: "network_error", stage: "submit" },
+    });
     await expect(readFile(join(job, "cloud", "transcript.json"), "utf8")).rejects.toThrow();
+  });
+
+  it("persists external cancellation separately from request timeout and network errors", async () => {
+    const { job } = await fixture();
+    const controller = new AbortController();
+    const reason = new DOMException("user cancelled", "AbortError");
+    controller.abort(reason);
+    await expect(transcribeKouboVideo(job, {
+      video: "uploads/source.mp4",
+      output: "cloud/transcript.json",
+      apiKey: "test-key",
+      pollIntervalMs: 0,
+      signal: controller.signal,
+      dependencies: {
+        probe,
+        extractAudio: async (_input, output) => { await writeFile(output, "fixture-audio"); },
+        fetch: async (_url, init) => {
+          throw (init.signal as AbortSignal).reason;
+        },
+        uuid: () => "request-cancelled",
+      },
+    })).rejects.toMatchObject({
+      code: "cloud_transcription_cancelled",
+      details: { kind: "external_cancel", stage: "submit", checkpointPhase: "cancelled" },
+    });
+    expect(await readCheckpoint(job)).toMatchObject({
+      phase: "cancelled",
+      error: { kind: "external_cancel", stage: "submit" },
+    });
   });
 
   it("rejects output outside the task directory before cloud work begins", async () => {

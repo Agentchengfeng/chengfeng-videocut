@@ -17,6 +17,9 @@ export type VideocutErrorCode =
   | "media_has_no_audio"
   | "missing_cloud_transcription_adapter"
   | "cloud_transcription_failed"
+  | "cloud_transcription_checkpoint_corrupt"
+  | "cloud_transcription_checkpoint_mismatch"
+  | "cloud_transcription_cancelled"
   /**
    * A write succeeded but reading it back did not match what was written. The
    * write protocol always required this check; leaving it as prose meant it could
