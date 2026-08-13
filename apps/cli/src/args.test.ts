@@ -1,7 +1,134 @@
 import { describe, expect, it } from "bun:test";
+import { RUNTIME_CLI_COMMANDS, type RuntimeCliCommand } from "@video-workbench/contracts";
 import { parseArgs } from "./args";
+import { HELP_TEXT } from "./output";
+
+type PublicRuntimeCliCommand = {
+  [K in RuntimeCliCommand]: typeof RUNTIME_CLI_COMMANDS[K]["public"] extends true ? K : never
+}[RuntimeCliCommand];
+
+const revision = "a".repeat(64);
+
+const publicCommandSamples = {
+  help: ["--help"],
+  version: ["--version"],
+  start: ["start"],
+  "service.install": ["service", "install"],
+  "service.start": ["service", "start"],
+  "service.stop": ["service", "stop"],
+  "service.restart": ["service", "restart"],
+  "service.status": ["service", "status"],
+  "service.logs": ["service", "logs"],
+  "service.ensure": ["service", "ensure"],
+  doctor: ["doctor"],
+  "config.get": ["config", "get"],
+  "config.set": ["config", "set", "transcription.apiKey", "secret"],
+  inspect: ["inspect", "demo"],
+  open: ["open", "demo"],
+  transcribe: ["transcribe", "task", "--video", "source.mp4", "--output", "words.json"],
+  "project.ingest": ["project", "ingest", "task", "--video", "source.mp4"],
+  "project.create": ["project", "create", "task", "--video", "source.mp4", "--transcript", "words.json"],
+  "project.prepare": ["project", "prepare", "task"],
+  "artifact.put": [
+    "artifact", "put", "demo",
+    "--type", "timeline",
+    "--file", "timeline.json",
+    "--expected-project-revision", revision,
+    "--expected-artifact-revision", "none",
+  ],
+  "cuts.get": ["cuts", "get", "demo"],
+  "transcript.playback": ["transcript", "playback", "demo"],
+  "transcript.retranscribe": ["transcript", "retranscribe", "demo", "--output", "words.json"],
+  "transcript.align": ["transcript", "align", "demo", "--script", "script.txt"],
+  "transcript.dictionary": ["transcript", "dictionary", "demo", "--dictionary", "dict.json"],
+  "transcript.regroup": ["transcript", "regroup", "demo"],
+  "transcript.correct": ["transcript", "correct", "demo", "--file", "corrections.json"],
+  "cuts.set": ["cuts", "set", "demo", "--file", "cuts.json", "--expected-revision", "none"],
+  "cuts.apply": [
+    "cuts", "apply", "demo",
+    "--expected-revision", revision,
+    "--expected-edit-list-revision", revision,
+    "--confirmed",
+  ],
+  "editList.get": ["edit-list", "get", "demo"],
+  "editList.patch": ["edit-list", "patch", "demo", "--file", "operation.json", "--expected-revision", "none"],
+  "subtitle.get": ["subtitle", "get", "demo"],
+  "subtitle.build": ["subtitle", "build", "demo"],
+  "subtitle.set": ["subtitle", "set", "demo", "--file", "subtitles.json"],
+  "visual.get": ["visual", "get", "demo"],
+  "visual.add": ["visual", "add", "demo", "--module", "layers/title.html", "--cues", "cue-1"],
+  "visual.remove": ["visual", "remove", "demo", "--id", "layer-1"],
+  "visual.frame": ["visual", "frame", "demo", "--cues", "cue-1"],
+  "workflow.get": ["workflow", "get", "demo"],
+  "workflow.transition": [
+    "workflow", "transition", "demo",
+    "--action", "start-final",
+    "--expected-revision", revision,
+    "--confirmed",
+  ],
+  "render.run": ["render", "run", "demo", "--expected-revision", revision, "--confirmed"],
+  export: ["export", "demo"],
+  "job.start": ["job", "start", "export", "demo"],
+  "job.get": ["job", "get", "job-1"],
+  "job.list": ["job", "list"],
+  "job.cancel": ["job", "cancel", "job-1"],
+} as const satisfies Record<PublicRuntimeCliCommand, readonly string[]>;
+
+function publicCommandIds(): PublicRuntimeCliCommand[] {
+  return (Object.keys(RUNTIME_CLI_COMMANDS) as RuntimeCliCommand[])
+    .filter((id): id is PublicRuntimeCliCommand => RUNTIME_CLI_COMMANDS[id].public);
+}
+
+function helpCommandIds(): RuntimeCliCommand[] {
+  const ids = new Set<RuntimeCliCommand>();
+  for (const line of HELP_TEXT.split("\n")) {
+    const id = commandIdFromUsageLine(line);
+    if (id) ids.add(id);
+  }
+  return [...ids];
+}
+
+function commandIdFromUsageLine(line: string): RuntimeCliCommand | null {
+  const trimmed = line.trim();
+  const prefix = "chengfeng-videocut ";
+  if (!trimmed.startsWith(prefix)) return null;
+  const tokens = trimmed.slice(prefix.length).split(/\s+/);
+  const first = tokens[0];
+  if (/^\d+\.\d+\.\d+/.test(first)) return null;
+  if (first === "--help") return "help";
+  if (first === "--version") return "version";
+  const twoPartPrefixes: Record<string, string> = {
+    artifact: "artifact",
+    config: "config",
+    cuts: "cuts",
+    "edit-list": "editList",
+    job: "job",
+    project: "project",
+    render: "render",
+    service: "service",
+    subtitle: "subtitle",
+    transcript: "transcript",
+    visual: "visual",
+    workflow: "workflow",
+  };
+  const command = twoPartPrefixes[first] && tokens[1]
+    ? `${twoPartPrefixes[first]}.${tokens[1]}`
+    : first;
+  if (!Object.hasOwn(RUNTIME_CLI_COMMANDS, command)) {
+    throw new Error(`HELP_TEXT usage line is not in RUNTIME_CLI_COMMANDS: ${trimmed}`);
+  }
+  return command as RuntimeCliCommand;
+}
 
 describe("start argument parser", () => {
+  it("keeps public command contract, help text, and parser coverage aligned", () => {
+    const contractIds = publicCommandIds().sort();
+    expect(helpCommandIds().sort()).toEqual(contractIds);
+    for (const id of contractIds) {
+      expect(parseArgs(publicCommandSamples[id]).command).toBe(id);
+    }
+  });
+
   it("parses durable job start/get/list/cancel commands", () => {
     expect(parseArgs(["job", "start", "export", "/tmp/project", "--out", "/tmp/out.mp4"])).toMatchObject({
       command: "job.start", jobKind: "export", project: "/tmp/project", outFile: "/tmp/out.mp4",

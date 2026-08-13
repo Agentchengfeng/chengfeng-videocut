@@ -100,6 +100,8 @@ export function humanService(data: StudioServiceCommandResult): string {
 export const HELP_TEXT = `chengfeng-videocut ${PRODUCT_VERSION}
 
 Usage:
+  chengfeng-videocut --help [--json]
+  chengfeng-videocut --version [--json]
   chengfeng-videocut start [--host <host>] [--port <port>] [--projects-dir <dir>] [--data-dir <dir>] [--open] [--json]
   chengfeng-videocut service install [--json]
   chengfeng-videocut service start [--json]
@@ -129,17 +131,21 @@ Usage:
   chengfeng-videocut transcript retranscribe <project> --output <file> [--language <code>] [--json]
   chengfeng-videocut transcript align <project> --script <file> [--json]
   chengfeng-videocut transcript dictionary <project> --dictionary <file> [--dry-run] [--json]
+  chengfeng-videocut transcript regroup <project> [--dry-run] [--json]
   chengfeng-videocut transcript correct <project> --file <corrections.json> [--dry-run] [--json]
   chengfeng-videocut cuts get <project> [--api-base <url>] [--json]
   chengfeng-videocut cuts set <project> --file <file> --expected-revision <none|sha256> [--full-selection] [--api-base <url>] [--json]
   chengfeng-videocut cuts set <project> --file <file> --dry-run [--json]
   chengfeng-videocut cuts apply <project> --expected-revision <sha256> --expected-edit-list-revision <sha256> --confirmed [--api-base <url>] [--json]
+  chengfeng-videocut edit-list get <project> [--api-base <url>] [--json]
+  chengfeng-videocut edit-list patch <project> --file <operation.json> --expected-revision <none|sha256> [--api-base <url>] [--json]
   chengfeng-videocut subtitle get <project> [--json]
   chengfeng-videocut subtitle build <project> [--replace] [--max-columns <n>] [--break-pause <seconds>] [--dry-run] [--json]
   chengfeng-videocut subtitle set <project> --file <subtitles.json> [--expected-revision <sha256>] [--dry-run] [--json]
   chengfeng-videocut visual get <project> [--json]
   chengfeng-videocut visual add <project> --module <project-relative .html> --cues <id,id,...> [--id <layer>] [--expected-revision <sha256>] [--dry-run] [--json]
   chengfeng-videocut visual remove <project> --id <layer> [--expected-revision <sha256>] [--dry-run] [--json]
+  chengfeng-videocut visual frame <project> --cues <id,id,...> [--count <n>] [--out <dir>] [--dry-run] [--json]
   chengfeng-videocut export <project> [--out <file.mp4>] [--scale <n>] [--fps <n>] [--keep-work] [--dry-run] [--api-base <url>] [--json]
 
 service ensure is the product entry point: it atomically installs or recovers the managed user service (launchd on macOS, Task Scheduler on Windows) and waits for a matching ready Runtime.
