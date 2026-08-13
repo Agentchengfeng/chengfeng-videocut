@@ -31,10 +31,10 @@ What it verifies:
   then proves a stale CAS conflict;
 - verifies the Studio HTTP route marker at
   `/api/projects/<projectId>/surface`;
-- exercises silent-media failure, source fake-provider response-loss retry,
-  stale transcript cursor, and foreground server restart;
-- fingerprints original media before and after, checks the user's default
-  Product projects snapshot, and avoids the default `5190` service path.
+- exercises silent-media failure, source-level fake-provider response-loss
+  retry logic, stale transcript cursor, and foreground server restart;
+- fingerprints original media before and after, proves all generated paths stay
+  under the isolated temp root, and proves started foreground process ownership.
 
 Real cloud ASR is not faked. To include it, provide a real voice media file and
 credentials:
@@ -47,8 +47,8 @@ bun run e2e:installed-product -- --voice-media /absolute/path/to/voice.mp4 --jso
 ```
 
 If credentials or voice media are missing, the real cloud stage is reported as
-`SKIP`. The fake-provider retry stage remains local-only evidence for recovery
-logic and is not reported as cloud ASR coverage.
+`SKIP`. The fake-provider retry stage is a source-level logic test for recovery
+behavior and is not reported as installed binary or cloud ASR coverage.
 
 When `--voice-media` is omitted, the installed project path uses generated A/V
 media to exercise real media ingestion, hashing, copy, playback, and Studio

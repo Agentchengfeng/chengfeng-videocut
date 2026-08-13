@@ -8,7 +8,6 @@ import {
   chmod,
   copyFile,
   cp,
-  lstat,
   mkdir,
   mkdtemp,
   readdir,
@@ -136,38 +135,6 @@ async function fileFingerprint(path: string): Promise<JsonRecord> {
   };
 }
 
-async function treeFingerprint(path: string): Promise<JsonRecord> {
-  try {
-    const root = await realpath(path);
-    const records: string[] = [];
-    async function walk(directory: string, prefix = ""): Promise<void> {
-      const entries = await readdir(directory, { withFileTypes: true });
-      entries.sort((left, right) => left.name.localeCompare(right.name, "en"));
-      for (const entry of entries) {
-        const absolute = join(directory, entry.name);
-        const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
-        const info = await lstat(absolute);
-        if (entry.isSymbolicLink()) {
-          records.push(`${rel}\tsymlink\t${info.size}\t${info.mtimeMs}`);
-        } else if (entry.isDirectory()) {
-          records.push(`${rel}/\tdir\t${info.mode}\t${info.mtimeMs}`);
-          await walk(absolute, rel);
-        } else if (entry.isFile()) {
-          records.push(`${rel}\tfile\t${info.size}\t${info.mtimeMs}`);
-        } else {
-          records.push(`${rel}\tspecial\t${info.mode}\t${info.mtimeMs}`);
-        }
-      }
-    }
-    await walk(root);
-    return { path, exists: true, entries: records.length, sha256: sha256(records.join("\n")) };
-  } catch (error) {
-    const code = jsonObject(error)?.code;
-    if (code === "ENOENT") return { path, exists: false };
-    throw error;
-  }
-}
-
 async function assertFreshTempRoot(root: string): Promise<string> {
   if (!isAbsolute(root)) throw new Error(`--output-root must be absolute: ${root}`);
   const tempRoot = await realpath(tmpdir());
@@ -189,6 +156,15 @@ async function assertFreshTempRoot(root: string): Promise<string> {
 async function makeRunRoot(options: Options): Promise<string> {
   if (options.outputRoot) return await assertFreshTempRoot(resolve(options.outputRoot));
   return await realpath(await mkdtemp(join(await realpath(tmpdir()), RUN_PREFIX)));
+}
+
+async function assertUnderRoot(label: string, path: string, root: string): Promise<string> {
+  const [realPath, realRoot] = await Promise.all([realpath(path), realpath(root)]);
+  const relativeToRoot = relative(realRoot, realPath);
+  if (relativeToRoot === ".." || relativeToRoot.startsWith(`..${sep}`) || isAbsolute(relativeToRoot)) {
+    throw new Error(`${label} must stay under isolated run root: ${realPath}`);
+  }
+  return realPath;
 }
 
 function scrubbedIsolatedEnv(home: string, tmp: string, extra: Record<string, string | undefined> = {}): NodeJS.ProcessEnv {
@@ -394,12 +370,15 @@ if [ -z "\${CHENGFENG_VIDEOCUT_DATA_DIR:-}" ]; then
   fi
 fi
 
-if [ -n "\${CHENGFENG_VIDEOCUT_DATA_DIR:-}" ]; then
-  MANAGED_TOOLS_DIR="$CHENGFENG_VIDEOCUT_DATA_DIR/tools/current"
-  if [ -d "$MANAGED_TOOLS_DIR" ]; then
-    PATH="$MANAGED_TOOLS_DIR\${PATH:+:$PATH}"
-    export PATH
-  fi
+if [ -z "\${CHENGFENG_VIDEOCUT_DATA_DIR:-}" ]; then
+  printf '%s\\n' 'chengfeng-videocut cannot locate its installed data root.' >&2
+  exit 127
+fi
+MANAGED_TOOLS_DIR="$CHENGFENG_VIDEOCUT_DATA_DIR/tools/current"
+BUN_EXECUTABLE="$MANAGED_TOOLS_DIR/bun"
+if [ ! -x "$BUN_EXECUTABLE" ]; then
+  printf '%s\\n' 'chengfeng-videocut installed Bun is missing from tools/current.' >&2
+  exit 127
 fi
 
 SELF=$0
@@ -413,34 +392,8 @@ while [ -L "$SELF" ]; do
 done
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$SELF")" && pwd)
 
-find_bun() {
-  if [ -n "\${MANAGED_TOOLS_DIR:-}" ] && [ -x "$MANAGED_TOOLS_DIR/bun" ]; then
-    printf '%s\\n' "$MANAGED_TOOLS_DIR/bun"
-    return 0
-  fi
-  if command -v bun >/dev/null 2>&1; then
-    command -v bun
-    return 0
-  fi
-  if [ -n "\${HOME:-}" ] && [ -x "$HOME/.bun/bin/bun" ]; then
-    printf '%s\\n' "$HOME/.bun/bin/bun"
-    return 0
-  fi
-  for candidate in /opt/homebrew/bin/bun /usr/local/bin/bun; do
-    if [ -x "$candidate" ]; then
-      printf '%s\\n' "$candidate"
-      return 0
-    fi
-  done
-  return 1
-}
-
-if ! BUN_EXECUTABLE=$(find_bun); then
-  printf '%s\\n' 'chengfeng-videocut requires Bun 1.2 or newer.' >&2
-  printf '%s\\n' 'Install guide: https://bun.sh/docs/installation' >&2
-  exit 127
-fi
-
+PATH="$MANAGED_TOOLS_DIR"
+export PATH
 exec "$BUN_EXECUTABLE" "$SCRIPT_DIR/cli.js" "$@"
 `;
   const startCommand = `#!/bin/sh
@@ -948,6 +901,9 @@ async function startInstalledServer(input: {
   if (typeof data.url !== "string" || typeof data.pid !== "number" || typeof data.port !== "number") {
     throw new Error(`start returned invalid server data: ${line}`);
   }
+  if (child.pid !== undefined && data.pid !== child.pid) {
+    throw new Error(`start returned a PID not owned by this harness: child=${child.pid} reported=${data.pid}`);
+  }
   return { child, url: data.url, pid: data.pid, port: data.port };
 }
 
@@ -1215,9 +1171,10 @@ async function runSourceFakeIngestRecovery(input: {
       throw new Error(`response-loss retry did not reuse stage/project: calls=${calls} ${JSON.stringify(transcription)}`);
     }
     input.stages.push({
-      name: "fake-provider-response-loss-retry",
+      name: "source-level-fake-provider-response-loss-retry",
       status: "PASS",
       details: {
+        proofScope: "source-level logic test only; not installed binary or cloud ASR proof",
         transcriptionCalls: calls,
         reused: transcription.reused,
         reusedProject: transcription.reusedProject,
@@ -1298,13 +1255,12 @@ async function maybeRunRealCloudIngest(input: {
   });
 }
 
-async function port5190Snapshot(): Promise<JsonRecord> {
+async function endpointStillReachable(url: string): Promise<boolean> {
   try {
-    const response = await fetch("http://127.0.0.1:5190/api/health", { signal: AbortSignal.timeout(750) });
-    const body = await response.text();
-    return { reachable: true, status: response.status, bodySha256: sha256(body), bodySample: body.slice(0, 200) };
-  } catch (error) {
-    return { reachable: false, error: error instanceof Error ? error.name : String(error) };
+    await fetch(`${url}/api/health`, { signal: AbortSignal.timeout(750) });
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -1357,12 +1313,43 @@ async function main(): Promise<number> {
   let evidenceOut = "";
   let status: StageStatus = "FAIL";
   await Promise.all([mkdir(home, { recursive: true }), mkdir(tmp, { recursive: true }), mkdir(dataDir, { recursive: true }), mkdir(projectsDir, { recursive: true }), mkdir(tasksDir, { recursive: true })]);
-  const userProjectSnapshotBefore = await treeFingerprint(join(process.env.HOME ?? "", PRODUCT_HOME_NAME, "projects"));
-  const portBefore = await port5190Snapshot();
+  await Promise.all([
+    assertUnderRoot("isolated HOME", home, runRoot),
+    assertUnderRoot("isolated tmp", tmp, runRoot),
+    assertUnderRoot("isolated data", dataDir, runRoot),
+    assertUnderRoot("isolated projects", projectsDir, runRoot),
+    assertUnderRoot("isolated tasks", tasksDir, runRoot),
+  ]);
   const startedPids: number[] = [];
+  const serverUrls: string[] = [];
   try {
+    if (process.env.CHENGFENG_VIDEOCUT_INSTALLED_E2E_SELFTEST_SURVIVOR === "1") {
+      const survivor = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+        stdio: "ignore",
+      });
+      if (survivor.pid !== undefined) startedPids.push(survivor.pid);
+      stages.push({
+        name: "cleanup-survivor-selftest",
+        status: "PASS",
+        details: { pid: survivor.pid, scope: "test-only cleanup fatal path" },
+      });
+      throw new Error("intentional cleanup survivor self-test");
+    }
     const candidate = await buildInstalledCandidate(runRoot, stages);
     await installCandidate({ installer: candidate.installer, home, tmp, stages });
+    stages.push({
+      name: "isolation-boundaries",
+      status: "PASS",
+      details: {
+        runRoot: await realpath(runRoot),
+        home: await assertUnderRoot("installed HOME", home, runRoot),
+        productRoot: await assertUnderRoot("installed Product root", join(home, PRODUCT_HOME_NAME), runRoot),
+        projectsDir: await assertUnderRoot("project registry", projectsDir, runRoot),
+        dataDir: await assertUnderRoot("server data dir", dataDir, runRoot),
+        tasksDir: await assertUnderRoot("task target root", tasksDir, runRoot),
+        proof: "absolute isolated paths plus owned foreground process PIDs; no default Runtime or user project probes",
+      },
+    });
     await authorizeLocalDevelopment(home, tmp, projectsDir, stages);
     const staticTools = await resolveStaticMediaTools();
     const project = await createInstalledProject({
@@ -1385,6 +1372,7 @@ async function main(): Promise<number> {
       stages,
     });
     startedPids.push(server.pid);
+    serverUrls.push(server.url);
     await exerciseCursorStale({ home, tmp, projectsDir, projectId: project.projectId, taskDir: project.taskDir, stages });
     await exerciseSilenceFailure({ home, tmp, projectsDir, tasksDir, ffmpeg: staticTools.ffmpeg, stages });
     await runSourceFakeIngestRecovery({ home, tmp, projectsDir, tasksDir, ffmpeg: staticTools.ffmpeg, stages });
@@ -1401,6 +1389,7 @@ async function main(): Promise<number> {
     server = null;
     restartedServer = await startInstalledServer({ home, tmp, projectsDir, dataDir });
     startedPids.push(restartedServer.pid);
+    serverUrls.push(restartedServer.url);
     const restarted = { url: restartedServer.url, pid: restartedServer.pid, port: restartedServer.port };
     const restartedHealth = await fetchJson(`${restarted.url}/api/health`);
     const restartStop = await stopServer(restartedServer);
@@ -1409,30 +1398,11 @@ async function main(): Promise<number> {
       name: "foreground-service-restart",
       status: restartedHealth.status === 200 ? "PASS" : "FAIL",
       details: {
-        managedServiceRestart: "UNVERIFIED: skipped to avoid touching user-wide 5190/LaunchAgent",
+        managedServiceRestart: "UNVERIFIED: skipped to avoid touching the user-wide managed service",
         firstStop,
         restarted: { ...restarted, status: restartedHealth.status },
         restartStop,
       },
-    });
-    const userProjectSnapshotAfter = await treeFingerprint(join(process.env.HOME ?? "", PRODUCT_HOME_NAME, "projects"));
-    const portAfter = await port5190Snapshot();
-    if (JSON.stringify(userProjectSnapshotBefore) !== JSON.stringify(userProjectSnapshotAfter)) {
-      throw new Error("default user Product projects changed during installed-product E2E");
-    }
-    if (JSON.stringify(portBefore) !== JSON.stringify(portAfter)) {
-      stages.push({
-        name: "default-5190-unchanged",
-        status: "UNVERIFIED",
-        details: { before: portBefore, after: portAfter, reason: "pre-existing 5190 health response changed externally" },
-      });
-    } else {
-      stages.push({ name: "default-5190-unchanged", status: "PASS", details: { before: portBefore, after: portAfter } });
-    }
-    stages.push({
-      name: "user-projects-untouched",
-      status: "PASS",
-      details: { before: userProjectSnapshotBefore, after: userProjectSnapshotAfter },
     });
     status = aggregateStatus(stages);
   } catch (error) {
@@ -1447,9 +1417,9 @@ async function main(): Promise<number> {
     status = aggregateStatus(stages);
   } finally {
     const stopResults = [];
-    stopResults.push(await stopServer(server));
-    stopResults.push(await stopServer(restartedServer));
-    const childAlive = [];
+    if (server) stopResults.push(await stopServer(server));
+    if (restartedServer) stopResults.push(await stopServer(restartedServer));
+    const childAlive: number[] = [];
     for (const pid of startedPids) {
       try {
         process.kill(pid, 0);
@@ -1458,7 +1428,42 @@ async function main(): Promise<number> {
         // Process is gone.
       }
     }
-    cleanup = { stoppedServers: stopResults, childAlive };
+    for (const pid of childAlive) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // Best-effort forced cleanup after recording the survivor.
+      }
+    }
+    const endpointAlive = [];
+    for (const url of serverUrls) {
+      if (await endpointStillReachable(url)) endpointAlive.push(url);
+    }
+    const cleanupFailures = [
+      ...(childAlive.length > 0 ? ["child process survived normal cleanup"] : []),
+      ...(endpointAlive.length > 0 ? ["server endpoint survived normal cleanup"] : []),
+    ];
+    let runRootRemoved = false;
+    if (!options.keep) {
+      try {
+        await rm(runRoot, { recursive: true, force: true });
+      } catch (error) {
+        cleanupFailures.push(`run root cleanup threw: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      runRootRemoved = !await stat(runRoot).then(() => true).catch(() => false);
+      if (!runRootRemoved) cleanupFailures.push("run root still exists after cleanup");
+    }
+    cleanup = { stoppedServers: stopResults, childAlive, endpointAlive, runRootRemoved };
+    if (cleanupFailures.length > 0) {
+      stages.push({
+        name: "cleanup-fatal",
+        status: "FAIL",
+        details: { failures: cleanupFailures, cleanup },
+      });
+      status = "FAIL";
+    } else if (status !== "FAIL" && status !== "BLOCKED") {
+      status = aggregateStatus(stages);
+    }
     const summary: JsonRecord = {
       ok: status === "PASS",
       status,
@@ -1469,23 +1474,10 @@ async function main(): Promise<number> {
       cleanup,
     };
     evidenceOut = await writeFinalEvidence({ options, runRoot, summary });
-    if (!options.keep) {
-      await rm(runRoot, { recursive: true, force: true });
-      const existsAfterCleanup = await stat(runRoot).then(() => true).catch(() => false);
-      const finalSummary = {
-        ...summary,
-        evidenceOut,
-        cleanup: { ...cleanup, runRootRemoved: !existsAfterCleanup },
-      };
-      await writeFile(evidenceOut, `${JSON.stringify(finalSummary, null, 2)}\n`, { mode: 0o600 });
-      if (options.json) console.log(JSON.stringify(finalSummary));
-      else console.log(`installed-product E2E ${status}; evidence: ${evidenceOut}`);
-      return status === "PASS" || status === "UNVERIFIED" ? 0 : 1;
-    }
     const finalSummary = {
       ...summary,
       evidenceOut,
-      cleanup: { ...cleanup, runRootRemoved: false },
+      cleanup,
     };
     await writeFile(evidenceOut, `${JSON.stringify(finalSummary, null, 2)}\n`, { mode: 0o600 });
     if (options.json) console.log(JSON.stringify(finalSummary));
