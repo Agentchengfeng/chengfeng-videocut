@@ -67,6 +67,20 @@ import {
 import { assertVisualDocument, type VisualDocument } from "./visuals";
 import { serializeProjectOperation } from "./projectLock";
 export {
+  OPERATION_ADMISSION_VERSION,
+  OPERATION_AUDIT_SCHEMA_VERSION,
+  OPERATION_IDEMPOTENCY_VERSION,
+  OperationAuditStore,
+  generatedOperationId,
+  operationInputHash,
+  type OperationAdmission,
+  type OperationAdmissionInput,
+  type OperationAuditFields,
+  type OperationAuditKind,
+  type OperationAuditRecord,
+  type OperationAuditTerminalStatus,
+} from "./operationAudit";
+export {
   PROJECT_OPERATION_LOCK_NAME,
   projectOperationLockPath,
   serializeProjectOperation,

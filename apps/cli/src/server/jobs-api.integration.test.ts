@@ -3,6 +3,7 @@ import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/pr
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { DurableJob } from "@video-workbench/contracts";
+import { OperationAuditStore } from "@video-workbench/core/node";
 import { startStudioServer, type RunningStudioServer } from "./start";
 import { createJobsApi } from "./jobs-api";
 import { runCli } from "../run";
@@ -162,12 +163,41 @@ describe("durable jobs HTTP and real export", () => {
     });
     expect(rebound.status).toBe(403);
     expect(await rebound.json()).toMatchObject({ error: { code: "host_forbidden" } });
+    const startBody = { kind: "export", target: "one", operationId: "job-start-op-1", params: { outputPath, scale: 2, fps: 15 } };
     const start = await fetch(`${server.url}/api/v1/jobs`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ kind: "export", target: "one", params: { outputPath, scale: 2, fps: 15 } }),
+      body: JSON.stringify(startBody),
     });
     expect(start.status).toBe(202);
-    const first = await start.json() as DurableJob;
+    const first = await start.json() as DurableJob & { operationId?: string; operationReplay?: boolean };
+    expect(first.operationId).toBe("job-start-op-1");
+    expect(await new OperationAuditStore(f.dataDir).read("job-start-op-1")).toMatchObject({
+      kind: "job.start.export",
+      accepted: true,
+      succeeded: true,
+      result: { jobId: first.jobId, projectId: "one" },
+    });
+
+    const replay = await fetch(`${server.url}/api/v1/jobs`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(startBody),
+    });
+    expect(replay.status).toBe(202);
+    expect(await replay.json()).toMatchObject({
+      jobId: first.jobId,
+      operationId: "job-start-op-1",
+      operationReplay: true,
+    });
+
+    const tamperedOperation = await fetch(`${server.url}/api/v1/jobs`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...startBody,
+        params: { outputPath: join(f.root, "tampered.mp4"), scale: 2, fps: 15 },
+      }),
+    });
+    expect(tamperedOperation.status).toBe(409);
+    expect(await tamperedOperation.json()).toMatchObject({ error: { code: "operation_id_conflict" } });
 
     const conflict = await fetch(`${server.url}/api/v1/jobs`, {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -180,8 +210,15 @@ describe("durable jobs HTTP and real export", () => {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ kind: "export", target: f.projectDirs[1] }),
     });
-    const second = await secondStart.json() as DurableJob;
+    const second = await secondStart.json() as DurableJob & { operationId?: string };
     expect(second.state).toBe("queued");
+    expect(second.operationId).toMatch(/^op_/);
+    expect(await new OperationAuditStore(f.dataDir).read(second.operationId!)).toMatchObject({
+      kind: "job.start.export",
+      accepted: true,
+      succeeded: true,
+      result: { jobId: second.jobId, projectId: "two" },
+    });
     const cancel = await fetch(`${server.url}/api/v1/jobs/${second.jobId}/cancel`, { method: "POST" });
     expect(cancel.status).toBe(200);
     expect((await cancel.json() as DurableJob).state).toBe("cancelled");

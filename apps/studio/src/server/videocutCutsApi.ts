@@ -1,9 +1,11 @@
 /// <reference types="node" />
 
 import { join, resolve } from "node:path";
-import { VideocutError, asVideocutError } from "@video-workbench/core";
+import { VideocutError, asVideocutError, type VideocutErrorCode } from "@video-workbench/core";
 import {
+  OperationAuditStore,
   readOptionalProjectDocument,
+  operationInputHash,
   resolveProject,
   writeCutSelectionWithEditList,
   type CutSelectionWriteMode,
@@ -21,6 +23,7 @@ export interface VideocutCutsChange {
 
 export interface VideocutCutsHandlerOptions {
   projectsDir: string;
+  operationAuditStore?: OperationAuditStore;
   materializeIndex?: (change: VideocutCutsChange) => void | Promise<void>;
   onDocumentChanged?: (change: VideocutCutsChange) => void | Promise<void>;
 }
@@ -28,6 +31,7 @@ export interface VideocutCutsHandlerOptions {
 type VideocutCutsHandler = (request: Request) => Promise<Response | null>;
 
 interface CutsPutBody {
+  operationId?: string;
   expectedRevision: string;
   cutWordIds: unknown[];
   mode: CutSelectionWriteMode;
@@ -83,7 +87,15 @@ function errorStatus(error: VideocutError): number {
     case "project_not_found":
       return 404;
     case "revision_conflict":
+    case "operation_id_conflict":
+    case "operation_in_progress":
       return 409;
+    case "invalid_operation_id":
+    case "operation_audit_invalid_field":
+      return 400;
+    case "operation_audit_corrupt":
+    case "operation_audit_record_too_large":
+      return 503;
     case "invalid_argument":
     case "invalid_project":
     case "invalid_json":
@@ -175,7 +187,7 @@ function parsePutBody(value: unknown): CutsPutBody {
   if (!isObject(value)) {
     throw new VideocutError("invalid_argument", "Cuts request body must be a JSON object");
   }
-  const allowedKeys = new Set(["expectedRevision", "cutWordIds", "mode", "reasons"]);
+  const allowedKeys = new Set(["operationId", "expectedRevision", "cutWordIds", "mode", "reasons"]);
   const unexpectedKeys = Object.keys(value).filter((key) => !allowedKeys.has(key));
   if (unexpectedKeys.length > 0) {
     throw new VideocutError(
@@ -193,6 +205,9 @@ function parsePutBody(value: unknown): CutsPutBody {
       "expectedRevision is required and must be 'none' or a SHA-256 revision",
     );
   }
+  if (value.operationId !== undefined && typeof value.operationId !== "string") {
+    throw new VideocutError("invalid_operation_id", "operationId must be a string when provided");
+  }
   if (!Array.isArray(value.cutWordIds)) {
     throw new VideocutError("invalid_argument", "cutWordIds must be an array");
   }
@@ -207,6 +222,7 @@ function parsePutBody(value: unknown): CutsPutBody {
     throw new VideocutError("invalid_argument", "reasons must be an array when present");
   }
   return {
+    ...(typeof value.operationId === "string" ? { operationId: value.operationId } : {}),
     expectedRevision: value.expectedRevision,
     cutWordIds: value.cutWordIds,
     mode: value.mode,
@@ -312,86 +328,169 @@ export function createVideocutCutsHandler(
       }
 
       const body = parsePutBody(await readJsonRequest(request));
-      const lockKey = join(project.directory, CUT_SELECTION_FILE);
-      const transaction = await mutex.run(lockKey, () =>
-        writeCutSelectionWithEditList(
-          project,
-          // Word ids, the declared reason for choosing them, and an explicit
-          // write intent — nothing else. Metadata, ranges and timestamps supplied
-          // by a caller can never replace the stored values; ranges in particular
-          // are always re-derived from the words.
-          //
-          // Reasons used to be refused here, which is why "why was this deleted"
-          // had no answer anywhere in the product: the Skill was told to produce
-          // them and the write path dropped them on the floor.
+      const admission = options.operationAuditStore
+        ? await options.operationAuditStore.admit({
+            operationId: body.operationId,
+            kind: "cuts.set",
+            target: {
+              projectId: project.projectId,
+              projectDirectory: project.directory,
+            },
+            inputHash: operationInputHash({
+              projectId: project.projectId,
+              expectedRevision: body.expectedRevision,
+              mode: body.mode,
+              cutWordIdsHash: operationInputHash(body.cutWordIds),
+              reasonsHash: body.reasons === undefined
+                ? null
+                : operationInputHash(body.reasons),
+            }),
+            baseRevisions: { cuts: body.expectedRevision },
+            actor: "skill",
+            entrypoint: "http.cuts",
+          })
+        : null;
+      if (admission?.replay) {
+        if (admission.replay.status === "succeeded" && admission.replay.result) {
+          const current = await readOptionalProjectDocument(project, CUT_SELECTION_FILE);
+          if (current && current.revision === admission.replay.result.revision) {
+            return jsonResponse(
+              {
+                schemaVersion: API_SCHEMA_VERSION,
+                projectId: project.projectId,
+                operationId: admission.operationId,
+                operationReplay: true,
+                exists: true,
+                changed: admission.replay.result.changed,
+                previousRevision: admission.replay.result.previousRevision ?? "none",
+                revision: current.revision,
+                editListRevision: admission.replay.result.editListRevision ?? null,
+                document: current.value,
+              },
+              200,
+              { ETag: `"${current.revision}"` },
+            );
+          }
+          return jsonResponse({
+            schemaVersion: API_SCHEMA_VERSION,
+            projectId: project.projectId,
+            operationId: admission.operationId,
+            operationReplay: true,
+            terminalStatus: "succeeded",
+            result: admission.replay.result,
+          });
+        }
+        const replayErrorCode = (admission.replay.errorCode ?? "operation_failed") as VideocutErrorCode;
+        throw new VideocutError(
+          replayErrorCode,
+          "operationId already reached a failed terminal result",
           {
-            cutWordIds: body.cutWordIds,
-            ...(body.reasons === undefined ? {} : { reasons: body.reasons }),
+            operationId: admission.operationId,
+            errorCode: replayErrorCode,
           },
-          { expectedRevision: body.expectedRevision, mode: body.mode, actor: "skill" },
-        ),
-      );
+        );
+      }
+
+      let transaction: Awaited<ReturnType<typeof writeCutSelectionWithEditList>>;
+      try {
+        const lockKey = join(project.directory, CUT_SELECTION_FILE);
+        transaction = await mutex.run(lockKey, () =>
+          writeCutSelectionWithEditList(
+            project,
+            // Word ids, the declared reason for choosing them, and an explicit
+            // write intent — nothing else. Metadata, ranges and timestamps supplied
+            // by a caller can never replace the stored values; ranges in particular
+            // are always re-derived from the words.
+            //
+            // Reasons used to be refused here, which is why "why was this deleted"
+            // had no answer anywhere in the product: the Skill was told to produce
+            // them and the write path dropped them on the floor.
+            {
+              cutWordIds: body.cutWordIds,
+              ...(body.reasons === undefined ? {} : { reasons: body.reasons }),
+            },
+            { expectedRevision: body.expectedRevision, mode: body.mode, actor: "skill" },
+          ),
+        );
+      } catch (error) {
+        if (admission) await options.operationAuditStore!.finishFailed(admission.operationId, error);
+        throw error;
+      }
       const result = transaction.cuts;
 
-      if (transaction.editList?.changed && options.materializeIndex) {
-        try {
-          await options.materializeIndex({
-            projectId: project.projectId,
-            path: transaction.editList.path,
-            revision: transaction.editList.revision,
-          });
-        } catch (error) {
-          throw new VideocutError(
-            "io_error",
-            "Cuts and edit-list.json were saved, but index.html could not be regenerated",
-            {
-              committed: true,
-              cutsRevision: result.revision,
-              editListRevision: transaction.editList.revision,
-              cause: error instanceof Error ? error.message : String(error),
-            },
-          );
+      try {
+        if (transaction.editList?.changed && options.materializeIndex) {
+          try {
+            await options.materializeIndex({
+              projectId: project.projectId,
+              path: transaction.editList.path,
+              revision: transaction.editList.revision,
+            });
+          } catch (error) {
+            throw new VideocutError(
+              "io_error",
+              "Cuts and edit-list.json were saved, but index.html could not be regenerated",
+              {
+                committed: true,
+                cutsRevision: result.revision,
+                editListRevision: transaction.editList.revision,
+                cause: error instanceof Error ? error.message : String(error),
+              },
+            );
+          }
         }
-      }
 
-      if (result.changed && options.onDocumentChanged) {
-        try {
-          await options.onDocumentChanged({
-            projectId: project.projectId,
-            path: result.path,
-            revision: result.revision,
-          });
-        } catch {
-          // Persistence already succeeded. A notification failure must not turn
-          // a committed write into an apparent request failure and invite retry.
+        if (result.changed && options.onDocumentChanged) {
+          try {
+            await options.onDocumentChanged({
+              projectId: project.projectId,
+              path: result.path,
+              revision: result.revision,
+            });
+          } catch {
+            // Persistence already succeeded. A notification failure must not turn
+            // a committed write into an apparent request failure and invite retry.
+          }
         }
-      }
-      if (transaction.editList?.changed && options.onDocumentChanged) {
-        try {
-          await options.onDocumentChanged({
-            projectId: project.projectId,
-            path: transaction.editList.path,
-            revision: transaction.editList.revision,
-          });
-        } catch {
-          // The Product documents and index are already current.
+        if (transaction.editList?.changed && options.onDocumentChanged) {
+          try {
+            await options.onDocumentChanged({
+              projectId: project.projectId,
+              path: transaction.editList.path,
+              revision: transaction.editList.revision,
+            });
+          } catch {
+            // The Product documents and index are already current.
+          }
         }
-      }
 
-      return jsonResponse(
-        {
+        const bodyOut = {
           schemaVersion: API_SCHEMA_VERSION,
           projectId: project.projectId,
+          ...(admission ? { operationId: admission.operationId } : {}),
           exists: true,
           changed: result.changed,
           previousRevision: result.previousRevision ?? "none",
           revision: result.revision,
           editListRevision: transaction.editList?.revision ?? null,
           document: result.document,
-        },
-        200,
-        { ETag: `"${result.revision}"` },
-      );
+        };
+        if (admission) {
+          await options.operationAuditStore!.finishSucceeded(admission.operationId, {
+            result: {
+              projectId: project.projectId,
+              previousRevision: result.previousRevision ?? "none",
+              revision: result.revision,
+              changed: result.changed,
+              editListRevision: transaction.editList?.revision ?? null,
+            },
+          });
+        }
+        return jsonResponse(bodyOut, 200, { ETag: `"${result.revision}"` });
+      } catch (error) {
+        if (admission) await options.operationAuditStore!.finishFailed(admission.operationId, error);
+        throw error;
+      }
     } catch (error) {
       const normalized = asVideocutError(error);
       return errorResponse(

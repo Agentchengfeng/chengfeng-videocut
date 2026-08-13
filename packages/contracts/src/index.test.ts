@@ -50,6 +50,9 @@ describe("Runtime capability and command contract", () => {
         transcriptPlaybackPagingVersion: 1,
         durableJobsApiVersion: 1,
         durableJobKinds: ["export"],
+        operationAdmissionVersion: 1,
+        operationAuditVersion: 1,
+        operationIdempotencyVersion: 1,
         managedTimelineOperations: [
           "move",
           "trim",
@@ -68,6 +71,20 @@ describe("Runtime capability and command contract", () => {
       kind: "capability",
       capability: "projectIngestVersion",
     });
+    for (const id of ["project.ingest", "cuts.set", "export", "job.start"] as const) {
+      expect(RUNTIME_CLI_COMMANDS[id].features).toContainEqual({
+        kind: "capability",
+        capability: "operationAdmissionVersion",
+      });
+      expect(RUNTIME_CLI_COMMANDS[id].features).toContainEqual({
+        kind: "capability",
+        capability: "operationAuditVersion",
+      });
+      expect(RUNTIME_CLI_COMMANDS[id].features).toContainEqual({
+        kind: "capability",
+        capability: "operationIdempotencyVersion",
+      });
+    }
     expect(RUNTIME_CLI_COMMANDS["transcript.playback"].features).toContainEqual({
       kind: "capability",
       capability: "transcriptPlaybackPagingVersion",
@@ -106,6 +123,9 @@ describe("Runtime capability and command contract", () => {
       capabilities: {
         projectIngestVersion: 1,
         transcriptPlaybackPagingVersion: 1,
+        operationAdmissionVersion: 1,
+        operationAuditVersion: 1,
+        operationIdempotencyVersion: 1,
         durableJobsApiVersion: 1,
         durableJobKinds: ["export"],
         serviceApiVersion: 1,

@@ -28,6 +28,13 @@ export type VideocutErrorCode =
    * write reports failure rather than success.
    */
   | "readback_mismatch"
+  | "invalid_operation_id"
+  | "operation_id_conflict"
+  | "operation_in_progress"
+  | "operation_audit_invalid_field"
+  | "operation_audit_corrupt"
+  | "operation_audit_record_too_large"
+  | "operation_failed"
   | "io_error";
 
 export class VideocutError extends Error {

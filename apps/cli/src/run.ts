@@ -1,7 +1,7 @@
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { VideocutError, asVideocutError, parseTranscriptWords } from "@video-workbench/core";
 import {
   createKouboProject,
@@ -40,6 +40,8 @@ import {
   correctTranscriptText,
   doctor,
   inspectProject,
+  OperationAuditStore,
+  operationInputHash,
   projectUrl,
   readEditList,
   readOptionalProjectDocument,
@@ -146,8 +148,10 @@ const defaultIo: CliIo = {
 function exitCodeFor(error: CliFailure): number {
   switch (error.code) {
     case "invalid_argument":
+    case "invalid_operation_id":
     case "confirmation_required":
     case "revision_required":
+    case "operation_audit_invalid_field":
       return 2;
     case "project_not_found":
       return 3;
@@ -163,6 +167,8 @@ function exitCodeFor(error: CliFailure): number {
       return 4;
     case "revision_conflict":
     case "project_id_conflict":
+    case "operation_id_conflict":
+    case "operation_in_progress":
     case "invalid_state":
     case "missing_artifact":
       return 5;
@@ -172,6 +178,8 @@ function exitCodeFor(error: CliFailure): number {
     case "service_launcher_missing":
     case "service_port_conflict":
     case "service_busy":
+    case "operation_audit_corrupt":
+    case "operation_audit_record_too_large":
       return 6;
     case "missing_renderer":
       return 7;
@@ -206,6 +214,14 @@ function configuredProjectsDir(explicit?: string): string {
     process.env.CHENGFENG_VIDEOCUT_DATA_DIR ?? join(homedir(), ".chengfeng-videocut"),
   );
   return join(dataDir, "projects");
+}
+
+function configuredDataDir(explicit?: string): string {
+  return resolve(
+    explicit ??
+      process.env.CHENGFENG_VIDEOCUT_DATA_DIR ??
+      join(homedir(), ".chengfeng-videocut"),
+  );
 }
 
 async function readProposal(file: string, cwd: string): Promise<unknown> {
@@ -257,6 +273,8 @@ function proposalCutWordIds(proposal: unknown): unknown[] {
 
 interface CutsApiResult {
   projectId: string;
+  operationId?: string;
+  operationReplay?: boolean;
   changed: boolean;
   previousRevision: string;
   revision: string;
@@ -622,6 +640,7 @@ async function readCutsThroughApi(options: {
 async function updateCutsThroughApi(options: {
   apiBase: string;
   projectId: string;
+  operationId?: string;
   expectedRevision: string;
   cutWordIds: unknown[];
   mode: "semantic-overlay" | "full-selection";
@@ -634,6 +653,7 @@ async function updateCutsThroughApi(options: {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        ...(options.operationId ? { operationId: options.operationId } : {}),
         expectedRevision: options.expectedRevision,
         cutWordIds: options.cutWordIds,
         mode: options.mode,
@@ -679,6 +699,8 @@ async function updateCutsThroughApi(options: {
     !record ||
     record.schemaVersion !== 1 ||
     record.projectId !== options.projectId ||
+    (record.operationId !== undefined && typeof record.operationId !== "string") ||
+    (record.operationReplay !== undefined && typeof record.operationReplay !== "boolean") ||
     typeof record.changed !== "boolean" ||
     typeof record.revision !== "string" ||
     !revisionPattern.test(record.revision) ||
@@ -696,6 +718,8 @@ async function updateCutsThroughApi(options: {
   }
   return {
     projectId: record.projectId,
+    ...(typeof record.operationId === "string" ? { operationId: record.operationId } : {}),
+    ...(typeof record.operationReplay === "boolean" ? { operationReplay: record.operationReplay } : {}),
     changed: record.changed,
     previousRevision,
     revision: record.revision,
@@ -918,6 +942,7 @@ export async function runCli(
     const parsed = parseArgs(argv);
     command = parsed.command;
     const projectsDir = configuredProjectsDir(parsed.projectsDir);
+    const dataDir = configuredDataDir(parsed.dataDir);
     if (parsed.command === "help") {
       if (parsed.json) io.stdout(JSON.stringify(successEnvelope("help", { text: HELP_TEXT })));
       else io.stdout(HELP_TEXT);
@@ -945,6 +970,7 @@ export async function runCli(
               ? resolve(cwd, target)
               : target;
           })(),
+          ...(parsed.operationId ? { operationId: parsed.operationId } : {}),
           params: {
             ...(parsed.outFile ? { outputPath: resolve(cwd, parsed.outFile) } : {}),
             ...(parsed.scale !== undefined ? { scale: parsed.scale } : {}),
@@ -1104,66 +1130,125 @@ export async function runCli(
     }
 
     if (parsed.command === "project.ingest") {
-      let url: string | undefined;
-      let registered: boolean | undefined;
-      const ingested = await ingestKouboProject(
-        resolve(cwd, projectInput(parsed.command, parsed.project)),
-        {
-          video: parsed.video as string,
-          language: parsed.language,
-          aspectRatio: parsed.aspectRatio,
-          transcription: await resolveTranscriptionCredentials(),
-          runTranscription: options.runTranscription ?? transcribeKouboVideo,
-          verifyExisting: async (existing) => {
-            const project = await resolveProject(existing.directory, { cwd, projectsDir });
-            if (project.projectId !== existing.projectId) {
-              throw new VideocutError(
-                "project_id_conflict",
-                `Existing project identity changed during ingest retry: ${existing.projectId}`,
-              );
-            }
-            await assertRegisteredProject({ project, cwd, projectsDir });
-            url = projectUrl(project);
-            registered = true;
-          },
-          create: {
-            finalize: async (prepared) => {
-              const project = await resolveProject(prepared.directory, { cwd, projectsDir });
-              url = projectUrl(project);
-              const registration = await registerProject(project, projectsDir);
-              if (!registration.registered) {
-                throw new VideocutError(
-                  "project_id_conflict",
-                  `project ingest refuses to reuse an existing registration: ${project.projectId}`,
-                  { projectId: project.projectId, linkPath: registration.linkPath },
-                );
-              }
-              registered = true;
-            },
-          },
+      const taskDirectory = resolve(cwd, projectInput(parsed.command, parsed.project));
+      const auditStore = new OperationAuditStore(dataDir);
+      const admission = await auditStore.admit({
+        operationId: parsed.operationId,
+        kind: "project.ingest",
+        target: {
+          projectId: basename(taskDirectory),
+          taskDirectory,
         },
-      );
-      if (url === undefined || registered === undefined) {
-        throw new VideocutError(
-          "io_error",
-          "project ingest completed without registration metadata",
+        inputHash: operationInputHash({
+          command: "project.ingest",
+          taskDirectory,
+          projectsDir,
+          video: parsed.video,
+          language: parsed.language ?? null,
+          aspectRatio: parsed.aspectRatio ?? null,
+        }),
+        actor: "cli",
+        entrypoint: "cli",
+      });
+      if (admission.replay) {
+        if (admission.replay.status === "succeeded" && admission.replay.result) {
+          const replayResult = admission.replay.result;
+          const url = typeof replayResult.url === "string" ? replayResult.url : "";
+          const directory = typeof replayResult.directory === "string" ? replayResult.directory : "";
+          const data = {
+            ...replayResult,
+            operationId: admission.operationId,
+            operationReplay: true,
+          };
+          if (parsed.json) io.stdout(JSON.stringify(successEnvelope(parsed.command, data)));
+          else io.stdout(`${url}\nCreated ${directory}`);
+          return 0;
+        }
+        throw new CliRequestError(
+          admission.replay.errorCode ?? "operation_failed",
+          "operationId already reached a failed terminal result",
+          { operationId: admission.operationId },
         );
       }
-      const data = {
-        projectId: ingested.projectId,
-        directory: ingested.directory,
-        url,
-        registered,
-        canonicalVideo: ingested.canonicalVideo,
-        canonicalTranscript: ingested.canonicalTranscript,
-        indexWritten: ingested.indexWritten,
-        transcriptCueCount: ingested.transcript.cues.length,
-        cutWordCount: ingested.cutWordIds.length,
-        transcription: ingested.transcription,
-        metadata: ingested.metadata,
-      };
-      if (parsed.json) io.stdout(JSON.stringify(successEnvelope(parsed.command, data)));
-      else io.stdout(`${data.url}\nCreated ${data.directory}`);
+      let url: string | undefined;
+      let registered: boolean | undefined;
+      try {
+        const ingested = await ingestKouboProject(
+          taskDirectory,
+          {
+            video: parsed.video as string,
+            language: parsed.language,
+            aspectRatio: parsed.aspectRatio,
+            transcription: await resolveTranscriptionCredentials(),
+            runTranscription: options.runTranscription ?? transcribeKouboVideo,
+            verifyExisting: async (existing) => {
+              const project = await resolveProject(existing.directory, { cwd, projectsDir });
+              if (project.projectId !== existing.projectId) {
+                throw new VideocutError(
+                  "project_id_conflict",
+                  `Existing project identity changed during ingest retry: ${existing.projectId}`,
+                );
+              }
+              await assertRegisteredProject({ project, cwd, projectsDir });
+              url = projectUrl(project);
+              registered = true;
+            },
+            create: {
+              finalize: async (prepared) => {
+                const project = await resolveProject(prepared.directory, { cwd, projectsDir });
+                url = projectUrl(project);
+                const registration = await registerProject(project, projectsDir);
+                if (!registration.registered) {
+                  throw new VideocutError(
+                    "project_id_conflict",
+                    `project ingest refuses to reuse an existing registration: ${project.projectId}`,
+                    { projectId: project.projectId, linkPath: registration.linkPath },
+                  );
+                }
+                registered = true;
+              },
+            },
+          },
+        );
+        if (url === undefined || registered === undefined) {
+          throw new VideocutError(
+            "io_error",
+            "project ingest completed without registration metadata",
+          );
+        }
+        const data = {
+          operationId: admission.operationId,
+          projectId: ingested.projectId,
+          directory: ingested.directory,
+          url,
+          registered,
+          canonicalVideo: ingested.canonicalVideo,
+          canonicalTranscript: ingested.canonicalTranscript,
+          indexWritten: ingested.indexWritten,
+          transcriptCueCount: ingested.transcript.cues.length,
+          cutWordCount: ingested.cutWordIds.length,
+          transcription: ingested.transcription,
+          metadata: ingested.metadata,
+        };
+        await auditStore.finishSucceeded(admission.operationId, {
+          result: {
+            projectId: data.projectId,
+            directory: data.directory,
+            url: data.url,
+            registered: data.registered,
+            canonicalVideo: data.canonicalVideo,
+            canonicalTranscript: data.canonicalTranscript,
+            indexWritten: data.indexWritten,
+            transcriptCueCount: data.transcriptCueCount,
+            cutWordCount: data.cutWordCount,
+          },
+        });
+        if (parsed.json) io.stdout(JSON.stringify(successEnvelope(parsed.command, data)));
+        else io.stdout(`${data.url}\nCreated ${data.directory}`);
+      } catch (error) {
+        await auditStore.finishFailed(admission.operationId, error);
+        throw error;
+      }
       return 0;
     }
 
@@ -1630,6 +1715,7 @@ export async function runCli(
         body: {
           kind: "export",
           target: project.directory,
+          ...(parsed.operationId ? { operationId: parsed.operationId } : {}),
           params: {
             outputPath,
             ...(parsed.scale !== undefined ? { scale: parsed.scale } : {}),
@@ -1639,6 +1725,9 @@ export async function runCli(
         },
       }));
       const jobId = started?.jobId;
+      const operationId = typeof started?.operationId === "string"
+        ? started.operationId
+        : undefined;
       if (typeof jobId !== "string") {
         throw new CliRequestError("service_unavailable", "Runtime returned an invalid job start response");
       }
@@ -1663,8 +1752,12 @@ export async function runCli(
       }
       const data = objectRecord(completed.result);
       if (!data) throw new CliRequestError("service_unavailable", "Succeeded job has no result", { jobId });
-      if (parsed.json) io.stdout(JSON.stringify(successEnvelope(parsed.command, data)));
-      else io.stdout(JSON.stringify(data, null, 2));
+      const exportData = {
+        ...data,
+        ...(operationId ? { operationId } : {}),
+      };
+      if (parsed.json) io.stdout(JSON.stringify(successEnvelope(parsed.command, exportData)));
+      else io.stdout(JSON.stringify(exportData, null, 2));
       return 0;
     }
 
@@ -1955,6 +2048,7 @@ export async function runCli(
         : await updateCutsThroughApi({
             apiBase: parsed.apiBase ?? "http://127.0.0.1:5190",
             projectId: project.projectId,
+            ...(parsed.operationId ? { operationId: parsed.operationId } : {}),
             expectedRevision: parsed.expectedRevision as string,
             cutWordIds,
             mode,
@@ -2000,8 +2094,14 @@ export async function runCli(
       const noLongerCut = previousCutWordIdList === null
         ? null
         : previousCutWordIdList.filter((id) => !nextCutWordIds.has(id));
+      const operationId = "operationId" in result && typeof result.operationId === "string"
+        ? result.operationId
+        : undefined;
+      const operationReplay = "operationReplay" in result && result.operationReplay === true;
       const data = {
         projectId: result.projectId,
+        ...(operationId ? { operationId } : {}),
+        ...(operationReplay ? { operationReplay: true } : {}),
         path: join(project.directory, "cut-selection.json"),
         previousRevision: result.previousRevision,
         revision: result.revision,

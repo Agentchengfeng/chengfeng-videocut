@@ -47,6 +47,9 @@ export const RUNTIME_DOCTOR_CAPABILITIES = {
   serviceCrashRestart: true,
   durableJobsApiVersion: 1,
   durableJobKinds: RUNTIME_DURABLE_JOB_KINDS,
+  operationAdmissionVersion: 1,
+  operationAuditVersion: 1,
+  operationIdempotencyVersion: 1,
   editListSchemaVersion: 1,
   editListOperations: RUNTIME_EDIT_LIST_OPERATIONS,
   managedArollProjection: true,
@@ -67,6 +70,9 @@ export const STUDIO_CAPABILITY_FEATURES = {
   transcriptPlaybackPagingVersion: RUNTIME_DOCTOR_CAPABILITIES.transcriptPlaybackPagingVersion,
   durableJobsApiVersion: RUNTIME_DOCTOR_CAPABILITIES.durableJobsApiVersion,
   durableJobKinds: RUNTIME_DURABLE_JOB_KINDS,
+  operationAdmissionVersion: RUNTIME_DOCTOR_CAPABILITIES.operationAdmissionVersion,
+  operationAuditVersion: RUNTIME_DOCTOR_CAPABILITIES.operationAuditVersion,
+  operationIdempotencyVersion: RUNTIME_DOCTOR_CAPABILITIES.operationIdempotencyVersion,
   managedTimelineOperations: RUNTIME_EDIT_LIST_OPERATIONS,
 } as const;
 
@@ -84,6 +90,9 @@ export interface RuntimeStudioCapabilityManifest {
     transcriptPlaybackPagingVersion: 1;
     durableJobsApiVersion: 1;
     durableJobKinds: readonly RuntimeDurableJobKind[];
+    operationAdmissionVersion: 1;
+    operationAuditVersion: 1;
+    operationIdempotencyVersion: 1;
     managedTimelineOperations: readonly RuntimeEditListOperation[];
   };
 }
@@ -103,6 +112,9 @@ export function createStudioCapabilityManifest(
       transcriptPlaybackPagingVersion: STUDIO_CAPABILITY_FEATURES.transcriptPlaybackPagingVersion,
       durableJobsApiVersion: STUDIO_CAPABILITY_FEATURES.durableJobsApiVersion,
       durableJobKinds: [...STUDIO_CAPABILITY_FEATURES.durableJobKinds],
+      operationAdmissionVersion: STUDIO_CAPABILITY_FEATURES.operationAdmissionVersion,
+      operationAuditVersion: STUDIO_CAPABILITY_FEATURES.operationAuditVersion,
+      operationIdempotencyVersion: STUDIO_CAPABILITY_FEATURES.operationIdempotencyVersion,
       managedTimelineOperations: [...STUDIO_CAPABILITY_FEATURES.managedTimelineOperations],
     },
   };
@@ -173,7 +185,12 @@ export const RUNTIME_CLI_COMMANDS = {
   },
   "project.ingest": {
     public: true,
-    features: [{ kind: "capability", capability: "projectIngestVersion" }],
+    features: [
+      { kind: "capability", capability: "projectIngestVersion" },
+      { kind: "capability", capability: "operationAdmissionVersion" },
+      { kind: "capability", capability: "operationAuditVersion" },
+      { kind: "capability", capability: "operationIdempotencyVersion" },
+    ],
   },
   "project.create": { public: true, features: [] },
   "project.prepare": { public: true, features: [] },
@@ -194,7 +211,14 @@ export const RUNTIME_CLI_COMMANDS = {
   "transcript.dictionary": { public: true, features: [] },
   "transcript.regroup": { public: true, features: [] },
   "transcript.correct": { public: true, features: [] },
-  "cuts.set": { public: true, features: [] },
+  "cuts.set": {
+    public: true,
+    features: [
+      { kind: "capability", capability: "operationAdmissionVersion" },
+      { kind: "capability", capability: "operationAuditVersion" },
+      { kind: "capability", capability: "operationIdempotencyVersion" },
+    ],
+  },
   "cuts.apply": {
     public: true,
     features: [
@@ -222,13 +246,21 @@ export const RUNTIME_CLI_COMMANDS = {
   "render.run": { public: true, features: [] },
   export: {
     public: true,
-    features: [{ kind: "durable-job", jobKind: "export" }],
+    features: [
+      { kind: "durable-job", jobKind: "export" },
+      { kind: "capability", capability: "operationAdmissionVersion" },
+      { kind: "capability", capability: "operationAuditVersion" },
+      { kind: "capability", capability: "operationIdempotencyVersion" },
+    ],
   },
   "job.start": {
     public: true,
     features: [
       { kind: "capability", capability: "durableJobsApiVersion" },
       { kind: "durable-job", jobKind: "export" },
+      { kind: "capability", capability: "operationAdmissionVersion" },
+      { kind: "capability", capability: "operationAuditVersion" },
+      { kind: "capability", capability: "operationIdempotencyVersion" },
     ],
   },
   "job.get": {

@@ -16,6 +16,9 @@
     "durableJobKinds": [
       "export"
     ],
+    "operationAdmissionVersion": 1,
+    "operationAuditVersion": 1,
+    "operationIdempotencyVersion": 1,
     "managedTimelineOperations": [
       "move",
       "trim",

@@ -58,6 +58,7 @@ export interface ParsedArgs {
   jobState?: string;
   projectFilter?: string;
   jobLimit?: number;
+  operationId?: string;
   /** Opaque, revision-bound continuation token for transcript playback. */
   playbackCursor?: string;
   /**
@@ -112,6 +113,7 @@ const VALUE_OPTIONS = new Set([
   "--project",
   "--limit",
   "--cursor",
+  "--operation-id",
 ]);
 
 const BOOLEAN_OPTIONS = new Set([
@@ -280,6 +282,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     jobState: values.get("--state"),
     projectFilter: values.get("--project"),
     jobLimit,
+    operationId: values.get("--operation-id"),
   };
   if (version) return { command: "version", ...common };
   if (help || positionals.length === 0) return { command: "help", ...common };
@@ -308,7 +311,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     const action = positionals[1];
     if (action === "start") {
       if (positionals.length !== 4) usageError("Usage: chengfeng-videocut job start <kind> <target>");
-      assertOptions(["--api-base", "--out", "--scale", "--fps"], ["--keep-work"]);
+      assertOptions(["--api-base", "--out", "--scale", "--fps", "--operation-id"], ["--keep-work"]);
       const rawScale = values.get("--scale");
       const scale = rawScale === undefined ? undefined : Number(rawScale);
       if (scale !== undefined && (!Number.isFinite(scale) || scale <= 0 || scale > 4)) {
@@ -410,7 +413,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     if (aspectRatio !== undefined && !/^\d+[:：]\d+$/.test(aspectRatio)) {
       usageError("project ingest --aspect-ratio must be W:H (e.g. 3:4, 16:9, 1:1); omit it to derive from the video");
     }
-    assertOptions(["--video", "--language", "--aspect-ratio", "--projects-dir"]);
+    assertOptions(["--video", "--language", "--aspect-ratio", "--projects-dir", "--operation-id"]);
     return {
       command: "project.ingest",
       project: positionals[2],
@@ -692,7 +695,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
       );
     }
     assertOptions(
-      ["--out", "--scale", "--fps", "--projects-dir", "--output-dir", "--api-base"],
+      ["--out", "--scale", "--fps", "--projects-dir", "--output-dir", "--api-base", "--operation-id"],
       ["--keep-work"],
       true,
     );
@@ -833,6 +836,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
         "--projects-dir",
         "--output-dir",
         "--api-base",
+        "--operation-id",
       ],
       ["--full-selection"],
       true,

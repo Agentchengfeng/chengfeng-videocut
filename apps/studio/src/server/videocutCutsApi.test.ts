@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildEditListFromCuts } from "@video-workbench/core";
-import { sha256 } from "@video-workbench/core/node";
+import { OperationAuditStore, sha256 } from "@video-workbench/core/node";
 import {
   createVideocutCutsHandler,
   isVideocutCutsRequest,
@@ -33,12 +33,14 @@ const storedSelection = {
 };
 
 async function createFixture(): Promise<{
+  dataDir: string;
   projectsDir: string;
   projectDir: string;
   cutsPath: string;
 }> {
   const root = await mkdtemp(join(tmpdir(), "videocut-cuts-api-"));
   cleanupPaths.push(root);
+  const dataDir = join(root, "data");
   const projectsDir = join(root, "projects");
   const projectDir = join(projectsDir, "demo");
   const cutsPath = join(projectDir, "cut-selection.json");
@@ -64,7 +66,7 @@ async function createFixture(): Promise<{
     }),
   );
   await writeFile(cutsPath, `${JSON.stringify(storedSelection, null, 2)}\n`);
-  return { projectsDir, projectDir, cutsPath };
+  return { dataDir, projectsDir, projectDir, cutsPath };
 }
 
 async function addEditListFixture(
@@ -257,6 +259,89 @@ describe("videocut cuts API", () => {
     })));
     expect(stale.status).toBe(409);
     expect(await stale.json()).toMatchObject({ error: { code: "revision_conflict" } });
+  });
+
+  it("audits accepted cuts writes and replays an explicit operation id without writing again", async () => {
+    const { dataDir, projectsDir, projectDir, cutsPath } = await createFixture();
+    await addEditListFixture(projectDir);
+    const auditStore = new OperationAuditStore(dataDir);
+    const handle = createVideocutCutsHandler({ projectsDir, operationAuditStore: auditStore });
+    const revision = sha256(await readFile(cutsPath, "utf8"));
+
+    const first = await requiredResponse(handle(cutsRequest("PUT", {
+      operationId: "cuts-op-1",
+      expectedRevision: revision,
+      cutWordIds: ["w-2"],
+    })));
+    const firstBody = await first.json();
+    expect(first.status).toBe(200);
+    expect(firstBody).toMatchObject({
+      operationId: "cuts-op-1",
+      changed: true,
+      document: { cutWordIds: ["w-2"] },
+    });
+    expect(await auditStore.read("cuts-op-1")).toMatchObject({
+      kind: "cuts.set",
+      accepted: true,
+      succeeded: true,
+      result: { projectId: "demo", revision: firstBody.revision },
+    });
+    expect(await readFile(auditStore.recordPath("cuts-op-1"), "utf8")).not.toContain("w-2");
+
+    const replay = await requiredResponse(handle(cutsRequest("PUT", {
+      operationId: "cuts-op-1",
+      expectedRevision: revision,
+      cutWordIds: ["w-2"],
+    })));
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toMatchObject({
+      operationId: "cuts-op-1",
+      operationReplay: true,
+      revision: firstBody.revision,
+      document: { cutWordIds: ["w-2"] },
+    });
+
+    const tampered = await requiredResponse(handle(cutsRequest("PUT", {
+      operationId: "cuts-op-1",
+      expectedRevision: revision,
+      cutWordIds: ["w-1"],
+    })));
+    expect(tampered.status).toBe(409);
+    expect(await tampered.json()).toMatchObject({ error: { code: "operation_id_conflict" } });
+  });
+
+  it("audits CAS conflicts as failed operations", async () => {
+    const { dataDir, projectsDir, projectDir } = await createFixture();
+    await addEditListFixture(projectDir);
+    const auditStore = new OperationAuditStore(dataDir);
+    const handle = createVideocutCutsHandler({ projectsDir, operationAuditStore: auditStore });
+
+    const response = await requiredResponse(handle(cutsRequest("PUT", {
+      operationId: "cuts-cas-conflict",
+      expectedRevision: "0".repeat(64),
+      cutWordIds: ["w-2"],
+    })));
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: { code: "revision_conflict" } });
+    expect(await auditStore.read("cuts-cas-conflict")).toMatchObject({
+      accepted: true,
+      succeeded: false,
+      failed: true,
+      errorCode: "revision_conflict",
+    });
+
+    const replay = await requiredResponse(handle(cutsRequest("PUT", {
+      operationId: "cuts-cas-conflict",
+      expectedRevision: "0".repeat(64),
+      cutWordIds: ["w-2"],
+    })));
+    expect(replay.status).toBe(409);
+    expect(await replay.json()).toMatchObject({
+      error: {
+        code: "revision_conflict",
+        details: { operationId: "cuts-cas-conflict", errorCode: "revision_conflict" },
+      },
+    });
   });
 
   it("fails closed for a missing or unknown Cuts write mode", async () => {

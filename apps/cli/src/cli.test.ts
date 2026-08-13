@@ -12,7 +12,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
-import { serializeProjectOperation } from "@video-workbench/core/node";
+import { OperationAuditStore, serializeProjectOperation } from "@video-workbench/core/node";
 import { runCli, type CliIo } from "./run";
 import { humanDoctor } from "./output";
 import { startStudioServer } from "./server/start";
@@ -180,6 +180,7 @@ describe("chengfeng-videocut CLI", () => {
     cleanupPaths.push(root);
     const projectDir = join(root, "ingested-task");
     const projectsDir = join(root, "registry");
+    const dataDir = join(root, "data");
     const media = "ingest-real-video";
     await mkdir(join(projectDir, "uploads"), { recursive: true });
     await writeFile(join(projectDir, "uploads/talk.mp4"), media);
@@ -216,11 +217,15 @@ describe("chengfeng-videocut CLI", () => {
       };
     };
 
+    const previousDataDir = process.env.CHENGFENG_VIDEOCUT_DATA_DIR;
+    process.env.CHENGFENG_VIDEOCUT_DATA_DIR = dataDir;
+    try {
     const code = await runCli([
       "project", "ingest", projectDir,
       "--video", "uploads/talk.mp4",
       "--aspect-ratio", "16:9",
       "--projects-dir", projectsDir,
+      "--operation-id", "ingest-op-1",
       "--json",
     ], {
       io: capture.io,
@@ -234,13 +239,44 @@ describe("chengfeng-videocut CLI", () => {
       ok: true,
       data: {
         projectId: "ingested-task",
+        operationId: "ingest-op-1",
         registered: true,
         canonicalVideo: "input/source.mp4",
         canonicalTranscript: "剪口播/1_转录/subtitles_words.json",
         transcription: { role: "source-transcript", provider: "volcengine", reused: false },
       },
     });
+    expect(await new OperationAuditStore(dataDir).read("ingest-op-1")).toMatchObject({
+      kind: "project.ingest",
+      accepted: true,
+      succeeded: true,
+      result: {
+        projectId: "ingested-task",
+        transcriptCueCount: 1,
+        cutWordCount: 0,
+      },
+    });
     expect(await realpath(join(projectsDir, "ingested-task"))).toBe(await realpath(projectDir));
+
+    const replayCapture = captureIo();
+    const replayCode = await runCli([
+      "project", "ingest", projectDir,
+      "--video", "uploads/talk.mp4",
+      "--aspect-ratio", "16:9",
+      "--projects-dir", projectsDir,
+      "--operation-id", "ingest-op-1",
+      "--json",
+    ], { io: replayCapture.io, runTranscription });
+    expect(replayCode, replayCapture.stdout.join(" | ")).toBe(0);
+    expect(JSON.parse(replayCapture.stdout[0])).toMatchObject({
+      data: {
+        projectId: "ingested-task",
+        operationId: "ingest-op-1",
+        operationReplay: true,
+        registered: true,
+      },
+    });
+    expect(transcriptionCalls).toBe(1);
 
     const beforeRetry = await Promise.all([
       "project.json", "transcript.json", "events.jsonl", "workbench.json",
@@ -264,6 +300,10 @@ describe("chengfeng-videocut CLI", () => {
     });
     for (const [name, bytes] of beforeRetry) {
       expect(await readFile(join(projectDir, name))).toEqual(bytes);
+    }
+    } finally {
+      if (previousDataDir === undefined) delete process.env.CHENGFENG_VIDEOCUT_DATA_DIR;
+      else process.env.CHENGFENG_VIDEOCUT_DATA_DIR = previousDataDir;
     }
   });
 

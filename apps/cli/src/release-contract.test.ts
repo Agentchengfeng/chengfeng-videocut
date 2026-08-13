@@ -135,6 +135,9 @@ describe("release contract", () => {
     expect(staticCapabilities.features.durableJobsApiVersion).toBe(
       runtime.capabilities.durableJobsApiVersion,
     );
+    expect(runtime.capabilities.operationAdmissionVersion).toBe(1);
+    expect(runtime.capabilities.operationAuditVersion).toBe(1);
+    expect(runtime.capabilities.operationIdempotencyVersion).toBe(1);
   });
 
   it("keeps command additions behind the Runtime capability contract", async () => {
@@ -152,6 +155,20 @@ describe("release contract", () => {
       kind: "capability",
       capability: "durableJobsApiVersion",
     });
+    for (const command of ["project.ingest", "cuts.set", "export", "job.start"] as const) {
+      expect(specs[command].features).toContainEqual({
+        kind: "capability",
+        capability: "operationAdmissionVersion",
+      });
+      expect(specs[command].features).toContainEqual({
+        kind: "capability",
+        capability: "operationAuditVersion",
+      });
+      expect(specs[command].features).toContainEqual({
+        kind: "capability",
+        capability: "operationIdempotencyVersion",
+      });
+    }
     for (const operation of RUNTIME_DOCTOR_CAPABILITIES.serviceOperations) {
       expect(specs[`service.${operation}`].features).toContainEqual({
         kind: "service",

@@ -17,7 +17,7 @@ import { createVideocutVisualsHandler } from "../../../studio/src/server/videocu
 import { createVideocutTimelineMediaHandler } from "../../../studio/src/server/videocutTimelineMediaApi";
 import { createVideocutProjectSurfaceHandler } from "../../../studio/src/server/videocutProjectSurfaceApi";
 import { materializeKouboEditListIndex } from "@video-workbench/koubo-adapter";
-import { findExecutable, serializeProjectOperation } from "@video-workbench/core/node";
+import { findExecutable, OperationAuditStore, serializeProjectOperation } from "@video-workbench/core/node";
 import { StudioEventHub } from "./events";
 import { createProjectMediaHandler } from "./project-media";
 import { watchRegisteredProjects } from "./project-watcher";
@@ -443,9 +443,10 @@ export async function startStudioServer(
   ]);
 
   const events = new StudioEventHub();
+  const operationAuditStore = new OperationAuditStore(dataDir);
   const jobs = new JobManager(dataDir, { projectsDir });
   await jobs.initialize();
-  const jobsApi = createJobsApi(jobs, listenPort);
+  const jobsApi = createJobsApi(jobs, listenPort, { operationAuditStore });
   const editPreviewArtifacts = new EditPreviewArtifactManager(projectsDir);
   const editPreviewArtifactApi = createEditPreviewArtifactHandler(editPreviewArtifacts);
   const context: StudioServerApiContext = { projectsDir, dataDir, events };
@@ -468,6 +469,7 @@ export async function startStudioServer(
   };
   const cutsApi = createVideocutCutsHandler({
     projectsDir,
+    operationAuditStore,
     materializeIndex: materializeEditListIndex,
     onDocumentChanged(change) {
       events.publish("file-change", change);
