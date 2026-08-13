@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { VideocutError, asVideocutError, parseTranscriptWords } from "@video-workbench/core";
 import {
   createKouboProject,
@@ -904,6 +904,52 @@ async function sha256File(path: string): Promise<string> {
   return hash.digest("hex");
 }
 
+async function verifiedProjectArtifactSha(input: {
+  projectDirectory: string;
+  relativePath: string;
+  expectedSha256: string;
+  operationId: string;
+  projectId: string;
+  field: string;
+}): Promise<void> {
+  const projectRoot = resolve(input.projectDirectory);
+  const artifactPath = resolve(projectRoot, input.relativePath);
+  const inProject = !isAbsolute(input.relativePath) &&
+    !relative(projectRoot, artifactPath).startsWith("..") &&
+    !isAbsolute(relative(projectRoot, artifactPath));
+  if (!inProject) {
+    throw new VideocutError(
+      "operation_replay_stale",
+      "Operation replay artifact identity is no longer inside the project",
+      { operationId: input.operationId, projectId: input.projectId, field: input.field },
+    );
+  }
+  let metadata;
+  try {
+    metadata = await lstat(artifactPath);
+  } catch {
+    throw new VideocutError(
+      "operation_replay_stale",
+      "Operation replay artifact is missing",
+      { operationId: input.operationId, projectId: input.projectId, field: input.field },
+    );
+  }
+  if (!metadata.isFile() || metadata.isSymbolicLink()) {
+    throw new VideocutError(
+      "operation_replay_stale",
+      "Operation replay artifact is not a regular file",
+      { operationId: input.operationId, projectId: input.projectId, field: input.field },
+    );
+  }
+  if (await sha256File(artifactPath) !== input.expectedSha256) {
+    throw new VideocutError(
+      "operation_replay_stale",
+      "Operation replay artifact no longer matches the recorded SHA",
+      { operationId: input.operationId, projectId: input.projectId, field: input.field },
+    );
+  }
+}
+
 function requiredAuditString(
   fields: Record<string, string | number | boolean | null>,
   name: string,
@@ -931,6 +977,11 @@ async function verifiedIngestReplayData(input: {
   const canonicalVideo = requiredAuditString(input.result, "canonicalVideo", input.operationId);
   const canonicalTranscript = requiredAuditString(input.result, "canonicalTranscript", input.operationId);
   const sourceSha256 = requiredAuditString(input.result, "sourceSha256", input.operationId);
+  const canonicalTranscriptSha256 = requiredAuditString(
+    input.result,
+    "canonicalTranscriptSha256",
+    input.operationId,
+  );
   const project = await resolveProject(input.taskDirectory, { cwd: input.cwd, projectsDir: input.projectsDir });
   if (project.projectId !== projectId) {
     throw new VideocutError(
@@ -953,13 +1004,22 @@ async function verifiedIngestReplayData(input: {
       { operationId: input.operationId, projectId },
     );
   }
-  if (await sha256File(join(project.directory, canonicalVideo)) !== sourceSha256) {
-    throw new VideocutError(
-      "operation_replay_stale",
-      "Operation replay source file no longer matches the recorded source SHA",
-      { operationId: input.operationId, projectId },
-    );
-  }
+  await verifiedProjectArtifactSha({
+    projectDirectory: project.directory,
+    relativePath: canonicalVideo,
+    expectedSha256: sourceSha256,
+    operationId: input.operationId,
+    projectId,
+    field: "canonicalVideo",
+  });
+  await verifiedProjectArtifactSha({
+    projectDirectory: project.directory,
+    relativePath: canonicalTranscript,
+    expectedSha256: canonicalTranscriptSha256,
+    operationId: input.operationId,
+    projectId,
+    field: "canonicalTranscript",
+  });
 
   return {
     projectId,
@@ -1308,6 +1368,9 @@ export async function runCli(
           );
         }
         const sourceSha256 = await sha256File(join(ingested.directory, ingested.canonicalVideo));
+        const canonicalTranscriptSha256 = await sha256File(
+          join(ingested.directory, ingested.canonicalTranscript),
+        );
         const data = {
           operationId: admission.operationId,
           projectId: ingested.projectId,
@@ -1329,6 +1392,7 @@ export async function runCli(
             canonicalVideo: data.canonicalVideo,
             canonicalTranscript: data.canonicalTranscript,
             sourceSha256,
+            canonicalTranscriptSha256,
             indexWritten: data.indexWritten,
             transcriptCueCount: data.transcriptCueCount,
             cutWordCount: data.cutWordCount,

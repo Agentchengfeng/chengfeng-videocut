@@ -246,16 +246,19 @@ describe("chengfeng-videocut CLI", () => {
         transcription: { role: "source-transcript", provider: "volcengine", reused: false },
       },
     });
-    expect(await new OperationAuditStore(dataDir).read("ingest-op-1")).toMatchObject({
+    const auditRecord = await new OperationAuditStore(dataDir).read("ingest-op-1");
+    expect(auditRecord).toMatchObject({
       kind: "project.ingest",
       accepted: true,
       succeeded: true,
       result: {
         projectId: "ingested-task",
+        canonicalTranscript: "剪口播/1_转录/subtitles_words.json",
         transcriptCueCount: 1,
         cutWordCount: 0,
       },
     });
+    expect(auditRecord?.result?.canonicalTranscriptSha256).toMatch(/^[a-f0-9]{64}$/);
     expect(await realpath(join(projectsDir, "ingested-task"))).toBe(await realpath(projectDir));
 
     const replayCapture = captureIo();
@@ -303,6 +306,62 @@ describe("chengfeng-videocut CLI", () => {
     });
     expect(transcriptionCalls).toBe(1);
     await writeFile(join(projectDir, "project.json"), originalProjectJson);
+
+    const transcriptPath = join(projectDir, "剪口播/1_转录/subtitles_words.json");
+    const originalTranscriptBytes = await readFile(transcriptPath);
+    await rm(transcriptPath);
+    const missingTranscriptCapture = captureIo();
+    const missingTranscriptCode = await runCli([
+      "project", "ingest", projectDir,
+      "--video", "uploads/talk.mp4",
+      "--aspect-ratio", "16:9",
+      "--projects-dir", projectsDir,
+      "--operation-id", "ingest-op-1",
+      "--json",
+    ], { io: missingTranscriptCapture.io, runTranscription });
+    expect(missingTranscriptCode, missingTranscriptCapture.stdout.join(" | ")).toBe(5);
+    expect(JSON.parse(missingTranscriptCapture.stdout[0])).toMatchObject({
+      ok: false,
+      error: { code: "operation_replay_stale" },
+    });
+    expect(transcriptionCalls).toBe(1);
+
+    await writeFile(transcriptPath, "tampered transcript bytes\n");
+    const tamperedTranscriptCapture = captureIo();
+    const tamperedTranscriptCode = await runCli([
+      "project", "ingest", projectDir,
+      "--video", "uploads/talk.mp4",
+      "--aspect-ratio", "16:9",
+      "--projects-dir", projectsDir,
+      "--operation-id", "ingest-op-1",
+      "--json",
+    ], { io: tamperedTranscriptCapture.io, runTranscription });
+    expect(tamperedTranscriptCode, tamperedTranscriptCapture.stdout.join(" | ")).toBe(5);
+    expect(JSON.parse(tamperedTranscriptCapture.stdout[0])).toMatchObject({
+      ok: false,
+      error: { code: "operation_replay_stale" },
+    });
+    expect(transcriptionCalls).toBe(1);
+
+    await writeFile(transcriptPath, originalTranscriptBytes);
+    const restoredTranscriptCapture = captureIo();
+    const restoredTranscriptCode = await runCli([
+      "project", "ingest", projectDir,
+      "--video", "uploads/talk.mp4",
+      "--aspect-ratio", "16:9",
+      "--projects-dir", projectsDir,
+      "--operation-id", "ingest-op-1",
+      "--json",
+    ], { io: restoredTranscriptCapture.io, runTranscription });
+    expect(restoredTranscriptCode, restoredTranscriptCapture.stdout.join(" | ")).toBe(0);
+    expect(JSON.parse(restoredTranscriptCapture.stdout[0])).toMatchObject({
+      data: {
+        operationId: "ingest-op-1",
+        operationReplay: true,
+        canonicalTranscript: "剪口播/1_转录/subtitles_words.json",
+      },
+    });
+    expect(transcriptionCalls).toBe(1);
 
     const beforeRetry = await Promise.all([
       "project.json", "transcript.json", "events.jsonl", "workbench.json",
