@@ -18,7 +18,11 @@ import { constants as fsConstants, createReadStream, existsSync } from "node:fs"
 import { homedir, userInfo } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, relative as relativePath, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isKnownNaturalPausePolicyVersion } from "@video-workbench/contracts";
+import {
+  RUNTIME_DOCTOR_CAPABILITIES,
+  isKnownNaturalPausePolicyVersion,
+  type RuntimeDoctorCapabilities,
+} from "@video-workbench/contracts";
 import {
   buildCutSelectionDocument,
   buildCutSelectionFromProposal,
@@ -1609,24 +1613,7 @@ export interface DoctorCheck {
   detail: string;
 }
 
-export interface DoctorCapabilities {
-  runtimeApiVersion: 1;
-  serviceApiVersion: 1;
-  serviceOperations: readonly ["install", "start", "stop", "restart", "status", "logs", "ensure"];
-  managedStudioService: true;
-  serviceParentProcessIndependent: true;
-  serviceCrashRestart: true;
-  durableJobsApiVersion: 1;
-  durableJobKinds: readonly ["export"];
-  editListSchemaVersion: 1;
-  editListOperations: readonly ["move", "trim", "split", "delete", "restore", "delete-range", "restore-snapshot"];
-  managedArollProjection: true;
-  expectedEditListRevision: true;
-  projectIngestVersion: 1;
-  transcriptPlaybackPagingVersion: 1;
-  cloudTranscriptionProvider: "volcengine";
-  cloudTranscriptionTaskLocalOnly: true;
-}
+export type DoctorCapabilities = RuntimeDoctorCapabilities;
 
 /**
  * PATH 上找可执行文件（Windows 带 PATHEXT 后缀）。导出给服务启动预检用：
@@ -2552,24 +2539,7 @@ export async function doctor(
     developmentMode: healthy && managedTools.developmentMode,
     releaseReady: healthy && managedTools.releaseReady,
     readinessMode,
-    capabilities: {
-      runtimeApiVersion: 1,
-      serviceApiVersion: 1,
-      serviceOperations: ["install", "start", "stop", "restart", "status", "logs", "ensure"],
-      managedStudioService: true,
-      serviceParentProcessIndependent: true,
-      serviceCrashRestart: true,
-      durableJobsApiVersion: 1,
-      durableJobKinds: ["export"],
-      editListSchemaVersion: 1,
-      editListOperations: ["move", "trim", "split", "delete", "restore", "delete-range", "restore-snapshot"],
-      managedArollProjection: true,
-      expectedEditListRevision: true,
-      projectIngestVersion: 1,
-      transcriptPlaybackPagingVersion: 1,
-      cloudTranscriptionProvider: "volcengine",
-      cloudTranscriptionTaskLocalOnly: true,
-    },
+    capabilities: RUNTIME_DOCTOR_CAPABILITIES,
     checks,
   };
 }

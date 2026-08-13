@@ -1,5 +1,6 @@
 import { access, readFile, readdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { createStudioCapabilityManifest } from "../../../packages/contracts/src/index";
 import { PRODUCT_VERSION } from "../src/output";
 
 const defaultCliDir = resolve(import.meta.dir, "..");
@@ -15,6 +16,10 @@ const LEGACY_STUDIO_MARKERS = ["cf-task-panel", "剪辑工作区"] as const;
 
 function check(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
+}
+
+function sameJson(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 export function checkStudioBundleContract(assets: readonly StudioBundleAsset[]): void {
@@ -114,37 +119,9 @@ export async function checkPackage(cliDir = defaultCliDir): Promise<number> {
   const capabilities = JSON.parse(
     await readFile(join(distDir, "studio/chengfeng-videocut-capabilities.json"), "utf8"),
   );
-  check(capabilities.schemaVersion === 1, "Studio capability schemaVersion must be 1");
-  check(capabilities.product === "chengfeng-videocut", "Studio capability product is invalid");
   check(
-    capabilities.studioVersion === PRODUCT_VERSION,
-    `Studio capability version must be ${PRODUCT_VERSION}`,
-  );
-  check(
-    ["storyboard", "preview", "koubo"].every((view) =>
-      capabilities.features?.topLevelViews?.includes(view)),
-    "Studio capability is missing a required top-level view",
-  );
-  check(
-    capabilities.features?.legacyWorkbenchPanel === false,
-    "Studio capability must explicitly disable the legacy workbench panel",
-  );
-  check(
-    capabilities.features?.managedTimelineEditing === true,
-    "Studio capability must explicitly enable managed timeline editing",
-  );
-  check(
-    capabilities.features?.projectIngestVersion === 1,
-    "Studio capability must explicitly enable Product-owned project ingest v1",
-  );
-  check(
-    capabilities.features?.transcriptPlaybackPagingVersion === 1,
-    "Studio capability must explicitly enable transcript playback paging v1",
-  );
-  check(
-    ["move", "trim", "split", "delete", "restore", "delete-range", "restore-snapshot"].every((operation) =>
-      capabilities.features?.managedTimelineOperations?.includes(operation)),
-    "Studio capability is missing a managed timeline operation",
+    sameJson(capabilities, createStudioCapabilityManifest(PRODUCT_VERSION)),
+    "Studio capability manifest must match the Runtime contract source",
   );
 
   const files = await walk(distDir);

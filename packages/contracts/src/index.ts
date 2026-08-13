@@ -4,6 +4,304 @@ export const JOB_SCHEMA_VERSION = 1 as const;
 
 export type JobKind = "transcribe" | "cut" | "export" | "render";
 
+export const RUNTIME_CONTRACT_SCHEMA_VERSION = 1 as const;
+
+export const RUNTIME_SERVICE_OPERATIONS = [
+  "install",
+  "start",
+  "stop",
+  "restart",
+  "status",
+  "logs",
+  "ensure",
+] as const;
+
+export type RuntimeServiceOperation = (typeof RUNTIME_SERVICE_OPERATIONS)[number];
+
+export const RUNTIME_DURABLE_JOB_KINDS = ["export"] as const satisfies readonly JobKind[];
+
+export type RuntimeDurableJobKind = (typeof RUNTIME_DURABLE_JOB_KINDS)[number];
+
+export const RUNTIME_EDIT_LIST_OPERATIONS = [
+  "move",
+  "trim",
+  "split",
+  "delete",
+  "restore",
+  "delete-range",
+  "restore-snapshot",
+] as const;
+
+export type RuntimeEditListOperation = (typeof RUNTIME_EDIT_LIST_OPERATIONS)[number];
+
+export const STUDIO_TOP_LEVEL_VIEWS = ["storyboard", "preview", "koubo"] as const;
+
+export type StudioTopLevelView = (typeof STUDIO_TOP_LEVEL_VIEWS)[number];
+
+export const RUNTIME_DOCTOR_CAPABILITIES = {
+  runtimeApiVersion: 1,
+  serviceApiVersion: 1,
+  serviceOperations: RUNTIME_SERVICE_OPERATIONS,
+  managedStudioService: true,
+  serviceParentProcessIndependent: true,
+  serviceCrashRestart: true,
+  durableJobsApiVersion: 1,
+  durableJobKinds: RUNTIME_DURABLE_JOB_KINDS,
+  editListSchemaVersion: 1,
+  editListOperations: RUNTIME_EDIT_LIST_OPERATIONS,
+  managedArollProjection: true,
+  expectedEditListRevision: true,
+  projectIngestVersion: 1,
+  transcriptPlaybackPagingVersion: 1,
+  cloudTranscriptionProvider: "volcengine",
+  cloudTranscriptionTaskLocalOnly: true,
+} as const;
+
+export type RuntimeDoctorCapabilities = typeof RUNTIME_DOCTOR_CAPABILITIES;
+
+export const STUDIO_CAPABILITY_FEATURES = {
+  topLevelViews: STUDIO_TOP_LEVEL_VIEWS,
+  legacyWorkbenchPanel: false,
+  managedTimelineEditing: true,
+  projectIngestVersion: RUNTIME_DOCTOR_CAPABILITIES.projectIngestVersion,
+  transcriptPlaybackPagingVersion: RUNTIME_DOCTOR_CAPABILITIES.transcriptPlaybackPagingVersion,
+  durableJobsApiVersion: RUNTIME_DOCTOR_CAPABILITIES.durableJobsApiVersion,
+  durableJobKinds: RUNTIME_DURABLE_JOB_KINDS,
+  managedTimelineOperations: RUNTIME_EDIT_LIST_OPERATIONS,
+} as const;
+
+export type StudioCapabilityFeatures = typeof STUDIO_CAPABILITY_FEATURES;
+
+export interface RuntimeStudioCapabilityManifest {
+  schemaVersion: typeof RUNTIME_CONTRACT_SCHEMA_VERSION;
+  product: "chengfeng-videocut";
+  studioVersion: string;
+  features: {
+    topLevelViews: readonly StudioTopLevelView[];
+    legacyWorkbenchPanel: false;
+    managedTimelineEditing: true;
+    projectIngestVersion: 1;
+    transcriptPlaybackPagingVersion: 1;
+    durableJobsApiVersion: 1;
+    durableJobKinds: readonly RuntimeDurableJobKind[];
+    managedTimelineOperations: readonly RuntimeEditListOperation[];
+  };
+}
+
+export function createStudioCapabilityManifest(
+  studioVersion: string,
+): RuntimeStudioCapabilityManifest {
+  return {
+    schemaVersion: RUNTIME_CONTRACT_SCHEMA_VERSION,
+    product: "chengfeng-videocut",
+    studioVersion,
+    features: {
+      topLevelViews: [...STUDIO_CAPABILITY_FEATURES.topLevelViews],
+      legacyWorkbenchPanel: STUDIO_CAPABILITY_FEATURES.legacyWorkbenchPanel,
+      managedTimelineEditing: STUDIO_CAPABILITY_FEATURES.managedTimelineEditing,
+      projectIngestVersion: STUDIO_CAPABILITY_FEATURES.projectIngestVersion,
+      transcriptPlaybackPagingVersion: STUDIO_CAPABILITY_FEATURES.transcriptPlaybackPagingVersion,
+      durableJobsApiVersion: STUDIO_CAPABILITY_FEATURES.durableJobsApiVersion,
+      durableJobKinds: [...STUDIO_CAPABILITY_FEATURES.durableJobKinds],
+      managedTimelineOperations: [...STUDIO_CAPABILITY_FEATURES.managedTimelineOperations],
+    },
+  };
+}
+
+export function serializeRuntimeContractJson(value: unknown): string {
+  return `${JSON.stringify(value, null, 2)}\n`;
+}
+
+export const RUNTIME_CLI_COMMAND_CONTRACT_SCHEMA_VERSION = 1 as const;
+
+export type RuntimeCapabilityKey = keyof RuntimeDoctorCapabilities;
+
+export type RuntimeCliCommandFeature =
+  | { kind: "capability"; capability: RuntimeCapabilityKey }
+  | { kind: "service"; operation: RuntimeServiceOperation }
+  | { kind: "durable-job"; jobKind: RuntimeDurableJobKind };
+
+export interface RuntimeCliCommandSpec {
+  public: boolean;
+  features: readonly RuntimeCliCommandFeature[];
+}
+
+export const RUNTIME_CLI_COMMANDS = {
+  help: { public: true, features: [] },
+  version: { public: true, features: [] },
+  start: { public: true, features: [] },
+  "service.install": {
+    public: true,
+    features: [{ kind: "service", operation: "install" }],
+  },
+  "service.start": {
+    public: true,
+    features: [{ kind: "service", operation: "start" }],
+  },
+  "service.stop": {
+    public: true,
+    features: [{ kind: "service", operation: "stop" }],
+  },
+  "service.restart": {
+    public: true,
+    features: [{ kind: "service", operation: "restart" }],
+  },
+  "service.status": {
+    public: true,
+    features: [{ kind: "service", operation: "status" }],
+  },
+  "service.logs": {
+    public: true,
+    features: [{ kind: "service", operation: "logs" }],
+  },
+  "service.ensure": {
+    public: true,
+    features: [{ kind: "service", operation: "ensure" }],
+  },
+  "service.supervise": { public: false, features: [] },
+  doctor: { public: true, features: [] },
+  "config.get": { public: true, features: [] },
+  "config.set": { public: true, features: [] },
+  inspect: { public: true, features: [] },
+  open: { public: true, features: [] },
+  transcribe: {
+    public: true,
+    features: [
+      { kind: "capability", capability: "cloudTranscriptionProvider" },
+      { kind: "capability", capability: "cloudTranscriptionTaskLocalOnly" },
+    ],
+  },
+  "project.ingest": {
+    public: true,
+    features: [{ kind: "capability", capability: "projectIngestVersion" }],
+  },
+  "project.create": { public: true, features: [] },
+  "project.prepare": { public: true, features: [] },
+  "artifact.put": { public: true, features: [] },
+  "cuts.get": { public: true, features: [] },
+  "transcript.playback": {
+    public: true,
+    features: [{ kind: "capability", capability: "transcriptPlaybackPagingVersion" }],
+  },
+  "transcript.retranscribe": {
+    public: true,
+    features: [
+      { kind: "capability", capability: "cloudTranscriptionProvider" },
+      { kind: "capability", capability: "cloudTranscriptionTaskLocalOnly" },
+    ],
+  },
+  "transcript.align": { public: true, features: [] },
+  "transcript.dictionary": { public: true, features: [] },
+  "transcript.regroup": { public: true, features: [] },
+  "transcript.correct": { public: true, features: [] },
+  "cuts.set": { public: true, features: [] },
+  "cuts.apply": {
+    public: true,
+    features: [
+      { kind: "capability", capability: "expectedEditListRevision" },
+      { kind: "capability", capability: "editListSchemaVersion" },
+    ],
+  },
+  "editList.get": {
+    public: true,
+    features: [{ kind: "capability", capability: "editListSchemaVersion" }],
+  },
+  "editList.patch": {
+    public: true,
+    features: [{ kind: "capability", capability: "editListSchemaVersion" }],
+  },
+  "subtitle.get": { public: true, features: [] },
+  "subtitle.build": { public: true, features: [] },
+  "subtitle.set": { public: true, features: [] },
+  "visual.get": { public: true, features: [] },
+  "visual.add": { public: true, features: [] },
+  "visual.remove": { public: true, features: [] },
+  "visual.frame": { public: true, features: [] },
+  "workflow.get": { public: true, features: [] },
+  "workflow.transition": { public: true, features: [] },
+  "render.run": { public: true, features: [] },
+  export: {
+    public: true,
+    features: [{ kind: "durable-job", jobKind: "export" }],
+  },
+  "job.start": {
+    public: true,
+    features: [
+      { kind: "capability", capability: "durableJobsApiVersion" },
+      { kind: "durable-job", jobKind: "export" },
+    ],
+  },
+  "job.get": {
+    public: true,
+    features: [{ kind: "capability", capability: "durableJobsApiVersion" }],
+  },
+  "job.list": {
+    public: true,
+    features: [{ kind: "capability", capability: "durableJobsApiVersion" }],
+  },
+  "job.cancel": {
+    public: true,
+    features: [{ kind: "capability", capability: "durableJobsApiVersion" }],
+  },
+} as const satisfies Record<string, RuntimeCliCommandSpec>;
+
+export const RUNTIME_CLI_COMMAND_CONTRACT = {
+  schemaVersion: RUNTIME_CLI_COMMAND_CONTRACT_SCHEMA_VERSION,
+  envelopeSchemaVersion: 1,
+  commands: RUNTIME_CLI_COMMANDS,
+} as const;
+
+export interface RuntimePluginContractSnapshot {
+  schemaVersion: typeof RUNTIME_CONTRACT_SCHEMA_VERSION;
+  product: "chengfeng-videocut";
+  runtimeVersion: string;
+  minimumRuntimeVersion: string;
+  capabilities: RuntimeDoctorCapabilities;
+  studioCapabilities: {
+    topLevelViews: readonly StudioTopLevelView[];
+    legacyWorkbenchPanel: false;
+    managedTimelineEditing: true;
+    managedTimelineOperations: readonly RuntimeEditListOperation[];
+  };
+  cli: typeof RUNTIME_CLI_COMMAND_CONTRACT;
+}
+
+export function createRuntimePluginContractSnapshot(
+  runtimeVersion: string,
+): RuntimePluginContractSnapshot {
+  return {
+    schemaVersion: RUNTIME_CONTRACT_SCHEMA_VERSION,
+    product: "chengfeng-videocut",
+    runtimeVersion,
+    minimumRuntimeVersion: runtimeVersion,
+    capabilities: RUNTIME_DOCTOR_CAPABILITIES,
+    studioCapabilities: {
+      topLevelViews: [...STUDIO_CAPABILITY_FEATURES.topLevelViews],
+      legacyWorkbenchPanel: STUDIO_CAPABILITY_FEATURES.legacyWorkbenchPanel,
+      managedTimelineEditing: STUDIO_CAPABILITY_FEATURES.managedTimelineEditing,
+      managedTimelineOperations: [...STUDIO_CAPABILITY_FEATURES.managedTimelineOperations],
+    },
+    cli: RUNTIME_CLI_COMMAND_CONTRACT,
+  };
+}
+
+export type RuntimeCliCommand = keyof typeof RUNTIME_CLI_COMMANDS;
+
+export const RUNTIME_CLI_COMMAND_IDS = Object.keys(
+  RUNTIME_CLI_COMMANDS,
+) as RuntimeCliCommand[];
+
+export function isRuntimeCliCommand(value: string): value is RuntimeCliCommand {
+  return Object.hasOwn(RUNTIME_CLI_COMMANDS, value);
+}
+
+export function runtimeCliCommand(value: string): RuntimeCliCommand {
+  if (!isRuntimeCliCommand(value)) {
+    throw new TypeError(`Unknown Runtime CLI command contract entry: ${value}`);
+  }
+  return value;
+}
+
 export type JobState =
   | "queued"
   | "running"

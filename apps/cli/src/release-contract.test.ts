@@ -10,6 +10,11 @@ import {
   writeReleaseChecksums,
 } from "../../../scripts/release-assets";
 import { checkVersionContract } from "../../../scripts/version-contract";
+import {
+  RUNTIME_CLI_COMMANDS,
+  RUNTIME_DOCTOR_CAPABILITIES,
+  createStudioCapabilityManifest,
+} from "@video-workbench/contracts";
 import { doctor } from "@video-workbench/core/node";
 import { PRODUCT_VERSION } from "./output";
 
@@ -117,20 +122,42 @@ describe("release contract", () => {
     const staticCapabilities = JSON.parse(await readFile(
       join(rootDir, "apps/studio/public/chengfeng-videocut-capabilities.json"),
       "utf8",
-    )) as {
-      features?: {
-        projectIngestVersion?: number;
-        transcriptPlaybackPagingVersion?: number;
-      };
-    };
+    ));
     const runtime = await doctor({ projectsDir: join(rootDir, ".release-contract-projects") });
-    expect(runtime.capabilities).toMatchObject({
-      projectIngestVersion: staticCapabilities.features?.projectIngestVersion,
-      transcriptPlaybackPagingVersion:
-        staticCapabilities.features?.transcriptPlaybackPagingVersion,
+    expect(runtime.capabilities).toEqual(RUNTIME_DOCTOR_CAPABILITIES);
+    expect(staticCapabilities).toEqual(createStudioCapabilityManifest(PRODUCT_VERSION));
+    expect(staticCapabilities.features.projectIngestVersion).toBe(
+      runtime.capabilities.projectIngestVersion,
+    );
+    expect(staticCapabilities.features.transcriptPlaybackPagingVersion).toBe(
+      runtime.capabilities.transcriptPlaybackPagingVersion,
+    );
+    expect(staticCapabilities.features.durableJobsApiVersion).toBe(
+      runtime.capabilities.durableJobsApiVersion,
+    );
+  });
+
+  it("keeps command additions behind the Runtime capability contract", async () => {
+    const specs = RUNTIME_CLI_COMMANDS;
+    expect(specs["project.ingest"].features).toContainEqual({
+      kind: "capability",
+      capability: "projectIngestVersion",
     });
-    expect(runtime.capabilities.projectIngestVersion).toBe(1);
-    expect(runtime.capabilities.transcriptPlaybackPagingVersion).toBe(1);
+    expect(specs["transcript.playback"].features).toContainEqual({
+      kind: "capability",
+      capability: "transcriptPlaybackPagingVersion",
+    });
+    expect(specs.export.features).toContainEqual({ kind: "durable-job", jobKind: "export" });
+    expect(specs["job.start"].features).toContainEqual({
+      kind: "capability",
+      capability: "durableJobsApiVersion",
+    });
+    for (const operation of RUNTIME_DOCTOR_CAPABILITIES.serviceOperations) {
+      expect(specs[`service.${operation}`].features).toContainEqual({
+        kind: "service",
+        operation,
+      });
+    }
   });
 
   it("keeps installed CLI commands on the stable install data root", async () => {

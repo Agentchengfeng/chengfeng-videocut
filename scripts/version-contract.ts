@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { createStudioCapabilityManifest } from "../packages/contracts/src/index";
 import { HELP_TEXT, PRODUCT_VERSION } from "../apps/cli/src/output";
 
 const defaultRootDir = resolve(import.meta.dir, "..");
@@ -36,6 +37,10 @@ function lockWorkspaceBlock(lockfile: string, workspacePath: string): string {
   const end = lockfile.indexOf("\n    },", start);
   check(end >= 0, `bun.lock has an invalid workspace block for ${workspacePath}`);
   return lockfile.slice(start, end);
+}
+
+function sameJson(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 export async function checkVersionContract(rootDir = defaultRootDir): Promise<string> {
@@ -87,24 +92,11 @@ export async function checkVersionContract(rootDir = defaultRootDir): Promise<st
       join(rootDir, "apps/studio/public/chengfeng-videocut-capabilities.json"),
       "utf8",
     ),
-  ) as {
-    studioVersion?: string;
-    features?: {
-      projectIngestVersion?: number;
-      transcriptPlaybackPagingVersion?: number;
-    };
-  };
-  check(
-    capabilities.studioVersion === PRODUCT_VERSION,
-    `Studio capability version ${String(capabilities.studioVersion)} does not match ${PRODUCT_VERSION}`,
   );
+  const expectedCapabilities = createStudioCapabilityManifest(PRODUCT_VERSION);
   check(
-    capabilities.features?.projectIngestVersion === 1,
-    "Studio capabilities must declare Product-owned project ingest v1",
-  );
-  check(
-    capabilities.features?.transcriptPlaybackPagingVersion === 1,
-    "Studio capabilities must declare transcript playback paging v1",
+    sameJson(capabilities, expectedCapabilities),
+    "Studio capability manifest does not match the Runtime contract source; run bun scripts/write-runtime-contract.ts",
   );
 
   check(

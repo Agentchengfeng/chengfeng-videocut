@@ -34,6 +34,8 @@
     "release:stage:windows-desktop": "bun scripts/stage-desktop-windows-release.ts",
     "release:checksums": "bun scripts/write-release-checksums.ts",
     "release:artifact-check": "bun scripts/release-artifact-check.ts",
+    "runtime-contract:sync": "bun scripts/write-runtime-contract.ts",
+    "runtime-contract:export": "bun scripts/export-runtime-plugin-contract.ts",
     "installer:build": "bun scripts/build-native-installer.ts",
     "tools:pack": "bun scripts/package-managed-tools.ts",
     "install-manifest:build": "bun scripts/write-install-manifest.ts",

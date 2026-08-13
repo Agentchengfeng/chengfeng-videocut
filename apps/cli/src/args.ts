@@ -1,54 +1,8 @@
 import { isAbsolute } from "node:path";
+import { runtimeCliCommand, type RuntimeCliCommand } from "@video-workbench/contracts";
 import { VideocutError } from "@video-workbench/core";
 
-export type CliCommand =
-  | "help"
-  | "version"
-  | "start"
-  | "service.install"
-  | "service.start"
-  | "service.stop"
-  | "service.restart"
-  | "service.status"
-  | "service.logs"
-  | "service.ensure"
-  | "service.supervise"
-  | "doctor"
-  | "config.get"
-  | "config.set"
-  | "inspect"
-  | "open"
-  | "transcribe"
-  | "project.ingest"
-  | "project.create"
-  | "project.prepare"
-  | "artifact.put"
-  | "cuts.get"
-  | "transcript.playback"
-  | "transcript.retranscribe"
-  | "transcript.align"
-  | "transcript.dictionary"
-  | "transcript.regroup"
-  | "transcript.correct"
-  | "cuts.set"
-  | "cuts.apply"
-  | "editList.get"
-  | "editList.patch"
-  | "subtitle.get"
-  | "subtitle.build"
-  | "subtitle.set"
-  | "visual.get"
-  | "visual.add"
-  | "visual.remove"
-  | "visual.frame"
-  | "workflow.get"
-  | "workflow.transition"
-  | "render.run"
-  | "export"
-  | "job.start"
-  | "job.get"
-  | "job.list"
-  | "job.cancel";
+export type CliCommand = RuntimeCliCommand;
 
 export interface ParsedArgs {
   command: CliCommand;
@@ -378,7 +332,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     if (action === "get" || action === "cancel") {
       if (positionals.length !== 3) usageError(`Usage: chengfeng-videocut job ${action} <job-id>`);
       assertOptions(["--api-base"]);
-      return { ...common, command: `job.${action}` as CliCommand, jobId: positionals[2] };
+      return { ...common, command: runtimeCliCommand(`job.${action}`), jobId: positionals[2] };
     }
     if (action === "list") {
       if (positionals.length !== 2) usageError("Usage: chengfeng-videocut job list");
@@ -407,7 +361,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     }
     if (action === "logs") assertOptions(["--lines"]);
     else assertOptions([]);
-    return { command: `service.${action}` as CliCommand, ...common };
+    return { command: runtimeCliCommand(`service.${action}`), ...common };
   }
 
   if (positionals[0] === "doctor") {
