@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import type { JobKind } from "@video-workbench/contracts";
 import { OperationAuditStore, operationInputHash } from "@video-workbench/core/node";
 import { JobManager } from "../jobs/manager";
@@ -5,6 +6,7 @@ import { JobStoreError } from "../jobs/store";
 import { publicJob } from "../jobs/public";
 
 const MAX_JOB_REQUEST_BYTES = 1 << 20;
+const OPERATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 
 function responseError(status: number, code: string, message: string, details?: Record<string, unknown>): Response {
   return Response.json({ error: { code, message, ...(details ? { details } : {}) } }, {
@@ -16,7 +18,7 @@ function responseError(status: number, code: string, message: string, details?: 
 function statusFor(code: string): number {
   if (code === "job_not_found") return 404;
   if (code === "project_not_found") return 404;
-  if (code === "job_target_conflict" || code === "job_not_cancellable" || code === "job_state_conflict" || code === "job_output_exists" || code === "operation_id_conflict" || code === "operation_in_progress") return 409;
+  if (code === "job_target_conflict" || code === "job_not_cancellable" || code === "job_state_conflict" || code === "job_output_exists" || code === "operation_id_conflict" || code === "operation_in_progress" || code === "operation_replay_stale" || code === "operation_replay_conflict") return 409;
   if (code === "job_store_corrupt" || code === "job_registry_busy" || code === "operation_audit_corrupt" || code === "operation_audit_record_too_large") return 503;
   if (code === "unsupported_media_type") return 415;
   if (code === "request_too_large") return 413;
@@ -96,6 +98,41 @@ async function readJsonBody(request: Request): Promise<unknown> {
   }
 }
 
+function extractValidOperationId(record: Record<string, unknown>): string | undefined {
+  return typeof record.operationId === "string" && OPERATION_ID_PATTERN.test(record.operationId)
+    ? record.operationId
+    : undefined;
+}
+
+function auditJobTarget(kind: unknown, target: unknown) {
+  const targetText = typeof target === "string" && target ? target : "unknown";
+  return {
+    kind: typeof kind === "string" && kind ? kind : "unknown",
+    targetLabel: basename(targetText),
+    targetHash: operationInputHash(targetText),
+  };
+}
+
+async function recordRejectedJobStart(input: {
+  store: OperationAuditStore | undefined;
+  operationId: string | undefined;
+  body: Record<string, unknown>;
+  errorCode: string;
+}): Promise<void> {
+  if (!input.store || !input.operationId) return;
+  await input.store.recordRejected({
+    operationId: input.operationId,
+    kind: "job.start.export",
+    target: auditJobTarget(input.body.kind, input.body.target),
+    inputHash: operationInputHash({
+      route: "job.start",
+      bodyHash: operationInputHash(input.body),
+    }),
+    actor: "runtime-api",
+    entrypoint: "http.jobs",
+  }, input.errorCode);
+}
+
 export function createJobsApi(
   manager: JobManager,
   expectedPort: number,
@@ -128,7 +165,14 @@ export function createJobsApi(
             return responseError(400, "invalid_argument", "Request body must be an object");
           }
           const record = body as Record<string, unknown>;
+          const rejectedOperationId = extractValidOperationId(record);
           if (typeof record.kind !== "string" || typeof record.target !== "string") {
+            await recordRejectedJobStart({
+              store: options.operationAuditStore,
+              operationId: rejectedOperationId,
+              body: record,
+              errorCode: "invalid_argument",
+            });
             return responseError(400, "invalid_argument", "kind and target are required");
           }
           if (record.operationId !== undefined && typeof record.operationId !== "string") {
@@ -136,16 +180,19 @@ export function createJobsApi(
           }
           const params = record.params;
           if (params !== undefined && (!params || typeof params !== "object" || Array.isArray(params))) {
+            await recordRejectedJobStart({
+              store: options.operationAuditStore,
+              operationId: rejectedOperationId,
+              body: record,
+              errorCode: "invalid_argument",
+            });
             return responseError(400, "invalid_argument", "params must be an object");
           }
           const admission = options.operationAuditStore
             ? await options.operationAuditStore.admit({
                 operationId: record.operationId,
                 kind: "job.start.export",
-                target: {
-                  target: record.target,
-                  kind: record.kind,
-                },
+                target: auditJobTarget(record.kind, record.target),
                 inputHash: operationInputHash({
                   kind: record.kind,
                   target: record.target,
@@ -158,17 +205,18 @@ export function createJobsApi(
           if (admission?.replay) {
             if (admission.replay.status === "succeeded" && admission.replay.result) {
               const jobId = admission.replay.result.jobId;
-              const job = typeof jobId === "string" ? await manager.read(jobId) : null;
+              if (typeof jobId !== "string") {
+                throw new JobStoreError("operation_replay_stale", "Operation replay is missing its job id", {
+                  operationId: admission.operationId,
+                });
+              }
+              const job = await manager.validateReplayStart({
+                kind: record.kind as JobKind,
+                target: record.target,
+                params: params as Record<string, unknown> | undefined,
+              }, jobId);
               return Response.json(
-                job
-                  ? { ...publicJob(job), operationId: admission.operationId, operationReplay: true }
-                  : {
-                      schemaVersion: 1,
-                      operationId: admission.operationId,
-                      operationReplay: true,
-                      terminalStatus: "succeeded",
-                      result: admission.replay.result,
-                    },
+                { ...publicJob(job), operationId: admission.operationId, operationReplay: true },
                 { status: 202, headers: { "Cache-Control": "no-store" } },
               );
             }
@@ -204,7 +252,7 @@ export function createJobsApi(
                 jobId: job.jobId,
                 projectId: job.projectId ?? null,
                 state: job.state,
-                targetKey: job.targetKey,
+                targetHash: operationInputHash(job.targetKey),
               },
             });
           }

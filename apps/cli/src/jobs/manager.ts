@@ -209,6 +209,81 @@ export class JobManager {
 
   read(jobId: string): Promise<DurableJob | null> { return this.store.read(jobId); }
 
+  async validateReplayStart(input: StartManagedJobInput, replayJobId: string): Promise<DurableJob> {
+    if (!this.#initialized || this.#stopping) {
+      throw new JobStoreError("job_runtime_stopping", "Durable job Runtime is not accepting work");
+    }
+    if (input.kind !== "export") {
+      throw new JobStoreError("unsupported_job_kind", `Job kind is not implemented: ${input.kind}`, {
+        supportedKinds: ["export"],
+      });
+    }
+    const project = await resolveProject(input.target, { projectsDir: this.#projectsDir });
+    const params = input.params ?? {};
+    const requestedOutput = params.outputPath;
+    if (requestedOutput !== undefined && (typeof requestedOutput !== "string" || !requestedOutput)) {
+      throw new JobStoreError("invalid_argument", "outputPath must be a non-empty string");
+    }
+    if (typeof requestedOutput === "string" && !isAbsolute(requestedOutput)) {
+      throw new JobStoreError("invalid_argument", "outputPath must be absolute");
+    }
+    if (params.scale !== undefined && (typeof params.scale !== "number" || !Number.isFinite(params.scale) || params.scale <= 0 || params.scale > 4)) {
+      throw new JobStoreError("invalid_argument", "scale must be a number greater than 0 and at most 4");
+    }
+    if (params.fps !== undefined && (typeof params.fps !== "number" || !Number.isFinite(params.fps) || params.fps < 1 || params.fps > 120)) {
+      throw new JobStoreError("invalid_argument", "fps must be a number from 1 to 120");
+    }
+    if (params.keepWork !== undefined && typeof params.keepWork !== "boolean") {
+      throw new JobStoreError("invalid_argument", "keepWork must be a boolean");
+    }
+    const outputPath = resolve(
+      typeof requestedOutput === "string" ? requestedOutput : defaultExportOutput(project.directory),
+    );
+    if (!dirname(outputPath) || dirname(outputPath) === outputPath) {
+      throw new JobStoreError("invalid_argument", "outputPath must name a file below a directory");
+    }
+
+    const job = await this.store.read(replayJobId);
+    if (!job) {
+      throw new JobStoreError("operation_replay_stale", "Operation replay job no longer exists", {
+        jobId: replayJobId,
+      });
+    }
+    const targetKey = `project:${project.directory}`;
+    if (
+      job.kind !== input.kind ||
+      job.target !== project.directory ||
+      job.targetKey !== targetKey ||
+      job.projectId !== project.projectId ||
+      job.params.outputPath !== outputPath ||
+      (job.params.scale ?? undefined) !== (typeof params.scale === "number" ? params.scale : undefined) ||
+      (job.params.fps ?? undefined) !== (typeof params.fps === "number" ? params.fps : undefined) ||
+      (job.params.keepWork ?? undefined) !== (params.keepWork === true ? true : undefined)
+    ) {
+      throw new JobStoreError("operation_replay_conflict", "Operation replay job identity no longer matches", {
+        jobId: replayJobId,
+      });
+    }
+    const activeConflict = (await this.store.list()).find((candidate) =>
+      candidate.jobId !== replayJobId &&
+      !terminal(candidate) &&
+      (
+        candidate.targetKey === targetKey ||
+        (
+          typeof candidate.params.outputPath === "string" &&
+          candidate.params.outputPath === outputPath
+        )
+      )
+    );
+    if (activeConflict) {
+      throw new JobStoreError("job_target_conflict", "Target already has an active job", {
+        jobId: activeConflict.jobId,
+        targetKey,
+      });
+    }
+    return job;
+  }
+
   async list(filters: { projectId?: string; kind?: string; state?: string; limit?: number } = {}): Promise<DurableJob[]> {
     const jobs = await this.store.list(filters);
     return jobs.slice(0, filters.limit ?? 100);

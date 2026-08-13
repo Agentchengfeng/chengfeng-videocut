@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { link, mkdir, open, readFile, rename, rm } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { VideocutError } from "./errors";
 
@@ -12,7 +12,7 @@ export type OperationAuditKind =
   | "cuts.set"
   | "job.start.export";
 
-export type OperationAuditTerminalStatus = "succeeded" | "failed" | "rejected";
+export type OperationAuditTerminalStatus = "succeeded" | "failed" | "rejected" | "committed_partial";
 
 export type OperationAuditFields = Record<string, string | number | boolean | null>;
 
@@ -31,6 +31,7 @@ export interface OperationAuditRecord {
   rejected: boolean;
   succeeded: boolean;
   failed: boolean;
+  committedPartial: boolean;
   errorCode: string | null;
   result: OperationAuditFields | null;
 }
@@ -59,6 +60,8 @@ const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const MAX_FIELD_KEYS = 32;
 const MAX_FIELD_STRING_BYTES = 1024;
 const MAX_RECORD_BYTES = 16 * 1024;
+const SENSITIVE_KEY_PATTERN =
+  /(?:password|passwd|secret|token|credential|api[_-]?key|authorization|auth|cookie|session|env)/i;
 
 function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
@@ -95,6 +98,9 @@ function assertSafeFields(name: string, fields: OperationAuditFields): void {
     if (!/^[A-Za-z0-9_.:-]{1,80}$/.test(key)) {
       throw new VideocutError("operation_audit_invalid_field", `${name} contains an invalid field name`);
     }
+    if (SENSITIVE_KEY_PATTERN.test(key)) {
+      throw new VideocutError("operation_audit_invalid_field", `${name} contains a sensitive field name`);
+    }
     if (
       value !== null &&
       typeof value !== "string" &&
@@ -106,6 +112,23 @@ function assertSafeFields(name: string, fields: OperationAuditFields): void {
     if (typeof value === "string" && Buffer.byteLength(value, "utf8") > MAX_FIELD_STRING_BYTES) {
       throw new VideocutError("operation_audit_record_too_large", `${name}.${key} is too large`);
     }
+    if (typeof value === "string" && looksLikeAbsolutePath(value)) {
+      throw new VideocutError("operation_audit_invalid_field", `${name}.${key} must not store an absolute path`);
+    }
+  }
+}
+
+function looksLikeAbsolutePath(value: string): boolean {
+  return value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value) || value.startsWith("\\\\");
+}
+
+function assertSafeMetadataLabel(
+  name: "actor" | "entrypoint",
+  value: string,
+  code: "operation_audit_invalid_field" | "operation_audit_corrupt",
+): void {
+  if (!/^[A-Za-z0-9_.:-]{1,80}$/.test(value) || looksLikeAbsolutePath(value)) {
+    throw new VideocutError(code, `Operation audit ${name} must be a bounded stable label`);
   }
 }
 
@@ -120,25 +143,69 @@ function assertRecord(record: OperationAuditRecord): void {
   assertSafeFields("target", record.target);
   assertSafeFields("baseRevisions", record.baseRevisions);
   if (record.result !== null) assertSafeFields("result", record.result);
-  if (!record.actor || record.actor.length > 80 || !record.entrypoint || record.entrypoint.length > 80) {
-    throw new VideocutError("operation_audit_corrupt", "Operation audit record has invalid actor metadata");
+  assertSafeMetadataLabel("actor", record.actor, "operation_audit_corrupt");
+  assertSafeMetadataLabel("entrypoint", record.entrypoint, "operation_audit_corrupt");
+  if (typeof record.committedPartial !== "boolean") {
+    throw new VideocutError("operation_audit_corrupt", "Operation audit record has invalid partial state");
   }
-  const terminalFlags = Number(record.rejected) + Number(record.succeeded) + Number(record.failed);
+  const terminalFlags =
+    Number(record.rejected) +
+    Number(record.succeeded) +
+    Number(record.failed) +
+    Number(record.committedPartial);
   if (terminalFlags > 1) {
     throw new VideocutError("operation_audit_corrupt", "Operation audit record has multiple terminal states");
   }
   if (record.rejected && record.accepted) {
     throw new VideocutError("operation_audit_corrupt", "Rejected operation cannot be accepted");
   }
-  if ((record.succeeded || record.failed) && !record.accepted) {
+  if ((record.succeeded || record.failed || record.committedPartial) && !record.accepted) {
     throw new VideocutError("operation_audit_corrupt", "Terminal execution requires accepted admission");
   }
-  if ((record.failed || record.rejected) && !record.errorCode) {
+  if ((record.failed || record.rejected || record.committedPartial) && !record.errorCode) {
     throw new VideocutError("operation_audit_corrupt", "Failed operation audit record has no error code");
+  }
+  if (record.committedPartial && record.result === null) {
+    throw new VideocutError("operation_audit_corrupt", "Partial operation audit record has no committed result");
   }
   const bytes = Buffer.byteLength(JSON.stringify(record, null, 2) + "\n", "utf8");
   if (bytes > MAX_RECORD_BYTES) {
     throw new VideocutError("operation_audit_record_too_large", "Operation audit record exceeds 16 KiB");
+  }
+}
+
+async function assertSecureJsonFile(path: string): Promise<void> {
+  let metadata;
+  try {
+    metadata = await lstat(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") throw error;
+    throw new VideocutError("operation_audit_corrupt", "Cannot inspect operation audit record");
+  }
+  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1) {
+    throw new VideocutError("operation_audit_corrupt", "Operation audit record is not a single-link regular file");
+  }
+  if (metadata.size > MAX_RECORD_BYTES) {
+    throw new VideocutError("operation_audit_record_too_large", "Operation audit record exceeds 16 KiB");
+  }
+  if (process.platform !== "win32" && (metadata.mode & 0o077) !== 0) {
+    throw new VideocutError("operation_audit_corrupt", "Operation audit record permissions are too broad");
+  }
+}
+
+async function ensureAuditDirectory(path: string): Promise<void> {
+  await mkdir(path, { recursive: true, mode: 0o700 });
+  let metadata;
+  try {
+    metadata = await lstat(path);
+  } catch {
+    throw new VideocutError("operation_audit_corrupt", "Cannot inspect operation audit directory");
+  }
+  if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+    throw new VideocutError("operation_audit_corrupt", "Operation audit directory must be symlink-free");
+  }
+  if (process.platform !== "win32") {
+    await chmod(path, 0o700);
   }
 }
 
@@ -153,7 +220,12 @@ async function syncDirectory(path: string): Promise<void> {
 
 async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
   const directory = resolve(path, "..");
-  await mkdir(directory, { recursive: true });
+  await ensureAuditDirectory(directory);
+  try {
+    await assertSecureJsonFile(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
   const temporaryPath = join(directory, `.${randomUUID()}.tmp`);
   const handle = await open(temporaryPath, "wx", 0o600);
   let completed = false;
@@ -167,6 +239,8 @@ async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
   }
   try {
     await rename(temporaryPath, path);
+    if (process.platform !== "win32") await chmod(path, 0o600);
+    await assertSecureJsonFile(path);
     await syncDirectory(directory);
   } catch (error) {
     await rm(temporaryPath, { force: true });
@@ -176,10 +250,11 @@ async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
 
 async function writeJsonExclusive(path: string, value: unknown): Promise<void> {
   const directory = resolve(path, "..");
-  await mkdir(directory, { recursive: true });
+  await ensureAuditDirectory(directory);
   const temporaryPath = join(directory, `.${randomUUID()}.tmp`);
   const handle = await open(temporaryPath, "wx", 0o600);
   let completed = false;
+  let linked = false;
   try {
     await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`, "utf8");
     await handle.sync();
@@ -190,11 +265,15 @@ async function writeJsonExclusive(path: string, value: unknown): Promise<void> {
   }
   try {
     await link(temporaryPath, path);
+    linked = true;
+    await rm(temporaryPath, { force: true });
+    if (process.platform !== "win32") await chmod(path, 0o600);
+    await assertSecureJsonFile(path);
     await syncDirectory(directory);
   } catch (error) {
     throw error;
   } finally {
-    await rm(temporaryPath, { force: true });
+    if (!linked) await rm(temporaryPath, { force: true });
   }
 }
 
@@ -204,6 +283,8 @@ function recordName(operationId: string): string {
 
 function isSameIdentity(left: OperationAuditRecord, right: OperationAdmissionInput): boolean {
   return left.kind === right.kind &&
+    left.actor === right.actor &&
+    left.entrypoint === right.entrypoint &&
     left.inputHash === right.inputHash &&
     canonicalJson(left.target) === canonicalJson(right.target);
 }
@@ -212,6 +293,7 @@ function terminalStatus(record: OperationAuditRecord): OperationAuditTerminalSta
   if (record.succeeded) return "succeeded";
   if (record.failed) return "failed";
   if (record.rejected) return "rejected";
+  if (record.committedPartial) return "committed_partial";
   return null;
 }
 
@@ -233,15 +315,23 @@ export class OperationAuditStore {
     this.rejectionsDir = join(this.auditDir, "rejections");
   }
 
+  private async ensureLayout(): Promise<void> {
+    await ensureAuditDirectory(this.auditDir);
+    await ensureAuditDirectory(this.recordsDir);
+    await ensureAuditDirectory(this.rejectionsDir);
+  }
+
   recordPath(operationId: string): string {
     assertOperationId(operationId);
     return join(this.recordsDir, recordName(operationId));
   }
 
   async read(operationId: string): Promise<OperationAuditRecord | null> {
+    await this.ensureLayout();
     const path = this.recordPath(operationId);
     let raw: string;
     try {
+      await assertSecureJsonFile(path);
       raw = await readFile(path, "utf8");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
@@ -261,6 +351,7 @@ export class OperationAuditStore {
   }
 
   async admit(input: OperationAdmissionInput): Promise<OperationAdmission> {
+    await this.ensureLayout();
     const operationId = input.operationId ?? generatedOperationId();
     assertOperationId(operationId);
     if (!SHA256_PATTERN.test(input.inputHash)) {
@@ -268,6 +359,8 @@ export class OperationAuditStore {
     }
     assertSafeFields("target", input.target);
     assertSafeFields("baseRevisions", input.baseRevisions ?? {});
+    assertSafeMetadataLabel("actor", input.actor, "operation_audit_invalid_field");
+    assertSafeMetadataLabel("entrypoint", input.entrypoint, "operation_audit_invalid_field");
     const now = new Date().toISOString();
     const record: OperationAuditRecord = {
       schemaVersion: OPERATION_AUDIT_SCHEMA_VERSION,
@@ -284,6 +377,7 @@ export class OperationAuditStore {
       rejected: false,
       succeeded: false,
       failed: false,
+      committedPartial: false,
       errorCode: null,
       result: null,
     };
@@ -353,11 +447,32 @@ export class OperationAuditStore {
     });
   }
 
+  async finishCommittedPartial(
+    operationId: string,
+    error: unknown,
+    options: { result: OperationAuditFields; baseRevisions?: OperationAuditFields },
+  ): Promise<OperationAuditRecord> {
+    return this.finish(operationId, {
+      succeeded: false,
+      failed: false,
+      committedPartial: true,
+      errorCode: errorCode(error),
+      result: options.result,
+      baseRevisions: options.baseRevisions,
+    });
+  }
+
+  async recordRejected(input: OperationAdmissionInput, error: string): Promise<void> {
+    await this.ensureLayout();
+    await this.writeRejectedAttempt(input, input.operationId ?? generatedOperationId(), error);
+  }
+
   private async finish(
     operationId: string,
     update: {
       succeeded: boolean;
       failed: boolean;
+      committedPartial?: boolean;
       errorCode: string | null;
       result: OperationAuditFields | null;
       baseRevisions?: OperationAuditFields;
@@ -376,6 +491,7 @@ export class OperationAuditStore {
       finishedAt: new Date().toISOString(),
       succeeded: update.succeeded,
       failed: update.failed,
+      committedPartial: update.committedPartial ?? false,
       errorCode: update.errorCode,
       result: update.result,
     };
@@ -404,6 +520,7 @@ export class OperationAuditStore {
       rejected: true,
       succeeded: false,
       failed: false,
+      committedPartial: false,
       errorCode: error,
       result: null,
     };

@@ -1,7 +1,7 @@
 /// <reference types="node" />
 
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildEditListFromCuts } from "@video-workbench/core";
@@ -287,6 +287,7 @@ describe("videocut cuts API", () => {
       result: { projectId: "demo", revision: firstBody.revision },
     });
     expect(await readFile(auditStore.recordPath("cuts-op-1"), "utf8")).not.toContain("w-2");
+    expect(await readFile(auditStore.recordPath("cuts-op-1"), "utf8")).not.toContain(projectDir);
 
     const replay = await requiredResponse(handle(cutsRequest("PUT", {
       operationId: "cuts-op-1",
@@ -308,6 +309,15 @@ describe("videocut cuts API", () => {
     })));
     expect(tampered.status).toBe(409);
     expect(await tampered.json()).toMatchObject({ error: { code: "operation_id_conflict" } });
+
+    await rm(cutsPath);
+    const staleReplay = await requiredResponse(handle(cutsRequest("PUT", {
+      operationId: "cuts-op-1",
+      expectedRevision: revision,
+      cutWordIds: ["w-2"],
+    })));
+    expect(staleReplay.status).toBe(409);
+    expect(await staleReplay.json()).toMatchObject({ error: { code: "operation_replay_stale" } });
   });
 
   it("audits CAS conflicts as failed operations", async () => {
@@ -342,6 +352,80 @@ describe("videocut cuts API", () => {
         details: { operationId: "cuts-cas-conflict", errorCode: "revision_conflict" },
       },
     });
+  });
+
+  it("records partial commits when materialization fails and replays the partial fact", async () => {
+    const { dataDir, projectsDir, projectDir, cutsPath } = await createFixture();
+    await addEditListFixture(projectDir);
+    const auditStore = new OperationAuditStore(dataDir);
+    const handle = createVideocutCutsHandler({
+      projectsDir,
+      operationAuditStore: auditStore,
+      materializeIndex: () => {
+        throw new Error("materialize failed after commit");
+      },
+    });
+    const revision = sha256(await readFile(cutsPath, "utf8"));
+
+    const first = await requiredResponse(handle(cutsRequest("PUT", {
+      operationId: "cuts-partial",
+      expectedRevision: revision,
+      cutWordIds: ["w-2"],
+    })));
+    expect(first.status).toBe(500);
+    expect(await first.json()).toMatchObject({
+      error: {
+        code: "committed_with_followup_failure",
+        details: { committed: true },
+      },
+    });
+    expect(await auditStore.read("cuts-partial")).toMatchObject({
+      succeeded: false,
+      failed: false,
+      committedPartial: true,
+      errorCode: "committed_with_followup_failure",
+      result: { committed: true },
+    });
+
+    const replay = await requiredResponse(handle(cutsRequest("PUT", {
+      operationId: "cuts-partial",
+      expectedRevision: revision,
+      cutWordIds: ["w-2"],
+    })));
+    expect(replay.status).toBe(500);
+    expect(await replay.json()).toMatchObject({
+      error: {
+        code: "committed_with_followup_failure",
+        details: {
+          operationReplay: true,
+          committed: true,
+          operationId: "cuts-partial",
+        },
+      },
+    });
+  });
+
+  it("audits invalid Cuts requests when a legal operation id is present", async () => {
+    const { dataDir, projectsDir, projectDir, cutsPath } = await createFixture();
+    await addEditListFixture(projectDir);
+    const auditStore = new OperationAuditStore(dataDir);
+    const handle = createVideocutCutsHandler({ projectsDir, operationAuditStore: auditStore });
+    const before = await readFile(cutsPath, "utf8");
+    const response = await requiredResponse(handle(new Request(
+      "http://localhost/api/v1/projects/demo/cuts",
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ operationId: "invalid-cuts-body", cutWordIds: ["w-2"] }),
+      },
+    )));
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: { code: "invalid_argument" } });
+    expect(await readFile(cutsPath, "utf8")).toBe(before);
+    const rejections = await readdir(auditStore.rejectionsDir);
+    expect(rejections).toHaveLength(1);
+    expect(await readFile(join(auditStore.rejectionsDir, rejections[0]!), "utf8"))
+      .toContain("invalid-cuts-body");
   });
 
   it("fails closed for a missing or unknown Cuts write mode", async () => {

@@ -31,9 +31,12 @@ export type VideocutErrorCode =
   | "invalid_operation_id"
   | "operation_id_conflict"
   | "operation_in_progress"
+  | "operation_replay_stale"
+  | "operation_replay_conflict"
   | "operation_audit_invalid_field"
   | "operation_audit_corrupt"
   | "operation_audit_record_too_large"
+  | "committed_with_followup_failure"
   | "operation_failed"
   | "io_error";
 

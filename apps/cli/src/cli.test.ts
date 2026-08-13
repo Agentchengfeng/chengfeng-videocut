@@ -278,6 +278,32 @@ describe("chengfeng-videocut CLI", () => {
     });
     expect(transcriptionCalls).toBe(1);
 
+    const originalProjectJson = await readFile(join(projectDir, "project.json"), "utf8");
+    const tamperedProjectJson = JSON.parse(originalProjectJson) as Record<string, unknown>;
+    tamperedProjectJson.source = {
+      ...((tamperedProjectJson.source && typeof tamperedProjectJson.source === "object")
+        ? tamperedProjectJson.source as Record<string, unknown>
+        : {}),
+      sha256: "0".repeat(64),
+    };
+    await writeFile(join(projectDir, "project.json"), `${JSON.stringify(tamperedProjectJson)}\n`);
+    const staleCapture = captureIo();
+    const staleCode = await runCli([
+      "project", "ingest", projectDir,
+      "--video", "uploads/talk.mp4",
+      "--aspect-ratio", "16:9",
+      "--projects-dir", projectsDir,
+      "--operation-id", "ingest-op-1",
+      "--json",
+    ], { io: staleCapture.io, runTranscription });
+    expect(staleCode, staleCapture.stdout.join(" | ")).toBe(5);
+    expect(JSON.parse(staleCapture.stdout[0])).toMatchObject({
+      ok: false,
+      error: { code: "operation_replay_stale" },
+    });
+    expect(transcriptionCalls).toBe(1);
+    await writeFile(join(projectDir, "project.json"), originalProjectJson);
+
     const beforeRetry = await Promise.all([
       "project.json", "transcript.json", "events.jsonl", "workbench.json",
     ].map(async (name) => [name, await readFile(join(projectDir, name))] as const));

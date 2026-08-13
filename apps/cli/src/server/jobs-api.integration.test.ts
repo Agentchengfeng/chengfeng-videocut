@@ -1,17 +1,20 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { DurableJob } from "@video-workbench/contracts";
 import { OperationAuditStore } from "@video-workbench/core/node";
 import { startStudioServer, type RunningStudioServer } from "./start";
 import { createJobsApi } from "./jobs-api";
+import { JobManager } from "../jobs/manager";
 import { runCli } from "../run";
 
 const cleanup: string[] = [];
 const servers: RunningStudioServer[] = [];
+const managers: JobManager[] = [];
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.stop().catch(() => undefined)));
+  await Promise.all(managers.splice(0).map((manager) => manager.shutdown().catch(() => undefined)));
   await Promise.all(cleanup.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
@@ -47,7 +50,30 @@ async function fixture() {
     })}\n`);
     await symlink(project, join(projectsDir, id), "dir");
   }
-  return { root, staticDir, projectsDir, dataDir, projectDirs };
+  const successWorker = join(root, "success-worker.ts");
+  await writeFile(successWorker, `
+import { createHash } from "node:crypto";
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+const argv = process.argv.slice(2);
+const jobId = argv[1];
+const dataDir = argv[argv.indexOf("--data-dir") + 1];
+const token = process.env.CHENGFENG_JOB_OWNER_TOKEN;
+let job;
+for (let i = 0; i < 200; i += 1) {
+  job = JSON.parse(await readFile(join(dataDir, "jobs", jobId, "job.json"), "utf8"));
+  if (job.state === "running" && job.owner?.token === token) break;
+  await Bun.sleep(10);
+}
+const candidate = "candidate";
+await writeFile(job.params.candidatePath, candidate);
+console.log(JSON.stringify({ ok: true, result: {
+  dependencyFingerprint: job.frozen.dependencyFingerprint,
+  candidateSha256: createHash("sha256").update(candidate).digest("hex"),
+  candidateSize: Buffer.byteLength(candidate),
+} }));
+`);
+  return { root, staticDir, projectsDir, dataDir, projectDirs, successWorker };
 }
 
 async function waitJob(url: string, jobId: string, states: string[], timeout = 30_000): Promise<DurableJob> {
@@ -59,6 +85,26 @@ async function waitJob(url: string, jobId: string, states: string[], timeout = 3
     await Bun.sleep(25);
   }
   throw new Error(`job ${jobId} did not reach ${states.join("/")}`);
+}
+
+async function waitManagedJob(manager: JobManager, jobId: string, states: string[], timeout = 10_000): Promise<DurableJob> {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    const job = await manager.read(jobId);
+    if (job && states.includes(job.state)) return job;
+    await Bun.sleep(20);
+  }
+  throw new Error(`job ${jobId} did not reach ${states.join("/")}`);
+}
+
+async function postJob(handler: ReturnType<typeof createJobsApi>, body: unknown): Promise<Response> {
+  const response = await handler(new Request("http://127.0.0.1:5190/api/v1/jobs", {
+    method: "POST",
+    headers: { Host: "127.0.0.1:5190", "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }), "127.0.0.1");
+  if (!response) throw new Error("jobs API did not handle request");
+  return response;
 }
 
 describe("durable jobs HTTP and real export", () => {
@@ -163,6 +209,21 @@ describe("durable jobs HTTP and real export", () => {
     });
     expect(rebound.status).toBe(403);
     expect(await rebound.json()).toMatchObject({ error: { code: "host_forbidden" } });
+    const invalidBody = await fetch(`${server.url}/api/v1/jobs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "export", target: "one", operationId: "invalid-job-body", params: [] }),
+    });
+    expect(invalidBody.status).toBe(400);
+    expect(await invalidBody.json()).toMatchObject({ error: { code: "invalid_argument" } });
+    const rejectedFiles = await readdir(new OperationAuditStore(f.dataDir).rejectionsDir);
+    expect(rejectedFiles).toHaveLength(1);
+    const rejectedText = await readFile(
+      join(new OperationAuditStore(f.dataDir).rejectionsDir, rejectedFiles[0]!),
+      "utf8",
+    );
+    expect(rejectedText).toContain("invalid-job-body");
+    expect(rejectedText).not.toContain(f.root);
     const startBody = { kind: "export", target: "one", operationId: "job-start-op-1", params: { outputPath, scale: 2, fps: 15 } };
     const start = await fetch(`${server.url}/api/v1/jobs`, {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -177,6 +238,10 @@ describe("durable jobs HTTP and real export", () => {
       succeeded: true,
       result: { jobId: first.jobId, projectId: "one" },
     });
+    expect(await readFile(
+      new OperationAuditStore(f.dataDir).recordPath("job-start-op-1"),
+      "utf8",
+    )).not.toContain(f.root);
 
     const replay = await fetch(`${server.url}/api/v1/jobs`, {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -295,4 +360,60 @@ describe("durable jobs HTTP and real export", () => {
       expect(() => process.kill(-oldWorkerPid, 0)).toThrow();
     }
   }, 45_000);
+
+  it("refuses a job-start replay when another active job now owns the target", async () => {
+    const f = await fixture();
+    let holdSecond = false;
+    let enteredSecond!: () => void;
+    let releaseSecond!: () => void;
+    let releasedSecond = false;
+    const secondEntered = new Promise<void>((resolveEntered) => { enteredSecond = resolveEntered; });
+    const secondGate = new Promise<void>((resolveRelease) => {
+      releaseSecond = () => {
+        releasedSecond = true;
+        resolveRelease();
+      };
+    });
+    const manager = new JobManager(f.dataDir, {
+      projectsDir: f.projectsDir,
+      workerEntrypoint: f.successWorker,
+      async beforeWorkerSpawn() {
+        if (!holdSecond) return;
+        enteredSecond();
+        await secondGate;
+      },
+    });
+    managers.push(manager);
+    await manager.initialize();
+    const auditStore = new OperationAuditStore(f.dataDir);
+    const handler = createJobsApi(manager, 5190, { operationAuditStore: auditStore });
+
+    try {
+      const firstBody = {
+        kind: "export",
+        target: "one",
+        operationId: "job-replay-active-conflict",
+        params: { outputPath: join(f.root, "first.mp4"), scale: 1, fps: 12 },
+      };
+      const firstResponse = await postJob(handler, firstBody);
+      expect(firstResponse.status).toBe(202);
+      const first = await firstResponse.json() as DurableJob;
+      expect((await waitManagedJob(manager, first.jobId, ["succeeded"])).state).toBe("succeeded");
+
+      holdSecond = true;
+      const secondResponse = await postJob(handler, {
+        kind: "export",
+        target: "one",
+        params: { outputPath: join(f.root, "second.mp4"), scale: 1, fps: 12 },
+      });
+      expect(secondResponse.status).toBe(202);
+      await secondEntered;
+
+      const replay = await postJob(handler, firstBody);
+      expect(replay.status).toBe(409);
+      expect(await replay.json()).toMatchObject({ error: { code: "job_target_conflict" } });
+    } finally {
+      if (!releasedSecond) releaseSecond();
+    }
+  });
 });

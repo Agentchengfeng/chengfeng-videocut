@@ -14,6 +14,7 @@ import {
 const API_SCHEMA_VERSION = 1 as const;
 const CUT_SELECTION_FILE = "cut-selection.json" as const;
 const REVISION_PATTERN = /^(?:none|[a-f0-9]{64})$/;
+const OPERATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 
 export interface VideocutCutsChange {
   projectId: string;
@@ -89,6 +90,8 @@ function errorStatus(error: VideocutError): number {
     case "revision_conflict":
     case "operation_id_conflict":
     case "operation_in_progress":
+    case "operation_replay_stale":
+    case "operation_replay_conflict":
       return 409;
     case "invalid_operation_id":
     case "operation_audit_invalid_field":
@@ -103,6 +106,8 @@ function errorStatus(error: VideocutError): number {
     case "invalid_cut_selection":
     case "invalid_edit_list":
       return 400;
+    case "committed_with_followup_failure":
+      return 500;
     default:
       return 500;
   }
@@ -230,6 +235,85 @@ function parsePutBody(value: unknown): CutsPutBody {
   };
 }
 
+function extractValidOperationId(value: unknown): string | undefined {
+  if (!isObject(value) || typeof value.operationId !== "string") return undefined;
+  return OPERATION_ID_PATTERN.test(value.operationId) ? value.operationId : undefined;
+}
+
+function auditProjectTarget(project: Awaited<ReturnType<typeof resolveProject>>) {
+  return {
+    projectId: project.projectId,
+    projectHash: operationInputHash(project.directory),
+  };
+}
+
+async function recordRejectedRequest(input: {
+  store: OperationAuditStore | undefined;
+  project: Awaited<ReturnType<typeof resolveProject>>;
+  operationId: string | undefined;
+  body: unknown;
+  errorCode: string;
+}): Promise<void> {
+  if (!input.store || !input.operationId) return;
+  await input.store.recordRejected({
+    operationId: input.operationId,
+    kind: "cuts.set",
+    target: auditProjectTarget(input.project),
+    inputHash: operationInputHash({
+      projectId: input.project.projectId,
+      bodyHash: operationInputHash(input.body),
+    }),
+    actor: "skill",
+    entrypoint: "http.cuts",
+  }, input.errorCode);
+}
+
+async function verifyCutsReplay(input: {
+  project: Awaited<ReturnType<typeof resolveProject>>;
+  operationId: string;
+  result: Record<string, string | number | boolean | null>;
+}): Promise<{
+  current: Awaited<ReturnType<typeof readOptionalProjectDocument>>;
+  editListRevision: string | null;
+}> {
+  const revision = input.result.revision;
+  if (typeof revision !== "string" || !/^[a-f0-9]{64}$/.test(revision)) {
+    throw new VideocutError(
+      "operation_replay_stale",
+      "Operation replay is missing its recorded Cuts revision",
+      { operationId: input.operationId },
+    );
+  }
+  const current = await readOptionalProjectDocument(input.project, CUT_SELECTION_FILE);
+  if (!current || current.revision !== revision) {
+    throw new VideocutError(
+      "operation_replay_stale",
+      "Operation replay Cuts document no longer matches the recorded terminal result",
+      { operationId: input.operationId, projectId: input.project.projectId, revision },
+    );
+  }
+  const expectedEditListRevision = input.result.editListRevision;
+  if (expectedEditListRevision !== null && typeof expectedEditListRevision !== "string") {
+    throw new VideocutError(
+      "operation_replay_stale",
+      "Operation replay has an invalid recorded edit-list revision",
+      { operationId: input.operationId },
+    );
+  }
+  const editList = await readOptionalProjectDocument(input.project, "edit-list.json");
+  if (
+    typeof expectedEditListRevision === "string" &&
+    editList?.revision !== expectedEditListRevision
+  ) {
+    throw new VideocutError(
+      "operation_replay_stale",
+      "Operation replay edit-list no longer matches the recorded terminal result",
+      { operationId: input.operationId, projectId: input.project.projectId, editListRevision: expectedEditListRevision },
+    );
+  }
+  return { current, editListRevision: expectedEditListRevision };
+}
+
 async function readJsonRequest(request: Request): Promise<unknown> {
   const source = await request.text();
   try {
@@ -327,15 +411,26 @@ export function createVideocutCutsHandler(
         );
       }
 
-      const body = parsePutBody(await readJsonRequest(request));
+      const rawBody = await readJsonRequest(request);
+      let body: CutsPutBody;
+      try {
+        body = parsePutBody(rawBody);
+      } catch (error) {
+        const normalized = asVideocutError(error);
+        await recordRejectedRequest({
+          store: options.operationAuditStore,
+          project,
+          operationId: extractValidOperationId(rawBody),
+          body: rawBody,
+          errorCode: normalized.code,
+        });
+        throw error;
+      }
       const admission = options.operationAuditStore
         ? await options.operationAuditStore.admit({
             operationId: body.operationId,
             kind: "cuts.set",
-            target: {
-              projectId: project.projectId,
-              projectDirectory: project.directory,
-            },
+            target: auditProjectTarget(project),
             inputHash: operationInputHash({
               projectId: project.projectId,
               expectedRevision: body.expectedRevision,
@@ -352,33 +447,47 @@ export function createVideocutCutsHandler(
         : null;
       if (admission?.replay) {
         if (admission.replay.status === "succeeded" && admission.replay.result) {
-          const current = await readOptionalProjectDocument(project, CUT_SELECTION_FILE);
-          if (current && current.revision === admission.replay.result.revision) {
-            return jsonResponse(
-              {
-                schemaVersion: API_SCHEMA_VERSION,
-                projectId: project.projectId,
-                operationId: admission.operationId,
-                operationReplay: true,
-                exists: true,
-                changed: admission.replay.result.changed,
-                previousRevision: admission.replay.result.previousRevision ?? "none",
-                revision: current.revision,
-                editListRevision: admission.replay.result.editListRevision ?? null,
-                document: current.value,
-              },
-              200,
-              { ETag: `"${current.revision}"` },
-            );
-          }
-          return jsonResponse({
-            schemaVersion: API_SCHEMA_VERSION,
-            projectId: project.projectId,
+          const verified = await verifyCutsReplay({
+            project,
             operationId: admission.operationId,
-            operationReplay: true,
-            terminalStatus: "succeeded",
             result: admission.replay.result,
           });
+          return jsonResponse(
+            {
+              schemaVersion: API_SCHEMA_VERSION,
+              projectId: project.projectId,
+              operationId: admission.operationId,
+              operationReplay: true,
+              exists: true,
+              changed: admission.replay.result.changed,
+              previousRevision: admission.replay.result.previousRevision ?? "none",
+              revision: verified.current!.revision,
+              editListRevision: verified.editListRevision,
+              document: verified.current!.value,
+            },
+            200,
+            { ETag: `"${verified.current!.revision}"` },
+          );
+        }
+        if (admission.replay.status === "committed_partial" && admission.replay.result) {
+          await verifyCutsReplay({
+            project,
+            operationId: admission.operationId,
+            result: admission.replay.result,
+          });
+          const replayErrorCode =
+            (admission.replay.errorCode ?? "committed_with_followup_failure") as VideocutErrorCode;
+          return errorResponse(
+            errorStatus(new VideocutError(replayErrorCode, "committed partial")),
+            replayErrorCode,
+            "operationId reached a committed partial terminal result",
+            {
+              operationId: admission.operationId,
+              operationReplay: true,
+              committed: true,
+              result: admission.replay.result,
+            },
+          );
         }
         const replayErrorCode = (admission.replay.errorCode ?? "operation_failed") as VideocutErrorCode;
         throw new VideocutError(
@@ -427,8 +536,8 @@ export function createVideocutCutsHandler(
               revision: transaction.editList.revision,
             });
           } catch (error) {
-            throw new VideocutError(
-              "io_error",
+            const partialError = new VideocutError(
+              "committed_with_followup_failure",
               "Cuts and edit-list.json were saved, but index.html could not be regenerated",
               {
                 committed: true,
@@ -437,6 +546,19 @@ export function createVideocutCutsHandler(
                 cause: error instanceof Error ? error.message : String(error),
               },
             );
+            if (admission) {
+              await options.operationAuditStore!.finishCommittedPartial(admission.operationId, partialError, {
+                result: {
+                  projectId: project.projectId,
+                  previousRevision: result.previousRevision ?? "none",
+                  revision: result.revision,
+                  changed: result.changed,
+                  editListRevision: transaction.editList.revision,
+                  committed: true,
+                },
+              });
+            }
+            throw partialError;
           }
         }
 

@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
@@ -169,6 +171,8 @@ function exitCodeFor(error: CliFailure): number {
     case "project_id_conflict":
     case "operation_id_conflict":
     case "operation_in_progress":
+    case "operation_replay_stale":
+    case "operation_replay_conflict":
     case "invalid_state":
     case "missing_artifact":
       return 5;
@@ -180,6 +184,7 @@ function exitCodeFor(error: CliFailure): number {
     case "service_busy":
     case "operation_audit_corrupt":
     case "operation_audit_record_too_large":
+    case "committed_with_followup_failure":
       return 6;
     case "missing_renderer":
       return 7;
@@ -888,6 +893,87 @@ async function assertRegisteredProject(input: {
   }
 }
 
+async function sha256File(path: string): Promise<string> {
+  const hash = createHash("sha256");
+  await new Promise<void>((resolvePromise, reject) => {
+    const stream = createReadStream(path);
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("error", reject);
+    stream.on("end", resolvePromise);
+  });
+  return hash.digest("hex");
+}
+
+function requiredAuditString(
+  fields: Record<string, string | number | boolean | null>,
+  name: string,
+  operationId: string,
+): string {
+  const value = fields[name];
+  if (typeof value !== "string" || !value) {
+    throw new VideocutError(
+      "operation_replay_stale",
+      "Operation replay is missing its recorded identity",
+      { operationId, field: name },
+    );
+  }
+  return value;
+}
+
+async function verifiedIngestReplayData(input: {
+  taskDirectory: string;
+  projectsDir: string;
+  cwd: string;
+  operationId: string;
+  result: Record<string, string | number | boolean | null>;
+}): Promise<Record<string, unknown>> {
+  const projectId = requiredAuditString(input.result, "projectId", input.operationId);
+  const canonicalVideo = requiredAuditString(input.result, "canonicalVideo", input.operationId);
+  const canonicalTranscript = requiredAuditString(input.result, "canonicalTranscript", input.operationId);
+  const sourceSha256 = requiredAuditString(input.result, "sourceSha256", input.operationId);
+  const project = await resolveProject(input.taskDirectory, { cwd: input.cwd, projectsDir: input.projectsDir });
+  if (project.projectId !== projectId) {
+    throw new VideocutError(
+      "operation_replay_conflict",
+      "Operation replay project identity no longer matches",
+      { operationId: input.operationId, projectId, currentProjectId: project.projectId },
+    );
+  }
+  await assertRegisteredProject({ project, cwd: input.cwd, projectsDir: input.projectsDir });
+
+  const source = objectRecord((project.project as Record<string, unknown>).source);
+  if (
+    (project.project as Record<string, unknown>).inputVideo !== canonicalVideo ||
+    source?.path !== canonicalVideo ||
+    source?.sha256 !== sourceSha256
+  ) {
+    throw new VideocutError(
+      "operation_replay_stale",
+      "Operation replay source identity no longer matches the current project",
+      { operationId: input.operationId, projectId },
+    );
+  }
+  if (await sha256File(join(project.directory, canonicalVideo)) !== sourceSha256) {
+    throw new VideocutError(
+      "operation_replay_stale",
+      "Operation replay source file no longer matches the recorded source SHA",
+      { operationId: input.operationId, projectId },
+    );
+  }
+
+  return {
+    projectId,
+    directory: project.directory,
+    url: projectUrl(project),
+    registered: true,
+    canonicalVideo,
+    canonicalTranscript,
+    indexWritten: input.result.indexWritten === true,
+    transcriptCueCount: input.result.transcriptCueCount,
+    cutWordCount: input.result.cutWordCount,
+  };
+}
+
 function projectInput(command: CliCommand, value: string | undefined): string {
   if (value) return value;
   throw new VideocutError("invalid_argument", `${command} requires a project`);
@@ -1137,7 +1223,8 @@ export async function runCli(
         kind: "project.ingest",
         target: {
           projectId: basename(taskDirectory),
-          taskDirectory,
+          taskLabel: basename(taskDirectory),
+          taskHash: operationInputHash(taskDirectory),
         },
         inputHash: operationInputHash({
           command: "project.ingest",
@@ -1152,16 +1239,20 @@ export async function runCli(
       });
       if (admission.replay) {
         if (admission.replay.status === "succeeded" && admission.replay.result) {
-          const replayResult = admission.replay.result;
-          const url = typeof replayResult.url === "string" ? replayResult.url : "";
-          const directory = typeof replayResult.directory === "string" ? replayResult.directory : "";
+          const replayData = await verifiedIngestReplayData({
+            taskDirectory,
+            projectsDir,
+            cwd,
+            operationId: admission.operationId,
+            result: admission.replay.result,
+          });
           const data = {
-            ...replayResult,
+            ...replayData,
             operationId: admission.operationId,
             operationReplay: true,
           };
           if (parsed.json) io.stdout(JSON.stringify(successEnvelope(parsed.command, data)));
-          else io.stdout(`${url}\nCreated ${directory}`);
+          else io.stdout(`${String(replayData.url)}\nCreated ${String(replayData.directory)}`);
           return 0;
         }
         throw new CliRequestError(
@@ -1216,6 +1307,7 @@ export async function runCli(
             "project ingest completed without registration metadata",
           );
         }
+        const sourceSha256 = await sha256File(join(ingested.directory, ingested.canonicalVideo));
         const data = {
           operationId: admission.operationId,
           projectId: ingested.projectId,
@@ -1233,11 +1325,10 @@ export async function runCli(
         await auditStore.finishSucceeded(admission.operationId, {
           result: {
             projectId: data.projectId,
-            directory: data.directory,
-            url: data.url,
             registered: data.registered,
             canonicalVideo: data.canonicalVideo,
             canonicalTranscript: data.canonicalTranscript,
+            sourceSha256,
             indexWritten: data.indexWritten,
             transcriptCueCount: data.transcriptCueCount,
             cutWordCount: data.cutWordCount,
