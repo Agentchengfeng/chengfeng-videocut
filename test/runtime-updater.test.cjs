@@ -43,6 +43,11 @@ const IS_WINDOWS = process.platform === "win32";
 // Windows 上 JS 版 realpathSync 不展开 8.3 短名（RUNNER~1），native 版才展开；
 // 夹具根统一走 native，避免与 install.cjs 的 canonicalPath 口径不一致。
 const canonicalRealpath = realpathSync.native ?? realpathSync;
+// Windows 上 os.homedir() 读 USERPROFILE 而不是 HOME；夹具改「用户目录」时两者必须一起改，
+// 否则 install.cjs 会把夹具根当成自定义 --target-root 拒绝 --ensure-service / --recover-rollback。
+function homeEnv(directory) {
+  return IS_WINDOWS ? { HOME: directory, USERPROFILE: directory } : { HOME: directory };
+}
 const PROJECT_CONTENT = "project must survive update transaction\n";
 
 function writeExecutable(destination, content) {
@@ -467,7 +472,7 @@ function invokeFormal(executable, home, release, formal, extraArgs = [], extraEn
   ], {
     env: {
       ...process.env,
-      HOME: path.dirname(home),
+      ...homeEnv(path.dirname(home)),
       CHENGFENG_VIDEOCUT_DOWNLOAD_BASE: pathToFileURL(release).href.replace(/\/$/, ""),
       ...extraEnv,
     },
@@ -550,7 +555,7 @@ Promise.resolve(installer.main()).catch((error) => {
   ], {
     env: {
       ...env,
-      HOME: path.dirname(home),
+      ...homeEnv(path.dirname(home)),
       CHENGFENG_VIDEOCUT_TEST_EMBEDDED_PAYLOAD: JSON.stringify(payload),
       CHENGFENG_VIDEOCUT_TEST_INSTALLER: INSTALLER,
       CHENGFENG_VIDEOCUT_ALLOW_UNVERIFIED_LOCAL_TOOLS: "1",
@@ -563,10 +568,12 @@ Promise.resolve(installer.main()).catch((error) => {
 function invokeStableLauncher(launcher, args, options = {}) {
   if (!IS_WINDOWS) return spawnSync(launcher, args, options);
   const quote = (value) => `"${String(value).replaceAll('"', '""')}"`;
+  // 与 install.cjs 的 runExecutable 一致：整条命令行已按 cmd 规则加好引号，
+  // 必须 windowsVerbatimArguments，否则 Node 会再包一层引号并把内部 " 转成 \"，cmd.exe 无法解析。
   return spawnSync(
     process.env.ComSpec || "cmd.exe",
     ["/d", "/v:off", "/s", "/c", `"${quote(launcher)} ${args.map(quote).join(" ")}"`],
-    options,
+    { ...options, windowsVerbatimArguments: true },
   );
 }
 
@@ -581,6 +588,17 @@ function addInstallerBootstrapAssets(release, { tamperInstaller = false } = {}) 
   if (tamperInstaller) {
     writeFileSync(releaseInstaller, `${readFileSync(releaseInstaller, "utf8")}\n// tampered after checksums\n`);
   }
+}
+
+// Windows 上 install.cjs 先在全部 PATH 目录里找 bun.exe，再找 bun.cmd；
+// 测试要用假 Bun 版本时必须把 runner 上真 bun.exe 所在目录剔掉，假 bun.cmd 才能生效。
+function inheritedPathForFakeBun(reportedBunVersion) {
+  const inherited = process.env.PATH || "";
+  if (!IS_WINDOWS || !reportedBunVersion) return inherited;
+  return inherited
+    .split(path.delimiter)
+    .filter((entry) => entry && !existsSync(path.join(entry, "bun.exe")))
+    .join(path.delimiter);
 }
 
 function installEnv(home, release, extra = {}) {
@@ -608,8 +626,8 @@ function installEnv(home, release, extra = {}) {
   }
   return {
     ...process.env,
-    HOME: path.dirname(home),
-    PATH: `${fakeBin}${path.delimiter}${process.env.PATH || ""}`,
+    ...homeEnv(path.dirname(home)),
+    PATH: `${fakeBin}${path.delimiter}${inheritedPathForFakeBun(reportedBunVersion)}`,
     CHENGFENG_VIDEOCUT_HOME: home,
     CHENGFENG_VIDEOCUT_DOWNLOAD_BASE: pathToFileURL(release).href.replace(/\/$/, ""),
     ...extra,
@@ -906,7 +924,7 @@ test("macOS shell bootstrap downloads and verifies install.cjs before a real loc
   const result = spawnSync("sh", [SHELL_INSTALLER], {
     env: {
       ...installEnv(home, release),
-      HOME: path.join(root, "bootstrap-home"),
+      ...homeEnv(path.join(root, "bootstrap-home")),
       TMPDIR: root,
     },
     encoding: "utf8",
@@ -926,7 +944,7 @@ test("macOS shell bootstrap rejects install.cjs changed after SHA256SUMS", {
   const result = spawnSync("sh", [SHELL_INSTALLER], {
     env: {
       ...installEnv(home, release),
-      HOME: path.join(root, "bootstrap-home"),
+      ...homeEnv(path.join(root, "bootstrap-home")),
       TMPDIR: root,
     },
     encoding: "utf8",
@@ -2126,7 +2144,7 @@ test("explicit embedded rollback recovery restores a legacy Runtime after the ol
     "--json",
   ], {
     ...environment,
-    HOME: path.dirname(home),
+    ...homeEnv(path.dirname(home)),
   });
   assert.notEqual(noPayload.status, 0);
   assert.match(noPayload.stdout, /含已校验受管工具 payload/);
@@ -2239,7 +2257,7 @@ test("explicit rollback recovery rejects a tampered journal and custom target ro
     customRoot,
     embeddedPayload,
     ["--recover-rollback"],
-    { HOME: path.join(root, "another-user") },
+    homeEnv(path.join(root, "another-user")),
   );
   assert.notEqual(customRootRejected.status, 0);
   assert.match(customRootRejected.stdout, /自定义 --target-root 不得接管全局/);
