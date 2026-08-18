@@ -36,8 +36,13 @@ const { gzipSync } = require("node:zlib");
 const ROOT = path.resolve(__dirname, "..");
 const INSTALLER = path.join(ROOT, "install.cjs");
 const SHELL_INSTALLER = path.join(ROOT, "install.sh");
-const VERSION = "0.5.1";
+// 单一版本源：夹具版本必须跟 package.json 走，否则 install.cjs 会把
+// chengfeng-videocut-<旧版本>/ 归档根当作「不安全的路径」拒绝（0.5.2–0.5.8 期间就是这么漂移的）。
+const VERSION = require("../package.json").version;
 const IS_WINDOWS = process.platform === "win32";
+// Windows 上 JS 版 realpathSync 不展开 8.3 短名（RUNNER~1），native 版才展开；
+// 夹具根统一走 native，避免与 install.cjs 的 canonicalPath 口径不一致。
+const canonicalRealpath = realpathSync.native ?? realpathSync;
 const PROJECT_CONTENT = "project must survive update transaction\n";
 
 function writeExecutable(destination, content) {
@@ -853,6 +858,46 @@ test("Windows stable launcher calls only managed tools/current Bun", () => {
   assert.doesNotMatch(launcher, /where bun|USERPROFILE|bun\.cmd/);
 });
 
+test("install.cjs embedded VERSION matches package.json so fixtures cannot drift", () => {
+  const source = readFileSync(INSTALLER, "utf8");
+  const match = source.match(/^const VERSION = "([^"]+)";$/m);
+  assert.ok(match, "install.cjs must declare a single hardcoded VERSION");
+  assert.equal(
+    match[1],
+    VERSION,
+    `install.cjs VERSION ${match[1]} != package.json version ${VERSION}; bump both together`,
+  );
+});
+
+// Windows 8.3 短名回归：GitHub runner 的 %TEMP% 是 C:\Users\RUNNER~1\...，
+// 安装根含短名组件时 realpathSync.native 展开为长名，不能被误判成「规范路径跳转」。
+test("Windows 8.3 short-name install root is a legal alias, not a canonical-path jump", {
+  skip: !IS_WINDOWS,
+}, (t) => {
+  const { root, release } = fixture(t);
+  const longDir = path.join(root, "updater-shortname-regression-longname");
+  mkdirSync(longDir, { recursive: true });
+  const shortDir = execFileSync("powershell.exe", [
+    "-NoProfile", "-NonInteractive", "-Command",
+    `(New-Object -ComObject Scripting.FileSystemObject).GetFolder('${longDir.replaceAll("'", "''")}').ShortPath`,
+  ], { encoding: "utf8" }).trim();
+  if (!shortDir || shortDir.toLowerCase() === longDir.toLowerCase()) {
+    t.skip("8.3 short names are disabled on this volume; nothing to regress");
+    return;
+  }
+  assert.notEqual(canonicalRealpath(shortDir).toLowerCase(), shortDir.toLowerCase(), "fixture must be a real short-name alias");
+  const home = path.join(shortDir, "user", ".chengfeng-videocut");
+  const result = invoke(home, release);
+  assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /规范路径跳转|reparse point/);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readState(home).phase, "idle");
+  assert.equal(readState(home).active.version, VERSION);
+  assert.equal(
+    canonicalRealpath(currentTarget(home)).toLowerCase(),
+    canonicalRealpath(path.join(home, "app", VERSION)).toLowerCase(),
+  );
+});
+
 test("macOS shell bootstrap downloads and verifies install.cjs before a real local Release install", {
   skip: IS_WINDOWS,
 }, (t) => {
@@ -1012,7 +1057,7 @@ function readState(home) {
 }
 
 function fixture(t, releaseOptions) {
-  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "chengfeng-videocut-updater-test-")));
+  const root = canonicalRealpath(mkdtempSync(path.join(os.tmpdir(), "chengfeng-videocut-updater-test-")));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const home = path.join(root, "user", ".chengfeng-videocut");
   const releaseInfo = makeRelease(root, releaseOptions);
@@ -2391,7 +2436,7 @@ test("lock mkdir-to-owner race never lets a second installer delete the live loc
 });
 
 test("crafted archive candidate root symlink is rejected and cannot escape into projects", (t) => {
-  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "chengfeng-videocut-updater-link-test-")));
+  const root = canonicalRealpath(mkdtempSync(path.join(os.tmpdir(), "chengfeng-videocut-updater-link-test-")));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const home = path.join(root, "home");
   const old = createLegacyRuntime(home);

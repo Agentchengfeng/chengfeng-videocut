@@ -15,7 +15,8 @@ import {
 } from "../scripts/npm-runtime-package";
 
 const ROOT = resolve(import.meta.dir, "..");
-const VERSION = "0.5.1";
+// 与 package.json 同源；npm 包 verifier 会拒绝与产品版本不一致的 manifest。
+const VERSION = (JSON.parse(await readFile(join(ROOT, "package.json"), "utf8")) as { version: string }).version;
 const PLATFORM: NpmRuntimePlatformKey = "darwin-arm64";
 const temporaryRoots: string[] = [];
 

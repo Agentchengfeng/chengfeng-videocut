@@ -263,8 +263,11 @@ function comparablePath(candidate) {
   return IS_WINDOWS ? resolved.toLowerCase() : resolved;
 }
 
-function assertSafeInstallRootPath(candidate) {
-  const resolved = path.resolve(candidate);
+// Windows 上同一目录有多个合法别名（8.3 短名如 RUNNER~1、大小写、subst/映射盘），
+// realpathSync.native 会把它们展开成长名，所以「canonical 与 path.resolve 字符串相等」
+// 在 Windows 不能当作「无链接」的判据；链接/junction/reparse point 由逐组件 lstat 拦截。
+// POSIX 没有别名问题，仍保留字符串等价比较作为第二道防线。
+function assertNoLinkedComponents(resolved, label) {
   const parsed = path.parse(resolved);
   let current = parsed.root;
   const segments = resolved.slice(parsed.root.length).split(path.sep).filter(Boolean);
@@ -274,19 +277,24 @@ function assertSafeInstallRootPath(candidate) {
     try {
       metadata = lstatSync(current);
     } catch (error) {
-      if (error && error.code === "ENOENT") return;
+      if (error && error.code === "ENOENT") return false;
       throw error;
     }
     if (metadata.isSymbolicLink()) {
-      fail(`Product 受管安装根的已有路径组件不得是链接或 reparse point：${current}`);
+      fail(`${label}的已有路径组件不得是链接或 reparse point：${current}`);
     }
     if (!metadata.isDirectory()) {
-      fail(`Product 受管安装根的已有路径组件不是目录：${current}`);
+      fail(`${label}的已有路径组件不是目录：${current}`);
     }
-    if (comparablePath(realpathSync(current)) !== comparablePath(current)) {
-      fail(`Product 受管安装根的已有路径组件发生规范路径跳转：${current}`);
+    if (!IS_WINDOWS && comparablePath(realpathSync(current)) !== comparablePath(current)) {
+      fail(`${label}的已有路径组件发生规范路径跳转：${current}`);
     }
   }
+  return true;
+}
+
+function assertSafeInstallRootPath(candidate) {
+  assertNoLinkedComponents(path.resolve(candidate), "Product 受管安装根");
 }
 
 function isWithinOrEqual(root, candidate) {
@@ -301,8 +309,14 @@ function assertPlainDirectory(candidate, label) {
   if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
     fail(`${label} 必须是非链接普通目录；安装已停止。`);
   }
+  const resolved = path.resolve(candidate);
   const canonical = canonicalPath(candidate);
-  if (comparablePath(canonical) !== comparablePath(path.resolve(candidate))) {
+  if (IS_WINDOWS) {
+    // 逐组件 lstat 已拒绝链接/junction/reparse point；剩余差异只可能是短名/大小写/盘符别名。
+    if (!assertNoLinkedComponents(resolved, label)) {
+      fail(`${label} 在校验期间消失；安装已停止。`);
+    }
+  } else if (comparablePath(canonical) !== comparablePath(resolved)) {
     fail(`${label} 发生链接、reparse point 或规范路径跳转；安装已停止。`);
   }
   return canonical;

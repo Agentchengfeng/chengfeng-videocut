@@ -20,6 +20,7 @@ const test = require("node:test");
 const { pathToFileURL } = require("node:url");
 
 const ROOT = path.resolve(__dirname, "..");
+const PRODUCT_VERSION = require("../package.json").version;
 const INSTALLER = path.join(ROOT, "install.cjs");
 
 function invoke(args, env = {}) {
@@ -217,8 +218,8 @@ test("formal asset download requires the exact byte size declared by the manifes
     const manifestValue = {
       schemaVersion: 1,
       product: "chengfeng-videocut",
-      productVersion: "0.5.1",
-      releaseTag: "v0.5.1",
+      productVersion: PRODUCT_VERSION,
+      releaseTag: `v${PRODUCT_VERSION}`,
       distributionMode: "local-test-only",
       runtime: {
         asset: runtimeAsset,

@@ -1,6 +1,5 @@
 import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import {
   NATIVE_INSTALLER_TARGETS,
   parseNativeInstallerTargets,
@@ -17,7 +16,13 @@ const packageJson = JSON.parse(await readFile(join(rootDir, "package.json"), "ut
 const selected = parseNativeInstallerTargets(process.env.CHENGFENG_VIDEOCUT_INSTALLER_TARGETS);
 
 function importSpecifier(from: string, to: string): string {
-  const value = relative(dirname(from), to).replaceAll("\\", "/");
+  const relativePath = relative(dirname(from), to);
+  // Windows 上跨盘（如 wrapper 在 C:\Temp、资产在 D:\a）时 path.relative 会原样返回绝对路径，
+  // 再拼成 "./D:/..." 会让 bun build 解析失败；这里 fail-closed 而不是产出坏 specifier。
+  if (isAbsolute(relativePath)) {
+    throw new Error(`Installer wrapper and asset must live on the same volume: ${from} -> ${to}`);
+  }
+  const value = relativePath.replaceAll("\\", "/");
   return value.startsWith(".") ? value : `./${value}`;
 }
 
@@ -60,7 +65,9 @@ try {
 }
 
 await mkdir(releaseDir, { recursive: true });
-const stagingRoot = await realpath(await mkdtemp(join(tmpdir(), "chengfeng-videocut-installer-payload-")));
+// staging 必须与 releaseDir（Runtime/tools 归档所在）同卷：wrapper 里的 file import 是相对路径，
+// GitHub Windows runner 的系统临时目录在 C:、工作区在 D:，放 tmpdir() 会跨盘。
+const stagingRoot = await realpath(await mkdtemp(join(releaseDir, ".chengfeng-videocut-installer-payload-")));
 try {
   const payloads = await writeInstallerPayloadManifests({
     rootDir,
