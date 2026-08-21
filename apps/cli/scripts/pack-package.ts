@@ -24,11 +24,12 @@ try {
 } finally {
   await rm(npmCacheDir, { recursive: true, force: true });
 }
-const packageJson = JSON.parse(await readFile(resolve(cliDir, "package.json"), "utf8")) as {
+  const packageJson = JSON.parse(await readFile(resolve(cliDir, "package.json"), "utf8")) as {
   name: string;
   version: string;
 };
+const packedName = `${packageJson.name.replace(/^@/, "").replace("/", "-")}-${packageJson.version}.tgz`;
 await copyFile(
-  resolve(releaseDir, `${packageJson.name}-${packageJson.version}.tgz`),
-  resolve(releaseDir, `${packageJson.name}.tgz`),
+  resolve(releaseDir, packedName),
+  resolve(releaseDir, "chengfeng-videocut.tgz"),
 );

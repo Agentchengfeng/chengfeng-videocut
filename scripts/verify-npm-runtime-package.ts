@@ -5,8 +5,14 @@ const args = process.argv.slice(2);
 const allowLocalFixtureIndex = args.indexOf("--allow-local-fixture");
 const allowLocalFixture = allowLocalFixtureIndex >= 0;
 if (allowLocalFixture) args.splice(allowLocalFixtureIndex, 1);
+const allowPublicBetaIndex = args.indexOf("--allow-public-beta");
+const allowPublicBeta = allowPublicBetaIndex >= 0;
+if (allowPublicBeta) args.splice(allowPublicBetaIndex, 1);
 if (args.length !== 1) {
-  throw new Error("Usage: bun scripts/verify-npm-runtime-package.ts [--allow-local-fixture] <package-directory>");
+  throw new Error("Usage: bun scripts/verify-npm-runtime-package.ts [--allow-local-fixture|--allow-public-beta] <package-directory>");
+}
+if (allowLocalFixture && allowPublicBeta) {
+  throw new Error("--allow-local-fixture and --allow-public-beta are mutually exclusive");
 }
 if (allowLocalFixture && process.env.NODE_ENV !== "test") {
   throw new Error("--allow-local-fixture requires NODE_ENV=test");
@@ -14,6 +20,7 @@ if (allowLocalFixture && process.env.NODE_ENV !== "test") {
 const manifest = await verifyNpmRuntimePackage({
   packageDir: resolve(args[0]),
   allowLocalFixture,
+  allowPublicBeta,
 });
 console.log(JSON.stringify({
   status: "verified",

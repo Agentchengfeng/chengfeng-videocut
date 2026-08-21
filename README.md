@@ -6,17 +6,21 @@ chengfeng-videocut 是一个本地优先的口播视频剪辑产品：浏览器�
 
 ## 下载与安装
 
-0.5.8 的目标入口是 Codex Plugin。Plugin 调用平台原生 installer，用户机器不需要预装
-Node、Bun、FFmpeg、FFprobe 或 Chrome。installer 用已校验的
+0.5.9 的目标入口是 Codex Plugin 与 npm CLI。用户或 Codex 先准备一次 Node LTS，随后以
+`npx @chengfeng/videocut <命令>` 启动产品；Node 只负责该入口。Plugin 调用平台原生 installer，用户机器不需要预装
+Bun、FFmpeg、FFprobe 或 Chrome。installer 用已校验的
 `chengfeng-videocut-install-manifest.json` 安装 Runtime 与固定版本 managed tools，随后
 显式 `service ensure`；多个 Codex 任务复用同一个 Product Runtime。
 
-当前 0.5.8 代码与本机隔离安装已实现，但**公开发布被阻止**：FFmpeg/FFprobe/Bun/
+当前 0.5.9 代码与本机隔离安装已实现，但**公开发布被阻止**：FFmpeg/FFprobe/Bun/
 Chrome for Testing Headless Shell 的来源与使用许可复核、macOS/Windows 签名和 Windows 实机安装尚未
 完成。仓库中的 `UNVERIFIED` 不是免责声明式通过，而是 fail-closed 发布门禁。
 
 正式资产契约见 [docs/distribution.md](docs/distribution.md)。`install.sh`、Node 执行
-`install.cjs` 和 Desktop/Companion 只保留历史兼容或实验用途，不是 0.5.8 用户入口。
+`install.cjs` 和 Desktop/Companion 只保留历史兼容或实验用途；用户入口为 npm CLI 或 Codex Plugin。
+Windows PowerShell 可能被执行策略阻止 `npx.ps1`，因此 Codex 应通过 `npx.cmd` / `cmd.exe` 调用，
+不应让用户放宽 execution policy。当前 Windows x64 测试包仍需显式传入
+`--accept-public-beta`，并且 `releaseReady=false`；该确认不适用于正式发行包。
 
 ### 受管渲染引擎源码预览
 

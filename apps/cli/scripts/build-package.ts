@@ -1,4 +1,4 @@
-import { chmod, cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 const cliDir = resolve(import.meta.dir, "..");
@@ -38,6 +38,8 @@ const cliPath = join(distDir, "cli.js");
 const bundled = (await readFile(cliPath, "utf8")).replace(/^#![^\n]*\n?/, "");
 await writeFile(cliPath, `#!/usr/bin/env bun\n${bundled}`);
 await chmod(cliPath, 0o755);
+await copyFile(join(cliDir, "src", "npx-entry.cjs"), join(distDir, "npx-entry.cjs"));
+await chmod(join(distDir, "npx-entry.cjs"), 0o755);
 
 const studioTarget = join(distDir, "studio");
 await mkdir(studioTarget, { recursive: true });

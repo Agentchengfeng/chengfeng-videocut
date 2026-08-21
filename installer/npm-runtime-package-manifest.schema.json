@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/Agentchengfeng/chengfeng-videocut/blob/v0.5.8/installer/npm-runtime-package-manifest.schema.json",
+  "$id": "https://github.com/Agentchengfeng/chengfeng-videocut/blob/v0.5.9/installer/npm-runtime-package-manifest.schema.json",
   "title": "Chengfeng VideoCut npm Runtime platform package manifest",
   "type": "object",
   "additionalProperties": false,
@@ -60,7 +60,7 @@
       }
     },
     "distributionMode": {
-      "enum": ["release-ready", "local-test-only"]
+      "enum": ["release-ready", "public-beta", "local-test-only"]
     },
     "licenseStatus": {
       "enum": ["VERIFIED", "UNVERIFIED"]
@@ -68,6 +68,15 @@
     "licenseNote": {
       "type": "string",
       "minLength": 1
+    },
+    "beta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["channel", "acknowledgement"],
+      "properties": {
+        "channel": { "const": "windows-x64-public-beta" },
+        "acknowledgement": { "const": "--accept-public-beta" }
+      }
     },
     "legal": {
       "type": "object",
@@ -160,12 +169,22 @@
   },
   "oneOf": [
     {
+      "not": { "required": ["beta"] },
       "properties": {
         "distributionMode": { "const": "release-ready" },
         "licenseStatus": { "const": "VERIFIED" }
       }
     },
     {
+      "required": ["beta"],
+      "properties": {
+        "distributionMode": { "const": "public-beta" },
+        "licenseStatus": { "const": "UNVERIFIED" },
+        "platformKey": { "const": "win32-x64" }
+      }
+    },
+    {
+      "not": { "required": ["beta"] },
       "properties": {
         "distributionMode": { "const": "local-test-only" },
         "licenseStatus": { "const": "UNVERIFIED" }

@@ -1,10 +1,10 @@
 {
-  "name": "chengfeng-videocut",
-  "version": "0.5.8",
+  "name": "@chengfeng/videocut",
+  "version": "0.5.9",
   "description": "CLI and local Studio server for chengfeng-videocut",
   "type": "module",
   "bin": {
-    "chengfeng-videocut": "./dist/cli.js"
+    "chengfeng-videocut": "./dist/npx-entry.cjs"
   },
   "files": [
     "dist",
@@ -16,9 +16,14 @@
     "build:package": "bun scripts/build-package.ts",
     "package:check": "bun scripts/check-package.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "bun test"
+    "test": "bun test && node --test scripts/npx-entry.test.cjs"
   },
   "dependencies": {},
+  "optionalDependencies": {
+    "@chengfeng/videocut-runtime-darwin-arm64": "0.5.9",
+    "@chengfeng/videocut-runtime-darwin-x64": "0.5.9",
+    "@chengfeng/videocut-runtime-win32-x64": "0.5.9"
+  },
   "devDependencies": {
     "@hyperframes/core": "0.7.60",
     "@hyperframes/studio-server": "0.7.60",
@@ -28,7 +33,7 @@
     "gsap": "^3.13.0"
   },
   "engines": {
-    "bun": ">=1.2.0"
+    "node": ">=20"
   },
   "license": "Apache-2.0",
   "author": "成峰 / AI产品自由",

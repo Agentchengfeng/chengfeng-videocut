@@ -58,14 +58,14 @@ export async function checkPackage(cliDir = defaultCliDir): Promise<number> {
   const distDir = join(cliDir, "dist");
   const packageJson = JSON.parse(await readFile(join(cliDir, "package.json"), "utf8"));
 
-  check(packageJson.name === "chengfeng-videocut", "package name must be chengfeng-videocut");
+  check(packageJson.name === "@chengfeng/videocut", "package name must be @chengfeng/videocut");
   check(
     packageJson.version === PRODUCT_VERSION,
     `package version ${String(packageJson.version)} does not match ${PRODUCT_VERSION}`,
   );
   check(
-    packageJson.bin?.["chengfeng-videocut"] === "./dist/cli.js",
-    "package bin must point to dist/cli.js",
+    packageJson.bin?.["chengfeng-videocut"] === "./dist/npx-entry.cjs",
+    "package bin must point to the Node npx entry",
   );
   check(
     Array.isArray(packageJson.files) && packageJson.files.includes("dist"),
@@ -73,11 +73,20 @@ export async function checkPackage(cliDir = defaultCliDir): Promise<number> {
   );
   check(
     Object.keys(packageJson.dependencies ?? {}).length === 0,
-    "GitHub package must not require registry dependencies",
+    "npx wrapper must not add registry dependencies beyond exact optional platform payloads",
+  );
+  check(
+    JSON.stringify(packageJson.optionalDependencies) === JSON.stringify({
+      "@chengfeng/videocut-runtime-darwin-arm64": PRODUCT_VERSION,
+      "@chengfeng/videocut-runtime-darwin-x64": PRODUCT_VERSION,
+      "@chengfeng/videocut-runtime-win32-x64": PRODUCT_VERSION,
+    }),
+    "npx wrapper must pin exact platform Runtime packages",
   );
 
   for (const relativePath of [
     "cli.js",
+    "npx-entry.cjs",
     "studio/index.html",
     "studio/studio-boot-guard.js",
     "studio/chengfeng-videocut-capabilities.json",
@@ -99,6 +108,9 @@ export async function checkPackage(cliDir = defaultCliDir): Promise<number> {
     !/from\s+["']@hyperframes\//.test(cli),
     "dist/cli.js still imports a registry dependency",
   );
+  const npxEntry = await readFile(join(distDir, "npx-entry.cjs"), "utf8");
+  check(npxEntry.startsWith("#!/usr/bin/env node\n"), "npx entry must have a Node shebang");
+  check(npxEntry.includes("@chengfeng/videocut-runtime-win32-x64"), "npx entry must resolve the Windows Runtime package");
   check(
     !cli.includes("require.resolve(\"@hyperframes/") &&
       !cli.includes("require.resolve(\"gsap/"),

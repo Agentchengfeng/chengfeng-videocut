@@ -53,9 +53,13 @@ export const NPM_RUNTIME_TARGETS = {
 } as const;
 
 export type NpmRuntimePlatformKey = keyof typeof NPM_RUNTIME_TARGETS;
-type DistributionMode = "release-ready" | "local-test-only";
+type DistributionMode = "release-ready" | "public-beta" | "local-test-only";
 type LicenseStatus = "VERIFIED" | "UNVERIFIED";
 type FileRecord = { path: string; sha256: string; size: number };
+type PublicBeta = {
+  channel: "windows-x64-public-beta";
+  acknowledgement: "--accept-public-beta";
+};
 
 type InstallManifest = {
   schemaVersion?: unknown;
@@ -65,6 +69,7 @@ type InstallManifest = {
   distributionMode?: unknown;
   licenseStatus?: unknown;
   licenseNote?: unknown;
+  beta?: unknown;
   platforms?: unknown;
 };
 
@@ -82,6 +87,7 @@ export type NpmRuntimePackageManifest = {
   distributionMode: DistributionMode;
   licenseStatus: LicenseStatus;
   licenseNote: string;
+  beta?: PublicBeta;
   legal: { files: FileRecord[] };
   sbom: FileRecord & { format: "SPDX-2.3" };
   installer: {
@@ -268,12 +274,22 @@ function validateDistributionPair(
   distributionMode: unknown,
   licenseStatus: unknown,
   allowLocalFixture: boolean,
+  allowPublicBeta: boolean,
   label: string,
 ): asserts distributionMode is DistributionMode {
   const isRelease = distributionMode === "release-ready" && licenseStatus === "VERIFIED";
   const isFixture = distributionMode === "local-test-only" && licenseStatus === "UNVERIFIED";
-  check(isRelease || (allowLocalFixture && isFixture),
-    `${label} must be release-ready / VERIFIED${allowLocalFixture ? " or an explicit local-test-only / UNVERIFIED fixture" : ""}`);
+  const isPublicBeta = distributionMode === "public-beta" && licenseStatus === "UNVERIFIED";
+  check(isRelease || (allowLocalFixture && isFixture) || (allowPublicBeta && isPublicBeta),
+    `${label} must be release-ready / VERIFIED${allowPublicBeta ? " or the acknowledged Windows public-beta / UNVERIFIED channel" : ""}${allowLocalFixture ? " or an explicit local-test-only / UNVERIFIED fixture" : ""}`);
+}
+
+function validatePublicBeta(value: unknown, label: string): PublicBeta {
+  check(isRecord(value), `${label} beta descriptor is invalid`);
+  exactKeys(value, ["acknowledgement", "channel"], `${label} beta descriptor`);
+  check(value.channel === "windows-x64-public-beta" && value.acknowledgement === "--accept-public-beta",
+    `${label} beta descriptor is not the acknowledged Windows x64 public beta`);
+  return { channel: "windows-x64-public-beta", acknowledgement: "--accept-public-beta" };
 }
 
 function parseInstallManifest(
@@ -281,30 +297,40 @@ function parseInstallManifest(
   version: string,
   selected: readonly NpmRuntimePlatformKey[],
   allowLocalFixture: boolean,
+  allowPublicBeta: boolean,
 ): {
   distributionMode: DistributionMode;
   licenseStatus: LicenseStatus;
   licenseNote: string;
+  beta?: PublicBeta;
   platforms: Record<string, unknown>;
 } {
   check(value.schemaVersion === 1 && value.product === "chengfeng-videocut", "Install manifest identity is invalid");
   check(value.productVersion === version && value.releaseTag === `v${version}`, "Install manifest version is not exact");
-  validateDistributionPair(value.distributionMode, value.licenseStatus, allowLocalFixture, "Install manifest");
+  validateDistributionPair(value.distributionMode, value.licenseStatus, allowLocalFixture, allowPublicBeta, "Install manifest");
   check(typeof value.licenseNote === "string" && value.licenseNote.trim().length > 0,
     "Install manifest licenseNote is required");
   check(isRecord(value.platforms), "Install manifest platforms are invalid");
   const platformKeys = Object.keys(value.platforms).sort();
+  let beta: PublicBeta | undefined;
   if (value.distributionMode === "release-ready") {
     check(platformKeys.join("\0") === ALL_PLATFORM_KEYS.join("\0"),
       "Release-ready install manifest must cover exactly all supported platforms");
+    check(value.beta === undefined, "Release-ready install manifest must not carry a beta descriptor");
+  } else if (value.distributionMode === "public-beta") {
+    check(platformKeys.join("\0") === "win32-x64" && selected.length === 1 && selected[0] === "win32-x64",
+      "Windows public beta install manifest must cover exactly win32-x64");
+    beta = validatePublicBeta(value.beta, "Install manifest");
   } else {
     check(platformKeys.length === selected.length && selected.every((key) => platformKeys.includes(key)),
       "Local fixture install manifest must cover exactly the selected platforms");
+    check(value.beta === undefined, "Local fixture install manifest must not carry a beta descriptor");
   }
   return {
     distributionMode: value.distributionMode,
     licenseStatus: value.licenseStatus as LicenseStatus,
     licenseNote: value.licenseNote.trim(),
+    ...(beta ? { beta } : {}),
     platforms: value.platforms,
   };
 }
@@ -383,11 +409,14 @@ async function verifyPackageJson(
 function validatePackageManifest(
   value: unknown,
   allowLocalFixture: boolean,
+  allowPublicBeta: boolean,
 ): NpmRuntimePackageManifest {
   check(isRecord(value), "npm Runtime package manifest must be an object");
+  const publicBeta = value.distributionMode === "public-beta";
   exactKeys(value, [
     "schemaVersion", "product", "productVersion", "platformKey", "npmPackage",
     "distributionMode", "licenseStatus", "licenseNote", "legal", "sbom", "installer",
+    ...(publicBeta ? ["beta"] : []),
   ], "npm Runtime package manifest");
   check(value.schemaVersion === 1 && value.product === "chengfeng-videocut", "npm Runtime package identity is invalid");
   check(typeof value.productVersion === "string" && VERSION_PATTERN.test(value.productVersion),
@@ -396,7 +425,9 @@ function validatePackageManifest(
     "npm Runtime package platformKey is invalid");
   const platformKey = value.platformKey;
   const target = NPM_RUNTIME_TARGETS[platformKey];
-  validateDistributionPair(value.distributionMode, value.licenseStatus, allowLocalFixture, "npm Runtime package manifest");
+  validateDistributionPair(value.distributionMode, value.licenseStatus, allowLocalFixture, allowPublicBeta, "npm Runtime package manifest");
+  const beta = publicBeta ? validatePublicBeta(value.beta, "npm Runtime package manifest") : undefined;
+  if (publicBeta) check(platformKey === "win32-x64", "Windows public beta package must target win32-x64");
   check(typeof value.licenseNote === "string" && value.licenseNote.trim().length > 0,
     "npm Runtime package licenseNote is required");
   check(isRecord(value.npmPackage), "npmPackage metadata is invalid");
@@ -429,7 +460,7 @@ function validatePackageManifest(
   check(Number.isSafeInteger(value.installer.size) && Number(value.installer.size) > 0,
     "installer size is invalid");
   check(value.installer.executable === target.executable, "installer executable contract is not exact");
-  return value as unknown as NpmRuntimePackageManifest;
+  return { ...value, ...(beta ? { beta } : {}) } as unknown as NpmRuntimePackageManifest;
 }
 
 async function assertExactLayout(packageDir: string, manifest: NpmRuntimePackageManifest): Promise<void> {
@@ -471,12 +502,17 @@ async function assertExactLayout(packageDir: string, manifest: NpmRuntimePackage
 export async function verifyNpmRuntimePackage(options: {
   packageDir: string;
   allowLocalFixture?: boolean;
+  allowPublicBeta?: boolean;
 }): Promise<NpmRuntimePackageManifest> {
   const packageDir = resolve(options.packageDir);
   const rootMetadata = await lstat(packageDir);
   check(rootMetadata.isDirectory() && !rootMetadata.isSymbolicLink(), "npm Runtime package root must be a regular directory");
   const manifestFile = await regularFile(join(packageDir, NPM_RUNTIME_PACKAGE_MANIFEST), "npm Runtime package manifest");
-  const manifest = validatePackageManifest(JSON.parse(manifestFile.bytes.toString("utf8")), options.allowLocalFixture === true);
+  const manifest = validatePackageManifest(
+    JSON.parse(manifestFile.bytes.toString("utf8")),
+    options.allowLocalFixture === true,
+    options.allowPublicBeta === true,
+  );
   await assertExactLayout(packageDir, manifest);
   const packageJsonFile = await regularFile(join(packageDir, "package.json"), "package.json");
   await verifyPackageJson(JSON.parse(packageJsonFile.bytes.toString("utf8")), manifest, options.allowLocalFixture === true);
@@ -512,12 +548,15 @@ export async function stageNpmRuntimePackages(options: {
   sbomDir?: string;
   platformKeys: readonly NpmRuntimePlatformKey[];
   allowLocalFixture?: boolean;
+  allowPublicBeta?: boolean;
 }): Promise<Array<{ platformKey: NpmRuntimePlatformKey; packageDir: string; manifest: NpmRuntimePackageManifest }>> {
   const rootDir = resolve(options.rootDir);
   const releaseDir = resolve(options.releaseDir);
   const outputDir = resolve(options.outputDir);
   const sbomDir = resolve(options.sbomDir ?? releaseDir);
   const allowLocalFixture = options.allowLocalFixture === true;
+  const allowPublicBeta = options.allowPublicBeta === true;
+  check(!(allowLocalFixture && allowPublicBeta), "Local fixture and public beta staging modes are mutually exclusive");
   const product = JSON.parse(await readFile(join(rootDir, "package.json"), "utf8")) as { version?: unknown };
   check(typeof product.version === "string" && VERSION_PATTERN.test(product.version), "Product package version is invalid");
   const version = product.version;
@@ -547,8 +586,9 @@ export async function stageNpmRuntimePackages(options: {
     version,
     selected,
     allowLocalFixture,
+    allowPublicBeta,
   );
-  if (!allowLocalFixture) {
+  if (!allowLocalFixture && !allowPublicBeta) {
     check(toolsLock.licenseStatus === "VERIFIED" && toolsLock.licenseNote === installManifest.licenseNote,
       "managed-tools.lock.json is not VERIFIED or does not match the install manifest license review");
   }
@@ -557,7 +597,7 @@ export async function stageNpmRuntimePackages(options: {
     const source = await regularFile(join(rootDir, path), `legal source ${path}`);
     legalSources.set(path, { bytes: source.bytes, size: source.size });
   }
-  if (!allowLocalFixture) {
+  if (!allowLocalFixture && !allowPublicBeta) {
     validateFormalLegalCoverage(new Map(
       [...legalSources].map(([path, source]) => [path, source.bytes]),
     ));
@@ -628,6 +668,7 @@ export async function stageNpmRuntimePackages(options: {
         distributionMode: installManifest.distributionMode,
         licenseStatus: installManifest.licenseStatus,
         licenseNote: installManifest.licenseNote,
+        ...(installManifest.beta ? { beta: installManifest.beta } : {}),
         legal: { files: legalFiles },
         sbom: {
           path: NPM_RUNTIME_SBOM,
@@ -649,7 +690,7 @@ export async function stageNpmRuntimePackages(options: {
         null,
         2,
       )}\n`, { mode: 0o644 });
-      await verifyNpmRuntimePackage({ packageDir, allowLocalFixture });
+      await verifyNpmRuntimePackage({ packageDir, allowLocalFixture, allowPublicBeta });
       receipts.push({ platformKey, packageDir: join(outputDir, platformKey), manifest });
     }
     await rename(stagingRoot, outputDir);

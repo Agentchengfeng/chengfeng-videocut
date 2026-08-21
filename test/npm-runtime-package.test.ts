@@ -27,6 +27,7 @@ function sha256(bytes: Uint8Array): string {
 async function fixture(options: {
   releaseReady?: boolean;
   allPlatforms?: boolean;
+  publicBeta?: boolean;
 } = {}): Promise<{ root: string; releaseDir: string; outputDir: string }> {
   const root = await mkdtemp(join(tmpdir(), "videocut-npm-runtime-package-"));
   temporaryRoots.push(root);
@@ -34,7 +35,9 @@ async function fixture(options: {
   const outputDir = join(root, "stage");
   await mkdir(releaseDir);
   const platforms: Record<string, unknown> = {};
-  const keys = options.allPlatforms ? Object.keys(NPM_RUNTIME_TARGETS) as NpmRuntimePlatformKey[] : [PLATFORM];
+  const keys = options.allPlatforms
+    ? Object.keys(NPM_RUNTIME_TARGETS) as NpmRuntimePlatformKey[]
+    : options.publicBeta ? ["win32-x64"] as NpmRuntimePlatformKey[] : [PLATFORM];
   for (const platformKey of keys) {
     const target = NPM_RUNTIME_TARGETS[platformKey];
     const bytes = Buffer.from(`fixture native installer:${platformKey}\n`);
@@ -187,11 +190,17 @@ async function fixture(options: {
     product: "chengfeng-videocut",
     productVersion: VERSION,
     releaseTag: `v${VERSION}`,
-    distributionMode: releaseReady ? "release-ready" : "local-test-only",
+    distributionMode: options.publicBeta ? "public-beta" : releaseReady ? "release-ready" : "local-test-only",
     runtime,
     platforms,
     licenseStatus: releaseReady ? "VERIFIED" : "UNVERIFIED",
     licenseNote: "explicit test fixture; never publish",
+    ...(options.publicBeta ? {
+      beta: {
+        channel: "windows-x64-public-beta",
+        acknowledgement: "--accept-public-beta",
+      },
+    } : {}),
   }, null, 2)}\n`);
   return { root, releaseDir, outputDir };
 }
@@ -300,6 +309,38 @@ describe("npm Runtime platform package", () => {
     const packageJson = JSON.parse(await readFile(join(packageDir, "package.json"), "utf8"));
     expect(packageJson.private).toBe(true);
     expect(packageJson).not.toHaveProperty("publishConfig");
+  });
+
+  test("stages only the exact acknowledged Windows public-beta package", async () => {
+    const value = await fixture({ publicBeta: true });
+    await expect(stageNpmRuntimePackages({
+      rootDir: ROOT,
+      releaseDir: value.releaseDir,
+      outputDir: value.outputDir,
+      platformKeys: ["win32-x64"],
+    })).rejects.toThrow(/release-ready \/ VERIFIED/);
+
+    const betaOutput = join(value.root, "beta-stage");
+    const receipts = await stageNpmRuntimePackages({
+      rootDir: ROOT,
+      releaseDir: value.releaseDir,
+      outputDir: betaOutput,
+      platformKeys: ["win32-x64"],
+      allowPublicBeta: true,
+    });
+    expect(receipts).toHaveLength(1);
+    const packageDir = join(betaOutput, "win32-x64");
+    await expect(verifyNpmRuntimePackage({ packageDir })).rejects.toThrow(/release-ready \/ VERIFIED/);
+    const manifest = await verifyNpmRuntimePackage({ packageDir, allowPublicBeta: true });
+    expect(manifest.distributionMode).toBe("public-beta");
+    expect(manifest.licenseStatus).toBe("UNVERIFIED");
+    expect(manifest.beta).toEqual({
+      channel: "windows-x64-public-beta",
+      acknowledgement: "--accept-public-beta",
+    });
+    const packageJson = JSON.parse(await readFile(join(packageDir, "package.json"), "utf8"));
+    expect(packageJson.publishConfig).toEqual({ access: "public" });
+    expect(packageJson.private).toBeUndefined();
   });
 
   test("rejects any file outside the controlled package allowlist", async () => {
