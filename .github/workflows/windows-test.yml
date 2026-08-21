@@ -71,3 +71,8 @@ jobs:
       - name: 原生项目 watcher（独立硬门禁）
         timeout-minutes: 5
         run: bun test apps/cli/src/server/project-watcher.test.ts
+      - name: 受管 Headless Shell 真实下载与成片门禁
+        timeout-minutes: 10
+        env:
+          CHENGFENG_VIDEOCUT_RENDERER_E2E: "1"
+        run: bun test packages/koubo-adapter/src/export/exportFilm.managed-runtime.test.ts

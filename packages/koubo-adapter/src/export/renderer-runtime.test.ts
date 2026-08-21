@@ -10,9 +10,17 @@ import {
 } from "./renderer-runtime";
 
 const cleanup: string[] = [];
-const platform = BrowserPlatform.MAC_ARM;
+// The fixture is a text script, not a real Chrome binary.  Keep the cache
+// layout on the host platform so Windows never exercises a macOS path, and
+// replace the executable self-check there because a Windows host cannot spawn
+// this POSIX fixture as a PE executable.
+const platform = process.platform === "win32" ? BrowserPlatform.WIN64 : BrowserPlatform.MAC_ARM;
 const buildId = "151.0.7922.47";
 const archiveSha256 = "a".repeat(64);
+
+const fixtureVerification = process.platform === "win32"
+  ? async (_path: string, _expectedBuildId: string): Promise<void> => undefined
+  : undefined;
 
 afterEach(async () => {
   await Promise.all(cleanup.splice(0).map((path) => rm(path, { recursive: true, force: true })));
@@ -58,6 +66,7 @@ function options(
     platform,
     installer,
     spec: { buildId, archiveSha256, browser: Browser.CHROMEHEADLESSSHELL },
+    verifyExecutable: fixtureVerification,
     ...overrides,
   };
 }

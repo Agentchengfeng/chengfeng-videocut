@@ -30,6 +30,10 @@ test("Windows PR/main uses the self-contained Product installer rather than the 
   assert.match(WINDOWS_WORKFLOW, /name: 准备固定版本的 FFmpeg 6\.0 测试工具[\s\S]*?timeout-minutes: 10/);
   assert.match(WINDOWS_WORKFLOW, /name: 全量单测[\s\S]*?timeout-minutes: 20/);
   assert.match(WINDOWS_WORKFLOW, /name: 原生项目 watcher（独立硬门禁）[\s\S]*?timeout-minutes: 5/);
+  assert.match(
+    WINDOWS_WORKFLOW,
+    /name: 受管 Headless Shell 真实下载与成片门禁[\s\S]*?timeout-minutes: 10[\s\S]*?CHENGFENG_VIDEOCUT_RENDERER_E2E: ["']1["'][\s\S]*?exportFilm\.managed-runtime\.test\.ts/,
+  );
   assert.match(WINDOWS_WORKFLOW, /releases\/download\/b6\.0\/ffmpeg-win32-x64/);
   assert.match(WINDOWS_WORKFLOW, /e9fd5e711debab9d680955fc1e38a2c1160fd280b144476cc3f62bc43ef49db1/);
   assert.match(WINDOWS_WORKFLOW, /releases\/download\/b6\.0\/ffprobe-win32-x64/);

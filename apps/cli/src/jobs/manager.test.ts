@@ -402,9 +402,23 @@ describe("job manager", () => {
     }
     release();
     await stopping;
-    expect(await manager.read(started.jobId)).toMatchObject({
-      state: "queued", phase: "queued_after_shutdown", owner: null,
-    });
+    if (process.platform === "win32") {
+      // Once a Windows root process has exited, taskkill cannot prove that it
+      // left no descendants. Keep the production safety boundary explicit:
+      // this shutdown race is blocked for recovery instead of being guessed
+      // clean and silently orphaning a renderer/FFmpeg child.
+      const blocked = await manager.read(started.jobId);
+      expect(blocked).toMatchObject({
+        state: "recovery_blocked",
+        phase: "recovery_blocked",
+        error: { code: "job_process_unproven" },
+      });
+      expect(blocked?.owner).not.toBeNull();
+    } else {
+      expect(await manager.read(started.jobId)).toMatchObject({
+        state: "queued", phase: "queued_after_shutdown", owner: null,
+      });
+    }
     await expect(readFile(outputPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 

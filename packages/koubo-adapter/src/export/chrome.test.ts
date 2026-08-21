@@ -34,9 +34,18 @@ describe("explicit Chrome override", () => {
       .toThrow("必须是绝对路径");
   });
 
-  it("rejects a non-executable explicit override", async () => {
+  it("enforces the POSIX executable bit only where the platform exposes it", async () => {
     const executable = await executableFixture();
     await chmod(executable, 0o644);
+
+    // Windows does not expose POSIX mode bits through access(2).  Its
+    // contract is readability here; the real launcher is still responsible
+    // for spawning the supplied PE executable.
+    if (process.platform === "win32") {
+      expect(findExplicitChromeOverride({ configuredPath: executable, platform: "win32" })).toBe(executable);
+      return;
+    }
+
     expect(() => findExplicitChromeOverride({ configuredPath: executable })).toThrow(ChromeError);
   });
 });

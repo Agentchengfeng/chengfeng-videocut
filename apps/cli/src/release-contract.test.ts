@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import {
   requiredReleaseAssetNames,
   nativeInstallerAssetNames,
@@ -33,7 +33,7 @@ async function assetRecord(path: string, root?: string): Promise<{
 }> {
   const bytes = new Uint8Array(await Bun.file(path).arrayBuffer());
   return {
-    asset: path.split("/").at(-1)!,
+    asset: basename(path),
     ...(root ? { root } : {}),
     sha256: digest(bytes),
     size: bytes.byteLength,

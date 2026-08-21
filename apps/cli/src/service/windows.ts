@@ -36,11 +36,12 @@ export const WINDOWS_TASK_NAME = "chengfeng-videocut-studio";
 
 // 任务的 UserId：工作组机器上 DOMAIN\user 形式会被拒（"No mapping between account
 // names and security IDs"，2026-08-03 真机实测），SID 在域/工作组都成立。
-// PowerShell 冷启动在 Windows CI / Defender 扫描时可能接近服务测试的 5 秒默认
-// 上限；whoami.exe 是系统原生命令，能以固定 CSV 形态给出同一个 SID。身份不会
-// 在一个 CLI 进程里变化，因此只解析一次。
+// whoami.exe 是系统原生命令，能以固定 CSV 形态给出同一个 SID。Windows CI
+// 或用户机首次启动时，系统命令可能先经过 Defender 扫描、用户令牌初始化或
+// 域/工作组身份解析；2 秒会把一个本应成功的真实身份解析误判成超时。10 秒仍
+// 是有界的，且身份不会在一个 CLI 进程里变化，因此只解析一次。
 let cachedCurrentUserId: string | undefined;
-const WINDOWS_SID_LOOKUP_TIMEOUT_MS = 2_000;
+const WINDOWS_SID_LOOKUP_TIMEOUT_MS = 10_000;
 
 export function parseWindowsUserSid(output: string): string | null {
   const value = /S-1-[0-9-]+/i.exec(output)?.[0];

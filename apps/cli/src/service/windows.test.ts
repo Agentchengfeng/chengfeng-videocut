@@ -160,7 +160,7 @@ describe("Windows scheduled-task service", () => {
           status: expected.status,
           signal: expected.signal,
           errorCode: expected.errorCode,
-          timeoutMs: 2_000,
+          timeoutMs: 10_000,
         });
       }
     }
@@ -225,7 +225,7 @@ describe("Windows scheduled-task service", () => {
     );
     expect(state.commands.some((command) => command[1] === "/Create")).toBe(true);
     expect(state.commands.some((command) => command[1] === "/Run")).toBe(true);
-  });
+  }, 15_000);
 
   it("waits for Task Scheduler to publish the server PID before accepting health", async () => {
     const { state, deps } = await makeFixture({ readyAfterSleeps: 2 });
