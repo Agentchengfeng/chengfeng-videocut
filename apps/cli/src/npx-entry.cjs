@@ -168,7 +168,12 @@ function doctorReady(launcher) {
   if (result.error || result.status !== 0) return false;
   const line = String(result.stdout || "").trim().split(/\r?\n/).filter(Boolean).at(-1);
   try {
-    return Boolean(line && JSON.parse(line).healthy === true);
+    const response = line && JSON.parse(line);
+    return Boolean(
+      response?.schemaVersion === 1 && response?.product === PRODUCT &&
+      response?.command === "doctor" && response?.ok === true &&
+      response?.data?.healthy === true,
+    );
   } catch {
     return false;
   }

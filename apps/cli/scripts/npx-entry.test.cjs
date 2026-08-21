@@ -52,7 +52,7 @@ mkdir -p "$target/bin"
 cat > "$target/bin/chengfeng-videocut" <<'LAUNCHER'
 #!/bin/sh
 if [ "\${1:-}" = doctor ]; then
-  printf '{"healthy":true}\\n'
+  printf '{"schemaVersion":1,"product":"chengfeng-videocut","command":"doctor","ok":true,"data":{"healthy":true}}\\n'
   exit 0
 fi
 printf 'runtime argv: %s\\n' "$*"
