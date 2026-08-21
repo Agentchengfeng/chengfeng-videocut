@@ -1959,6 +1959,7 @@ interface ManagedToolsDoctorResult {
   executables: Partial<Record<"bun" | "ffmpeg" | "ffprobe", string>>;
   releaseReady: boolean;
   developmentMode: boolean;
+  publicBeta: boolean;
   identity?: InstalledDevelopmentIdentity;
 }
 
@@ -2261,6 +2262,7 @@ async function inspectInstalledManagedTools(
       arch?: string;
       distributionMode?: string;
       licenseStatus?: string;
+      beta?: { channel?: string; acknowledgement?: string };
       executables?: Record<string, string>;
       files?: Array<{ path?: string; size?: number; sha256?: string }>;
       resources?: unknown;
@@ -2276,10 +2278,15 @@ async function inspectInstalledManagedTools(
       manifest.distributionMode === "release-ready" && manifest.licenseStatus === "VERIFIED";
     const localDevelopmentEligible =
       manifest.distributionMode === "local-test-only" && manifest.licenseStatus === "UNVERIFIED";
-    if (!releaseReady && !(options.localDevelopment && localDevelopmentEligible)) {
+    const publicBetaEligible =
+      process.platform === "win32" && process.arch === "x64" &&
+      manifest.distributionMode === "public-beta" && manifest.licenseStatus === "UNVERIFIED" &&
+      manifest.beta?.channel === "windows-x64-public-beta" &&
+      manifest.beta?.acknowledgement === "--accept-public-beta";
+    if (!releaseReady && !publicBetaEligible && !(options.localDevelopment && localDevelopmentEligible)) {
       throw new Error("resources-manifest is not VERIFIED/release-ready for this platform");
     }
-    if (!releaseReady && !localDevelopmentEligible) {
+    if (!releaseReady && !publicBetaEligible && !localDevelopmentEligible) {
       throw new Error("resources-manifest trust state is not an allowed Product combination");
     }
     if (Object.hasOwn(manifest, "resources")) {
@@ -2351,7 +2358,7 @@ async function inspectInstalledManagedTools(
     if (await realpath(process.execPath) !== await realpath(executables.bun!)) {
       throw new Error("Runtime was not launched by tools/current managed Bun");
     }
-    const identity = releaseReady
+    const identity = releaseReady || publicBetaEligible
       ? undefined
       : await installedDevelopmentIdentity(
         dataDir,
@@ -2365,10 +2372,13 @@ async function inspectInstalledManagedTools(
       ok: true,
       detail: releaseReady
         ? `VERIFIED ${manifest.productVersion} at ${canonicalCurrent}`
-        : `authorized local development ${manifest.productVersion} at ${canonicalCurrent}; NOT release-ready`,
+        : publicBetaEligible
+          ? `Windows x64 public beta ${manifest.productVersion} at ${canonicalCurrent}; NOT release-ready`
+          : `authorized local development ${manifest.productVersion} at ${canonicalCurrent}; NOT release-ready`,
       executables,
       releaseReady,
-      developmentMode: !releaseReady,
+      developmentMode: localDevelopmentEligible,
+      publicBeta: publicBetaEligible,
       ...(identity ? { identity } : {}),
     };
   } catch (error) {
@@ -2378,6 +2388,7 @@ async function inspectInstalledManagedTools(
       executables: {},
       releaseReady: false,
       developmentMode: false,
+      publicBeta: false,
     };
   }
 }
@@ -2435,7 +2446,8 @@ export async function doctor(
   healthy: boolean;
   developmentMode: boolean;
   releaseReady: boolean;
-  readinessMode: "release-ready" | "local-development" | "source-development" | "unready";
+  publicBeta: boolean;
+  readinessMode: "release-ready" | "public-beta" | "local-development" | "source-development" | "unready";
   capabilities: DoctorCapabilities;
   checks: DoctorCheck[];
 }> {
@@ -2456,6 +2468,7 @@ export async function doctor(
         executables: {},
         releaseReady: false,
         developmentMode: false,
+        publicBeta: false,
       }
       : {
         ok: true,
@@ -2463,6 +2476,7 @@ export async function doctor(
         executables: {},
         releaseReady: false,
         developmentMode: false,
+        publicBeta: false,
       };
   const [sourceFfmpeg, sourceFfprobe, registryExists, studioExists, transcription] = await Promise.all([
     installedMode ? Promise.resolve(null) : findExecutable("ffmpeg"),
@@ -2545,13 +2559,16 @@ export async function doctor(
     ? "unready" as const
     : managedTools.releaseReady
       ? "release-ready" as const
-      : managedTools.developmentMode
-        ? "local-development" as const
-        : "source-development" as const;
+      : managedTools.publicBeta
+        ? "public-beta" as const
+        : managedTools.developmentMode
+          ? "local-development" as const
+          : "source-development" as const;
   return {
     healthy,
     developmentMode: healthy && managedTools.developmentMode,
     releaseReady: healthy && managedTools.releaseReady,
+    publicBeta: healthy && managedTools.publicBeta,
     readinessMode,
     capabilities: RUNTIME_DOCTOR_CAPABILITIES,
     checks,

@@ -60,6 +60,7 @@ export function humanDoctor(data: {
   healthy: boolean;
   developmentMode: boolean;
   releaseReady: boolean;
+  publicBeta?: boolean;
   checks: DoctorCheck[];
 }): string {
   const lines = data.checks.map(
@@ -68,6 +69,8 @@ export function humanDoctor(data: {
   lines.push(
     data.healthy && data.developmentMode && !data.releaseReady
       ? `${BRAND_NAME} is ready for authorized local development; NOT release-ready`
+      : data.healthy && data.publicBeta && !data.releaseReady
+        ? `${BRAND_NAME} is ready for the acknowledged Windows public beta; NOT release-ready`
       : data.healthy
         ? `${BRAND_NAME} is ready`
         : `${BRAND_NAME} needs attention`,
