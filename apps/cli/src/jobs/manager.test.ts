@@ -12,10 +12,13 @@ import {
 
 const cleanup: string[] = [];
 const managers: JobManager[] = [];
+// Windows ownership verification plus taskkill can legitimately consume the
+// production 5-second cleanup budget; the default 5-second hook limit would
+// abort teardown at the exact boundary and leak it into the next test.
 afterEach(async () => {
   await Promise.all(managers.splice(0).map((manager) => manager.shutdown().catch(() => undefined)));
   await Promise.all(cleanup.splice(0).map((path) => rm(path, { recursive: true, force: true })));
-});
+}, { timeout: 15_000 });
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "job-manager-"));

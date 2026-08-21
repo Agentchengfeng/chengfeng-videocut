@@ -972,7 +972,15 @@ test("real compiled installer embeds one Runtime/tools payload, rejects an exter
   // not inside the disposable Runtime fixture under the system temp volume.
   mkdirSync(path.join(ROOT, "release"), { recursive: true });
   const compiledRoot = mkdtempSync(path.join(ROOT, "release", "native-installer-test-"));
-  t.after(() => rmSync(compiledRoot, { recursive: true, force: true }));
+  // Windows filesystem filters can briefly keep a compiled staging entry in
+  // use after the child exits. Let Node's bounded recursive retry absorb that
+  // window; a persistent leak still fails instead of being hidden.
+  t.after(() => rmSync(compiledRoot, {
+    recursive: true,
+    force: true,
+    maxRetries: 8,
+    retryDelay: 100,
+  }));
   for (const asset of [
     `chengfeng-videocut-runtime-${VERSION}.tar.gz`,
     `chengfeng-videocut-tools-${VERSION}-${platformKey}.tar.gz`,

@@ -4,7 +4,7 @@ import { hostname } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { JobStoreError, syncDirectory } from "./store";
 
-interface RuntimeLockOwner {
+export interface RuntimeLockOwner {
   version: 1;
   pid: number;
   token: string;
@@ -14,7 +14,6 @@ interface RuntimeLockOwner {
 
 interface RuntimeLockRecord {
   owner: RuntimeLockOwner;
-  layout: "directory" | "legacy-file";
   path: string;
 }
 
@@ -26,11 +25,24 @@ export interface RuntimeJobLockHooks {
   afterTombstoneRetired?: (garbagePath: string) => void | Promise<void>;
 }
 
+export type RuntimeLockOwnerParser = (raw: string, path: string) => RuntimeLockOwner;
+
+export interface RuntimeJobLockOptions extends RuntimeJobLockHooks {
+  /** Override the default `<dataDir>/jobs` ownership directory. */
+  directory?: string;
+  /** Override the canonical lock name inside `directory`. */
+  lockName?: string;
+  /** Injectable process identity and liveness seams for other Runtime locks. */
+  pid?: number;
+  ownerHostname?: string;
+  processExists?: (pid: number) => boolean;
+  now?: () => number;
+  /** Accept a previous on-disk owner schema while still publishing version 1. */
+  parseOwner?: RuntimeLockOwnerParser;
+}
+
 const OWNER_NAME = "owner.json";
 const LOCK_NAME = ".runtime-owner.json";
-const CANDIDATE_PREFIX = `${LOCK_NAME}.candidate.`;
-const TOMBSTONE_PREFIX = `${LOCK_NAME}.tombstone.`;
-const GARBAGE_PREFIX = `${LOCK_NAME}.garbage.`;
 const MAX_ACQUIRE_ATTEMPTS = 16;
 
 function processExists(pid: number): boolean {
@@ -42,7 +54,7 @@ function processExists(pid: number): boolean {
   }
 }
 
-function parseOwner(raw: string, path: string): RuntimeLockOwner {
+export function parseRuntimeLockOwner(raw: string, path: string): RuntimeLockOwner {
   let value: unknown;
   try { value = JSON.parse(raw); }
   catch {
@@ -79,7 +91,10 @@ function isMissing(error: unknown): boolean {
   return (error as NodeJS.ErrnoException).code === "ENOENT";
 }
 
-async function readLockRecord(path: string): Promise<RuntimeLockRecord> {
+async function readLockRecord(
+  path: string,
+  parseOwner: RuntimeLockOwnerParser,
+): Promise<RuntimeLockRecord> {
   const info = await lstat(path);
   if (info.isSymbolicLink()) {
     throw new JobStoreError("job_runtime_lock_corrupt", "Durable job Runtime lock cannot be a symbolic link", { path });
@@ -90,7 +105,7 @@ async function readLockRecord(path: string): Promise<RuntimeLockRecord> {
         path,
       });
     }
-    return { owner: parseOwner(await readFile(path, "utf8"), path), layout: "legacy-file", path };
+    return { owner: parseOwner(await readFile(path, "utf8"), path), path };
   }
   if (!info.isDirectory()) {
     throw new JobStoreError("job_runtime_lock_corrupt", "Durable job Runtime lock is not a private directory", { path });
@@ -109,7 +124,6 @@ async function readLockRecord(path: string): Promise<RuntimeLockRecord> {
   }
   return {
     owner: parseOwner(await readFile(ownerPath, "utf8"), ownerPath),
-    layout: "directory",
     path,
   };
 }
@@ -133,13 +147,39 @@ export class RuntimeJobLock {
   readonly path: string;
   readonly token = randomUUID();
   readonly #hooks: RuntimeJobLockHooks;
+  readonly #candidatePrefix: string;
+  readonly #tombstonePrefix: string;
+  readonly #garbagePrefix: string;
+  readonly #pid: number;
+  readonly #ownerHostname: string;
+  readonly #processExists: (pid: number) => boolean;
+  readonly #now: () => number;
+  readonly #parseOwner: RuntimeLockOwnerParser;
   #lifecycleTail: Promise<void> = Promise.resolve();
   #held = false;
 
-  constructor(dataDir: string, hooks: RuntimeJobLockHooks = {}) {
-    this.jobsDirectory = resolve(dataDir, "jobs");
-    this.path = join(this.jobsDirectory, LOCK_NAME);
-    this.#hooks = hooks;
+  constructor(dataDir: string, options: RuntimeJobLockOptions = {}) {
+    const lockName = options.lockName ?? LOCK_NAME;
+    if (!lockName || basename(lockName) !== lockName || lockName === "." || lockName === "..") {
+      throw new JobStoreError("job_runtime_lock_corrupt", "Runtime lock name must be one plain path component", {
+        lockName,
+      });
+    }
+    const ownerPid = options.pid ?? process.pid;
+    if (!Number.isInteger(ownerPid) || ownerPid <= 0) {
+      throw new JobStoreError("job_runtime_lock_corrupt", "Runtime lock owner pid is invalid", { ownerPid });
+    }
+    this.jobsDirectory = options.directory ? resolve(options.directory) : resolve(dataDir, "jobs");
+    this.path = join(this.jobsDirectory, lockName);
+    this.#hooks = options;
+    this.#candidatePrefix = `${lockName}.candidate.`;
+    this.#tombstonePrefix = `${lockName}.tombstone.`;
+    this.#garbagePrefix = `${lockName}.garbage.`;
+    this.#pid = ownerPid;
+    this.#ownerHostname = options.ownerHostname ?? hostname();
+    this.#processExists = options.processExists ?? processExists;
+    this.#now = options.now ?? Date.now;
+    this.#parseOwner = options.parseOwner ?? parseRuntimeLockOwner;
   }
 
   get held(): boolean { return this.#held; }
@@ -157,10 +197,10 @@ export class RuntimeJobLock {
     await mkdir(this.jobsDirectory, { recursive: true });
     const owner: RuntimeLockOwner = {
       version: 1,
-      pid: process.pid,
+      pid: this.#pid,
       token: this.token,
-      hostname: hostname(),
-      acquiredAt: new Date().toISOString(),
+      hostname: this.#ownerHostname,
+      acquiredAt: new Date(this.#now()).toISOString(),
     };
 
     for (let attempt = 0; attempt < MAX_ACQUIRE_ATTEMPTS; attempt += 1) {
@@ -184,17 +224,17 @@ export class RuntimeJobLock {
       }
 
       let existing: RuntimeLockRecord;
-      try { existing = await readLockRecord(this.path); }
+      try { existing = await readLockRecord(this.path, this.#parseOwner); }
       catch (error) {
         if (isMissing(error)) continue;
         throw error;
       }
-      if (existing.owner.hostname !== hostname() || processExists(existing.owner.pid)) {
+      if (existing.owner.hostname !== this.#ownerHostname || this.#processExists(existing.owner.pid)) {
         throw conflict(existing.owner, this.path);
       }
 
       await this.#hooks.afterStaleOwnerRead?.(Object.freeze({ ...existing.owner }));
-      const tombstonePath = join(this.jobsDirectory, `${TOMBSTONE_PREFIX}${randomUUID()}`);
+      const tombstonePath = join(this.jobsDirectory, `${this.#tombstonePrefix}${randomUUID()}`);
       try {
         await rename(this.path, tombstonePath);
         await syncDirectory(this.jobsDirectory);
@@ -204,7 +244,7 @@ export class RuntimeJobLock {
       }
 
       let claimed: RuntimeLockRecord;
-      try { claimed = await readLockRecord(tombstonePath); }
+      try { claimed = await readLockRecord(tombstonePath, this.#parseOwner); }
       catch (error) {
         // Another contender may have already proved and removed this stale,
         // uniquely named tombstone. Any other failure is fail-closed.
@@ -217,7 +257,7 @@ export class RuntimeJobLock {
         // record until that owner releases or becomes stale.
         continue;
       }
-      if (claimed.owner.hostname !== hostname() || processExists(claimed.owner.pid)) {
+      if (claimed.owner.hostname !== this.#ownerHostname || this.#processExists(claimed.owner.pid)) {
         throw conflict(claimed.owner, tombstonePath);
       }
 
@@ -247,16 +287,16 @@ export class RuntimeJobLock {
     this.#held = false;
     const owner: RuntimeLockOwner = {
       version: 1,
-      pid: process.pid,
+      pid: this.#pid,
       token: this.token,
-      hostname: hostname(),
+      hostname: this.#ownerHostname,
       acquiredAt: "",
     };
     const removed = await this.#removeOwnedLocations(owner);
     if (removed) return;
 
     let current: RuntimeLockRecord | null = null;
-    try { current = await readLockRecord(this.path); }
+    try { current = await readLockRecord(this.path, this.#parseOwner); }
     catch (error) {
       if (!isMissing(error)) throw error;
     }
@@ -268,7 +308,7 @@ export class RuntimeJobLock {
   }
 
   async #publishOwner(owner: RuntimeLockOwner): Promise<boolean> {
-    const candidatePath = join(this.jobsDirectory, `${CANDIDATE_PREFIX}${this.token}.${randomUUID()}`);
+    const candidatePath = join(this.jobsDirectory, `${this.#candidatePrefix}${this.token}.${randomUUID()}`);
     await mkdir(candidatePath, { mode: 0o700 });
     const ownerPath = join(candidatePath, OWNER_NAME);
     const handle = await open(ownerPath, "wx", 0o600);
@@ -317,15 +357,15 @@ export class RuntimeJobLock {
   async #clearStaleTombstones(): Promise<void> {
     const entries = await readdir(this.jobsDirectory, { withFileTypes: true });
     for (const entry of entries) {
-      if (!entry.name.startsWith(TOMBSTONE_PREFIX)) continue;
+      if (!entry.name.startsWith(this.#tombstonePrefix)) continue;
       const path = join(this.jobsDirectory, entry.name);
       let record: RuntimeLockRecord;
-      try { record = await readLockRecord(path); }
+      try { record = await readLockRecord(path, this.#parseOwner); }
       catch (error) {
         if (isMissing(error)) continue;
         throw error;
       }
-      if (record.owner.hostname !== hostname() || processExists(record.owner.pid)) {
+      if (record.owner.hostname !== this.#ownerHostname || this.#processExists(record.owner.pid)) {
         throw conflict(record.owner, path);
       }
       // Tombstone names are never reused, so deleting this exact stale path is
@@ -339,7 +379,7 @@ export class RuntimeJobLock {
   async #clearGarbage(): Promise<void> {
     let removed = false;
     for (const entry of await readdir(this.jobsDirectory, { withFileTypes: true })) {
-      if (!entry.name.startsWith(GARBAGE_PREFIX)) continue;
+      if (!entry.name.startsWith(this.#garbagePrefix)) continue;
       try {
         await rm(join(this.jobsDirectory, entry.name), { recursive: true, force: true });
         removed = true;
@@ -353,12 +393,12 @@ export class RuntimeJobLock {
 
   async #retireTombstone(record: RuntimeLockRecord): Promise<void> {
     const name = basename(record.path);
-    if (join(this.jobsDirectory, name) !== record.path || !name.startsWith(TOMBSTONE_PREFIX)) {
+    if (join(this.jobsDirectory, name) !== record.path || !name.startsWith(this.#tombstonePrefix)) {
       throw new JobStoreError("job_runtime_lock_corrupt", "Refusing to retire a path outside the Runtime tombstone namespace", {
         path: record.path,
       });
     }
-    const garbagePath = join(this.jobsDirectory, `${GARBAGE_PREFIX}${randomUUID()}`);
+    const garbagePath = join(this.jobsDirectory, `${this.#garbagePrefix}${randomUUID()}`);
     try {
       await rename(record.path, garbagePath);
       await syncDirectory(this.jobsDirectory);
@@ -367,21 +407,32 @@ export class RuntimeJobLock {
       throw error;
     }
     await this.#hooks.afterTombstoneRetired?.(garbagePath);
-    await rm(garbagePath, { recursive: record.layout === "directory", force: true });
+    await rm(garbagePath, {
+      // recursive=true is valid for both files and directories and makes
+      // Node's maxRetries/retryDelay contract effective for a legacy file lock
+      // as well as the current owner-directory layout.
+      recursive: true,
+      force: true,
+      // Windows can keep the just-renamed directory in a short delete-pending
+      // state. The unique garbage name is no longer an ownership fence, so a
+      // bounded retry is safe and cannot remove a successor's canonical lock.
+      maxRetries: 5,
+      retryDelay: 20,
+    });
     await syncDirectory(this.jobsDirectory);
   }
 
   async #hasOwnerLocation(owner: RuntimeLockOwner): Promise<boolean> {
     try {
-      const canonical = await readLockRecord(this.path);
+      const canonical = await readLockRecord(this.path, this.#parseOwner);
       if (sameOwner(canonical.owner, owner)) return true;
     } catch (error) {
       if (!isMissing(error)) throw error;
     }
     for (const entry of await readdir(this.jobsDirectory, { withFileTypes: true })) {
-      if (!entry.name.startsWith(TOMBSTONE_PREFIX)) continue;
+      if (!entry.name.startsWith(this.#tombstonePrefix)) continue;
       try {
-        const record = await readLockRecord(join(this.jobsDirectory, entry.name));
+        const record = await readLockRecord(join(this.jobsDirectory, entry.name), this.#parseOwner);
         if (sameOwner(record.owner, owner)) return true;
       } catch (error) {
         if (!isMissing(error)) throw error;
@@ -392,11 +443,11 @@ export class RuntimeJobLock {
 
   async #removeOwnedLocations(owner: RuntimeLockOwner): Promise<boolean> {
     let removed = false;
-    const cleanupPath = join(this.jobsDirectory, `${TOMBSTONE_PREFIX}${randomUUID()}`);
+    const cleanupPath = join(this.jobsDirectory, `${this.#tombstonePrefix}${randomUUID()}`);
     try {
       await rename(this.path, cleanupPath);
       await syncDirectory(this.jobsDirectory);
-      const claimed = await readLockRecord(cleanupPath);
+      const claimed = await readLockRecord(cleanupPath, this.#parseOwner);
       if (sameOwner(claimed.owner, owner)) {
         await this.#hooks.beforeOwnedLocationRetire?.(Object.freeze({ ...claimed.owner }), cleanupPath);
         await this.#retireTombstone(claimed);
@@ -408,10 +459,10 @@ export class RuntimeJobLock {
     }
 
     for (const entry of await readdir(this.jobsDirectory, { withFileTypes: true })) {
-      if (!entry.name.startsWith(TOMBSTONE_PREFIX)) continue;
+      if (!entry.name.startsWith(this.#tombstonePrefix)) continue;
       const path = join(this.jobsDirectory, entry.name);
       let record: RuntimeLockRecord;
-      try { record = await readLockRecord(path); }
+      try { record = await readLockRecord(path, this.#parseOwner); }
       catch (error) {
         if (isMissing(error)) continue;
         throw error;

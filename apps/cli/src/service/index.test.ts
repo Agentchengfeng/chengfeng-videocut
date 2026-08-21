@@ -250,6 +250,43 @@ describe("Studio user service", () => {
     )).toBe(false);
   });
 
+  it("releases the canonical service lock before cleaning its retired directory", async () => {
+    const home = await testHome();
+    const { dependencies } = fakeRuntime(home);
+    const paths = studioServicePaths(home, undefined, undefined, "darwin");
+    let enteredCleanup!: () => void;
+    let allowCleanup!: () => void;
+    const cleanupEntered = new Promise<void>((resolveEntered) => { enteredCleanup = resolveEntered; });
+    const cleanupGate = new Promise<void>((resolveCleanup) => { allowCleanup = resolveCleanup; });
+    let retiredPath = "";
+
+    const first = runStudioServiceCommand("ensure", {}, {
+      ...dependencies,
+      async afterServiceLockRetiredBeforeCleanup(path) {
+        retiredPath = path;
+        enteredCleanup();
+        await cleanupGate;
+      },
+    });
+    await cleanupEntered;
+
+    try {
+      expect(retiredPath.startsWith(`${paths.operationLockPath}.garbage.`)).toBe(true);
+      const second = await runStudioServiceCommand("ensure", {}, dependencies);
+      expect(second.ready).toBe(true);
+      expect((await readdir(paths.dataDir)).filter((name) =>
+        name === "service-operation.lock" || name.startsWith("service-operation.lock.tombstone.")
+      )).toEqual([]);
+    } finally {
+      allowCleanup();
+    }
+
+    expect((await first).ready).toBe(true);
+    expect((await readdir(paths.dataDir)).filter((name) =>
+      name.startsWith("service-operation.lock")
+    )).toEqual([]);
+  });
+
   it("reconciles a stale or damaged LaunchAgent before starting", async () => {
     const home = await testHome();
     const { state, dependencies } = fakeRuntime(home);
@@ -554,7 +591,7 @@ describe("Studio user service", () => {
     expect(result.logs?.stderr).toBe("err-27\nerr-28\nerr-29");
   });
 
-  it("recovers an abandoned stale operation lock without removing a live lock", async () => {
+  it("recovers an abandoned legacy operation lock through the fenced owner protocol", async () => {
     const home = await testHome();
     const { dependencies } = fakeRuntime(home);
     const paths = studioServicePaths(home, undefined, undefined, "darwin");
@@ -569,5 +606,58 @@ describe("Studio user service", () => {
       isProcessAlive: () => false,
     });
     expect(result.ready).toBe(true);
+    expect((await readdir(paths.dataDir)).filter((name) =>
+      name.startsWith("service-operation.lock")
+    )).toEqual([]);
+  });
+
+  it("keeps a live legacy service owner and reports a bounded busy result", async () => {
+    const home = await testHome();
+    const { dependencies } = fakeRuntime(home);
+    const paths = studioServicePaths(home, undefined, undefined, "darwin");
+    const raw = `${JSON.stringify({ pid: 7777, acquiredAt: 1 })}\n`;
+    await mkdir(paths.operationLockPath, { recursive: true });
+    await writeFile(join(paths.operationLockPath, "owner.json"), raw);
+    let clock = 0;
+
+    await expect(runStudioServiceCommand("ensure", {}, {
+      ...dependencies,
+      now: () => clock,
+      sleep: async (milliseconds) => { clock += milliseconds; },
+      isProcessAlive: (pid) => pid === 7777,
+      lockTimeoutMs: 100,
+    })).rejects.toMatchObject({ code: "service_busy" });
+    expect(await readFile(join(paths.operationLockPath, "owner.json"), "utf8")).toBe(raw);
+    expect(await readdir(paths.operationLockPath)).toEqual(["owner.json"]);
+  });
+
+  it("fails closed without moving or deleting a damaged legacy service owner", async () => {
+    const home = await testHome();
+    const { dependencies } = fakeRuntime(home);
+    const paths = studioServicePaths(home, undefined, undefined, "darwin");
+    const raw = "not-json\n";
+    await mkdir(paths.operationLockPath, { recursive: true });
+    await writeFile(join(paths.operationLockPath, "owner.json"), raw);
+
+    await expect(runStudioServiceCommand("ensure", {}, dependencies)).rejects.toMatchObject({
+      code: "service_lock_corrupt",
+    });
+    expect(await readFile(join(paths.operationLockPath, "owner.json"), "utf8")).toBe(raw);
+    expect(await readdir(paths.operationLockPath)).toEqual(["owner.json"]);
+  });
+
+  it("does not reinterpret an unknown service lock version as a reclaimable legacy owner", async () => {
+    const home = await testHome();
+    const { dependencies } = fakeRuntime(home);
+    const paths = studioServicePaths(home, undefined, undefined, "darwin");
+    const raw = `${JSON.stringify({ version: 2, pid: 7777, acquiredAt: 1 })}\n`;
+    await mkdir(paths.operationLockPath, { recursive: true });
+    await writeFile(join(paths.operationLockPath, "owner.json"), raw);
+
+    await expect(runStudioServiceCommand("ensure", {}, {
+      ...dependencies,
+      isProcessAlive: () => false,
+    })).rejects.toMatchObject({ code: "service_lock_corrupt" });
+    expect(await readFile(join(paths.operationLockPath, "owner.json"), "utf8")).toBe(raw);
   });
 });

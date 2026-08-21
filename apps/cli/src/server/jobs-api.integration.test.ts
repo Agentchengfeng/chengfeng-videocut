@@ -186,7 +186,7 @@ describe("durable jobs HTTP and real export", () => {
     expect(await decoupledUrl?.json()).toMatchObject({ error: { code: "host_forbidden" } });
   });
 
-  it("enforces conflict/list/cancel, survives Runtime restart, and publishes a real MP4", async () => {
+  it("enforces conflict/list/cancel and handles Runtime restart without unsafe publish", async () => {
     const f = await fixture();
     let server = await startStudioServer({
       port: 0, dataDir: f.dataDir, projectsDir: f.projectsDir, staticDir: f.staticDir,
@@ -325,9 +325,20 @@ describe("durable jobs HTTP and real export", () => {
     });
     servers.push(server);
     const finished = await waitJob(server.url, first.jobId, ["succeeded", "failed", "recovery_blocked"]);
-    expect(finished.state).toBe("succeeded");
-    expect(finished.attempt).toBe(2);
-    expect(finished.result).toMatchObject({ outputPath, hasAudio: true, problems: [] });
+    if (process.platform === "win32") {
+      // A Windows Runtime cannot prove that descendants are gone after the
+      // worker root has already exited. Keep the safety boundary explicit in
+      // this API-level restart race instead of treating it as a clean retry.
+      expect(finished).toMatchObject({
+        state: "recovery_blocked",
+        error: { code: "job_process_unproven" },
+      });
+      expect(finished.owner).not.toBeNull();
+    } else {
+      expect(finished.state).toBe("succeeded");
+      expect(finished.attempt).toBe(2);
+      expect(finished.result).toMatchObject({ outputPath, hasAudio: true, problems: [] });
+    }
 
     const cliLines: string[] = [];
     expect(await runCli(["job", "get", first.jobId, "--api-base", server.url], {
@@ -335,7 +346,10 @@ describe("durable jobs HTTP and real export", () => {
     })).toBe(0);
     expect(JSON.parse(cliLines[0]!)).toMatchObject({
       schemaVersion: 1, command: "job.get", ok: true,
-      data: { jobId: first.jobId, state: "succeeded" },
+      data: {
+        jobId: first.jobId,
+        state: process.platform === "win32" ? "recovery_blocked" : "succeeded",
+      },
     });
 
     const legacyOutput = join(f.root, "legacy-export.mp4");
@@ -353,9 +367,13 @@ describe("durable jobs HTTP and real export", () => {
     const projectTwoJobs = await (await fetch(`${server.url}/api/v1/jobs?projectId=two`)).json() as { jobs: DurableJob[] };
     expect(projectTwoJobs.jobs.map((job) => job.state).sort()).toEqual(["cancelled", "succeeded"]);
 
-    const probe = Bun.spawnSync(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", outputPath]);
-    expect(probe.exitCode).toBe(0);
-    expect(Number(probe.stdout.toString().trim())).toBeGreaterThan(1.9);
+    if (process.platform === "win32") {
+      await expect(readFile(outputPath)).rejects.toMatchObject({ code: "ENOENT" });
+    } else {
+      const probe = Bun.spawnSync(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", outputPath]);
+      expect(probe.exitCode).toBe(0);
+      expect(Number(probe.stdout.toString().trim())).toBeGreaterThan(1.9);
+    }
     if (process.platform !== "win32" && oldWorkerPid) {
       expect(() => process.kill(-oldWorkerPid, 0)).toThrow();
     }

@@ -10,12 +10,18 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { createConnection } from "node:net";
 import { withOwnedAbortTimeout } from "@video-workbench/core";
 import { PRODUCT_NAME, PRODUCT_VERSION } from "../output";
+import {
+  RuntimeJobLock,
+  parseRuntimeLockOwner,
+  type RuntimeLockOwner,
+} from "../jobs/runtime-lock";
+import { JobStoreError } from "../jobs/store";
 
 export const STUDIO_SERVICE_LABEL = "com.chengfeng.videocut.studio";
 export const STUDIO_SERVICE_URL = "http://127.0.0.1:5190";
@@ -23,7 +29,6 @@ export const SERVICE_API_VERSION = 1;
 
 const DEFAULT_READY_TIMEOUT_MS = 15_000;
 const DEFAULT_LOCK_TIMEOUT_MS = 20_000;
-const STALE_LOCK_MS = 30_000;
 const MAX_LOG_LINES = 1_000;
 const MAX_LOG_BYTES = 1024 * 1024;
 
@@ -79,6 +84,8 @@ export interface StudioServiceDependencies {
   windowsSidLookup?: WindowsSidLookup;
   readyTimeoutMs?: number;
   lockTimeoutMs?: number;
+  /** Deterministic test seam after the canonical lock name is released. */
+  afterServiceLockRetiredBeforeCleanup?: (retiredPath: string) => void | Promise<void>;
 }
 
 export interface StudioServicePaths {
@@ -165,6 +172,7 @@ export interface ResolvedServiceDependencies {
   windowsSidLookup?: WindowsSidLookup;
   readyTimeoutMs: number;
   lockTimeoutMs: number;
+  afterServiceLockRetiredBeforeCleanup?: (retiredPath: string) => void | Promise<void>;
 }
 
 export class StudioServiceError extends Error {
@@ -325,6 +333,7 @@ function resolveDependencies(input: StudioServiceDependencies): ResolvedServiceD
     windowsSidLookup: input.windowsSidLookup,
     readyTimeoutMs: input.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS,
     lockTimeoutMs: input.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS,
+    afterServiceLockRetiredBeforeCleanup: input.afterServiceLockRetiredBeforeCleanup,
   };
 }
 
@@ -948,57 +957,72 @@ export async function acquireServiceLock(
   deps: ResolvedServiceDependencies,
   paths: StudioServicePaths,
 ): Promise<() => Promise<void>> {
-  await mkdir(paths.dataDir, { recursive: true });
+  const ownerHostname = hostname();
+  const parseServiceOwner = (raw: string, path: string): RuntimeLockOwner => {
+    let value: unknown;
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      throw new JobStoreError("job_runtime_lock_corrupt", "Studio service lock is not valid JSON", { path });
+    }
+    if (
+      value && typeof value === "object" && !Array.isArray(value) &&
+      (value as Record<string, unknown>).version === 1
+    ) {
+      return parseRuntimeLockOwner(raw, path);
+    }
+    if (
+      value && typeof value === "object" && !Array.isArray(value) &&
+      Object.prototype.hasOwnProperty.call(value, "version")
+    ) {
+      throw new JobStoreError("job_runtime_lock_corrupt", "Studio service lock version is unsupported", { path });
+    }
+    const legacy = value as { pid?: unknown; acquiredAt?: unknown } | null;
+    if (
+      !legacy || !Number.isInteger(legacy.pid) || Number(legacy.pid) <= 0 ||
+      typeof legacy.acquiredAt !== "number" || !Number.isFinite(legacy.acquiredAt)
+    ) {
+      throw new JobStoreError("job_runtime_lock_corrupt", "Studio service lock owner is invalid", { path });
+    }
+    const acquiredAt = new Date(legacy.acquiredAt);
+    if (!Number.isFinite(acquiredAt.getTime())) {
+      throw new JobStoreError("job_runtime_lock_corrupt", "Studio service lock timestamp is invalid", { path });
+    }
+    return {
+      version: 1,
+      pid: Number(legacy.pid),
+      // Legacy owners did not have a token. This deterministic identity is
+      // used only while reclaiming that exact on-disk record; every newly
+      // published owner still receives a random UUID token.
+      token: `legacy:${legacy.pid}:${legacy.acquiredAt}`,
+      hostname: ownerHostname,
+      acquiredAt: acquiredAt.toISOString(),
+    };
+  };
+  const lock = new RuntimeJobLock(paths.dataDir, {
+    directory: paths.dataDir,
+    lockName: basename(paths.operationLockPath),
+    pid: deps.pid,
+    ownerHostname,
+    processExists: deps.isProcessAlive,
+    now: deps.now,
+    parseOwner: parseServiceOwner,
+    afterTombstoneRetired: deps.afterServiceLockRetiredBeforeCleanup,
+  });
   const deadline = deps.now() + deps.lockTimeoutMs;
   for (;;) {
     try {
-      await mkdir(paths.operationLockPath);
-      try {
-        await atomicWrite(
-          join(paths.operationLockPath, "owner.json"),
-          `${JSON.stringify({ pid: deps.pid, acquiredAt: deps.now() })}\n`,
-          0o600,
-        );
-      } catch (error) {
-        await rm(paths.operationLockPath, { recursive: true, force: true });
-        throw error;
-      }
+      await lock.acquire();
       return async () => {
-        await rm(paths.operationLockPath, { recursive: true, force: true });
+        try {
+          await lock.release();
+        } catch (error) {
+          throw translateServiceLockError(error, paths);
+        }
       };
     } catch (error) {
-      const code = error && typeof error === "object" && "code" in error
-        ? String((error as { code?: unknown }).code)
-        : "";
-      if (code !== "EEXIST") throw error;
-    }
-
-    let stale = false;
-    try {
-      const [lockStat, raw] = await Promise.all([
-        stat(paths.operationLockPath),
-        readFile(join(paths.operationLockPath, "owner.json"), "utf8").catch(() => "{}"),
-      ]);
-      const owner = JSON.parse(raw) as { pid?: unknown; acquiredAt?: unknown };
-      const ownerPid = typeof owner.pid === "number" ? owner.pid : null;
-      const acquiredAt = typeof owner.acquiredAt === "number"
-        ? owner.acquiredAt
-        : lockStat.mtimeMs;
-      stale = ownerPid === null
-        ? deps.now() - acquiredAt > STALE_LOCK_MS
-        : !deps.isProcessAlive(ownerPid);
-    } catch {
-      stale = false;
-    }
-
-    if (stale) {
-      const stalePath = `${paths.operationLockPath}.stale.${randomUUID()}`;
-      try {
-        await rename(paths.operationLockPath, stalePath);
-        await rm(stalePath, { recursive: true, force: true });
-        continue;
-      } catch {
-        // Another process recovered or replaced the stale lock first.
+      if (!(error instanceof JobStoreError) || error.code !== "job_runtime_conflict") {
+        throw translateServiceLockError(error, paths);
       }
     }
     if (deps.now() >= deadline) {
@@ -1010,6 +1034,29 @@ export async function acquireServiceLock(
     }
     await deps.sleep(100);
   }
+}
+
+function translateServiceLockError(error: unknown, paths: StudioServicePaths): unknown {
+  if (!(error instanceof JobStoreError)) return error;
+  if (error.code === "job_runtime_lock_corrupt") {
+    return new StudioServiceError(
+      "service_lock_corrupt",
+      "The Studio service operation lock is damaged; refusing an unsafe recovery",
+      { lockPath: paths.operationLockPath, causeCode: error.code },
+    );
+  }
+  if (error.code === "job_runtime_lock_lost") {
+    return new StudioServiceError(
+      "service_lock_lost",
+      "The Studio service operation lock changed ownership during the operation",
+      { lockPath: paths.operationLockPath, causeCode: error.code },
+    );
+  }
+  return new StudioServiceError(
+    "service_lock_failed",
+    "The Studio service operation lock could not be used safely",
+    { lockPath: paths.operationLockPath, causeCode: error.code },
+  );
 }
 
 export async function readTail(path: string, requestedLines: number): Promise<string> {

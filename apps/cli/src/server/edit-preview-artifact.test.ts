@@ -1264,17 +1264,14 @@ test("final probe cannot publish an old revision when project identity changes b
   });
 
   manager.schedule(f.projectId);
-  await Bun.sleep(80);
+  const current = await waitFor(manager, f.projectId, "current");
   const manifest = join(f.projectDir, ".chengfeng-videocut", "preview-edited", "current.json");
-  let saved = JSON.parse(await readFile(manifest, "utf8"));
+  const saved = JSON.parse(await readFile(manifest, "utf8"));
   expect(saved.editRevision).not.toBe(r1);
   const tempFilesAfterFirstRun = (await readdir(join(f.projectDir, ".chengfeng-videocut", "preview-edited")))
     .filter((name) => name.includes(".writer-") && name.endsWith(".tmp.mp4"));
   expect(tempFilesAfterFirstRun).toEqual([]);
 
-  manager.schedule(f.projectId);
-  const current = await waitFor(manager, f.projectId, "current");
-  saved = JSON.parse(await readFile(manifest, "utf8"));
   const tempFilesAfterCurrent = (await readdir(join(f.projectDir, ".chengfeng-videocut", "preview-edited")))
     .filter((name) => name.includes(".writer-") && name.endsWith(".tmp.mp4"));
 

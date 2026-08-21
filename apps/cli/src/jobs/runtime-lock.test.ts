@@ -318,4 +318,51 @@ describe("RuntimeJobLock stale-owner CAS", () => {
     await contender.acquire();
     await contender.release();
   });
+
+  it("uses the same fencing protocol for a custom service lock namespace", async () => {
+    const f = await fixture();
+    const lockName = "service-operation.lock";
+    const lockPath = join(f.dataDir, lockName);
+    const ownerAlive = (pid: number) => pid === 9_001 || pid === 9_002;
+    const first = new RuntimeJobLock(f.dataDir, {
+      directory: f.dataDir,
+      lockName,
+      pid: 9_001,
+      processExists: ownerAlive,
+    });
+    await first.acquire();
+
+    // Model an external stale contender displacing A outside the managed
+    // namespace, then letting B publish at the canonical path before A's old
+    // release runs. A must fence B under a tombstone, never delete it.
+    const displacedFirst = join(f.dataDir, "externally-displaced-first-owner");
+    await rename(lockPath, displacedFirst);
+    const second = new RuntimeJobLock(f.dataDir, {
+      directory: f.dataDir,
+      lockName,
+      pid: 9_002,
+      processExists: ownerAlive,
+    });
+    await second.acquire();
+    await first.release();
+
+    const ownedNames = (await readdir(f.dataDir)).filter((name) =>
+      name === lockName || name.startsWith(`${lockName}.tombstone.`)
+    );
+    expect(ownedNames).toHaveLength(1);
+    expect(ownedNames[0]).toStartWith(`${lockName}.tombstone.`);
+    const successorOwner = JSON.parse(await readFile(join(f.dataDir, ownedNames[0]!, "owner.json"), "utf8"));
+    expect(successorOwner.token).toBe(second.token);
+
+    const third = new RuntimeJobLock(f.dataDir, {
+      directory: f.dataDir,
+      lockName,
+      pid: 9_003,
+      processExists: ownerAlive,
+    });
+    await expect(third.acquire()).rejects.toMatchObject({ code: "job_runtime_conflict" });
+    await second.release();
+    await rm(displacedFirst, { recursive: true, force: true });
+    expect((await readdir(f.dataDir)).filter((name) => name.startsWith(lockName))).toEqual([]);
+  });
 });
