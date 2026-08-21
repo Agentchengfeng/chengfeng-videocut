@@ -253,8 +253,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: native-windows-installer-evidence
+          name: native-windows-installer-beta-candidate
           path: |
+            release/chengfeng-videocut-installer-windows-x64.exe
             ${{ runner.temp }}/native-windows-source-digests.json
             ${{ runner.temp }}/native-windows-installer-evidence.json
             ${{ runner.temp }}/native-windows-installer-diagnostics
