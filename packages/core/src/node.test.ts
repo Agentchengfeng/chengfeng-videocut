@@ -430,7 +430,9 @@ describe("project store", () => {
         dataDir: root,
         expectedProductRoot: root,
       });
-      expect((await stat(authorized.path)).mode & 0o077).toBe(0);
+      if (process.platform !== "win32") {
+        expect((await stat(authorized.path)).mode & 0o077).toBe(0);
+      }
       const local = await doctor({
         projectsDir: join(root, "projects"),
         localDevelopment: true,
@@ -445,16 +447,18 @@ describe("project store", () => {
       expect(local.checks.find((check) => check.name === "dependencyMode")?.detail)
         .toContain("NOT release-ready");
 
-      await chmod(authorized.path, 0o644);
-      const permissive = await doctor({
-        projectsDir: join(root, "projects"),
-        localDevelopment: true,
-        expectedProductRoot: root,
-      });
-      expect(permissive.healthy).toBe(false);
-      expect(permissive.checks.find((check) => check.name === "dependencyMode")?.detail)
-        .toContain("mode 0600");
-      await chmod(authorized.path, 0o600);
+      if (process.platform !== "win32") {
+        await chmod(authorized.path, 0o644);
+        const permissive = await doctor({
+          projectsDir: join(root, "projects"),
+          localDevelopment: true,
+          expectedProductRoot: root,
+        });
+        expect(permissive.healthy).toBe(false);
+        expect(permissive.checks.find((check) => check.name === "dependencyMode")?.detail)
+          .toContain("mode 0600");
+        await chmod(authorized.path, 0o600);
+      }
 
       const drifted = JSON.parse(await readFile(authorized.path, "utf8"));
       drifted.runtime.treeDigest = "f".repeat(64);

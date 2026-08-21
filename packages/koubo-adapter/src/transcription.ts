@@ -16,7 +16,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { VideocutError, ffmpegFileArg } from "@video-workbench/core";
+import { VideocutError, ffmpegFileArg, withOwnedAbortTimeout } from "@video-workbench/core";
 import { serializeProjectOperation } from "@video-workbench/core/node";
 import { probeMedia, type MediaProbe } from "./mediaCut";
 
@@ -810,33 +810,6 @@ function causeType(error: unknown): string {
   return error instanceof Error ? error.name : typeof error;
 }
 
-function timeoutSignal(milliseconds: number): AbortSignal {
-  if (typeof AbortSignal.timeout === "function") return AbortSignal.timeout(milliseconds);
-  const controller = new AbortController();
-  const timer = setTimeout(() => {
-    controller.abort(new DOMException("The operation timed out", "TimeoutError"));
-  }, milliseconds);
-  timer.unref?.();
-  return controller.signal;
-}
-
-function combineSignals(signals: AbortSignal[]): AbortSignal {
-  const active = signals.filter(Boolean);
-  if (active.length === 1) return active[0] as AbortSignal;
-  if (typeof AbortSignal.any === "function") return AbortSignal.any(active);
-  const controller = new AbortController();
-  for (const signal of active) {
-    if (signal.aborted) {
-      controller.abort(signal.reason);
-      return controller.signal;
-    }
-    signal.addEventListener("abort", () => {
-      if (!controller.signal.aborted) controller.abort(signal.reason);
-    }, { once: true });
-  }
-  return controller.signal;
-}
-
 function classifyProviderRequestFailure(
   error: unknown,
   stage: "submit" | "query",
@@ -901,19 +874,23 @@ async function sleepWithCancellation(
     causeType: causeType(signal.reason),
     recoverable: false,
   });
-  await Promise.race([
-    dependencies.sleep(milliseconds),
-    new Promise<never>((_, reject) => {
-      signal.addEventListener("abort", () => {
-        reject(new ProviderRequestFailure("external_cancel", "query", {
-          kind: "external_cancel",
-          stage: "query",
-          causeType: causeType(signal.reason),
-          recoverable: false,
-        }));
-      }, { once: true });
-    }),
-  ]);
+  let onAbort: (() => void) | undefined;
+  const cancelled = new Promise<never>((_, reject) => {
+    onAbort = () => {
+      reject(new ProviderRequestFailure("external_cancel", "query", {
+        kind: "external_cancel",
+        stage: "query",
+        causeType: causeType(signal.reason),
+        recoverable: false,
+      }));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    await Promise.race([dependencies.sleep(milliseconds), cancelled]);
+  } finally {
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+  }
 }
 
 async function parseProviderResponse(
@@ -944,13 +921,13 @@ async function requestProvider(
   timeoutMs: number,
   externalSignal?: AbortSignal,
 ): Promise<FetchLikeResponse> {
-  const timeout = timeoutSignal(timeoutMs);
-  const signal = combineSignals(externalSignal ? [timeout, externalSignal] : [timeout]);
-  try {
-    return await dependencies.fetch(url, { ...init, signal });
-  } catch (error) {
-    throw classifyProviderRequestFailure(error, stage, timeout, externalSignal, timeoutMs);
-  }
+  return await withOwnedAbortTimeout(timeoutMs, async (signal, timeoutSignal) => {
+    try {
+      return await dependencies.fetch(url, { ...init, signal });
+    } catch (error) {
+      throw classifyProviderRequestFailure(error, stage, timeoutSignal, externalSignal, timeoutMs);
+    }
+  }, externalSignal);
 }
 
 /** Marks that end or divide a sentence in Chinese and in English. */

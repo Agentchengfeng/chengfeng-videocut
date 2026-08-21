@@ -223,6 +223,15 @@ describe("release contract", () => {
       "chengfeng-videocut-installer-macos-x64",
       "chengfeng-videocut-installer-windows-x64.exe",
     ]);
+    if (process.platform === "win32") {
+      // A Windows filesystem cannot attest a macOS executable bit. Formal
+      // cross-platform verification must fail closed instead of silently
+      // weakening the macOS asset contract just to make this fixture pass.
+      await expect(
+        verifyReleaseAssetManifest({ releaseDir, version: PRODUCT_VERSION }),
+      ).rejects.toThrow("darwin-arm64 installer is not executable");
+      return;
+    }
     await expect(
       verifyReleaseAssetManifest({ releaseDir, version: PRODUCT_VERSION }),
     ).resolves.toEqual({

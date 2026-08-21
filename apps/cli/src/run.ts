@@ -4,7 +4,12 @@ import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
-import { VideocutError, asVideocutError, parseTranscriptWords } from "@video-workbench/core";
+import {
+  VideocutError,
+  asVideocutError,
+  parseTranscriptWords,
+  withOwnedAbortTimeout,
+} from "@video-workbench/core";
 import {
   createKouboProject,
   ingestKouboProject,
@@ -341,6 +346,17 @@ function objectRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+async function fetchWithProductTimeout(
+  input: string | URL,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<Response> {
+  return await withOwnedAbortTimeout(
+    timeoutMs,
+    async (signal) => await fetch(input, { ...init, signal }),
+  );
+}
+
 const PLAYBACK_CURSOR_SCHEMA_VERSION = 1;
 const DEFAULT_PLAYBACK_PAGE_LIMIT = 64;
 // The native MCP deliberately rejects a stream above 32 KiB. Keep the Product
@@ -510,7 +526,7 @@ async function requestEditListApi(options: {
   const endpoint = projectApiEndpoint(options.apiBase, options.projectId, "edit-list");
   let response: Response;
   try {
-    response = await fetch(endpoint, {
+    response = await fetchWithProductTimeout(endpoint, {
       method: options.method,
       headers: options.method === "PATCH"
         ? { "Content-Type": "application/json" }
@@ -524,8 +540,7 @@ async function requestEditListApi(options: {
             actor: "cli",
           })
         : undefined,
-      signal: AbortSignal.timeout(30_000),
-    });
+    }, 30_000);
   } catch (error) {
     throw new CliRequestError(
       "service_unavailable",
@@ -581,7 +596,7 @@ async function readCutsThroughApi(options: {
   const endpoint = apiEndpoint(options.apiBase, options.projectId);
   let response: Response;
   try {
-    response = await fetch(endpoint, { signal: AbortSignal.timeout(15_000) });
+    response = await fetchWithProductTimeout(endpoint, {}, 15_000);
   } catch (error) {
     throw new CliRequestError(
       "service_unavailable",
@@ -654,7 +669,7 @@ async function updateCutsThroughApi(options: {
   const endpoint = apiEndpoint(options.apiBase, options.projectId);
   let response: Response;
   try {
-    response = await fetch(endpoint, {
+    response = await fetchWithProductTimeout(endpoint, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -666,8 +681,7 @@ async function updateCutsThroughApi(options: {
         // "why was this deleted" unanswerable for every deletion ever made.
         ...(options.reasons === undefined ? {} : { reasons: options.reasons }),
       }),
-      signal: AbortSignal.timeout(15_000),
-    });
+    }, 15_000);
   } catch (error) {
     throw new CliRequestError(
       "service_unavailable",
@@ -766,7 +780,7 @@ async function requestWorkflowApi(options: {
   );
   let response: Response;
   try {
-    response = await fetch(endpoint, options.action ? {
+    response = await fetchWithProductTimeout(endpoint, options.action ? {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -778,10 +792,7 @@ async function requestWorkflowApi(options: {
           : {}),
         ...(options.config !== undefined ? { config: options.config } : {}),
       }),
-      signal: AbortSignal.timeout(20_000),
-    } : {
-      signal: AbortSignal.timeout(15_000),
-    });
+    } : {}, options.action ? 20_000 : 15_000);
   } catch (error) {
     throw new CliRequestError(
       "service_unavailable",
@@ -847,12 +858,11 @@ async function requestJobsApi(options: {
   const method = options.command === "job.start" || options.command === "job.cancel" ? "POST" : "GET";
   let response: Response;
   try {
-    response = await fetch(endpoint, {
+    response = await fetchWithProductTimeout(endpoint, {
       method,
       headers: options.body ? { "Content-Type": "application/json" } : { Accept: "application/json" },
       body: options.body ? JSON.stringify(options.body) : undefined,
-      signal: AbortSignal.timeout(30_000),
-    });
+    }, 30_000);
   } catch (error) {
     throw new CliRequestError("service_unavailable", `Cannot reach chengfeng-videocut at ${options.apiBase}`, {
       endpoint: endpoint.toString(), cause: error instanceof Error ? error.message : String(error),

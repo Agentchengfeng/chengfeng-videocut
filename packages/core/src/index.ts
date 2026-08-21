@@ -3,6 +3,7 @@ export {
   ffmpegOutputArgs,
   runWithFfmpegComplexFilterFile,
 } from "./ffmpegPath";
+export * from "./abort";
 export * from "./config";
 export * from "./cuts";
 export * from "./editList";

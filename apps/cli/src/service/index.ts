@@ -14,6 +14,7 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { createConnection } from "node:net";
+import { withOwnedAbortTimeout } from "@video-workbench/core";
 import { PRODUCT_NAME, PRODUCT_VERSION } from "../output";
 
 export const STUDIO_SERVICE_LABEL = "com.chengfeng.videocut.studio";
@@ -501,10 +502,10 @@ async function launchdStatus(deps: ResolvedServiceDependencies): Promise<Launchd
 export async function probeHealth(deps: ResolvedServiceDependencies): Promise<HealthProbe> {
   let response: Response;
   try {
-    response = await deps.fetch(`${STUDIO_SERVICE_URL}/api/health`, {
-      headers: { Accept: "application/json" },
-      signal: AbortSignal.timeout(1_500),
-    });
+    response = await withOwnedAbortTimeout(1_500, async (signal) => await deps.fetch(
+      `${STUDIO_SERVICE_URL}/api/health`,
+      { headers: { Accept: "application/json" }, signal },
+    ));
   } catch {
     const occupied = await deps.isPortOccupied();
     const portOwnerPid = occupied ? await deps.getPortOwnerPid() : null;

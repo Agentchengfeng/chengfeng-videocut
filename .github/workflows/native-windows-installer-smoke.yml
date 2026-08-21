@@ -1,6 +1,6 @@
 name: native-windows-installer-smoke
 
-# A manual engineering gate for the self-contained Product Runtime installer.
+# A reusable engineering gate for the self-contained Product Runtime installer.
 # It deliberately uses local-test-only managed tools: this does not sign,
 # publish, relax the release/licensing gate, or establish a release supply chain.
 on:
@@ -30,7 +30,7 @@ jobs:
       - name: Run native Windows installer transaction regression tests
         shell: pwsh
         run: |
-          node --test test/installer-arguments.test.cjs test/runtime-updater.test.cjs
+          node --test test/installer-arguments.test.cjs test/runtime-updater.test.cjs test/windows-workflow-contract.test.cjs
 
       - name: Build the Runtime archive
         run: |
@@ -47,13 +47,37 @@ jobs:
           if ($lock.schemaVersion -ne 2 -or ($toolNames -join ",") -ne "bun,ffmpeg,ffprobe") {
             throw "managed-tools.lock.json must be schema 2 with only Bun, FFmpeg and FFprobe"
           }
-          Push-Location "apps/desktop"
-          try {
-            $ffmpeg = (node -p "require('ffmpeg-static')").Trim()
-            $ffprobe = (node -p "require('@derhuerst/ffprobe-static')").Trim()
-          } finally {
-            Pop-Location
+          function Get-PinnedFixture([string] $Url, [string] $Destination, [string] $Sha256) {
+            $downloaded = $false
+            foreach ($attempt in 1..3) {
+              try {
+                Invoke-WebRequest -Uri $Url -OutFile $Destination -TimeoutSec 180
+                $downloaded = $true
+                break
+              } catch {
+                if ($attempt -eq 3) { throw }
+                Start-Sleep -Seconds (10 * $attempt)
+              }
+            }
+            if (-not $downloaded -or -not (Test-Path -LiteralPath $Destination -PathType Leaf)) {
+              throw "Pinned managed-tool fixture is missing after download: $Destination"
+            }
+            $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $Destination).Hash.ToLowerInvariant()
+            if ($actual -ne $Sha256) {
+              throw "Pinned managed-tool fixture SHA256 mismatch: $Destination ($actual)"
+            }
           }
+
+          # These GPL-v3 binaries are an explicit local-test-only fixture. They
+          # exercise the Product's exact 6.0 lock without changing the formal
+          # UNVERIFIED redistribution gate or trusting a drifting npm payload.
+          $ffmpegUrl = "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.0/ffmpeg-win32-x64"
+          $ffprobeUrl = "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.0/ffprobe-win32-x64"
+          $ffmpeg = Join-Path $env:RUNNER_TEMP "chengfeng-videocut-ffmpeg-6.0.exe"
+          $ffprobe = Join-Path $env:RUNNER_TEMP "chengfeng-videocut-ffprobe-6.0.exe"
+          Get-PinnedFixture $ffmpegUrl $ffmpeg "e9fd5e711debab9d680955fc1e38a2c1160fd280b144476cc3f62bc43ef49db1"
+          Get-PinnedFixture $ffprobeUrl $ffprobe "139f8420bcb2f29fcd5734e29d686289df826cadce5d2b7b5f56d0000ea9a951"
+
           $bun = (Get-Command bun.exe -ErrorAction Stop).Source
           foreach ($source in @($bun, $ffmpeg, $ffprobe)) {
             if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
@@ -61,10 +85,25 @@ jobs:
             }
           }
 
+          $bunVersion = (& $bun --version | Select-Object -First 1).Trim()
+          $ffmpegVersion = (& $ffmpeg -version | Select-Object -First 1).Trim()
+          $ffprobeVersion = (& $ffprobe -version | Select-Object -First 1).Trim()
+          $mediaVersion = [regex]::Escape([string] $lock.tools.ffmpeg.version)
+          $probeVersion = [regex]::Escape([string] $lock.tools.ffprobe.version)
+          if ($bunVersion -ne [string] $lock.tools.bun.version) {
+            throw "Bun fixture identity mismatch: $bunVersion"
+          }
+          if ($ffmpegVersion -notmatch "^ffmpeg version (?:n)?$mediaVersion(?:[-\s]|$)") {
+            throw "FFmpeg fixture identity mismatch: $ffmpegVersion"
+          }
+          if ($ffprobeVersion -notmatch "^ffprobe version (?:n)?$probeVersion(?:[-\s]|$)") {
+            throw "FFprobe fixture identity mismatch: $ffprobeVersion"
+          }
+
           $records = @{
-            bun = @{ path = $bun; sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $bun).Hash.ToLowerInvariant() }
-            ffmpeg = @{ path = $ffmpeg; sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $ffmpeg).Hash.ToLowerInvariant() }
-            ffprobe = @{ path = $ffprobe; sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $ffprobe).Hash.ToLowerInvariant() }
+            bun = @{ path = $bun; version = $bunVersion; sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $bun).Hash.ToLowerInvariant() }
+            ffmpeg = @{ path = $ffmpeg; url = $ffmpegUrl; version = $ffmpegVersion; sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $ffmpeg).Hash.ToLowerInvariant() }
+            ffprobe = @{ path = $ffprobe; url = $ffprobeUrl; version = $ffprobeVersion; sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $ffprobe).Hash.ToLowerInvariant() }
           }
           $records | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP "native-windows-source-digests.json") -Encoding utf8
           "CHENGFENG_VIDEOCUT_LOCAL_TOOLS_FIXTURE=1" >> $env:GITHUB_ENV
@@ -142,12 +181,19 @@ jobs:
 
           $launcher = Join-Path $defaultRoot "bin/chengfeng-videocut.cmd"
           $tools = Join-Path $defaultRoot "tools/$version"
+          $lock = Get-Content "installer/managed-tools.lock.json" -Raw | ConvertFrom-Json
           $runtimeVersion = (& $launcher --version | Select-Object -First 1).Trim()
           if ($LASTEXITCODE -ne 0 -or $runtimeVersion -ne $version) { throw "Managed launcher version mismatch: $runtimeVersion" }
           $bunVersion = (& (Join-Path $tools "bun.exe") --version | Select-Object -First 1).Trim()
           $ffmpegVersion = (& (Join-Path $tools "ffmpeg.exe") -version | Select-Object -First 1).Trim()
           $ffprobeVersion = (& (Join-Path $tools "ffprobe.exe") -version | Select-Object -First 1).Trim()
-          if ($bunVersion -ne "1.3.5" -or $ffmpegVersion -notmatch "^ffmpeg version (?:n)?6\\.0" -or $ffprobeVersion -notmatch "^ffprobe version (?:n)?6\\.0") {
+          $mediaVersion = [regex]::Escape([string] $lock.tools.ffmpeg.version)
+          $probeVersion = [regex]::Escape([string] $lock.tools.ffprobe.version)
+          if (
+            $bunVersion -ne [string] $lock.tools.bun.version -or
+            $ffmpegVersion -notmatch "^ffmpeg version (?:n)?$mediaVersion(?:[-\s]|$)" -or
+            $ffprobeVersion -notmatch "^ffprobe version (?:n)?$probeVersion(?:[-\s]|$)"
+          ) {
             throw "Installed managed tool identity mismatch: Bun=$bunVersion FFmpeg=$ffmpegVersion FFprobe=$ffprobeVersion"
           }
 

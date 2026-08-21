@@ -11,86 +11,63 @@ on:
   workflow_dispatch:
 
 jobs:
-  # The self-contained installer needs a locally-built, test-only tools payload.
-  # Keep this heavyweight validation manual; routine PR/main checks below retain
-  # their existing portable Runtime scope.
-  native-installer-smoke:
-    if: github.event_name == 'workflow_dispatch'
+  # The Product contract is the self-contained installer. The legacy portable
+  # archive cannot prove a managed Bun/FFmpeg installation and is not a user path.
+  install-smoke:
     uses: ./.github/workflows/native-windows-installer-smoke.yml
 
   test:
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.5
-      - name: 安装 ffmpeg（直接下载静态构建，带重试，不依赖任何目录 API）
+      - name: 准备固定版本的 FFmpeg 6.0 测试工具
+        timeout-minutes: 10
         shell: pwsh
         run: |
-          $url = 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip'
-          $ok = $false
-          foreach ($i in 1..3) {
-            try { Invoke-WebRequest $url -OutFile ff.zip -TimeoutSec 120; $ok = $true; break }
-            catch { Start-Sleep -Seconds (10 * $i) }
+          $ErrorActionPreference = "Stop"
+          $toolBin = Join-Path $env:RUNNER_TEMP "chengfeng-videocut-test-tools"
+          New-Item -ItemType Directory -Force $toolBin | Out-Null
+
+          function Get-PinnedFixture([string] $Url, [string] $Destination, [string] $Sha256) {
+            foreach ($attempt in 1..3) {
+              try {
+                Invoke-WebRequest -Uri $Url -OutFile $Destination -TimeoutSec 180
+                break
+              } catch {
+                if ($attempt -eq 3) { throw }
+                Start-Sleep -Seconds (10 * $attempt)
+              }
+            }
+            $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $Destination).Hash.ToLowerInvariant()
+            if ($actual -ne $Sha256) { throw "Pinned test tool SHA256 mismatch: $Destination ($actual)" }
           }
-          if (-not $ok) { throw 'ffmpeg download failed after retries' }
-          Expand-Archive ff.zip -DestinationPath $env:RUNNER_TEMP\ff
-          $bin = Get-ChildItem -Directory $env:RUNNER_TEMP\ff | Select-Object -First 1
-          Add-Content $env:GITHUB_PATH (Join-Path $bin.FullName 'bin')
+
+          # Local CI fixture only; this does not change the formal UNVERIFIED
+          # redistribution gate in installer/managed-tools.lock.json.
+          $ffmpeg = Join-Path $toolBin "ffmpeg.exe"
+          $ffprobe = Join-Path $toolBin "ffprobe.exe"
+          Get-PinnedFixture "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.0/ffmpeg-win32-x64" $ffmpeg "e9fd5e711debab9d680955fc1e38a2c1160fd280b144476cc3f62bc43ef49db1"
+          Get-PinnedFixture "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.0/ffprobe-win32-x64" $ffprobe "139f8420bcb2f29fcd5734e29d686289df826cadce5d2b7b5f56d0000ea9a951"
+          if ((& $ffmpeg -version | Select-Object -First 1) -notmatch "^ffmpeg version (?:n)?6\.0(?:[-\s]|$)") {
+            throw "FFmpeg fixture is not 6.0"
+          }
+          if ((& $ffprobe -version | Select-Object -First 1) -notmatch "^ffprobe version (?:n)?6\.0(?:[-\s]|$)") {
+            throw "FFprobe fixture is not 6.0"
+          }
+          Add-Content $env:GITHUB_PATH $toolBin
       - name: 安装依赖
         run: bun install --frozen-lockfile
       - name: 全量单测
         # Several suites exercise native Windows watchers and process lifecycle.
         # Keep the native watcher in its own fresh Bun process below.
+        timeout-minutes: 20
         env:
           CHENGFENG_VIDEOCUT_SKIP_NATIVE_WATCHER_TEST: "1"
         run: bun test --max-concurrency=1 packages apps/cli/src apps/studio/src/server/videocutEditListApi.test.ts
       - name: 原生项目 watcher（独立硬门禁）
+        timeout-minutes: 5
         run: bun test apps/cli/src/server/project-watcher.test.ts
-
-  # W1 验收：真实 Windows 上装得上、跑得出版本号。这个 job 是硬门禁。
-  install-smoke:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.5
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-      - name: 安装依赖
-        run: bun install --frozen-lockfile
-      - name: 构建便携包
-        run: |
-          bun run package:build
-          bun scripts/package-portable.ts
-      - name: 组装本地 release 夹具并安装
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force local-release | Out-Null
-          Copy-Item release/chengfeng-videocut-portable.tar.gz local-release/
-          Copy-Item install.cjs local-release/
-          node -e "const{createHash}=require('crypto');const fs=require('fs');const p='local-release/chengfeng-videocut-portable.tar.gz';const h=createHash('sha256').update(fs.readFileSync(p)).digest('hex');fs.writeFileSync('local-release/SHA256SUMS.txt',h+'  chengfeng-videocut-portable.tar.gz\n');"
-          $env:CHENGFENG_VIDEOCUT_HOME = Join-Path $env:RUNNER_TEMP 'vc-home'
-          $env:CHENGFENG_VIDEOCUT_DOWNLOAD_BASE = ([uri](Join-Path $PWD 'local-release')).AbsoluteUri
-          $originalPath = $env:PATH
-          $nativeBun = (Get-Command bun.exe -ErrorAction Stop).Source
-          $brokenShimBin = Join-Path $env:RUNNER_TEMP '01-pnpm-bin'
-          $nativeBin = Join-Path $env:RUNNER_TEMP '02-native-bin'
-          New-Item -ItemType Directory -Force $brokenShimBin, $nativeBin | Out-Null
-          [IO.File]::WriteAllText(
-            (Join-Path $brokenShimBin 'bun.cmd'),
-            "@echo off`r`nexit /b 91`r`n",
-            [Text.Encoding]::ASCII
-          )
-          Copy-Item $nativeBun (Join-Path $nativeBin 'bun.exe')
-          $env:PATH = "$brokenShimBin;$nativeBin;$originalPath"
-          node local-release/install.cjs
-          $installExit = $LASTEXITCODE
-          $env:PATH = $originalPath
-          if ($installExit -ne 0) { exit $installExit }
-          $version = & (Join-Path $env:CHENGFENG_VIDEOCUT_HOME 'bin\chengfeng-videocut.cmd') --version
-          Write-Host "launcher reports: $version"
-          if ($version -notmatch '\d+\.\d+\.\d+') { exit 1 }
