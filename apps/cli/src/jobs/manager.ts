@@ -13,9 +13,29 @@ import {
   exportInputFingerprint,
   fileIdentity,
 } from "./runners";
-import { terminateOwnedProcessTree } from "./process";
+import { proveWorkerOwnership, terminateOwnedProcessTree } from "./process";
 import { RuntimeJobLock } from "./runtime-lock";
 import { JobStore, JobStoreError, syncDirectory } from "./store";
+
+const WORKER_CLEANUP_TIMEOUT_MS = 5_000;
+
+function remainingCleanupMs(deadline: number): number {
+  return Math.max(0, deadline - Date.now());
+}
+
+async function waitForWorkerClose(
+  worker: Pick<RunningWorker, "closed" | "isClosed">,
+  deadline: number,
+): Promise<boolean> {
+  if (worker.isClosed()) return true;
+  const remaining = remainingCleanupMs(deadline);
+  if (remaining <= 0) return false;
+  const closed = await Promise.race([
+    worker.closed.then(() => true),
+    Bun.sleep(remaining).then(() => false),
+  ]);
+  return closed || worker.isClosed();
+}
 
 interface AttemptLease {
   jobId: string;
@@ -28,6 +48,7 @@ interface RunningWorker {
   child: ChildProcess;
   token: string;
   closed: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
+  isClosed: () => boolean;
   lease: AttemptLease | null;
 }
 
@@ -326,7 +347,19 @@ export class JobManager {
     if (!worker || !transitioned.owner || !worker.lease || !this.#sameLease(transitioned, worker.lease)) {
       return this.#blockRecovery(transitioned, "job_process_unproven", "Running worker ownership is missing");
     }
-    const result = await terminateOwnedProcessTree(transitioned.owner.pid, worker.token);
+    const cleanupDeadline = Date.now() + WORKER_CLEANUP_TIMEOUT_MS;
+    const result = await terminateOwnedProcessTree(
+      transitioned.owner.pid,
+      worker.token,
+      remainingCleanupMs(cleanupDeadline),
+      {
+        child: worker.child,
+        token: worker.token,
+        proveOwnership: (timeoutMs) => proveWorkerOwnership(
+          worker.child, worker.token, this.#workerSecret, timeoutMs,
+        ),
+      },
+    );
     if (result === "identity_mismatch" || result === "cleanup_failed") {
       return this.#blockRecovery(
         transitioned,
@@ -336,7 +369,15 @@ export class JobManager {
         worker.lease,
       );
     }
-    await Promise.race([worker.closed, Bun.sleep(5_000)]);
+    if (!(await waitForWorkerClose(worker, cleanupDeadline))) {
+      return this.#blockRecovery(
+        transitioned,
+        "job_process_unproven",
+        "Worker termination did not close its process channel within the cleanup budget",
+        {},
+        worker.lease,
+      );
+    }
     return (await this.store.read(jobId)) ?? transitioned;
   }
 
@@ -389,30 +430,51 @@ export class JobManager {
         }
         throw error;
       }
-      const result = await terminateOwnedProcessTree(lease.pid, lease.token);
+      const cleanupDeadline = Date.now() + WORKER_CLEANUP_TIMEOUT_MS;
+      const result = await terminateOwnedProcessTree(
+        lease.pid,
+        lease.token,
+        remainingCleanupMs(cleanupDeadline),
+        {
+          child: worker.child,
+          token: worker.token,
+          proveOwnership: (timeoutMs) => proveWorkerOwnership(
+            worker.child, worker.token, this.#workerSecret, timeoutMs,
+          ),
+        },
+      );
       if (result === "identity_mismatch" || result === "cleanup_failed") {
         await this.#blockRecovery(job, "job_process_unproven", `Worker cleanup failed: ${result}`, {}, lease);
       } else {
-        await Promise.race([worker.closed, Bun.sleep(5_000)]);
-        await this.#cleanupArtifacts(job);
-        await this.store.update(jobId, (value) => {
-          this.#assertLease(value, lease);
-          if (value.phase !== "stopping") {
-            throw new JobStoreError("job_state_conflict", "Job left its shutdown lease", { jobId });
-          }
-          return value.state === "cancelling" ? {
-            ...value,
-            state: "cancelled",
-            phase: "cancelled",
-            owner: null,
-            finishedAt: new Date().toISOString(),
-          } : {
-            ...value,
-            state: "queued",
-            phase: "queued_after_shutdown",
-            owner: null,
-          };
-        });
+        if (!(await waitForWorkerClose(worker, cleanupDeadline))) {
+          await this.#blockRecovery(
+            job,
+            "job_process_unproven",
+            "Worker termination did not close its process channel within the cleanup budget",
+            {},
+            lease,
+          );
+        } else {
+          await this.#cleanupArtifacts(job);
+          await this.store.update(jobId, (value) => {
+            this.#assertLease(value, lease);
+            if (value.phase !== "stopping") {
+              throw new JobStoreError("job_state_conflict", "Job left its shutdown lease", { jobId });
+            }
+            return value.state === "cancelling" ? {
+              ...value,
+              state: "cancelled",
+              phase: "cancelled",
+              owner: null,
+              finishedAt: new Date().toISOString(),
+            } : {
+              ...value,
+              state: "queued",
+              phase: "queued_after_shutdown",
+              owner: null,
+            };
+          });
+        }
       }
       this.#shutdownAttempts.delete(jobId);
     }
@@ -576,7 +638,7 @@ export class JobManager {
       "--owner-token", token,
     ], {
       detached: process.platform !== "win32",
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["ignore", "pipe", "pipe", "ipc"],
       env: {
         ...process.env,
         CHENGFENG_JOB_OWNER_TOKEN: token,
@@ -600,6 +662,7 @@ export class JobManager {
     child.stderr?.setEncoding("utf8");
     child.stdout?.on("data", (chunk: string) => { stdout = `${stdout}${chunk}`.slice(-64_000); });
     child.stderr?.on("data", (chunk: string) => { stderr = `${stderr}${chunk}`.slice(-8_000); });
+    let didClose = false;
     const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveClose) => {
       let settled = false;
       const settle = (value: { code: number | null; signal: NodeJS.Signals | null }) => {
@@ -609,11 +672,15 @@ export class JobManager {
       };
       child.once("error", (error) => {
         stderr = `${stderr}\n${error.message}`.slice(-8_000);
-        settle({ code: 1, signal: null });
+        // IPC/send errors do not prove that the worker process exited. Only
+        // `close` can settle ownership and permit cleanup of its durable job.
       });
-      child.once("close", (code, signal) => settle({ code, signal }));
+      child.once("close", (code, signal) => {
+        didClose = true;
+        settle({ code, signal });
+      });
     });
-    const worker: RunningWorker = { child, token, closed, lease: null };
+    const worker: RunningWorker = { child, token, closed, isClosed: () => didClose, lease: null };
     this.#running.set(jobId, worker);
     const now = new Date().toISOString();
     let runningJob: DurableJob;
@@ -643,12 +710,35 @@ export class JobManager {
         };
       }, ["queued"]);
     } catch (error) {
-      const cleanup = await terminateOwnedProcessTree(child.pid, token);
+      const cleanupDeadline = Date.now() + WORKER_CLEANUP_TIMEOUT_MS;
+      const cleanup = await terminateOwnedProcessTree(
+        child.pid,
+        token,
+        remainingCleanupMs(cleanupDeadline),
+        {
+          child,
+          token,
+          proveOwnership: (timeoutMs) => proveWorkerOwnership(
+            child, token, this.#workerSecret, timeoutMs,
+          ),
+        },
+      );
       if (cleanup === "identity_mismatch" || cleanup === "cleanup_failed") {
         const current = await this.store.read(jobId);
         if (current) await this.#blockRecovery(current, "job_process_unproven", `Launch rollback failed: ${cleanup}`);
       } else {
-        await Promise.race([closed, Bun.sleep(1_000)]);
+        if (!(await waitForWorkerClose(worker, cleanupDeadline))) {
+          const current = await this.store.read(jobId);
+          if (current) {
+            await this.#blockRecovery(
+              current,
+              "job_process_unproven",
+              "Launch rollback did not close its worker channel within the cleanup budget",
+            );
+          }
+          this.#running.delete(jobId);
+          return;
+        }
         if (!(error instanceof JobStoreError && ["job_state_conflict", "job_runtime_stopping"].includes(error.code))) {
           try {
             await this.store.update(jobId, (value) => ({

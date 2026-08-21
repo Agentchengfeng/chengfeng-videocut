@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import { runCli } from "./run";
+import { installWorkerOwnershipResponder } from "./jobs/process";
 import { runJobWorker } from "./jobs/runners";
 
 if (import.meta.main) {
@@ -9,6 +10,7 @@ if (import.meta.main) {
     const jobId = argv[1];
     const dataDirIndex = argv.indexOf("--data-dir");
     const tokenIndex = argv.indexOf("--owner-token");
+    let removeOwnershipResponder: (() => void) | undefined;
     try {
       const ownerToken = tokenIndex >= 0 ? argv[tokenIndex + 1] : undefined;
       const workerSecret = process.env.CHENGFENG_INTERNAL_JOB_WORKER_SECRET;
@@ -20,6 +22,7 @@ if (import.meta.main) {
           code: "job_worker_unauthorized",
         });
       }
+      removeOwnershipResponder = installWorkerOwnershipResponder(ownerToken, workerSecret);
       await runJobWorker(argv[dataDirIndex + 1]!, jobId, ownerToken, workerSecret);
       process.exitCode = 0;
     } catch (error) {
@@ -33,6 +36,13 @@ if (import.meta.main) {
         },
       })}\n`);
       process.exitCode = 1;
+    } finally {
+      removeOwnershipResponder?.();
+      try {
+        if (process.connected) process.disconnect?.();
+      } catch {
+        // The manager may close IPC while the worker is finishing normally.
+      }
     }
   } else {
     process.exitCode = await runCli(argv);

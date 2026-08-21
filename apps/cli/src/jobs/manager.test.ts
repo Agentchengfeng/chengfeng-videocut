@@ -12,9 +12,8 @@ import {
 
 const cleanup: string[] = [];
 const managers: JobManager[] = [];
-// Windows ownership verification plus taskkill can legitimately consume the
-// production 5-second cleanup budget; the default 5-second hook limit would
-// abort teardown at the exact boundary and leak it into the next test.
+// Production worker cleanup has one 5-second budget. Leave room for the
+// fail-closed state write and removal of each test's temporary directory.
 afterEach(async () => {
   await Promise.all(managers.splice(0).map((manager) => manager.shutdown().catch(() => undefined)));
   await Promise.all(cleanup.splice(0).map((path) => rm(path, { recursive: true, force: true })));
@@ -32,16 +31,33 @@ async function fixture() {
     await writeFile(join(project, "overlay.html"), `<p>overlay-${index}</p>`);
   }
   const slowWorker = join(root, "slow-worker.ts");
-  await writeFile(slowWorker, "await Bun.sleep(60_000);\n");
+  const ownershipModule = new URL("./process.ts", import.meta.url).href;
+  await writeFile(slowWorker, `
+import { installWorkerOwnershipResponder } from ${JSON.stringify(ownershipModule)};
+const disposeOwnership = installWorkerOwnershipResponder(
+  process.env.CHENGFENG_JOB_OWNER_TOKEN!,
+  process.env.CHENGFENG_INTERNAL_JOB_WORKER_SECRET!,
+);
+try { await Bun.sleep(60_000); }
+finally {
+  disposeOwnership();
+  try { if (process.connected) process.disconnect?.(); } catch {}
+}
+`);
   const successWorker = join(root, "success-worker.ts");
   await writeFile(successWorker, `
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
+import { installWorkerOwnershipResponder } from ${JSON.stringify(ownershipModule)};
 const argv = process.argv.slice(2);
 const jobId = argv[1];
 const dataDir = argv[argv.indexOf("--data-dir") + 1];
 const token = process.env.CHENGFENG_JOB_OWNER_TOKEN;
+const disposeOwnership = installWorkerOwnershipResponder(
+  token!,
+  process.env.CHENGFENG_INTERNAL_JOB_WORKER_SECRET!,
+);
 let job;
 for (let i = 0; i < 200; i++) {
   job = JSON.parse(await readFile(join(dataDir, "jobs", jobId, "job.json"), "utf8"));
@@ -56,6 +72,8 @@ console.log(JSON.stringify({ ok: true, result: {
   candidateSha256: createHash("sha256").update(candidate).digest("hex"),
   candidateSize: Buffer.byteLength(candidate),
 } }));
+disposeOwnership();
+try { if (process.connected) process.disconnect?.(); } catch {}
 `);
   const delayedWorker = join(root, "delayed-worker.ts");
   await writeFile(delayedWorker, (await readFile(successWorker, "utf8")).replace(
@@ -340,7 +358,7 @@ describe("job manager", () => {
     expect(await readFile(candidatePath, "utf8")).toBe("identical-bytes");
   });
 
-  it("rejects a second Runtime before it can recover or kill the first worker", async () => {
+  it("rejects a second Runtime and then shuts down its tracked Windows worker within one budget", async () => {
     const f = await fixture();
     const first = new JobManager(f.dataDir, { workerEntrypoint: f.slowWorker });
     const second = new JobManager(f.dataDir, { workerEntrypoint: f.successWorker });
@@ -351,7 +369,11 @@ describe("job manager", () => {
     await expect(second.initialize()).rejects.toMatchObject({ code: "job_runtime_conflict" });
     expect(() => process.kill(running.owner!.pid, 0)).not.toThrow();
     expect(await first.read(started.jobId)).toMatchObject({ state: "running", attempt: 1 });
-  });
+    const cleanupStartedAt = Date.now();
+    await first.shutdown();
+    expect(Date.now() - cleanupStartedAt).toBeLessThan(7_000);
+    expect(() => process.kill(running.owner!.pid, 0)).toThrow();
+  }, { timeout: 10_000 });
 
   it("does not let a worker escape when shutdown crosses the launch seam", async () => {
     const f = await fixture();
