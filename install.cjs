@@ -59,6 +59,7 @@ function parseInstallerArguments(argv) {
     ensureService: false,
     recoverRollback: false,
     allowUnverifiedLocalFixture: false,
+    acceptPublicBeta: false,
   };
   const valueOptions = new Set(["--manifest", "--target-root", "--checksum-file"]);
   const seen = new Set();
@@ -86,6 +87,7 @@ function parseInstallerArguments(argv) {
     else if (argument === "--ensure-service") options.ensureService = true;
     else if (argument === "--recover-rollback") options.recoverRollback = true;
     else if (argument === "--allow-unverified-local-fixture") options.allowUnverifiedLocalFixture = true;
+    else if (argument === "--accept-public-beta") options.acceptPublicBeta = true;
     else fail(`未知安装器参数：${argument}`);
   }
   return options;
@@ -172,6 +174,22 @@ const EMBEDDED_PAYLOAD_BUILD =
 const ALLOW_UNVERIFIED_LOCAL_TOOLS =
   INSTALLER_OPTIONS.allowUnverifiedLocalFixture ||
   process.env.CHENGFENG_VIDEOCUT_ALLOW_UNVERIFIED_LOCAL_TOOLS === "1";
+const ACCEPT_PUBLIC_BETA = INSTALLER_OPTIONS.acceptPublicBeta;
+
+function isAcceptedWindowsPublicBeta(manifest) {
+  return (
+    ACCEPT_PUBLIC_BETA &&
+    process.platform === "win32" && process.arch === "x64" &&
+    manifest?.distributionMode === "public-beta" &&
+    manifest?.licenseStatus === "UNVERIFIED" &&
+    manifest?.beta?.channel === "windows-x64-public-beta" &&
+    manifest?.beta?.acknowledgement === "--accept-public-beta"
+  );
+}
+
+function allowsUnverifiedManagedTools(manifest) {
+  return ALLOW_UNVERIFIED_LOCAL_TOOLS || isAcceptedWindowsPublicBeta(manifest);
+}
 let candidateServiceStopAttempted = false;
 let installerToolsDirectory = null;
 let lockedInstallRootCanonical = null;
@@ -669,8 +687,8 @@ function validateExternalToolsSource(source, { allowManagedRoot = false } = {}) 
   if (Object.keys(manifest.executables).sort().join(",") !== "bun,ffmpeg,ffprobe") {
     fail("schemaVersion 4 受管工具只能声明 Bun、FFmpeg、FFprobe。");
   }
-  if (manifest.licenseStatus !== "VERIFIED" && !ALLOW_UNVERIFIED_LOCAL_TOOLS) {
-    fail("受管工具许可状态不是 VERIFIED；公开安装已阻止。仅隔离工程 smoke 可显式允许 UNVERIFIED。");
+  if (manifest.licenseStatus !== "VERIFIED" && !allowsUnverifiedManagedTools(manifest)) {
+    fail("受管工具许可状态不是 VERIFIED；需要 Windows 测试版的明确确认，或隔离工程 smoke 的显式允许。");
   }
   const requiredKeys = ["bun", "ffmpeg", "ffprobe"];
   for (const key of requiredKeys) {
@@ -1727,13 +1745,13 @@ function loadEmbeddedInstallContext(payload) {
     if (
       manifest?.schemaVersion !== 1 || manifest.product !== "chengfeng-videocut" ||
       manifest.productVersion !== VERSION || manifest.releaseTag !== `v${VERSION}` ||
-      !["release-ready", "local-test-only"].includes(manifest.distributionMode) ||
+      !["release-ready", "local-test-only", "public-beta"].includes(manifest.distributionMode) ||
       !manifest.platforms || typeof manifest.platforms !== "object"
     ) fail("内嵌安装 manifest 与当前 Runtime 版本不一致。");
     if (
       (manifest.licenseStatus !== "VERIFIED" || manifest.distributionMode !== "release-ready") &&
-      !ALLOW_UNVERIFIED_LOCAL_TOOLS
-    ) fail("内嵌安装 manifest 的第三方许可不是 VERIFIED；公开安装已阻止。");
+      !allowsUnverifiedManagedTools(manifest)
+    ) fail("内嵌安装 manifest 不是正式发行；需要 Windows 测试版的明确确认。");
     const platform = manifest.platforms[platformKey];
     if (!platform || typeof platform !== "object") fail(`内嵌安装 manifest 缺少 ${platformKey}。`);
     const runtime = safeAssetRecord(manifest.runtime, "runtime");
@@ -1808,7 +1826,7 @@ async function loadFormalInstallContext() {
   if (
     manifest?.schemaVersion !== 1 || manifest.product !== "chengfeng-videocut" ||
     manifest.productVersion !== VERSION || manifest.releaseTag !== `v${VERSION}` ||
-    !["release-ready", "local-test-only"].includes(manifest.distributionMode) ||
+    !["release-ready", "local-test-only", "public-beta"].includes(manifest.distributionMode) ||
     !manifest.platforms || typeof manifest.platforms !== "object" ||
     Object.keys(manifest.platforms).sort().join(",") !==
       ["darwin-arm64", "darwin-x64", "win32-x64"].sort().join(",")
@@ -1818,10 +1836,10 @@ async function loadFormalInstallContext() {
   }
   if (
     (manifest.licenseStatus !== "VERIFIED" || manifest.distributionMode !== "release-ready") &&
-    !ALLOW_UNVERIFIED_LOCAL_TOOLS
+    !allowsUnverifiedManagedTools(manifest)
   ) {
     removeTreeWithoutFollowingLinks(tmpDir);
-    fail("安装 manifest 的第三方许可不是 VERIFIED；公开安装已阻止。");
+    fail("安装 manifest 不是正式发行；需要 Windows 测试版的明确确认。");
   }
   const platformKey = installerPlatformKey();
   const platform = manifest.platforms[platformKey];

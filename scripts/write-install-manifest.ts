@@ -34,6 +34,13 @@ const platformAssets = {
 } as const;
 const allowPartial = process.env.CHENGFENG_VIDEOCUT_ALLOW_PARTIAL_MANIFEST === "1";
 const allowLocalFixture = process.env.CHENGFENG_VIDEOCUT_ALLOW_LOCAL_TOOLS_FIXTURE === "1";
+const publicBeta = process.env.CHENGFENG_VIDEOCUT_PUBLIC_BETA === "1";
+if (allowLocalFixture && publicBeta) {
+  throw new Error("local fixture and public beta manifest modes are mutually exclusive");
+}
+if (publicBeta && !allowPartial) {
+  throw new Error("Windows public beta manifests must be partial and contain only win32-x64");
+}
 const selectedLicenseStatuses: string[] = [];
 
 async function exists(path: string): Promise<boolean> {
@@ -80,11 +87,15 @@ for (const [platformKey, names] of Object.entries(platformAssets)) {
   if (sidecar.size !== toolsSize) {
     throw new Error(`${platformKey} tools sidecar size does not match the asset`);
   }
-  if (sidecar.distributionMode !== "release-ready" && !allowLocalFixture) {
+  const permittedDistributionModes = publicBeta ? ["public-beta"] : ["release-ready"];
+  if (!permittedDistributionModes.includes(sidecar.distributionMode ?? "") && !allowLocalFixture) {
     throw new Error(`${platformKey} tools are local-test-only; public manifest generation is blocked`);
   }
-  if (sidecar.licenseStatus !== "VERIFIED" && !allowLocalFixture) {
+  if (sidecar.licenseStatus !== "VERIFIED" && !allowLocalFixture && !publicBeta) {
     throw new Error(`${platformKey} tools license status is not VERIFIED`);
+  }
+  if (publicBeta && (platformKey !== "win32-x64" || sidecar.licenseStatus !== "UNVERIFIED")) {
+    throw new Error("Windows public beta must use the pinned UNVERIFIED win32-x64 tools bundle");
   }
   selectedLicenseStatuses.push(sidecar.licenseStatus ?? "UNVERIFIED");
   platforms[platformKey] = {
@@ -109,6 +120,9 @@ const manifestLicenseStatus =
   selectedLicenseStatuses.every((status) => status === "VERIFIED")
     ? "VERIFIED"
     : "UNVERIFIED";
+if (publicBeta && (Object.keys(platforms).sort().join(",") !== "win32-x64" || manifestLicenseStatus !== "UNVERIFIED")) {
+  throw new Error("Windows public beta manifest must contain exactly the unverified win32-x64 payload");
+}
 const runtimePath = join(releaseDir, runtimeAsset);
 
 const manifest = {
@@ -116,7 +130,7 @@ const manifest = {
   product: "chengfeng-videocut",
   productVersion: version,
   releaseTag: `v${version}`,
-  distributionMode: manifestLicenseStatus === "VERIFIED" ? "release-ready" : "local-test-only",
+  distributionMode: publicBeta ? "public-beta" : (manifestLicenseStatus === "VERIFIED" ? "release-ready" : "local-test-only"),
   runtime: {
     asset: runtimeAsset,
     root: runtimeRoot,
@@ -126,6 +140,12 @@ const manifest = {
   platforms,
   licenseStatus: manifestLicenseStatus,
   licenseNote: toolsLock.licenseNote,
+  ...(publicBeta ? {
+    beta: {
+      channel: "windows-x64-public-beta",
+      acknowledgement: "--accept-public-beta",
+    },
+  } : {}),
 };
 const output = join(releaseDir, "chengfeng-videocut-install-manifest.json");
 await writeFile(output, `${JSON.stringify(manifest, null, 2)}\n`);

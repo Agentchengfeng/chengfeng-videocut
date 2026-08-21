@@ -49,7 +49,14 @@ if (!["darwin-arm64", "darwin-x64", "win32-x64"].includes(platformKey)) {
 }
 const suffix = platform === "win32" ? ".exe" : "";
 const localFixture = process.env.CHENGFENG_VIDEOCUT_LOCAL_TOOLS_FIXTURE === "1";
-if (!localFixture && lock.licenseStatus !== "VERIFIED") {
+const publicBeta = process.env.CHENGFENG_VIDEOCUT_PUBLIC_BETA === "1";
+if (localFixture && publicBeta) {
+  throw new Error("local fixture and public beta packaging modes are mutually exclusive");
+}
+if (publicBeta && platformKey !== "win32-x64") {
+  throw new Error("The current public beta is Windows x64 only");
+}
+if (!localFixture && !publicBeta && lock.licenseStatus !== "VERIFIED") {
   throw new Error(
     "Managed tools redistribution is UNVERIFIED. Public release packaging is blocked; " +
     "use CHENGFENG_VIDEOCUT_LOCAL_TOOLS_FIXTURE=1 only for isolated engineering smoke.",
@@ -111,7 +118,7 @@ const ffmpegContract = spawnSync(ffmpegSource, ["-version"], {
   windowsHide: true,
 });
 const ffmpegContractText = `${ffmpegContract.stdout ?? ""}${ffmpegContract.stderr ?? ""}`;
-if (!localFixture && /--enable-nonfree|--enable-gpl/.test(ffmpegContractText)) {
+if (!localFixture && !publicBeta && /--enable-nonfree|--enable-gpl/.test(ffmpegContractText)) {
   throw new Error("FFmpeg source has GPL/nonfree configuration; release-ready packaging is blocked");
 }
 
@@ -180,10 +187,16 @@ try {
     ),
     versions,
     sourceDigests,
-    distributionMode: localFixture ? "local-test-only" : "release-ready",
+    distributionMode: publicBeta ? "public-beta" : (localFixture ? "local-test-only" : "release-ready"),
     files: await collectFiles(bundleRoot),
     licenseStatus: lock.licenseStatus,
     licenseNote: lock.licenseNote,
+    ...(publicBeta ? {
+      beta: {
+        channel: "windows-x64-public-beta",
+        acknowledgement: "--accept-public-beta",
+      },
+    } : {}),
   };
   await writeFile(join(bundleRoot, "resources-manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
   await mkdir(releaseDir, { recursive: true });
@@ -202,7 +215,7 @@ try {
     sha256: await sha256(output),
     size: (await stat(output)).size,
     resourcesManifestSha256: await sha256(join(bundleRoot, "resources-manifest.json")),
-    distributionMode: localFixture ? "local-test-only" : "release-ready",
+    distributionMode: publicBeta ? "public-beta" : (localFixture ? "local-test-only" : "release-ready"),
     licenseStatus: lock.licenseStatus,
   };
   await writeFile(join(releaseDir, `${asset}.json`), `${JSON.stringify(sidecar, null, 2)}\n`);

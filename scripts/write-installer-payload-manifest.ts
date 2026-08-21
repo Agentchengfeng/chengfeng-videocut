@@ -53,9 +53,13 @@ export interface InstallerPayloadManifest {
   product: "chengfeng-videocut";
   productVersion: string;
   releaseTag: string;
-  distributionMode: "release-ready" | "local-test-only";
+  distributionMode: "release-ready" | "local-test-only" | "public-beta";
   licenseStatus: "VERIFIED" | "UNVERIFIED";
   licenseNote: string;
+  beta?: {
+    channel: "windows-x64-public-beta";
+    acknowledgement: "--accept-public-beta";
+  };
   runtime: PayloadAssetRecord;
   platforms: Partial<Record<NativeInstallerPlatformKey, { tools: PayloadAssetRecord }>>;
 }
@@ -109,7 +113,7 @@ function assertToolsSidecar(
   platformKey: NativeInstallerPlatformKey,
   asset: string,
   observed: { sha256: string; size: number },
-): { distributionMode: "release-ready" | "local-test-only"; licenseStatus: "VERIFIED" | "UNVERIFIED" } {
+): { distributionMode: "release-ready" | "local-test-only" | "public-beta"; licenseStatus: "VERIFIED" | "UNVERIFIED" } {
   const expectedRoot = asset.slice(0, -".tar.gz".length);
   if (
     sidecar.platformKey !== platformKey || sidecar.asset !== asset || sidecar.root !== expectedRoot ||
@@ -117,7 +121,11 @@ function assertToolsSidecar(
   ) {
     throw new Error(`${platformKey} managed tools sidecar does not match its exact archive`);
   }
-  if (sidecar.distributionMode !== "release-ready" && sidecar.distributionMode !== "local-test-only") {
+  if (
+    sidecar.distributionMode !== "release-ready" &&
+    sidecar.distributionMode !== "local-test-only" &&
+    sidecar.distributionMode !== "public-beta"
+  ) {
     throw new Error(`${platformKey} managed tools sidecar distributionMode is invalid`);
   }
   if (sidecar.licenseStatus !== "VERIFIED" && sidecar.licenseStatus !== "UNVERIFIED") {
@@ -173,12 +181,16 @@ export async function writeInstallerPayloadManifests(options: {
       lock.licenseStatus === "VERIFIED" &&
       sidecarStatus.licenseStatus === "VERIFIED" &&
       sidecarStatus.distributionMode === "release-ready";
+    const publicBeta = sidecarStatus.distributionMode === "public-beta";
+    if (publicBeta && platformKey !== "win32-x64") {
+      throw new Error("public beta payloads are Windows x64 only");
+    }
     const manifest: InstallerPayloadManifest = {
       schemaVersion: 1,
       product: "chengfeng-videocut",
       productVersion: product.version,
       releaseTag: `v${product.version}`,
-      distributionMode: releaseReady ? "release-ready" : "local-test-only",
+      distributionMode: publicBeta ? "public-beta" : (releaseReady ? "release-ready" : "local-test-only"),
       licenseStatus: releaseReady ? "VERIFIED" : "UNVERIFIED",
       licenseNote: lock.licenseNote,
       runtime,
@@ -191,6 +203,12 @@ export async function writeInstallerPayloadManifests(options: {
           },
         },
       },
+      ...(publicBeta ? {
+        beta: {
+          channel: "windows-x64-public-beta",
+          acknowledgement: "--accept-public-beta",
+        },
+      } : {}),
     };
     const directory = join(outputDir, platformKey);
     await mkdir(directory, { recursive: true });
