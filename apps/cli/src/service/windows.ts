@@ -321,6 +321,8 @@ async function inspectWindowsStatus(
       ? { detail: conflict }
       : identity && !configured
         ? { detail: "Scheduled task configuration is missing or stale" }
+        : health.detail
+          ? { detail: health.detail }
         : {}),
   };
 }

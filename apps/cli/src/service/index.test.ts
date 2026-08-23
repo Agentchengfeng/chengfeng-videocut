@@ -338,6 +338,38 @@ describe("Studio user service", () => {
     )).toBe(false);
   });
 
+  it("recovers a transient 503 only when the managed job PID owns the Studio port", async () => {
+    const home = await testHome();
+    const { state, dependencies } = fakeRuntime(home);
+    const installed = await runStudioServiceCommand("ensure", {}, dependencies);
+    const previousPid = installed.pid;
+    expect(previousPid).not.toBeNull();
+
+    const health503 = (async () => new Response("recovering", { status: 503 })) as unknown as typeof globalThis.fetch;
+    const unhealthy = await runStudioServiceCommand("status", {}, {
+      ...dependencies,
+      fetch: health503,
+    });
+    expect(unhealthy.state).toBe("unhealthy");
+    expect(unhealthy.detail).toContain("HTTP 503");
+
+    let firstHealthProbe = true;
+    const baseFetch = dependencies.fetch!;
+    const recovered = await runStudioServiceCommand("ensure", {}, {
+      ...dependencies,
+      fetch: (async (...[input, init]: Parameters<typeof globalThis.fetch>) => {
+        if (String(input).endsWith("/api/health") && firstHealthProbe) {
+          firstHealthProbe = false;
+          return new Response("recovering", { status: 503 });
+        }
+        return await baseFetch(input, init);
+      }) as unknown as typeof globalThis.fetch,
+    });
+    expect(recovered.ready).toBe(true);
+    expect(recovered.pid).not.toBe(previousPid);
+    expect(state.operations.some((operation) => operation.startsWith("kickstart "))).toBe(true);
+  });
+
   it("waits for launchd to publish the replacement PID before restart returns", async () => {
     const home = await testHome();
     const { state, dependencies } = fakeRuntime(home);

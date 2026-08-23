@@ -594,11 +594,30 @@ export function assertNoPortConflict(
   expectedMode: "launchd" | "windows-task" = "launchd",
 ): void {
   if (!health.reachable) return;
+  // A Product service can bind its port before its health route is ready, or
+  // briefly return 503 while its own durable state is recovering. This is not
+  // an unknown-port conflict when the OS proves that the exact managed job PID
+  // owns the port. Let the caller's controlled restart/wait path recover it.
+  //
+  // Keep this deliberately narrow: a timeout, a non-503 response, a missing
+  // task PID, or a different port PID remains fail-closed below.
+  const managedHealth503 = health.product === null &&
+    health.detail === "Port returned an invalid Product health response (HTTP 503)" &&
+    launchd.loaded &&
+    launchd.pid !== null &&
+    health.portOwnerPid === launchd.pid;
+  if (managedHealth503) return;
   if (health.product !== PRODUCT_NAME) {
     throw new StudioServiceError(
       "service_port_conflict",
       `${STUDIO_SERVICE_URL} is occupied by an unknown service; it was not stopped`,
-      { url: STUDIO_SERVICE_URL, observedProduct: health.product },
+      {
+        url: STUDIO_SERVICE_URL,
+        observedProduct: health.product,
+        healthDetail: health.detail ?? null,
+        portOwnerPid: health.portOwnerPid,
+        managedPid: launchd.pid,
+      },
     );
   }
   if (
@@ -739,6 +758,8 @@ async function inspectStatus(
       ? { detail: conflict }
       : identity && !configured
         ? { detail: "LaunchAgent configuration is missing or stale" }
+        : health.detail
+          ? { detail: health.detail }
         : {}),
   };
 }

@@ -259,6 +259,24 @@ describe("Windows scheduled-task service", () => {
     expect(lookups).toBe(0);
   });
 
+  it("reports a task-owned transient 503 as unhealthy, not a foreign port conflict", async () => {
+    const { paths, state, deps } = await makeFixture({ registered: true });
+    await writeFile(
+      paths.plistPath,
+      Buffer.from(`\ufeff${renderStudioScheduledTask(paths, "S-1-5-21-1000")}`, "utf16le"),
+    );
+    state.started = true;
+    state.alive.add(state.serverPid);
+    const status = await runStudioServiceCommand("status", {}, {
+      ...deps,
+      fetch: (async () => new Response("recovering", { status: 503 })) as unknown as typeof globalThis.fetch,
+      getPortOwnerPid: async () => state.serverPid,
+    });
+    expect(status.state).toBe("unhealthy");
+    expect(status.detail).toContain("HTTP 503");
+    expect(status.state).not.toBe("conflict");
+  });
+
   it("requires a SID only when ensure must create or rewrite the scheduled task", async () => {
     const { state, deps } = await makeFixture();
     delete (deps as { windowsTaskUserId?: string }).windowsTaskUserId;
