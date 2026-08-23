@@ -709,7 +709,10 @@ describe("chengfeng-videocut CLI", () => {
 
     expect(payload.data).toMatchObject({
       cutWordCount: expectedCutWordCount,
-      cutRangeCount: 1,
+      // v5 keeps the first short breath in the generated pause baseline, so
+      // deleting w-1 does not merge through that retained room into the
+      // separately-compressed long pause.
+      cutRangeCount: 2,
       changed: true,
     });
     expect(payload.data.revision).toMatch(/^[a-f0-9]{64}$/);
@@ -736,7 +739,7 @@ describe("chengfeng-videocut CLI", () => {
         exists: true,
         revision: payload.data.revision,
         cutWordCount: expectedCutWordCount,
-        cutRangeCount: 1,
+        cutRangeCount: 2,
         document: {
           schemaVersion: 3,
           cutWordIds: written.cutWordIds,

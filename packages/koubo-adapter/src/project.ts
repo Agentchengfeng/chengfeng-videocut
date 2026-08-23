@@ -817,8 +817,17 @@ function applyManualSelectionDelta(input: {
     input.previousBaselineCutWordIds.filter((id) => !previousSelection.has(id)),
   );
   const addedByUser = input.previousCutWordIds.filter((id) => !previousBaseline.has(id));
+  const wasWholeGapRestored = (candidate: string): boolean => {
+    if (removedByUser.has(candidate)) return true;
+    // v4 cut an entire ASR gap under its original id. v5 may retain a short
+    // leading part and represent only the excess as `gap-id__part_*`. If the
+    // user restored that whole v4 gap, preserve that explicit decision rather
+    // than silently re-cutting the v5 residual fragment on policy migration.
+    const separator = candidate.indexOf("__part_");
+    return separator > 0 && removedByUser.has(candidate.slice(0, separator));
+  };
   const result = new Set(
-    input.baselineCutWordIds.filter((id) => !removedByUser.has(id)),
+    input.baselineCutWordIds.filter((id) => !wasWholeGapRestored(id)),
   );
   for (const id of addedByUser) {
     if (input.availableWordIds.has(id)) result.add(id);

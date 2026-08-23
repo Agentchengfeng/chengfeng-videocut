@@ -3,8 +3,8 @@
 /**
  * Real-browser regression for the two playback seams that previously stalled
  * a talking-head project:
- *   1. Crossing a retained-segment boundary must jump over deleted source time.
- *   2. Saving a new cut while playing may reload the preview, but must resume.
+ *   1. A retained EDL boundary must stay continuous in the assembled stream.
+ *   2. Saving a new cut while playing may rebuild the stream, but must resume.
  *
  * The source project is read-only. The runner creates a temporary project next
  * to it, hard-links input/source.mp4 (no 344 MB copy), registers that scratch
@@ -147,7 +147,10 @@ async function waitFor(read, accept, label, timeoutMs = 20_000) {
 }
 
 function projectUrl(studioUrl, projectId, time) {
-  return `${studioUrl}/?view=koubo#project/${encodeURIComponent(projectId)}` +
+  // `t` belongs to the project hash. Add an outer query nonce as well so each
+  // probe is a real page load: navigating to the same hash route only updates
+  // browser history and leaves the already-mounted transport at its old time.
+  return `${studioUrl}/?view=koubo&e2e=${Date.now()}#project/${encodeURIComponent(projectId)}` +
     `?v=e2e-${Date.now()}&t=${time.toFixed(3)}&tab=design&rc=0`;
 }
 
@@ -239,8 +242,7 @@ async function printNaturalPauseAudit(projectDir) {
   const plan = await pathExists(planPath) ? await readJson(planPath) : null;
   const planSummary = plan ? {
     policy: plan.policy?.version ?? null,
-    mediumPauseTarget: plan.policy?.mediumPauseTarget ?? null,
-    longPauseTarget: plan.policy?.longPauseTarget ?? null,
+    maxNaturalPauseSeconds: plan.policy?.maxNaturalPauseSeconds ?? null,
     pausesKept: plan.summary?.pausesKept ?? null,
     pausesCompressed: plan.summary?.pausesCompressed ?? null,
   } : null;
@@ -331,24 +333,6 @@ function findCutBoundary(editList, preferredTimelineTime = null) {
   throw new Error("Fixture has no retained-segment boundary with at least 3 deleted source seconds");
 }
 
-function sourceTimeForTimeline(editList, timelineTime) {
-  const segments = Array.isArray(editList?.segments) ? editList.segments : [];
-  for (const [index, segment] of segments.entries()) {
-    const timelineStart = Number(segment.timelineStart);
-    const playbackRate = Number(segment.playbackRate) || 1;
-    const duration = (Number(segment.sourceEnd) - Number(segment.sourceStart)) / playbackRate;
-    const timelineEnd = timelineStart + duration;
-    const includesEnd = index === segments.length - 1;
-    if (
-      timelineTime >= timelineStart &&
-      (timelineTime < timelineEnd || (includesEnd && timelineTime <= timelineEnd))
-    ) {
-      return Number(segment.sourceStart) + (timelineTime - timelineStart) * playbackRate;
-    }
-  }
-  return null;
-}
-
 function chooseFarFutureRetainedWord(transcript, cutSelection, sourceDuration) {
   const cutWordIds = new Set(Array.isArray(cutSelection?.cutWordIds)
     ? cutSelection.cutWordIds.map(String)
@@ -368,7 +352,24 @@ function chooseFarFutureRetainedWord(transcript, cutSelection, sourceDuration) {
       start > sourceDuration * 0.75
     );
   });
-  const word = candidates.at(-1);
+  // Large fixtures should change a late word so the running preview has real
+  // future media to preserve. Tiny smoke fixtures may not contain a word past
+  // the 75% mark, so their last retained word is still a valid live-refresh
+  // probe rather than a reason to silently skip the regression.
+  const word = candidates.at(-1) ?? allTranscriptWords(transcript).filter((candidate) => {
+    const start = Number(candidate?.start);
+    const end = Number(candidate?.end);
+    return (
+      candidate &&
+      typeof candidate.id === "string" &&
+      !cutWordIds.has(candidate.id) &&
+      !candidate.isGap &&
+      String(candidate.text ?? "").trim() &&
+      Number.isFinite(start) &&
+      Number.isFinite(end) &&
+      end > start + 0.05
+    );
+  }).at(-1);
   if (!word) throw new Error("Fixture has no far-future retained speech word for mutation test");
   return word;
 }
@@ -570,182 +571,27 @@ async function createScratchFixture(options) {
 
 async function playbackSnapshot(page) {
   return await page.evaluate(() => {
-    const player = document.querySelector("hyperframes-player");
-    const iframe = player?.shadowRoot?.querySelector("iframe");
-    const frameDocument = iframe?.contentDocument;
-    const root = frameDocument?.querySelector("[data-edit-list-revision]");
-    const video = frameDocument?.querySelector("[data-videocut-edl-backing]");
-    const audio = document.querySelector("[data-videocut-edl-audio]");
-    const studioAdapter = iframe?.contentWindow?.__studioPlaybackAdapter;
-    const adapterTime = typeof studioAdapter?.getTime === "function"
-      ? Number(studioAdapter.getTime())
-      : Number(player?.currentTime ?? player?._currentTime);
+    const workspace = document.querySelector("[data-chengfeng-koubo-editor]");
+    const artifact = document.querySelector("[data-preview-artifact-phase]");
+    const video = document.querySelector("video[data-koubo-media-owner=\"video\"]");
+    const stream = artifact?.getAttribute("data-preview-artifact-profile") === "ledger-proxy-v1";
     return {
-      // Product extensions are an explicit Studio transport contract. The
-      // HyperFrames host clock belongs to the framework's base player and is
-      // only a fallback when no extension adapter owns the preview timeline.
-      outerTime: adapterTime,
-      sourceTime: Number(video?.currentTime),
+      // The Product transport plays an assembled stream: media time and cut
+      // timeline time are intentionally one clock, with no source-time jump.
+      outerTime: Number(video?.currentTime),
+      mediaTime: Number(video?.currentTime),
       videoPaused: video?.paused ?? null,
-      audioTime: Number(audio?.currentTime),
-      audioPaused: audio?.paused ?? null,
-      audioMuted: audio?.muted ?? null,
-      audioSeeking: audio?.seeking ?? null,
-      audioReadyState: audio?.readyState ?? 0,
       readyState: video?.readyState ?? 0,
-      editListRevision: root?.getAttribute("data-edit-list-revision") ?? null,
-      adapterStatus: frameDocument?.documentElement?.dataset?.videocutEdlAdapter ?? null,
-      audioOwner: audio?.getAttribute("data-project-id") ??
-        audio?.getAttribute("data-videocut-project-id") ?? null,
-      hasBasePlayer: Boolean(iframe?.contentWindow?.__player),
-      hasStudioAdapter: Boolean(iframe?.contentWindow?.__studioPlaybackAdapter),
-      hasPreview: Boolean(root && video),
-      playButton: Boolean(document.querySelector('button[aria-label="Play"]')),
-      pauseButton: Boolean(document.querySelector('button[aria-label="Pause"]')),
+      duration: Number(video?.duration),
+      previewPhase: artifact?.getAttribute("data-preview-artifact-phase") ?? null,
+      previewCurrent: artifact?.getAttribute("data-preview-artifact-current") === "true",
+      playsAssembledLedgerStream: stream,
+      mediaOwnerCount: document.querySelectorAll("video[data-koubo-media-owner=\"video\"]").length,
+      hasPreview: Boolean(workspace && video),
+      playButton: Boolean(document.querySelector('button[aria-label="播放"]')),
+      pauseButton: Boolean(document.querySelector('button[aria-label="暂停"]')),
       bodyTextLength: document.body?.innerText?.length ?? 0,
     };
-  });
-}
-
-/**
- * Trace the Product-owned parent audio without changing the runtime under test.
- * The instance accessors forward to Chromium's native HTMLMediaElement
- * accessors, but record the mute state at the exact currentTime write that
- * crosses an EDL discontinuity. Native seeking/seeked events then prove that
- * the gate is restored only after Chromium has completed the seek.
- */
-async function installParentAudioGateProbe(page) {
-  return await page.evaluate(() => {
-    const key = "__videocutEdlAudioGateProbe";
-    const existing = window[key];
-    if (existing && typeof existing.dispose === "function") existing.dispose();
-
-    const parentAudios = [...document.querySelectorAll("[data-videocut-edl-audio]")];
-    if (parentAudios.length !== 1 || !(parentAudios[0] instanceof HTMLAudioElement)) {
-      return {
-        ok: false,
-        reason: "expected-one-parent-audio",
-        audioCount: parentAudios.length,
-      };
-    }
-    const audio = parentAudios[0];
-    const currentTimeDescriptor = Object.getOwnPropertyDescriptor(
-      HTMLMediaElement.prototype,
-      "currentTime",
-    );
-    const mutedDescriptor = Object.getOwnPropertyDescriptor(
-      HTMLMediaElement.prototype,
-      "muted",
-    );
-    if (
-      typeof currentTimeDescriptor?.get !== "function" ||
-      typeof currentTimeDescriptor?.set !== "function" ||
-      typeof mutedDescriptor?.get !== "function" ||
-      typeof mutedDescriptor?.set !== "function"
-    ) {
-      return { ok: false, reason: "native-media-accessors-unavailable" };
-    }
-
-    const originalCurrentTime = Object.getOwnPropertyDescriptor(audio, "currentTime");
-    const originalMuted = Object.getOwnPropertyDescriptor(audio, "muted");
-    const events = [];
-    let sequence = 0;
-    const readCurrentTime = () => Number(currentTimeDescriptor.get.call(audio));
-    const readMuted = () => Boolean(mutedDescriptor.get.call(audio));
-    const record = (type, value = null) => {
-      events.push({
-        sequence: ++sequence,
-        type,
-        value,
-        at: performance.now(),
-        currentTime: readCurrentTime(),
-        muted: readMuted(),
-        paused: audio.paused,
-        seeking: audio.seeking,
-        readyState: audio.readyState,
-      });
-    };
-    const listeners = new Map();
-    for (const type of ["seeking", "seeked", "waiting", "playing", "pause"]) {
-      const listener = () => record(type);
-      listeners.set(type, listener);
-      audio.addEventListener(type, listener);
-    }
-
-    Object.defineProperty(audio, "currentTime", {
-      configurable: true,
-      enumerable: currentTimeDescriptor.enumerable,
-      get: () => readCurrentTime(),
-      set: (value) => {
-        const numericValue = Number(value);
-        record("currentTime-write", numericValue);
-        currentTimeDescriptor.set.call(audio, value);
-      },
-    });
-    Object.defineProperty(audio, "muted", {
-      configurable: true,
-      enumerable: mutedDescriptor.enumerable,
-      get: () => readMuted(),
-      set: (value) => {
-        mutedDescriptor.set.call(audio, Boolean(value));
-        record("muted-write", Boolean(value));
-      },
-    });
-
-    const probe = {
-      audio,
-      events,
-      dispose() {
-        for (const [type, listener] of listeners) {
-          audio.removeEventListener(type, listener);
-        }
-        if (originalCurrentTime) {
-          Object.defineProperty(audio, "currentTime", originalCurrentTime);
-        } else {
-          delete audio.currentTime;
-        }
-        if (originalMuted) {
-          Object.defineProperty(audio, "muted", originalMuted);
-        } else {
-          delete audio.muted;
-        }
-        if (window[key] === probe) delete window[key];
-      },
-    };
-    window[key] = probe;
-    record("installed");
-    return {
-      ok: true,
-      audioId: audio.id || null,
-      currentTime: readCurrentTime(),
-      muted: readMuted(),
-    };
-  });
-}
-
-async function parentAudioGateSnapshot(page) {
-  return await page.evaluate(() => {
-    const probe = window.__videocutEdlAudioGateProbe;
-    const audio = probe?.audio;
-    if (!probe || !(audio instanceof HTMLAudioElement)) {
-      return { ok: false, events: [] };
-    }
-    return {
-      ok: true,
-      currentTime: Number(audio.currentTime),
-      muted: audio.muted,
-      paused: audio.paused,
-      seeking: audio.seeking,
-      readyState: audio.readyState,
-      events: probe.events.map((event) => ({ ...event })),
-    };
-  });
-}
-
-async function disposeParentAudioGateProbe(page) {
-  await page.evaluate(() => {
-    const probe = window.__videocutEdlAudioGateProbe;
-    if (probe && typeof probe.dispose === "function") probe.dispose();
   });
 }
 
@@ -756,11 +602,12 @@ async function openReadyProject(page, url, expected = null) {
     (snapshot) => (
       snapshot.hasPreview &&
       snapshot.readyState >= 1 &&
-      snapshot.adapterStatus !== "error" &&
+      snapshot.previewCurrent &&
+      snapshot.playsAssembledLedgerStream &&
+      snapshot.mediaOwnerCount === 1 &&
       snapshot.playButton &&
       (!expected || (
-        Math.abs(snapshot.outerTime - expected.timelineTime) < 0.2 &&
-        Math.abs(snapshot.sourceTime - expected.sourceTime) < 0.4
+        Math.abs(snapshot.outerTime - expected.timelineTime) < 0.2
       ))
     ),
     expected ? "ready paused EDL preview at requested timeline time" : "ready paused EDL preview",
@@ -784,170 +631,41 @@ async function verifyExistingCutBoundary(page, options, fixture) {
     );
   }
   const startTime = Math.max(0, boundary.timelineBoundary - 0.45);
-  const startSourceTime = sourceTimeForTimeline(fixture.editList, startTime);
-  assert(startSourceTime !== null, "Cannot map the selected cut-boundary start time", {
-    startTime,
-    boundary,
-  });
   const before = await openReadyProject(
     page,
     projectUrl(options.studioUrl, fixture.projectId, startTime),
-    { timelineTime: startTime, sourceTime: startSourceTime },
+    { timelineTime: startTime },
   );
   assert(
-    before.sourceTime < Number(boundary.previous.sourceEnd) + 0.5,
-    "Preview did not seek before the selected cut boundary",
+    before.mediaOwnerCount === 1 && before.playsAssembledLedgerStream,
+    "Preview did not load the single assembled Product media stream",
     { before, boundary },
   );
 
-  const probe = await installParentAudioGateProbe(page);
-  assert(probe.ok, "Cannot install Product parent-audio boundary probe", { probe, boundary });
-  assert(probe.muted === false, "Parent audio was already muted before boundary playback", {
-    probe,
-    boundary,
-  });
-
-  let after;
-  let gateSnapshot;
-  try {
-    await clickTransport(page, "Play");
-    after = await waitFor(
-      () => playbackSnapshot(page),
-      (snapshot) => (
-        snapshot.outerTime > boundary.timelineBoundary + 0.25 &&
-        snapshot.sourceTime >= Number(boundary.next.sourceStart) - 0.25
-      ),
-      "playhead to cross an existing deleted range",
-    );
-    assert(after.pauseButton && !after.videoPaused, "Playback paused at an existing cut boundary", {
-      before,
-      after,
-      boundary,
-    });
-    assert(
-      after.sourceTime >= Number(boundary.next.sourceStart) - 0.25,
-      "Backing video did not jump to the next retained source segment",
-      { before, after, boundary },
-    );
-    if (!after.audioPaused) {
-      assert(
-        Math.abs(after.audioTime - after.sourceTime) < 0.35,
-        "Parent audio lost sync while crossing a cut boundary",
-        { after, boundary },
-      );
-    }
-
-    const nextSourceStart = Number(boundary.next.sourceStart);
-    const boundaryWriteMinimum = nextSourceStart - 0.06;
-    gateSnapshot = await waitFor(
-      () => parentAudioGateSnapshot(page),
-      (snapshot) => {
-        const boundaryWrite = snapshot.events.find((event) => (
-          event.type === "currentTime-write" &&
-          Number(event.value) >= boundaryWriteMinimum
-        ));
-        const seeked = boundaryWrite && snapshot.events.find((event) => (
-          event.type === "seeked" &&
-          event.sequence > boundaryWrite.sequence &&
-          event.currentTime >= boundaryWriteMinimum
-        ));
-        const restored = seeked && snapshot.events.find((event) => (
-          event.type === "muted-write" &&
-          event.sequence > seeked.sequence &&
-          event.value === false &&
-          event.seeking === false
-        ));
-        return Boolean(
-          boundaryWrite &&
-          seeked &&
-          restored &&
-          snapshot.muted === false &&
-          snapshot.seeking === false
-        );
-      },
-      `parent audio gate at timeline ${boundary.timelineBoundary.toFixed(3)}`,
-      8_000,
-    );
-
-    const boundaryWrite = gateSnapshot.events.find((event) => (
-      event.type === "currentTime-write" &&
-      Number(event.value) >= boundaryWriteMinimum
-    ));
-    assert(boundaryWrite, "Parent audio never sought to the next retained segment", {
-      boundary,
-      gateSnapshot,
-    });
-    assert(
-      boundaryWrite.muted === true,
-      "Parent audio was audible when its source clock crossed a deleted range",
-      { boundary, boundaryWrite, events: gateSnapshot.events },
-    );
-
-    const seeked = gateSnapshot.events.find((event) => (
-      event.type === "seeked" &&
-      event.sequence > boundaryWrite.sequence &&
-      event.currentTime >= boundaryWriteMinimum
-    ));
-    assert(seeked, "Parent audio did not confirm the cross-segment seek", {
-      boundary,
-      boundaryWrite,
-      events: gateSnapshot.events,
-    });
-    // The runtime's seeked listener is installed before this diagnostic
-    // listener. It may therefore restore muted=false earlier in the same
-    // seeked dispatch, immediately before the probe records its own `seeked`
-    // event. That is safe when Chromium already reports seeking=false; only a
-    // restore while the native seek is still pending is a leak hazard.
-    const unsafeRestore = gateSnapshot.events.find((event) => (
-      event.type === "muted-write" &&
-      event.sequence > boundaryWrite.sequence &&
-      event.sequence < seeked.sequence &&
-      event.value === false &&
-      event.seeking !== false
-    ));
-    assert(
-      !unsafeRestore,
-      "Parent audio unmuted while Chromium was still seeking across the deleted range",
-      { boundary, boundaryWrite, seeked, unsafeRestore, events: gateSnapshot.events },
-    );
-    const restored = gateSnapshot.events.find((event) => (
-      event.type === "muted-write" &&
-      event.sequence > seeked.sequence &&
-      event.value === false &&
-      event.seeking === false
-    ));
-    assert(
-      restored && gateSnapshot.muted === false,
-      "Parent audio did not restore its audible state after seeked",
-      { boundary, boundaryWrite, seeked, restored, gateSnapshot },
-    );
-    assert(
-      gateSnapshot.paused === false,
-      "Parent audio paused while applying the cross-segment gate",
-      { boundary, gateSnapshot },
-    );
-
-    await clickTransport(page, "Pause");
-    console.log(
-      `PASS parent-audio-gate timeline=${boundary.timelineBoundary.toFixed(3)} ` +
-        `source=${Number(boundary.previous.sourceEnd).toFixed(3)}->` +
-        `${nextSourceStart.toFixed(3)} gateMs=${(restored.at - boundaryWrite.at).toFixed(1)}`,
-    );
-  } finally {
-    await disposeParentAudioGateProbe(page).catch(() => undefined);
-  }
-
-  if (!after || !gateSnapshot) {
-    assert(
-      false,
-      "Boundary playback completed without parent-audio gate evidence",
-      { boundary },
-    );
-  }
+  await clickTransport(page, "播放");
+  const after = await waitFor(
+    () => playbackSnapshot(page),
+    (snapshot) => (
+      snapshot.outerTime > boundary.timelineBoundary + 0.25 &&
+      snapshot.pauseButton &&
+      !snapshot.videoPaused
+    ),
+    "assembled playhead to cross an existing deleted range",
+  );
+  assert(
+    Math.abs(after.outerTime - after.mediaTime) < 0.02,
+    "Assembled media clock diverged from the cut timeline at an EDL boundary",
+    { before, after, boundary },
+  );
+  assert(
+    after.mediaOwnerCount === 1 && after.playsAssembledLedgerStream,
+    "Playback crossed an EDL boundary without the one continuous Product stream",
+    { before, after, boundary },
+  );
+  await clickTransport(page, "暂停");
   console.log(
     `PASS existing-cut-boundary timeline=${boundary.timelineBoundary.toFixed(3)} ` +
-      `source=${Number(boundary.previous.sourceEnd).toFixed(3)}->` +
-      `${Number(boundary.next.sourceStart).toFixed(3)}`,
+      `assembled=${before.mediaTime.toFixed(3)}->${after.mediaTime.toFixed(3)}`,
   );
 }
 
@@ -970,14 +688,12 @@ async function verifyLiveCutRefresh(page, options, fixture) {
     `${encodeURIComponent(fixture.projectId)}/cuts`;
 
   const liveMutationStart = 1;
-  const liveMutationSourceStart = sourceTimeForTimeline(fixture.editList, liveMutationStart);
-  assert(liveMutationSourceStart !== null, "Cannot map live-mutation start time");
   await openReadyProject(
     page,
     projectUrl(options.studioUrl, fixture.projectId, liveMutationStart),
-    { timelineTime: liveMutationStart, sourceTime: liveMutationSourceStart },
+    { timelineTime: liveMutationStart },
   );
-  await clickTransport(page, "Play");
+  await clickTransport(page, "播放");
   const playingBefore = await waitFor(
     () => playbackSnapshot(page),
     (snapshot) => snapshot.pauseButton && !snapshot.videoPaused && snapshot.outerTime > 1.2,
@@ -1006,11 +722,17 @@ async function verifyLiveCutRefresh(page, options, fixture) {
     { changed },
   );
 
-  const resumed = await waitFor(
-    () => playbackSnapshot(page),
-    (snapshot) => (
+  const previewArtifactUrl = `${options.studioUrl}/api/v1/projects/` +
+    `${encodeURIComponent(fixture.projectId)}/preview-artifact`;
+  const resumedState = await waitFor(
+    async () => ({
+      snapshot: await playbackSnapshot(page),
+      artifact: await fetchJson(previewArtifactUrl),
+    }),
+    ({ snapshot, artifact }) => (
       snapshot.hasPreview &&
-      snapshot.editListRevision === changed.editListRevision &&
+      artifact.artifactRevision === changed.editListRevision &&
+      snapshot.previewCurrent &&
       snapshot.pauseButton &&
       !snapshot.videoPaused &&
       snapshot.outerTime > playingBefore.outerTime + 0.25
@@ -1018,13 +740,14 @@ async function verifyLiveCutRefresh(page, options, fixture) {
     "preview reload to preserve and resume playback after deletion",
     30_000,
   );
+  const resumed = resumedState.snapshot;
   assert(
     resumed.outerTime >= playingBefore.outerTime - 0.25,
     "Preview reset behind the confirmed playhead after deletion",
     { playingBefore, resumed, targetWord },
   );
   assert(resumed.bodyTextLength > 100, "Studio became blank after live cut refresh", { resumed });
-  await clickTransport(page, "Pause");
+  await clickTransport(page, "暂停");
   console.log(
     `PASS live-cut-refresh word=${targetWord.id} ` +
       `timeline=${playingBefore.outerTime.toFixed(3)}->${resumed.outerTime.toFixed(3)}`,

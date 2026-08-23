@@ -623,13 +623,14 @@ export const NATURAL_PAUSE_POLICY_VERSIONS = [
   "natural-pause-v2",
   "natural-pause-v3-direct-delete",
   "natural-pause-v4-delete-all-gaps",
+  "natural-pause-v5-compress-long-gaps",
 ] as const;
 
 export type NaturalPausePolicyVersion = (typeof NATURAL_PAUSE_POLICY_VERSIONS)[number];
 
 /** The version a fresh plan is written with. Writers must use this. */
 export const CURRENT_NATURAL_PAUSE_POLICY_VERSION: NaturalPausePolicyVersion =
-  "natural-pause-v4-delete-all-gaps";
+  "natural-pause-v5-compress-long-gaps";
 
 /** True when a persisted policy string is one Product itself wrote. */
 export function isKnownNaturalPausePolicyVersion(

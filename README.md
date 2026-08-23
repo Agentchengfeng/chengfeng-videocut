@@ -74,7 +74,7 @@ chengfeng-videocut render run /absolute/project \
 
 新任务必须走 `project create`，Skill 不预写 `project.json`。视频与转录路径必须位于任务目录内；产品负责规范化输入、prepare 和注册，并在失败时回滚本次创建。`project prepare` 只刷新已有规范项目，二者都不会使用 demo 媒体。
 
-`cuts set` 的 `cutWordIds` 只表示 Skill 判断出的语义删词。CLI 通过 Cuts API 使用 `semantic-overlay` 意图；产品在项目锁内把它与 `natural-pause-v2` 的合法初始化基线合并，再从 `transcript.json` 推导 `cutRanges`。Skill 不读取、复制或手工合并 `baselineCutWordIds`。写入必须携带当前修订值，避免两个写入者互相覆盖。
+`cuts set` 的 `cutWordIds` 只表示 Skill 判断出的语义删词。CLI 通过 Cuts API 使用 `semantic-overlay` 意图；产品在项目锁内把它与 `natural-pause-v5-compress-long-gaps` 的合法初始化基线合并，再从 `transcript.json` 推导 `cutRanges`。短的正常呼吸会保留，较长停顿只压缩中段，词尾与词头仍由 Core 的安全边界保护。Skill 不读取、复制或手工合并 `baselineCutWordIds`。写入必须携带当前修订值，避免两个写入者互相覆盖。
 
 Studio 逐词编辑使用另一种明确意图 `full-selection`，提交当前完整的“删除/未删除”状态，因此用户可以恢复初始化选中的静音。Cuts API 不接受缺失或未知意图。M1 不把“恢复静音”另存为跨语义重跑的永久偏好：之后再次执行 `semantic-overlay` 会按产品当前的 natural-pause 基线重新计算；永久覆盖需要未来独立的用户 override 字段。
 
@@ -90,7 +90,7 @@ chengfeng-videocut 负责确定性的产品能力：
 - 已确认任务的渲染调用与结果验证
 - 面向自动化的本地 CLI/API
 
-Skills 负责判断与编排，例如转录、口误/重复等语义识别、让用户审核和决定是否执行剪切。普通静音由产品的 `natural-pause-v2` 确定性策略负责。公开 Skills 位于 [Agentchengfeng/chengfeng-videocut-skills](https://github.com/Agentchengfeng/chengfeng-videocut-skills)。
+Skills 负责判断与编排，例如转录、口误/重复等语义识别、让用户审核和决定是否执行剪切。普通停顿由产品的 `natural-pause-v5-compress-long-gaps` 确定性策略负责。公开 Skills 位于 [Agentchengfeng/chengfeng-videocut-skills](https://github.com/Agentchengfeng/chengfeng-videocut-skills)。
 
 ## 本地与网络说明
 

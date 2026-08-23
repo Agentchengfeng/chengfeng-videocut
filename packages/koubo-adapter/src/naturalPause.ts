@@ -18,6 +18,11 @@ export interface NaturalPausePolicy {
   version: NaturalPausePolicyVersion;
   keepAfterPreviousWord: number;
   keepBeforeNextWord: number;
+  /**
+   * Natural speech pauses at or below this duration stay intact. Longer
+   * pauses keep this much air and only their excess is cut.
+   */
+  maxNaturalPauseSeconds: number;
 }
 
 export interface NaturalPauseDeleteSegment {
@@ -30,6 +35,8 @@ export interface NaturalPauseAction extends Record<string, unknown> {
     | "semantic-delete"
     | "explicit-gap-delete"
     | "pause-delete"
+    | "pause-compress"
+    | "pause-keep"
     | "head-tail-delete";
   start: number;
   end: number;
@@ -45,6 +52,8 @@ export interface NaturalPausePlan {
     semanticSelectedWords: number;
     semanticGroups: number;
     pausesDeleted: number;
+    pausesCompressed: number;
+    pausesKept: number;
     explicitGapsDeleted: number;
     headTailDeleted: number;
     deleteSegments: number;
@@ -58,6 +67,9 @@ export const DEFAULT_NATURAL_PAUSE_POLICY: Readonly<NaturalPausePolicy> = Object
   version: CURRENT_NATURAL_PAUSE_POLICY_VERSION,
   keepAfterPreviousWord: 0.08,
   keepBeforeNextWord: 0.16,
+  // Nine frames at 30 fps: ordinary breaths remain part of the performance
+  // instead of turning the preview into a run of tiny media fragments.
+  maxNaturalPauseSeconds: 0.3,
 });
 
 function finiteNumber(value: unknown, fallback: number): number {
@@ -76,6 +88,10 @@ function normalizePolicy(policy: Partial<NaturalPausePolicy> = {}): NaturalPause
       policy.keepBeforeNextWord,
       DEFAULT_NATURAL_PAUSE_POLICY.keepBeforeNextWord,
     ),
+    maxNaturalPauseSeconds: Math.max(0, finiteNumber(
+      policy.maxNaturalPauseSeconds,
+      DEFAULT_NATURAL_PAUSE_POLICY.maxNaturalPauseSeconds,
+    )),
   };
 }
 
@@ -267,17 +283,33 @@ export function buildNaturalPausePlan(
       index = endIndex + 1;
       continue;
     }
-    addSegment(start, end, "pause-delete");
-    actions.push({
-      type: "pause-delete",
-      indices,
-      start: roundTime(start),
-      end: roundTime(end),
-      deleteStart: roundTime(start),
-      deleteEnd: roundTime(end),
-      originalDuration: roundTime(duration),
-      targetDuration: 0,
-    });
+    const keptDuration = Math.min(duration, policy.maxNaturalPauseSeconds);
+    if (duration <= policy.maxNaturalPauseSeconds + 0.000001) {
+      actions.push({
+        type: "pause-keep",
+        indices,
+        start: roundTime(start),
+        end: roundTime(end),
+        originalDuration: roundTime(duration),
+        targetDuration: roundTime(keptDuration),
+      });
+    } else {
+      // Keep the first short breath after the preceding word, then remove only
+      // the excess before the next word. The 0.3s default is exactly nine
+      // frames at 30 fps, so a normal pause cannot manufacture a sub-frame cut.
+      const deleteStart = start + keptDuration;
+      addSegment(deleteStart, end, "pause-compress");
+      actions.push({
+        type: "pause-compress",
+        indices,
+        start: roundTime(start),
+        end: roundTime(end),
+        deleteStart: roundTime(deleteStart),
+        deleteEnd: roundTime(end),
+        originalDuration: roundTime(duration),
+        targetDuration: roundTime(keptDuration),
+      });
+    }
     index = endIndex + 1;
   }
 
@@ -307,6 +339,8 @@ export function buildNaturalPausePlan(
       semanticSelectedWords: [...selected].filter((index) => !isGap(index)).length,
       semanticGroups: semanticGroups.length,
       pausesDeleted: actions.filter((action) => action.type === "pause-delete").length,
+      pausesCompressed: actions.filter((action) => action.type === "pause-compress").length,
+      pausesKept: actions.filter((action) => action.type === "pause-keep").length,
       explicitGapsDeleted: actions.filter((action) => action.type === "explicit-gap-delete").length,
       headTailDeleted: actions.filter((action) => action.type === "head-tail-delete").length,
       deleteSegments: deleteSegments.length,

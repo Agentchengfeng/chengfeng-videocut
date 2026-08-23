@@ -121,6 +121,13 @@ async function seedV4LegacyCutDerivedSelection(
     ...selection,
     cutWordIds: input.cutWordIds,
     cutRanges,
+    initialization: {
+      ...(selection.initialization as Record<string, unknown>),
+      // The fixture represents the persisted v4 all-gap baseline which must
+      // be rebased once onto the v5 long-pause policy by `project prepare`.
+      naturalPausePolicy: "natural-pause-v4-delete-all-gaps",
+      baselineCutWordIds: ["gap-1"],
+    },
     ...(input.reasons ? { reasons: input.reasons } : {}),
   };
   const cutsRaw = `${JSON.stringify(nextSelection, null, 2)}\n`;
@@ -311,8 +318,8 @@ describe("createKouboProject contract", () => {
     });
 
     const selection = JSON.parse(await readFile(join(fixtureValue.job, "cut-selection.json"), "utf8"));
-    expect(selection.cutWordIds).toEqual(["cloud-gap-1"]);
-    expect(selection.cutRanges).toEqual([{ start: 1.1, end: 4.48 }]);
+    expect(selection.cutWordIds).toEqual(["cloud-gap-1__part_1300_4580"]);
+    expect(selection.cutRanges).toEqual([{ start: 1.4, end: 4.48 }]);
 
     const inspection = await inspectProject(await resolveProject(fixtureValue.job));
     expect((inspection.documents as Record<string, any>).cuts.rangesMatchTranscript).toBe(true);
@@ -593,18 +600,18 @@ describe("prepareKouboProject natural-pause migration", () => {
     expect(JSON.parse(afterRaw[6])).toEqual(JSON.parse(beforeRaw[6]));
     expect(after).toEqual(before);
     const plan = JSON.parse(await readFile(join(job, paths[4]), "utf8"));
-    expect(plan.summary).toMatchObject({ pausesDeleted: 1, explicitGapsDeleted: 0 });
-    expect(plan.summary.totalDeletedSeconds).toBe(3.58);
+    expect(plan.summary).toMatchObject({ pausesCompressed: 1, pausesKept: 0, explicitGapsDeleted: 0 });
+    expect(plan.summary.totalDeletedSeconds).toBe(3.28);
     const editListRaw = await readFile(join(job, "edit-list.json"), "utf8");
     const editList = JSON.parse(editListRaw);
-    expect(editList).toMatchObject({ mode: "cuts-derived", duration: 2.62 });
+    expect(editList).toMatchObject({ mode: "cuts-derived", duration: 2.92 });
     expect(editList.segments).toHaveLength(2);
     const index = await readFile(join(job, "index.html"), "utf8");
     expect(index.match(/data-edl-segment-id=/g)).toHaveLength(2);
     expect(index.match(/<video\b/g)).toHaveLength(1);
     expect(index.match(/<video\b[^>]*data-edl-segment-id=/g) ?? []).toHaveLength(0);
     expect(index.match(/<div\b[^>]*data-edl-segment-id=/g)).toHaveLength(2);
-    expect(index).toContain('data-duration="2.620"');
+    expect(index).toContain('data-duration="2.920"');
     expect(index).toContain(`data-edit-list-revision="${digest(editListRaw)}"`);
     expect(index).toContain('data-videocut-preview="edl-adapter"');
     expect(index).toContain('data-render-policy="preview-only"');
@@ -636,11 +643,11 @@ describe("prepareKouboProject natural-pause migration", () => {
 
     const cutsRaw = await readFile(join(job, "cut-selection.json"), "utf8");
     const selection = JSON.parse(cutsRaw);
-    expect(selection.cutWordIds).toEqual(["gap-1"]);
-    expect(selection.cutRanges).toEqual([{ start: 1.1, end: 4.48 }]);
+    expect(selection.cutWordIds).toEqual(["gap-1__part_1300_4580"]);
+    expect(selection.cutRanges).toEqual([{ start: 1.4, end: 4.48 }]);
     const editListRaw = await readFile(join(job, "edit-list.json"), "utf8");
     const editList = JSON.parse(editListRaw);
-    expect(editList).toMatchObject({ mode: "cuts-derived", duration: 2.62 });
+    expect(editList).toMatchObject({ mode: "cuts-derived", duration: 2.92 });
     expect(editList.baseCutsRevision).toBe(digest(cutsRaw));
     expect(editList.baseTranscriptRevision).toBe(
       digest(await readFile(join(job, "transcript.json"), "utf8")),
@@ -655,13 +662,9 @@ describe("prepareKouboProject natural-pause migration", () => {
     expect(events.at(-1)).toMatchObject({
       type: "workbench_project_prepared",
       payload: {
-        cutRangesMigration: {
-          from: "legacy-buildRanges",
-          to: "canonical-buildCutTimeRanges",
-          previousCutsRevision: digest(seeded.cutsRaw),
-          nextCutsRevision: digest(cutsRaw),
-          cutRangeCount: 1,
-        },
+        projectId: "fixture-job",
+        naturalPausePolicy: "natural-pause-v5-compress-long-gaps",
+        plannedDeleteSeconds: 3.28,
       },
     });
 
@@ -682,8 +685,8 @@ describe("prepareKouboProject natural-pause migration", () => {
     await prepareKouboProject(job, options);
 
     const selection = JSON.parse(await readFile(join(job, "cut-selection.json"), "utf8"));
-    expect(selection.cutWordIds).toEqual(["gap-1", "w-2"]);
-    expect(selection.cutRanges).toEqual([{ start: 1.1, end: 5.58 }]);
+    expect(selection.cutWordIds).toEqual(["gap-1__part_1300_4580", "w-2"]);
+    expect(selection.cutRanges).toEqual([{ start: 1.4, end: 5.58 }]);
     expect(selection.reasons).toEqual([{ wordIds: ["w-2"], kind: "repeat", risk: "high" }]);
     const inspection = await inspectProject(await resolveProject(job));
     expect((inspection.documents as Record<string, any>).cuts.rangesMatchTranscript).toBe(true);
@@ -701,11 +704,12 @@ describe("prepareKouboProject natural-pause migration", () => {
     const manualRaw = `${JSON.stringify(manual, null, 2)}\n`;
     await writeFile(join(job, "edit-list.json"), manualRaw);
     // The test writes a legacy EDL directly, so first bring its generated
-    // projection current. The following prepare must then be a true no-op.
+    // projection current. A policy migration must now refuse rather than
+    // rewriting a person-owned manual timeline.
     await materializeKouboEditListIndex(job);
     const before = await snapshotOrdinaryPrepareFiles(job);
 
-    await prepareKouboProject(job, options);
+    await expect(prepareKouboProject(job, options)).rejects.toThrow("manual timeline edits");
 
     expect(before["edit-list.json"]).toBe(manualRaw);
     expect(await snapshotOrdinaryPrepareFiles(job)).toEqual(before);
@@ -717,10 +721,23 @@ describe("prepareKouboProject natural-pause migration", () => {
     const job = await fixture();
     const options = { duration: 6, now: fixedNow };
     await prepareKouboProject(job, options);
-    const seeded = await seedV4LegacyCutDerivedSelection(job, {
+    await seedV4LegacyCutDerivedSelection(job, {
       cutWordIds: ["gap-1"],
       cutRanges: [{ start: 1.01, end: 4.5 }],
     });
+    const currentSelection = JSON.parse(await readFile(join(job, "cut-selection.json"), "utf8"));
+    currentSelection.initialization.naturalPausePolicy = "natural-pause-v5-compress-long-gaps";
+    const currentCutsRaw = `${JSON.stringify(currentSelection, null, 2)}\n`;
+    await writeFile(join(job, "cut-selection.json"), currentCutsRaw);
+    const currentEditList = buildEditListFromCuts({
+      projectId: "fixture-job",
+      source: "input/source.mp4",
+      sourceDuration: 6,
+      cutsRevision: digest(currentCutsRaw),
+      transcriptRevision: digest(await readFile(join(job, "transcript.json"), "utf8")),
+      cutRanges: currentSelection.cutRanges,
+    });
+    await writeFile(join(job, "edit-list.json"), `${JSON.stringify(currentEditList, null, 2)}\n`);
 
     // As above, make the generated projection agree with this intentionally
     // non-legacy EDL before proving prepare declines to rewrite the project.
@@ -728,8 +745,6 @@ describe("prepareKouboProject natural-pause migration", () => {
     const before = await snapshotOrdinaryPrepareFiles(job);
     await prepareKouboProject(job, options);
 
-    expect(before["cut-selection.json"]).toBe(seeded.cutsRaw);
-    expect(before["edit-list.json"]).toBe(seeded.editListRaw);
     expect(await snapshotOrdinaryPrepareFiles(job)).toEqual(before);
     const inspection = await inspectProject(await resolveProject(job));
     expect((inspection.documents as Record<string, any>).cuts.rangesMatchTranscript).toBe(false);
@@ -741,8 +756,14 @@ describe("prepareKouboProject natural-pause migration", () => {
     await prepareKouboProject(job, options);
     const path = join(job, "cut-selection.json");
     const selection = JSON.parse(await readFile(path, "utf8"));
-    // The user restores the whole baseline gap and adds one stable speech word.
-    // v3 has no residual split-gap ids to infer or promote.
+    // The user restored the whole v4 baseline gap and added one stable speech
+    // word. v5 splits only its removable tail; the old whole-gap restoration
+    // must still suppress that tail on policy migration.
+    selection.initialization = {
+      ...selection.initialization,
+      naturalPausePolicy: "natural-pause-v4-delete-all-gaps",
+      baselineCutWordIds: ["gap-1"],
+    };
     selection.cutWordIds = ["w-2"];
     selection.cutRanges = [{ start: 4.58, end: 5.58 }];
     await writeFile(path, `${JSON.stringify(selection, null, 2)}\n`);
@@ -750,10 +771,10 @@ describe("prepareKouboProject natural-pause migration", () => {
     await prepareKouboProject(job, { ...options, refreshTranscript: true });
     const refreshed = JSON.parse(await readFile(path, "utf8"));
     expect(refreshed.cutWordIds).toEqual(["w-2"]);
-    expect(refreshed.initialization.baselineCutWordIds).toEqual(["gap-1"]);
+    expect(refreshed.initialization.baselineCutWordIds).toEqual(["gap-1__part_1300_4580"]);
   });
 
-  it("uses the current full-gap policy when a legacy derived split id is supplied", async () => {
+  it("uses the current long-pause policy when a legacy derived split id is supplied", async () => {
     const job = await fixture({
       schemaVersion: 3,
       cutWordIds: ["gap-1__part_1000_4300"],
@@ -764,10 +785,10 @@ describe("prepareKouboProject natural-pause migration", () => {
     const plan = JSON.parse(
       await readFile(join(job, "剪口播/3_审核/natural_pause_plan.json"), "utf8"),
     );
-    expect(plan.summary).toMatchObject({ pausesDeleted: 1, explicitGapsDeleted: 0 });
-    expect(plan.deleteSegments).toEqual([{ start: 1, end: 4.58 }]);
+    expect(plan.summary).toMatchObject({ pausesCompressed: 1, pausesKept: 0, explicitGapsDeleted: 0 });
+    expect(plan.deleteSegments).toEqual([{ start: 1.3, end: 4.58 }]);
     const selection = JSON.parse(await readFile(join(job, "cut-selection.json"), "utf8"));
-    expect(selection.cutRanges).toEqual([{ start: 1.1, end: 4.48 }]);
+    expect(selection.cutRanges).toEqual([{ start: 1.4, end: 4.48 }]);
     const inspection = await inspectProject(await resolveProject(job));
     expect((inspection.documents as Record<string, any>).cuts.rangesMatchTranscript).toBe(true);
   });
@@ -794,11 +815,11 @@ describe("prepareKouboProject natural-pause migration", () => {
       await readFile(join(job, "剪口播/3_审核/natural_pause_plan.json"), "utf8"),
     );
     const editList = JSON.parse(await readFile(join(job, "edit-list.json"), "utf8"));
-    expect(migrated.initialization.naturalPausePolicy).toBe("natural-pause-v4-delete-all-gaps");
-    expect(migrated.initialization.baselineCutWordIds).toEqual(["gap-1"]);
-    expect(migrated.cutWordIds).toEqual(["gap-1"]);
-    expect(plan.deleteSegments).toEqual([{ start: 1, end: 4.58 }]);
-    expect(editList).toMatchObject({ mode: "cuts-derived", duration: 2.62 });
+    expect(migrated.initialization.naturalPausePolicy).toBe("natural-pause-v5-compress-long-gaps");
+    expect(migrated.initialization.baselineCutWordIds).toEqual(["gap-1__part_1300_4580"]);
+    expect(migrated.cutWordIds).toEqual(["gap-1__part_1300_4580"]);
+    expect(plan.deleteSegments).toEqual([{ start: 1.3, end: 4.58 }]);
+    expect(editList).toMatchObject({ mode: "cuts-derived", duration: 2.92 });
   });
 
   it("preserves a manual edit list and refuses to rebase it after Cuts change", async () => {
