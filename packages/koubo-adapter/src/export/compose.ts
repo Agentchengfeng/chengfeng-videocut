@@ -23,10 +23,12 @@
 import { spawn } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import type { ExportProfile } from "@video-workbench/contracts";
 import type { ExportPlan } from "@video-workbench/core";
 import { cropRectForBox, ffmpegFileArg, ffmpegOutputArgs } from "@video-workbench/core";
 import { orderedSegmentManifest, probeMedia, type MediaProbe } from "../mediaCut";
 import { MARKER_STRIP_HEIGHT } from "./overlayPage";
+import { finalEncodingSettings } from "./profile";
 
 /**
  * How hard the final encoder tries.
@@ -38,8 +40,6 @@ import { MARKER_STRIP_HEIGHT } from "./overlayPage";
  * preserve the source and reliably made white-background text mushier than the
  * original.
  */
-const FINAL_CRF = "16";
-const FINAL_PRESET = "slow";
 const FINAL_AUDIO_BITRATE = "256k";
 /** Near-transparent, so the second generation starts from what the cut was. */
 const INTERMEDIATE_CRF = "10";
@@ -181,11 +181,13 @@ export async function composeFilm(input: {
   output: string;
   workDirectory: string;
   plan: ExportPlan;
+  profile?: ExportProfile;
   onSpan?: (done: number, total: number) => void;
   onLine?: (line: string) => void;
   signal?: AbortSignal;
 }): Promise<void> {
   const { plan } = input;
+  const encoding = finalEncodingSettings(input.profile);
   await mkdir(dirname(input.output), { recursive: true });
   await mkdir(input.workDirectory, { recursive: true });
 
@@ -228,7 +230,7 @@ export async function composeFilm(input: {
           ]
         : [`[0:v]${steps.join(",")}[outv]`]).join(";"),
       "-map", "[outv]", "-an",
-      "-c:v", "libx264", "-preset", FINAL_PRESET, "-crf", FINAL_CRF,
+      "-c:v", "libx264", "-preset", encoding.preset, "-crf", encoding.crf,
       "-profile:v", "high", "-pix_fmt", "yuv420p",
       "-fps_mode", "cfr", "-r", String(plan.fps),
       // The span must be exactly as long as it was planned to be. One frame of

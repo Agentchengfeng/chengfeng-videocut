@@ -18,6 +18,7 @@
 
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
+import type { ExportProfile } from "@video-workbench/contracts";
 import type { ExportPlan } from "@video-workbench/core";
 import { assembleCut, composeFilm, intermediatePath, verifyFilm } from "./compose";
 import { renderOverlayFrames } from "./overlayRenderer";
@@ -27,6 +28,7 @@ export * from "./chrome";
 export * from "./compose";
 export * from "./overlayPage";
 export * from "./overlayRenderer";
+export * from "./profile";
 
 export type ExportStage = "assemble" | "overlay" | "compose" | "verify";
 
@@ -38,6 +40,7 @@ export interface ExportFilmInput {
   plan: ExportPlan;
   outputPath: string;
   workDirectory: string;
+  profile?: ExportProfile;
   /** Leave the intermediate and the PNG frames behind for inspection. */
   keepWork?: boolean;
   signal?: AbortSignal;
@@ -88,6 +91,7 @@ export async function exportFilm(input: ExportFilmInput): Promise<ExportFilmResu
     output: input.outputPath,
     workDirectory: join(input.workDirectory, "spans"),
     plan,
+    profile: input.profile,
     signal: input.signal,
     onSpan: (done, total) => input.onProgress?.("compose", done, total),
   });

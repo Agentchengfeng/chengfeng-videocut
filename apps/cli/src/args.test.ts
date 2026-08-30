@@ -130,14 +130,30 @@ describe("start argument parser", () => {
   });
 
   it("parses durable job start/get/list/cancel commands", () => {
-    expect(parseArgs(["job", "start", "export", "/tmp/project", "--out", "/tmp/out.mp4"])).toMatchObject({
+    expect(parseArgs([
+      "job", "start", "export", "/tmp/project", "--out", "/tmp/out.mp4", "--profile", "fast",
+    ])).toMatchObject({
       command: "job.start", jobKind: "export", project: "/tmp/project", outFile: "/tmp/out.mp4",
+      profile: "fast",
     });
     expect(parseArgs(["job", "get", "abc"])).toMatchObject({ command: "job.get", jobId: "abc" });
     expect(parseArgs(["job", "list", "--project", "demo", "--state", "queued", "--limit", "25"])).toMatchObject({
       command: "job.list", projectFilter: "demo", jobState: "queued", jobLimit: 25,
     });
     expect(parseArgs(["job", "cancel", "abc"])).toMatchObject({ command: "job.cancel", jobId: "abc" });
+  });
+
+  it("parses export profiles and rejects unknown profiles", () => {
+    expect(parseArgs(["export", "demo", "--profile", "fast", "--dry-run"])).toMatchObject({
+      command: "export",
+      project: "demo",
+      profile: "fast",
+      dryRun: true,
+    });
+    expect(() => parseArgs(["export", "demo", "--profile", "turbo"]))
+      .toThrow("--profile must be master or fast");
+    expect(() => parseArgs(["job", "start", "export", "demo", "--profile", "turbo"]))
+      .toThrow("--profile must be master or fast");
   });
   it("parses defaults and supports an ephemeral port", () => {
     expect(parseArgs(["start"])).toMatchObject({

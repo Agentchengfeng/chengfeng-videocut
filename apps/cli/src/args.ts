@@ -1,5 +1,10 @@
 import { isAbsolute } from "node:path";
-import { runtimeCliCommand, type RuntimeCliCommand } from "@video-workbench/contracts";
+import {
+  isExportProfile,
+  runtimeCliCommand,
+  type ExportProfile,
+  type RuntimeCliCommand,
+} from "@video-workbench/contracts";
 import { VideocutError } from "@video-workbench/core";
 
 export type CliCommand = RuntimeCliCommand;
@@ -51,6 +56,8 @@ export interface ParsedArgs {
   scale?: number;
   /** Output frame rate. Defaults to the source's. */
   fps?: number;
+  /** Product-owned output trade-off. Defaults to master. */
+  profile?: ExportProfile;
   /** Keep the intermediate video and the overlay PNGs for inspection. */
   keepWork: boolean;
   jobId?: string;
@@ -108,6 +115,7 @@ const VALUE_OPTIONS = new Set([
   "--zoom",
   "--scale",
   "--fps",
+  "--profile",
   "--kind",
   "--state",
   "--project",
@@ -311,7 +319,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     const action = positionals[1];
     if (action === "start") {
       if (positionals.length !== 4) usageError("Usage: chengfeng-videocut job start <kind> <target>");
-      assertOptions(["--api-base", "--out", "--scale", "--fps", "--operation-id"], ["--keep-work"]);
+      assertOptions(["--api-base", "--out", "--scale", "--fps", "--profile", "--operation-id"], ["--keep-work"]);
       const rawScale = values.get("--scale");
       const scale = rawScale === undefined ? undefined : Number(rawScale);
       if (scale !== undefined && (!Number.isFinite(scale) || scale <= 0 || scale > 4)) {
@@ -322,6 +330,10 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
       if (fps !== undefined && (!Number.isFinite(fps) || fps < 1 || fps > 120)) {
         usageError("--fps must be a frame rate between 1 and 120");
       }
+      const profile = values.get("--profile");
+      if (profile !== undefined && !isExportProfile(profile)) {
+        usageError("--profile must be master or fast");
+      }
       return {
         ...common,
         command: "job.start",
@@ -330,6 +342,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
         outFile: values.get("--out"),
         scale,
         fps,
+        profile,
       };
     }
     if (action === "get" || action === "cancel") {
@@ -691,11 +704,11 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
   if (positionals[0] === "export") {
     if (positionals.length !== 2) {
       usageError(
-        "Usage: chengfeng-videocut export <project> [--out <file.mp4>] [--scale 2] [--fps 60] [--keep-work]",
+        "Usage: chengfeng-videocut export <project> [--out <file.mp4>] [--profile <master|fast>] [--scale 2] [--fps 60] [--keep-work]",
       );
     }
     assertOptions(
-      ["--out", "--scale", "--fps", "--projects-dir", "--output-dir", "--api-base", "--operation-id"],
+      ["--out", "--profile", "--scale", "--fps", "--projects-dir", "--output-dir", "--api-base", "--operation-id"],
       ["--keep-work"],
       true,
     );
@@ -709,6 +722,10 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     if (fps !== undefined && (!Number.isFinite(fps) || fps < 1 || fps > 120)) {
       usageError("--fps must be a frame rate between 1 and 120");
     }
+    const profile = values.get("--profile");
+    if (profile !== undefined && !isExportProfile(profile)) {
+      usageError("--profile must be master or fast");
+    }
     return {
       ...common,
       command: "export",
@@ -716,6 +733,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
       outFile: values.get("--out"),
       scale,
       fps,
+      profile,
     };
   }
   if (positionals[0] === "visual" && positionals[1] === "get") {

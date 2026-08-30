@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, link, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ChromeError, findExplicitChromeOverride } from "./chrome";
@@ -22,6 +22,13 @@ async function executableFixture(): Promise<string> {
 describe("explicit Chrome override", () => {
   it("uses a developer-supplied executable only when explicitly requested", async () => {
     const executable = await executableFixture();
+    expect(findExplicitChromeOverride({ configuredPath: executable })).toBe(executable);
+  });
+
+  it("accepts an explicitly supplied executable with multiple hard links", async () => {
+    const executable = await executableFixture();
+    await link(executable, `${executable}-alias`);
+
     expect(findExplicitChromeOverride({ configuredPath: executable })).toBe(executable);
   });
 

@@ -40,7 +40,12 @@ interface ChromePathOptions {
 function isExecutableFile(path: string, platform: NodeJS.Platform): boolean {
   try {
     const metadata = lstatSync(path);
-    if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1) return false;
+    // This path is an explicit developer override, not a Product-managed
+    // cache entry. macOS application binaries can legitimately have multiple
+    // hard links (Google Chrome currently does), so rejecting nlink > 1 here
+    // produces a false negative. Managed renderer artifacts keep their
+    // stricter single-link validation in renderer-runtime.ts.
+    if (!metadata.isFile() || metadata.isSymbolicLink()) return false;
     accessSync(path, platform === "win32" ? constants.R_OK : constants.R_OK | constants.X_OK);
     return true;
   } catch {

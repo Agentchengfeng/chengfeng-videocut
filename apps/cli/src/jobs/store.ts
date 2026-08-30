@@ -3,6 +3,7 @@ import { mkdir, open, readFile, readdir, rename, rm } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import {
   JOB_SCHEMA_VERSION,
+  isExportProfile,
   type DurableJob,
   type JobState,
 } from "@video-workbench/contracts";
@@ -69,6 +70,7 @@ function assertExportRecordPaths(
     !exactAbsolutePath(snapshotDirectory) || snapshotDirectory !== join(jobDirectory, "snapshot") ||
     (params.scale !== undefined && (typeof params.scale !== "number" || !Number.isFinite(params.scale) || params.scale <= 0 || params.scale > 4)) ||
     (params.fps !== undefined && (typeof params.fps !== "number" || !Number.isFinite(params.fps) || params.fps < 1 || params.fps > 120)) ||
+    (params.profile !== undefined && !isExportProfile(params.profile)) ||
     (params.keepWork !== undefined && typeof params.keepWork !== "boolean")
   ) {
     throw new JobStoreError("job_store_corrupt", "Export job paths or parameters are invalid", {

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { link, mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { link, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JobManager } from "./manager";
@@ -122,6 +122,53 @@ async function waitState(manager: JobManager, jobId: string, state: string, time
 }
 
 describe("job manager", () => {
+  it("ignores prior generated export work but still fingerprints real overlay assets", async () => {
+    const f = await fixture();
+    const project = f.projects[0]!;
+    const generated = join(project, ".chengfeng-videocut", "export", "overlay");
+    await mkdir(generated, { recursive: true });
+    const before = await exportDependencyFingerprint(project);
+    await writeFile(join(generated, "000000.png"), "large-generated-frame");
+    expect(await exportDependencyFingerprint(project)).toBe(before);
+    await writeFile(join(project, "overlay.html"), "<p>changed</p>");
+    expect(await exportDependencyFingerprint(project)).not.toBe(before);
+  });
+
+  it.skipIf(process.platform === "win32")("ignores the Product-owned legacy source_cut alias only", async () => {
+    const f = await fixture();
+    const project = f.projects[0]!;
+    const realCut = join(project, "legacy-cut.mp4");
+    await writeFile(realCut, "legacy-cut");
+    const before = await exportDependencyFingerprint(project);
+    await symlink("legacy-cut.mp4", join(project, "source_cut.mp4"));
+    expect(await exportDependencyFingerprint(project)).toBe(before);
+    await symlink("legacy-cut.mp4", join(project, "untrusted-alias.mp4"));
+    await expect(exportDependencyFingerprint(project)).rejects.toMatchObject({
+      code: "job_dependency_unsafe",
+    });
+  });
+
+  it("persists a canonical profile and rejects unknown profiles", async () => {
+    const f = await fixture();
+    const manager = new JobManager(f.dataDir, { workerEntrypoint: f.slowWorker });
+    managers.push(manager);
+    await manager.initialize();
+
+    await expect(manager.start({
+      kind: "export",
+      target: f.projects[0]!,
+      params: { outputPath: join(f.root, "bad-profile.mp4"), profile: "turbo" },
+    })).rejects.toMatchObject({ code: "invalid_argument" });
+
+    const started = await manager.start({
+      kind: "export",
+      target: f.projects[0]!,
+      params: { outputPath: join(f.root, "fast-profile.mp4"), profile: "fast" },
+    });
+    expect(started.params.profile).toBe("fast");
+    await manager.cancel(started.jobId);
+  });
+
   it("rejects an existing default output before creating or running a job", async () => {
     const f = await fixture();
     const outputPath = join(f.projects[0]!, "成片.mp4");

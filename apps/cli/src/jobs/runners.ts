@@ -3,7 +3,7 @@ import { createReadStream } from "node:fs";
 import { lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { resolveProject, serializeProjectOperation } from "@video-workbench/core/node";
-import type { DurableJob, JobKind } from "@video-workbench/contracts";
+import { isExportProfile, type DurableJob, type JobKind } from "@video-workbench/contracts";
 import { executeExport } from "../export-command";
 import { JobStore, JobStoreError } from "./store";
 
@@ -11,6 +11,8 @@ const EXPORT_DOCUMENTS = [
   "project.json", "edit-list.json", "transcript.json", "subtitles.json", "visuals.json",
 ] as const;
 const PROJECT_LOCK_DIRECTORY = ".chengfeng-videocut.write.lock";
+const GENERATED_EXPORT_DIRECTORY = ".chengfeng-videocut/export";
+const LEGACY_SOURCE_CUT_ALIAS = "source_cut.mp4";
 
 export interface JobRunnerDefinition {
   kind: JobKind;
@@ -113,6 +115,13 @@ export async function exportDependencyFingerprint(
       if (exclusions.has(path)) continue;
       const rel = relative(root, path).split(sep).join("/");
       if (rel === PROJECT_LOCK_DIRECTORY || rel.startsWith(`${PROJECT_LOCK_DIRECTORY}/`)) continue;
+      if (rel === GENERATED_EXPORT_DIRECTORY || rel.startsWith(`${GENERATED_EXPORT_DIRECTORY}/`)) continue;
+      // The legacy physical-cut command creates this root alias to its real
+      // project-internal output. The real target is fingerprinted where it
+      // lives; hashing the alias would duplicate it and reject an artifact the
+      // Product itself created. A configured inputVideo still goes through
+      // hashStableFile separately and remains fail-closed for symlinks.
+      if (rel === LEGACY_SOURCE_CUT_ALIAS) continue;
       const info = await lstat(path);
       if (info.isSymbolicLink()) {
         throw new JobStoreError("job_dependency_unsafe", "Export project contains a symbolic link", {
@@ -283,6 +292,7 @@ export async function runJobWorker(
       workDirectory: paths.workDirectory,
       scale: typeof job.params.scale === "number" ? job.params.scale : undefined,
       fps: typeof job.params.fps === "number" ? job.params.fps : undefined,
+      profile: isExportProfile(job.params.profile) ? job.params.profile : "master",
       keepWork: Boolean(job.params.keepWork),
       signal: controller.signal,
     });

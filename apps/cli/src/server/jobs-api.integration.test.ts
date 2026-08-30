@@ -224,7 +224,12 @@ describe("durable jobs HTTP and real export", () => {
     );
     expect(rejectedText).toContain("invalid-job-body");
     expect(rejectedText).not.toContain(f.root);
-    const startBody = { kind: "export", target: "one", operationId: "job-start-op-1", params: { outputPath, scale: 2, fps: 15 } };
+    const startBody = {
+      kind: "export",
+      target: "one",
+      operationId: "job-start-op-1",
+      params: { outputPath, scale: 2, fps: 15, profile: "fast" },
+    };
     const start = await fetch(`${server.url}/api/v1/jobs`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(startBody),
@@ -232,6 +237,7 @@ describe("durable jobs HTTP and real export", () => {
     expect(start.status).toBe(202);
     const first = await start.json() as DurableJob & { operationId?: string; operationReplay?: boolean };
     expect(first.operationId).toBe("job-start-op-1");
+    expect(first.params.profile).toBe("fast");
     expect(await new OperationAuditStore(f.dataDir).read("job-start-op-1")).toMatchObject({
       kind: "job.start.export",
       accepted: true,
@@ -258,7 +264,7 @@ describe("durable jobs HTTP and real export", () => {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         ...startBody,
-        params: { outputPath: join(f.root, "tampered.mp4"), scale: 2, fps: 15 },
+        params: { outputPath: join(f.root, "tampered.mp4"), scale: 2, fps: 15, profile: "master" },
       }),
     });
     expect(tamperedOperation.status).toBe(409);

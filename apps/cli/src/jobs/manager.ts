@@ -3,7 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { link, lstat, mkdir, rm, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { DurableJob, JobKind } from "@video-workbench/contracts";
+import { isExportProfile, type DurableJob, type JobKind } from "@video-workbench/contracts";
 import { resolveProject, serializeProjectOperation } from "@video-workbench/core/node";
 import {
   candidateForOutput,
@@ -164,11 +164,15 @@ export class JobManager {
     if (params.fps !== undefined && (typeof params.fps !== "number" || !Number.isFinite(params.fps) || params.fps < 1 || params.fps > 120)) {
       throw new JobStoreError("invalid_argument", "fps must be a number from 1 to 120");
     }
+    if (params.profile !== undefined && !isExportProfile(params.profile)) {
+      throw new JobStoreError("invalid_argument", "profile must be master or fast");
+    }
     if (params.keepWork !== undefined && typeof params.keepWork !== "boolean") {
       throw new JobStoreError("invalid_argument", "keepWork must be a boolean");
     }
 
     const jobId = randomUUID();
+    const profile = isExportProfile(params.profile) ? params.profile : "master";
     const outputPath = resolve(
       typeof requestedOutput === "string" ? requestedOutput : defaultExportOutput(project.directory),
     );
@@ -214,6 +218,7 @@ export class JobManager {
           snapshotDirectory,
           ...(typeof params.scale === "number" ? { scale: params.scale } : {}),
           ...(typeof params.fps === "number" ? { fps: params.fps } : {}),
+          profile,
           ...(params.keepWork === true ? { keepWork: true } : {}),
         },
       });
@@ -254,9 +259,13 @@ export class JobManager {
     if (params.fps !== undefined && (typeof params.fps !== "number" || !Number.isFinite(params.fps) || params.fps < 1 || params.fps > 120)) {
       throw new JobStoreError("invalid_argument", "fps must be a number from 1 to 120");
     }
+    if (params.profile !== undefined && !isExportProfile(params.profile)) {
+      throw new JobStoreError("invalid_argument", "profile must be master or fast");
+    }
     if (params.keepWork !== undefined && typeof params.keepWork !== "boolean") {
       throw new JobStoreError("invalid_argument", "keepWork must be a boolean");
     }
+    const profile = isExportProfile(params.profile) ? params.profile : "master";
     const outputPath = resolve(
       typeof requestedOutput === "string" ? requestedOutput : defaultExportOutput(project.directory),
     );
@@ -279,6 +288,7 @@ export class JobManager {
       job.params.outputPath !== outputPath ||
       (job.params.scale ?? undefined) !== (typeof params.scale === "number" ? params.scale : undefined) ||
       (job.params.fps ?? undefined) !== (typeof params.fps === "number" ? params.fps : undefined) ||
+      (job.params.profile ?? "master") !== profile ||
       (job.params.keepWork ?? undefined) !== (params.keepWork === true ? true : undefined)
     ) {
       throw new JobStoreError("operation_replay_conflict", "Operation replay job identity no longer matches", {

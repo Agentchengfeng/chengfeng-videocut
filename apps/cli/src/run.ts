@@ -16,6 +16,7 @@ import {
   prepareKouboProject,
   probeMedia,
   putKouboArtifact,
+  resolveExportProfile,
   runKouboRender,
   alignScriptToWords,
   matchDictionary,
@@ -1131,6 +1132,7 @@ export async function runCli(
             ...(parsed.outFile ? { outputPath: resolve(cwd, parsed.outFile) } : {}),
             ...(parsed.scale !== undefined ? { scale: parsed.scale } : {}),
             ...(parsed.fps !== undefined ? { fps: parsed.fps } : {}),
+            profile: parsed.profile ?? "master",
             ...(parsed.keepWork ? { keepWork: true } : {}),
           },
         } : undefined,
@@ -1835,6 +1837,14 @@ export async function runCli(
           sourcePath,
         });
       }
+      const resolvedProfile = resolveExportProfile({
+        profile: parsed.profile,
+        sourceWidth: probe.width,
+        sourceHeight: probe.height,
+        sourceFrameRate: probe.frameRate ?? 30,
+        scale: parsed.scale,
+        fps: parsed.fps,
+      });
       const plan = buildExportPlan({
         editList: editList?.value ?? null,
         words: transcript ? parseTranscriptWords(transcript.value) : [],
@@ -1846,14 +1856,15 @@ export async function runCli(
           duration: probe.duration,
           frameRate: probe.frameRate ?? 30,
         },
-        scale: parsed.scale,
-        fps: parsed.fps,
+        scale: resolvedProfile.scale,
+        fps: resolvedProfile.fps,
       });
       const outputPath = parsed.outFile
         ? resolve(cwd, parsed.outFile)
         : join(project.directory, "成片.mp4");
       const summary = {
         projectId: project.projectId,
+        profile: resolvedProfile.profile,
         output: outputPath,
         duration: plan.duration,
         fps: plan.fps,
@@ -1885,6 +1896,7 @@ export async function runCli(
             outputPath,
             ...(parsed.scale !== undefined ? { scale: parsed.scale } : {}),
             ...(parsed.fps !== undefined ? { fps: parsed.fps } : {}),
+            profile: resolvedProfile.profile,
             ...(parsed.keepWork ? { keepWork: true } : {}),
           },
         },

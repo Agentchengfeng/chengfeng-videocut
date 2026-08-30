@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import type { ExportProfile } from "@video-workbench/contracts";
 import { VideocutError, buildExportPlan, parseTranscriptWords } from "@video-workbench/core";
 import {
   readEditList,
@@ -7,7 +8,7 @@ import {
   readVisuals,
   type ResolvedProject,
 } from "@video-workbench/core/node";
-import { exportFilm, probeMedia } from "@video-workbench/koubo-adapter";
+import { exportFilm, probeMedia, resolveExportProfile } from "@video-workbench/koubo-adapter";
 
 export interface ExecuteExportOptions {
   project: ResolvedProject;
@@ -19,6 +20,7 @@ export interface ExecuteExportOptions {
   workDirectory: string;
   scale?: number;
   fps?: number;
+  profile?: ExportProfile;
   keepWork?: boolean;
   signal?: AbortSignal;
   onProgress?: (stage: string, done: number, total: number) => void;
@@ -41,6 +43,14 @@ export async function executeExport(options: ExecuteExportOptions): Promise<Reco
   if (!probe.hasVideo) {
     throw new VideocutError("invalid_project", "The source is not a readable video", { sourcePath });
   }
+  const resolvedProfile = resolveExportProfile({
+    profile: options.profile,
+    sourceWidth: probe.width,
+    sourceHeight: probe.height,
+    sourceFrameRate: probe.frameRate ?? 30,
+    scale: options.scale,
+    fps: options.fps,
+  });
   const plan = buildExportPlan({
     editList: editList?.value ?? null,
     words: transcript ? parseTranscriptWords(transcript.value) : [],
@@ -52,11 +62,12 @@ export async function executeExport(options: ExecuteExportOptions): Promise<Reco
       duration: probe.duration,
       frameRate: probe.frameRate ?? 30,
     },
-    scale: options.scale,
-    fps: options.fps,
+    scale: resolvedProfile.scale,
+    fps: resolvedProfile.fps,
   });
   const summary = {
     projectId: project.projectId,
+    profile: resolvedProfile.profile,
     output: options.outputPath,
     duration: plan.duration,
     fps: plan.fps,
@@ -75,6 +86,7 @@ export async function executeExport(options: ExecuteExportOptions): Promise<Reco
     plan,
     outputPath: options.outputPath,
     workDirectory: options.workDirectory,
+    profile: resolvedProfile.profile,
     keepWork: options.keepWork,
     signal: options.signal,
     onProgress: options.onProgress,

@@ -4,6 +4,13 @@ export const JOB_SCHEMA_VERSION = 1 as const;
 
 export type JobKind = "transcribe" | "cut" | "export" | "render";
 
+export const EXPORT_PROFILES = ["master", "fast"] as const;
+export type ExportProfile = typeof EXPORT_PROFILES[number];
+
+export function isExportProfile(value: unknown): value is ExportProfile {
+  return typeof value === "string" && (EXPORT_PROFILES as readonly string[]).includes(value);
+}
+
 export const RUNTIME_CONTRACT_SCHEMA_VERSION = 1 as const;
 
 export const RUNTIME_SERVICE_OPERATIONS = [
