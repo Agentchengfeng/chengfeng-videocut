@@ -1625,6 +1625,8 @@ export interface DoctorCheck {
   ok: boolean;
   required: boolean;
   detail: string;
+  status?: "ready" | "failed" | "blocked";
+  blockedBy?: string;
 }
 
 export type DoctorCapabilities = RuntimeDoctorCapabilities;
@@ -1957,9 +1959,14 @@ interface ManagedToolsDoctorResult {
   ok: boolean;
   detail: string;
   executables: Partial<Record<"bun" | "ffmpeg" | "ffprobe", string>>;
+  detectedExecutables: Partial<Record<"bun" | "ffmpeg" | "ffprobe", string>>;
   releaseReady: boolean;
   developmentMode: boolean;
   publicBeta: boolean;
+  distributionChannel: "stable" | "public-beta" | "local-development" | "source-development" | "unknown";
+  distributionMode: string;
+  licenseStatus: string;
+  blockedReason?: "channel_mismatch" | "integrity_error";
   identity?: InstalledDevelopmentIdentity;
 }
 
@@ -2232,6 +2239,10 @@ async function inspectInstalledManagedTools(
 ): Promise<ManagedToolsDoctorResult> {
   const toolsRoot = resolve(dataDir, "tools");
   const current = join(toolsRoot, "current");
+  let distributionMode = "unknown";
+  let licenseStatus = "unknown";
+  let distributionChannel: ManagedToolsDoctorResult["distributionChannel"] = "unknown";
+  let detectedExecutables: ManagedToolsDoctorResult["detectedExecutables"] = {};
   try {
     const currentLinkMetadata = await lstat(current);
     if (!currentLinkMetadata.isSymbolicLink()) {
@@ -2268,6 +2279,8 @@ async function inspectInstalledManagedTools(
       resources?: unknown;
     };
     const schemaVersion = manifest.schemaVersion;
+    distributionMode = manifest.distributionMode ?? "unknown";
+    licenseStatus = manifest.licenseStatus ?? "unknown";
     if (
       schemaVersion !== 4 ||
       manifest.product !== "chengfeng-videocut-managed-tools" ||
@@ -2283,9 +2296,13 @@ async function inspectInstalledManagedTools(
       manifest.distributionMode === "public-beta" && manifest.licenseStatus === "UNVERIFIED" &&
       manifest.beta?.channel === "windows-x64-public-beta" &&
       manifest.beta?.acknowledgement === "--accept-public-beta";
-    if (!releaseReady && !publicBetaEligible && !(options.localDevelopment && localDevelopmentEligible)) {
-      throw new Error("resources-manifest is not VERIFIED/release-ready for this platform");
-    }
+    distributionChannel = releaseReady
+      ? "stable"
+      : publicBetaEligible
+        ? "public-beta"
+        : localDevelopmentEligible
+          ? "local-development"
+          : "unknown";
     if (!releaseReady && !publicBetaEligible && !localDevelopmentEligible) {
       throw new Error("resources-manifest trust state is not an allowed Product combination");
     }
@@ -2358,6 +2375,23 @@ async function inspectInstalledManagedTools(
     if (await realpath(process.execPath) !== await realpath(executables.bun!)) {
       throw new Error("Runtime was not launched by tools/current managed Bun");
     }
+    detectedExecutables = { ...executables };
+    if (!releaseReady && !publicBetaEligible && !(options.localDevelopment && localDevelopmentEligible)) {
+      return {
+        ok: false,
+        detail:
+          "installed Runtime channel is local-development; it is not authorized for a stable/public-beta doctor",
+        executables: {},
+        detectedExecutables,
+        releaseReady: false,
+        developmentMode: false,
+        publicBeta: false,
+        distributionChannel,
+        distributionMode,
+        licenseStatus,
+        blockedReason: "channel_mismatch",
+      };
+    }
     const identity = releaseReady || publicBetaEligible
       ? undefined
       : await installedDevelopmentIdentity(
@@ -2376,9 +2410,13 @@ async function inspectInstalledManagedTools(
           ? `Windows x64 public beta ${manifest.productVersion} at ${canonicalCurrent}; NOT release-ready`
           : `authorized local development ${manifest.productVersion} at ${canonicalCurrent}; NOT release-ready`,
       executables,
+      detectedExecutables,
       releaseReady,
       developmentMode: localDevelopmentEligible,
       publicBeta: publicBetaEligible,
+      distributionChannel,
+      distributionMode,
+      licenseStatus,
       ...(identity ? { identity } : {}),
     };
   } catch (error) {
@@ -2386,9 +2424,14 @@ async function inspectInstalledManagedTools(
       ok: false,
       detail: error instanceof Error ? error.message : String(error),
       executables: {},
+      detectedExecutables,
       releaseReady: false,
       developmentMode: false,
       publicBeta: false,
+      distributionChannel,
+      distributionMode,
+      licenseStatus,
+      blockedReason: "integrity_error",
     };
   }
 }
@@ -2447,6 +2490,9 @@ export async function doctor(
   developmentMode: boolean;
   releaseReady: boolean;
   publicBeta: boolean;
+  distributionChannel: "stable" | "public-beta" | "local-development" | "source-development" | "unknown";
+  distributionMode: string;
+  licenseStatus: string;
   readinessMode: "release-ready" | "public-beta" | "local-development" | "source-development" | "unready";
   capabilities: DoctorCapabilities;
   checks: DoctorCheck[];
@@ -2466,17 +2512,25 @@ export async function doctor(
         ok: false,
         detail: "local development authorization applies only to the installed default Product Runtime",
         executables: {},
+        detectedExecutables: {},
         releaseReady: false,
         developmentMode: false,
         publicBeta: false,
+        distributionChannel: "local-development",
+        distributionMode: "local-test-only",
+        licenseStatus: "UNVERIFIED",
       }
       : {
         ok: true,
         detail: "source-development PATH fallback",
         executables: {},
+        detectedExecutables: {},
         releaseReady: false,
         developmentMode: false,
         publicBeta: false,
+        distributionChannel: "source-development",
+        distributionMode: "source-development",
+        licenseStatus: "NOT_APPLICABLE",
       };
   const [sourceFfmpeg, sourceFfprobe, registryExists, studioExists, transcription] = await Promise.all([
     installedMode ? Promise.resolve(null) : findExecutable("ffmpeg"),
@@ -2503,11 +2557,17 @@ export async function doctor(
       name: "runtime",
       ok: Boolean(bunVersion) && managedTools.ok,
       required: true,
-      detail: bunVersion
+      ...(installedMode && !managedTools.ok && managedTools.detectedExecutables.bun
+        ? {
+          status: "blocked" as const,
+          blockedBy: "dependencyMode",
+          detail: `blocked by dependencyMode; managed Bun detected at ${managedTools.detectedExecutables.bun}`,
+        }
+        : { detail: bunVersion
         ? installedMode
           ? `Managed Bun ${bunVersion}`
           : `Bun ${bunVersion} (source-development fallback)`
-        : "Bun is required",
+        : "Bun is required" }),
     },
     {
       name: "studio",
@@ -2529,13 +2589,25 @@ export async function doctor(
       name: "ffmpeg",
       ok: Boolean(ffmpeg),
       required: true,
-      detail: ffmpeg ?? "ffmpeg was not found on PATH",
+      ...(installedMode && !managedTools.ok && managedTools.detectedExecutables.ffmpeg
+        ? {
+          status: "blocked" as const,
+          blockedBy: "dependencyMode",
+          detail: `blocked by dependencyMode; managed ffmpeg detected at ${managedTools.detectedExecutables.ffmpeg}`,
+        }
+        : { detail: ffmpeg ?? "ffmpeg was not found in the Product-managed tools directory" }),
     },
     {
       name: "ffprobe",
       ok: Boolean(ffprobe),
       required: true,
-      detail: ffprobe ?? "ffprobe was not found on PATH",
+      ...(installedMode && !managedTools.ok && managedTools.detectedExecutables.ffprobe
+        ? {
+          status: "blocked" as const,
+          blockedBy: "dependencyMode",
+          detail: `blocked by dependencyMode; managed ffprobe detected at ${managedTools.detectedExecutables.ffprobe}`,
+        }
+        : { detail: ffprobe ?? "ffprobe was not found in the Product-managed tools directory" }),
     },
     {
       // Documented in four contracts and checked nowhere: a machine without the
@@ -2569,6 +2641,9 @@ export async function doctor(
     developmentMode: healthy && managedTools.developmentMode,
     releaseReady: healthy && managedTools.releaseReady,
     publicBeta: healthy && managedTools.publicBeta,
+    distributionChannel: managedTools.distributionChannel,
+    distributionMode: managedTools.distributionMode,
+    licenseStatus: managedTools.licenseStatus,
     readinessMode,
     capabilities: RUNTIME_DOCTOR_CAPABILITIES,
     checks,

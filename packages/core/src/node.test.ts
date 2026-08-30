@@ -279,6 +279,9 @@ describe("project store", () => {
         healthy: true,
         developmentMode: false,
         releaseReady: true,
+        distributionChannel: "stable",
+        distributionMode: "release-ready",
+        licenseStatus: "VERIFIED",
         readinessMode: "release-ready",
       });
       expect(result.checks.some((check) => check.name === "exportRenderer")).toBe(false);
@@ -411,10 +414,20 @@ describe("project store", () => {
         healthy: false,
         developmentMode: false,
         releaseReady: false,
+        distributionChannel: "local-development",
+        distributionMode: "local-test-only",
+        licenseStatus: "UNVERIFIED",
         readinessMode: "unready",
       });
       expect(ordinary.checks.find((check) => check.name === "dependencyMode")?.detail)
-        .toBe("resources-manifest is not VERIFIED/release-ready for this platform");
+        .toContain("installed Runtime channel is local-development");
+      for (const name of ["runtime", "ffmpeg", "ffprobe"]) {
+        expect(ordinary.checks.find((check) => check.name === name)).toMatchObject({
+          ok: false,
+          status: "blocked",
+          blockedBy: "dependencyMode",
+        });
+      }
 
       const missingAuthorization = await doctor({
         projectsDir: join(root, "projects"),
@@ -442,6 +455,9 @@ describe("project store", () => {
         healthy: true,
         developmentMode: true,
         releaseReady: false,
+        distributionChannel: "local-development",
+        distributionMode: "local-test-only",
+        licenseStatus: "UNVERIFIED",
         readinessMode: "local-development",
       });
       expect(local.checks.find((check) => check.name === "dependencyMode")?.detail)

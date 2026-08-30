@@ -100,6 +100,20 @@ describe("chengfeng-videocut CLI", () => {
       releaseReady: false,
       checks: [],
     })).toContain("ready for authorized local development; NOT release-ready");
+    const mismatch = humanDoctor({
+      healthy: false,
+      developmentMode: false,
+      releaseReady: false,
+      distributionChannel: "local-development",
+      distributionMode: "local-test-only",
+      licenseStatus: "UNVERIFIED",
+      checks: [{
+        name: "ffmpeg", ok: false, required: true, status: "blocked",
+        blockedBy: "dependencyMode", detail: "managed ffmpeg is blocked by dependencyMode",
+      }],
+    });
+    expect(mismatch).toContain("↳ ffmpeg");
+    expect(mismatch).toContain("Runtime channel: local-development (local-test-only), license UNVERIFIED");
   });
 
   it("documents the confirmation-gated render command and stable exit codes", async () => {

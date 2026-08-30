@@ -61,11 +61,21 @@ export function humanDoctor(data: {
   developmentMode: boolean;
   releaseReady: boolean;
   publicBeta?: boolean;
+  distributionChannel?: string;
+  distributionMode?: string;
+  licenseStatus?: string;
   checks: DoctorCheck[];
 }): string {
   const lines = data.checks.map(
-    (check) => `${check.ok ? "✓" : "✗"} ${check.name}: ${check.detail}`,
+    (check) => `${check.ok ? "✓" : check.status === "blocked" ? "↳" : "✗"} ${check.name}: ${check.detail}`,
   );
+  if (data.distributionChannel) {
+    lines.push(
+      `Runtime channel: ${data.distributionChannel}` +
+      `${data.distributionMode ? ` (${data.distributionMode})` : ""}` +
+      `${data.licenseStatus ? `, license ${data.licenseStatus}` : ""}`,
+    );
+  }
   lines.push(
     data.healthy && data.developmentMode && !data.releaseReady
       ? `${BRAND_NAME} is ready for authorized local development; NOT release-ready`
