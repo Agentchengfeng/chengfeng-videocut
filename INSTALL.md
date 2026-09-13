@@ -40,7 +40,7 @@
 | chengfeng-videocut-export | [74d20c8ee7f12853f954dec9e567ed74aa3d4a0e](https://github.com/Agentchengfeng/chengfeng-videocut-export/commit/74d20c8ee7f12853f954dec9e567ed74aa3d4a0e) |
 | chengfeng-videocut-maintain | [ad2622865d72e688cdbc713d48a70f1e3ff124a9](https://github.com/Agentchengfeng/chengfeng-videocut-maintain/commit/ad2622865d72e688cdbc713d48a70f1e3ff124a9) |
 | chengfeng-videocut-shot-design | [fa3ea6fe79a3cbbd48e62cb6a1bbff344ac223bf](https://github.com/Agentchengfeng/chengfeng-videocut-shot-design/commit/fa3ea6fe79a3cbbd48e62cb6a1bbff344ac223bf) |
-| chengfeng-videocut-xiaohei | [072695a80d08a06ce7d4e8496d6934cb3bb7c22d](https://github.com/Agentchengfeng/chengfeng-videocut-xiaohei/commit/072695a80d08a06ce7d4e8496d6934cb3bb7c22d) |
+| chengfeng-videocut-xiaohei | [37d642308482339728422ecf2ad10bcdb4697344](https://github.com/Agentchengfeng/chengfeng-videocut-xiaohei/commit/37d642308482339728422ecf2ad10bcdb4697344) |
 
 安装前核对所选仓库的标签解析提交，例如：
 
