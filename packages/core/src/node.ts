@@ -13,9 +13,18 @@ import {
   stat,
   symlink,
 } from "node:fs/promises";
-import { constants as fsConstants, existsSync } from "node:fs";
+import { constants as fsConstants, existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, delimiter, dirname, isAbsolute, join, relative as relativePath, resolve } from "node:path";
+import {
+  basename,
+  delimiter,
+  dirname,
+  isAbsolute,
+  join,
+  relative as relativePath,
+  resolve,
+  win32,
+} from "node:path";
 import { fileURLToPath } from "node:url";
 import { isKnownNaturalPausePolicyVersion } from "@video-workbench/contracts";
 import {
@@ -67,6 +76,97 @@ export {
   serializeProjectOperation,
   type ProjectOperationLockOptions,
 } from "./projectLock";
+
+/** The override is deliberately an executable path, never a browser download URL. */
+export const CHENGFENG_VIDEOCUT_CHROME_PATH = "CHENGFENG_VIDEOCUT_CHROME_PATH";
+
+export interface SystemChromeResolverOptions {
+  /** Injectable so platform-specific paths can be tested from any host OS. */
+  platform?: NodeJS.Platform;
+  /** Injectable to keep configuration precedence and Windows variables testable. */
+  env?: Record<string, string | undefined>;
+  /** Injectable so discovery has no filesystem dependency in unit tests. */
+  isRegularFile?: (path: string) => boolean;
+}
+
+const MACOS_CHROME_PATHS = [
+  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+  "/Applications/Chromium.app/Contents/MacOS/Chromium",
+  // Kept for compatibility with the previous macOS resolver. Do not add Edge
+  // as a new Windows fallback without separately qualifying that contract.
+  "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+];
+
+const LINUX_CHROME_PATHS = [
+  "/usr/bin/google-chrome",
+  "/usr/bin/chromium",
+  "/usr/bin/chromium-browser",
+];
+
+function configuredWindowsRoot(
+  env: Record<string, string | undefined>,
+  name: "ProgramFiles" | "ProgramFiles(x86)" | "ProgramW6432" | "LOCALAPPDATA",
+): string | undefined {
+  const upperName = name.toUpperCase();
+  const value = env[name] ?? env[upperName];
+  return value?.trim() ? value : undefined;
+}
+
+function windowsChromePaths(env: Record<string, string | undefined>): string[] {
+  return ["ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "LOCALAPPDATA"]
+    .map((name) => configuredWindowsRoot(
+      env,
+      name as "ProgramFiles" | "ProgramFiles(x86)" | "ProgramW6432" | "LOCALAPPDATA",
+    ))
+    .filter((root): root is string => root !== undefined)
+    .map((root) => win32.join(root, "Google", "Chrome", "Application", "chrome.exe"));
+}
+
+function isRegularFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+export class SystemChromePathError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SystemChromePathError";
+  }
+}
+
+/**
+ * Find the locally installed browser used by the CLI export renderer.
+ * An explicit override is fail-closed: it must be an absolute regular file.
+ */
+export function findSystemChrome(options: SystemChromeResolverOptions = {}): string | null {
+  const platform = options.platform ?? process.platform;
+  const env = options.env ?? process.env;
+  const fileExists = options.isRegularFile ?? isRegularFile;
+  const configured = env[CHENGFENG_VIDEOCUT_CHROME_PATH];
+  if (configured?.trim()) {
+    const absolute = platform === "win32" ? win32.isAbsolute(configured) : isAbsolute(configured);
+    if (!absolute) {
+      throw new SystemChromePathError(
+        "CHENGFENG_VIDEOCUT_CHROME_PATH 必须是 Chrome 可执行文件的绝对路径。",
+      );
+    }
+    if (!fileExists(configured)) {
+      throw new SystemChromePathError(
+        "CHENGFENG_VIDEOCUT_CHROME_PATH 必须指向一个现有的普通文件。",
+      );
+    }
+    return configured;
+  }
+  const candidates = platform === "win32"
+    ? windowsChromePaths(env)
+    : platform === "darwin"
+      ? MACOS_CHROME_PATHS
+      : LINUX_CHROME_PATHS;
+  return candidates.find((path) => fileExists(path)) ?? null;
+}
 
 export const PROJECT_DOCUMENT_NAMES = [
   "project.json",

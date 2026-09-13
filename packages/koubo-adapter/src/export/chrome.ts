@@ -19,30 +19,10 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
-/**
- * Where a system Chrome lives.
- *
- * A browser is not installed for this product: the export borrows the one on
- * the machine. If there is none, the export says so plainly rather than
- * downloading a hundred and fifty megabytes behind the user's back.
- */
-const CHROME_PATHS = [
-  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-  "/Applications/Chromium.app/Contents/MacOS/Chromium",
-  "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-  "/usr/bin/google-chrome",
-  "/usr/bin/chromium",
-  "/usr/bin/chromium-browser",
-];
-
-export function findSystemChrome(): string | null {
-  return CHROME_PATHS.find((path) => existsSync(path)) ?? null;
-}
+import { findSystemChrome, SystemChromePathError } from "@video-workbench/core/node";
 
 interface PendingCall {
   resolve: (value: Record<string, unknown>) => void;
@@ -66,6 +46,15 @@ export interface ChromePageOptions {
 
 export class ChromeError extends Error {}
 
+/**
+ * Keep Chrome's executable separate from its arguments and explicitly disable
+ * a shell. A Windows Program Files path therefore remains one executable path,
+ * never a command string split on its spaces.
+ */
+export function chromeSpawnOptions(): Parameters<typeof spawn>[2] {
+  return { shell: false, stdio: ["ignore", "pipe", "pipe"] };
+}
+
 export class ChromePage {
   #socket: WebSocket;
   #process: ChildProcess;
@@ -88,10 +77,18 @@ export class ChromePage {
   }
 
   static async launch(options: ChromePageOptions): Promise<ChromePage> {
-    const executable = findSystemChrome();
+    let executable: string | null;
+    try {
+      executable = findSystemChrome();
+    } catch (error) {
+      if (error instanceof SystemChromePathError) {
+        throw new ChromeError(`Chrome 路径配置无效：${error.message}`);
+      }
+      throw error;
+    }
     if (!executable) {
       throw new ChromeError(
-        "找不到 Chrome。导出要用系统上的 Chrome 把字幕和动画画成图片，请先安装 Google Chrome。",
+        "找不到 Chrome。已检查 CHENGFENG_VIDEOCUT_CHROME_PATH 与当前系统的常见 Chrome 安装位置；请安装 Google Chrome，或将该变量设为 chrome.exe 的绝对路径。",
       );
     }
     const profileDir = await mkdtemp(join(tmpdir(), "chengfeng-videocut-export-"));
@@ -122,7 +119,7 @@ export class ChromePage {
       "--run-all-compositor-stages-before-draw",
       "--disable-new-content-rendering-timeout",
       "about:blank",
-    ], { stdio: ["ignore", "pipe", "pipe"] });
+    ], chromeSpawnOptions());
 
     let endpoint: string;
     try {
