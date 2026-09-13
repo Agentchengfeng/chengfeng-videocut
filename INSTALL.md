@@ -26,6 +26,28 @@
 
 小黑动画未进入本次公开目录，第三方资源许可仍待核验；私人动画不公开、不默认安装。旧 diagnose、check-updates、report-bug 三项由 maintain 承担；visual 不是新的默认独立产品。
 
+<a id="verified-preview-commits"></a>
+## 已公开预览的固定来源
+
+以下为 2026-09-13 回读 GitHub 的 `v0.1.0-beta.1` 标签提交。它们标识旧版单包源码，不代表本地后续修改，也不是已验收的整套 Runtime 兼容清单。
+
+| 仓库 | 标签对应提交 |
+|---|---|
+| chengfeng-videocut-install | [3b6c4ef80aeb30dcc80a95b63f06c20360bad388](https://github.com/Agentchengfeng/chengfeng-videocut-install/commit/3b6c4ef80aeb30dcc80a95b63f06c20360bad388) |
+| chengfeng-videocut-cut | [633d59236100784a36eef0c21c86945e618fc25a](https://github.com/Agentchengfeng/chengfeng-videocut-cut/commit/633d59236100784a36eef0c21c86945e618fc25a) |
+| chengfeng-videocut-subtitle | [24f6d35726846df5b8778495b2cdc04b3bc67934](https://github.com/Agentchengfeng/chengfeng-videocut-subtitle/commit/24f6d35726846df5b8778495b2cdc04b3bc67934) |
+| chengfeng-videocut-export | [74d20c8ee7f12853f954dec9e567ed74aa3d4a0e](https://github.com/Agentchengfeng/chengfeng-videocut-export/commit/74d20c8ee7f12853f954dec9e567ed74aa3d4a0e) |
+| chengfeng-videocut-maintain | [ad2622865d72e688cdbc713d48a70f1e3ff124a9](https://github.com/Agentchengfeng/chengfeng-videocut-maintain/commit/ad2622865d72e688cdbc713d48a70f1e3ff124a9) |
+| chengfeng-videocut-shot-design | [fa3ea6fe79a3cbbd48e62cb6a1bbff344ac223bf](https://github.com/Agentchengfeng/chengfeng-videocut-shot-design/commit/fa3ea6fe79a3cbbd48e62cb6a1bbff344ac223bf) |
+
+安装前核对所选仓库的标签解析提交，例如：
+
+```sh
+git ls-remote https://github.com/Agentchengfeng/chengfeng-videocut-install.git refs/tags/v0.1.0-beta.1 'refs/tags/v0.1.0-beta.1^{}'
+```
+
+标签可能移动；不一致时停止，不把当前 main 或另一个提交冒充本表版本。下载后还要核对来源与安装文件摘要；本表不是签名，不消除下载期间标签变化风险。安装器本地收据只核对 ID、版本与文件摘要，尚不记录仓库 commit、组合归属或 Runtime 兼容性。
+
 ## 示例：只安装安装与接入 Skill
 
 前提：Node.js 18+、npm、Git，可访问 GitHub；先检查来源与目标。执行以下命令会安装包文件，不会启动工作台、上传素材或调用云端服务。
@@ -40,7 +62,7 @@ npx -y github:Agentchengfeng/chengfeng-videocut-install#v0.1.0-beta.1 doctor --h
 
 默认安装到用户 `.agents/skills/chengfeng-videocut-install`，Codex 模式建立对应入口。隔离测试先创建空目录，再为每条命令追加 `--target-root "<已存在的测试目录>"`；不用真实用户安装目录做首次测试，不覆盖 HOME/CODEX_HOME。具体行为与限制以 [本包说明](https://github.com/Agentchengfeng/chengfeng-videocut-install#quick-start) 为准，其他业务包按各自说明单装。
 
-相同身份复用，内容或版本冲突拒绝覆盖。文件安装后还要确认宿主发现/加载；可能需要新任务。`doctor` 的 `runtime: not-checked` 和 `hostLoaded: not-checked` 不能算这两层通过。Windows 与完整业务 E2E 不在当前预览验收结论中。
+相同 ID、版本与文件摘要复用，内容或版本冲突拒绝覆盖；这不是对仓库来源或组合归属的完整判定。文件安装后还要确认宿主发现/加载；可能需要新任务。`doctor` 的 `runtime: not-checked` 和 `hostLoaded: not-checked` 不能算这两层通过。Windows 与完整业务 E2E 不在当前预览验收结论中。
 
 ## 完整产品的目标流程
 
