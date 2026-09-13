@@ -4,7 +4,35 @@ chengfeng-videocut 是一个本地优先的口播视频剪辑产品：浏览器�
 
 产品本体与 Skills 分开发布。用户只需安装一次工作台；不同 Skills 通过 CLI 填充项目、读取状态和提交剪切结果，无需复制工作台源码。
 
-## 下载与安装
+## 从这里开始
+
+**本仓库是主产品与统一入口。** 先读 [安装说明](INSTALL.md)，区分工作台软件、安装方法与各业务 Skill；不需要同时安装两套同名工具。
+
+```text
+chengfeng-videocut（本仓库：工作台 + 总安装说明 + 组合清单）
+  → Agent 使用 chengfeng-videocut-install（唯一安装方法）
+  → 按明确版本准备工作台与所选业务 Skills
+```
+
+这是产品分工，不是“一条命令已经能装完整套”的承诺。**截至 2026-09-13，六项独立 Skills 已发布 `v0.1.0-beta.1` 源码预览；整套新版远端安装、宿主加载及匹配 Runtime 的业务验收尚未完成。** 主 Plugin 引用同源安装方法的方案也不能由本文更新推导为已发布。
+
+| 你要找什么 | 去哪里 |
+|---|---|
+| 工作台软件、完整产品安装与版本说明 | 本仓库的 [INSTALL.md](INSTALL.md) 与 [Releases](https://github.com/Agentchengfeng/chengfeng-videocut/releases)；以具体版本说明为准 |
+| 安装或补装 Skill 的方法 | [chengfeng-videocut-install](https://github.com/Agentchengfeng/chengfeng-videocut-install)；方法只在这里维护，主产品引用，不另写一套 |
+| 剪口播、字幕、导出、维护、镜头设计 | [独立 Skills 目录](INSTALL.md#独立-skills-源码预览)；各自维护、单装，整套按清单组合 |
+| 从旧 Skills 仓库过来 | [旧仓迁移指引](https://github.com/Agentchengfeng/chengfeng-videocut-skills)；保留历史，不是另一套新安装产品 |
+
+软件本体在本仓库，安装 Skill 不包含 Runtime/Studio。组合版本清单归主仓，各包声明自身版本与依赖；不维护“内置版”和“独立版”两份业务源码。旧 `chengfeng-videocut-skills` 不与 install 合仓，也不再发展新的安装流程。
+
+## 历史 Runtime 说明
+
+以下保留原 v0.4.9 安装与旧 CLI 示例，仅供已有用户查阅。**没有验证它与上面的新 Skills 组合兼容；新用户先读 [INSTALL.md](INSTALL.md)，不要把旧命令当作新整套安装命令。** 本次只更新入口说明，不发布或升级 Runtime。
+
+<details>
+<summary>展开 v0.4.9 安装与旧 CLI 用法（历史内容）</summary>
+
+### v0.4.9 下载与安装
 
 正式分发只走 [GitHub Releases](https://github.com/Agentchengfeng/chengfeng-videocut/releases)，
 不发布 npm 包，也不需要 `bunx`。**v0.4.9 是 Windows Desktop 受控测试
@@ -114,6 +142,8 @@ Studio 逐词编辑使用另一种明确意图 `full-selection`，提交当前�
 
 `render run` 只在显式传入 `--confirmed` 后运行。渲染器需要通过 `--renderer` 或 `CHENGFENG_VIDEOCUT_RENDERER_PATH` 指定；产品不会猜测某个 Skill 的安装目录。最终视频只有通过媒体、音频、时长、尺寸、帧率和关键帧证据检查后，项目状态才会进入 `done`。
 
+</details>
+
 ## 产品与 Skills 的边界
 
 chengfeng-videocut 负责确定性的产品能力：
@@ -124,7 +154,7 @@ chengfeng-videocut 负责确定性的产品能力：
 - 已确认任务的渲染调用与结果验证
 - 面向自动化的本地 CLI/API
 
-Skills 负责判断与编排，例如转录、口误/重复等语义识别、让用户审核和决定是否执行剪切。普通静音由产品的 `natural-pause-v2` 确定性策略负责。公开 Skills 位于 [Agentchengfeng/chengfeng-videocut-skills](https://github.com/Agentchengfeng/chengfeng-videocut-skills)。
+Skills 负责判断与编排，例如转录、口误/重复等语义识别、让用户审核和决定是否执行剪切。普通静音由产品的 `natural-pause-v2` 确定性策略负责。当前独立 Skills 的入口见 [安装说明](INSTALL.md#独立-skills-源码预览)；旧 Skills 仓库仅保留历史与迁移指引。
 
 ## 本地与网络说明
 
