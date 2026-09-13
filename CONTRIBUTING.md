@@ -19,6 +19,8 @@ bun run dev
 bun run typecheck
 bun test packages apps/cli/src
 bun run --cwd apps/studio test
+# 检查 Studio 不会把只读上游快照的测试当成产品测试
+node --test test/studio-test-discovery.test.mjs
 bun run build
 ```
 

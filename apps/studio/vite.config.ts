@@ -336,7 +336,14 @@ export default defineConfig({
     external: ["recast", "@babel/parser", "ast-types"],
   },
   test: {
-    exclude: ["data/**", "node_modules/**"],
+    // The vendored HyperFrames tree is an immutable audit snapshot. Its tests
+    // target upstream internals and must never be collected as Product tests;
+    // the Product-owned boundary test beside the fork remains included.
+    exclude: [
+      "data/**",
+      "node_modules/**",
+      "src/cut/timeline/hf-upstream-0.7.60/**",
+    ],
     setupFiles: ["src/test-setup.ts"],
   },
 });
