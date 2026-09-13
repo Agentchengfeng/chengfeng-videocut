@@ -47,7 +47,7 @@ Skills 维护语义判断与编排方法，不复制 Runtime。工作台不直�
 |---|---|
 | [hf-upstream-0.7.60](../apps/studio/src/cut/timeline/hf-upstream-0.7.60) | 只读审计母版；边界测试逐文件校验 114 项，禁止运行时代码导入；其中 35 个上游测试不进入 Product 测试收集 |
 | [vendor/hyperframes-timeline-0.7.60](../vendor/hyperframes-timeline-0.7.60) | 早期部分快照；其中 16 个文件与母版重复，但 `player-components/TimelineSelectionOverlays.tsx` 是母版没有的独有文件，不能按重复目录删除；合并前需保留来源与差异 |
-| [scripts/experiments](../scripts/experiments) | 非生产实验；不属于默认安装或正式剪辑步骤，不因没有自动调用就假定无人使用 |
+| [scripts/experiments](../scripts/experiments) | 非生产实验；不属于默认安装或正式剪辑步骤；原生 EDL 生成器要求独立输出目录，`--force` 不得覆盖源项目 |
 
 ## 早期架构记录
 

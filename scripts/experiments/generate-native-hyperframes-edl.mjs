@@ -222,6 +222,17 @@ ${mediaNodes(editList, mode)}
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
+  // This generator is an experiment, but --force must never be able to erase
+  // the source project (or a directory containing it) before validation.
+  const outputOverlapsSource =
+    options.sourceProject === options.outputDir ||
+    isInside(options.sourceProject, options.outputDir) ||
+    isInside(options.outputDir, options.sourceProject);
+  if (outputOverlapsSource) {
+    throw new Error(
+      "--output-dir must be an independent directory; it cannot contain or be contained by --source-project",
+    );
+  }
   if (await exists(options.outputDir)) {
     if (!options.force) throw new Error(`Output exists; pass --force to replace it: ${options.outputDir}`);
     await rm(options.outputDir, { recursive: true, force: true });
