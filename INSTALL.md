@@ -6,14 +6,14 @@
 
 截至 2026-09-13：
 
-- 六项独立 Skills 的 `v0.1.0-beta.1` 是已公开的源码预览，可分别安装文件、校验和复用。
+- 七项独立 Skills 的 `v0.1.0-beta.1` 是已公开的源码预览，可分别安装文件、校验和复用；小黑动画 Skill 的风格来源与第三方许可见其独立仓库 NOTICE。
 - 安装 `chengfeng-videocut-install` 取得的是安装 Skill 本身，**不会自动安装全部业务 Skills 或 Runtime**；其中的组合脚本目前接受本地清单与路径。
 - 新整套远端安装、匹配 Runtime 的交付、宿主实际加载以及真实剪辑/导出流程仍需验收。不要把本页链接表当作已验证的整套兼容清单。
 - 工作台旧版本见 [Releases](https://github.com/Agentchengfeng/chengfeng-videocut/releases)。各版本的平台和依赖以对应说明为准，不能默认与本批 Skills 兼容；本次没有发布新工作台版本。
 
 ## 独立 Skills 源码预览
 
-以下六包均为 `v0.1.0-beta.1`。完整产品的组合清单由主仓维护；此表仅是已公开的单包目录。
+以下七包均为 `v0.1.0-beta.1`。完整产品的组合清单由主仓维护；此表仅是已公开的单包目录。
 
 | 功能 | 唯一仓库 | 本项职责 |
 |---|---|---|
@@ -23,8 +23,9 @@
 | 导出 | [chengfeng-videocut-export](https://github.com/Agentchengfeng/chengfeng-videocut-export) | 导出编排与交付验收，编码执行归 Runtime |
 | 维护与排障 | [chengfeng-videocut-maintain](https://github.com/Agentchengfeng/chengfeng-videocut-maintain) | 按请求选择排查、更新或 Bug 反馈 |
 | 镜头设计 | [chengfeng-videocut-shot-design](https://github.com/Agentchengfeng/chengfeng-videocut-shot-design) | 构图、动作节拍与镜头方案 |
+| 小黑动画 | [chengfeng-videocut-xiaohei](https://github.com/Agentchengfeng/chengfeng-videocut-xiaohei) | 借鉴 Ian Xiaohei 手绘解释语言的可编辑 HTML/SVG/GSAP 动画；不含私人小鸟 |
 
-小黑动画未进入本次公开目录，第三方资源许可仍待核验；私人动画不公开、不默认安装。旧 diagnose、check-updates、report-bug 三项由 maintain 承担；visual 不是新的默认独立产品。
+私人动画不公开、不默认安装。旧 diagnose、check-updates、report-bug 三项由 maintain 承担；visual 不是新的默认独立产品。小黑包是源码预览，不等于 Runtime、宿主加载或完整业务 E2E 已验收。
 
 <a id="verified-preview-commits"></a>
 ## 已公开预览的固定来源
@@ -39,6 +40,7 @@
 | chengfeng-videocut-export | [74d20c8ee7f12853f954dec9e567ed74aa3d4a0e](https://github.com/Agentchengfeng/chengfeng-videocut-export/commit/74d20c8ee7f12853f954dec9e567ed74aa3d4a0e) |
 | chengfeng-videocut-maintain | [ad2622865d72e688cdbc713d48a70f1e3ff124a9](https://github.com/Agentchengfeng/chengfeng-videocut-maintain/commit/ad2622865d72e688cdbc713d48a70f1e3ff124a9) |
 | chengfeng-videocut-shot-design | [fa3ea6fe79a3cbbd48e62cb6a1bbff344ac223bf](https://github.com/Agentchengfeng/chengfeng-videocut-shot-design/commit/fa3ea6fe79a3cbbd48e62cb6a1bbff344ac223bf) |
+| chengfeng-videocut-xiaohei | [2d4434440bbeff708e85bd39b5c54d579379e3d5](https://github.com/Agentchengfeng/chengfeng-videocut-xiaohei/commit/2d4434440bbeff708e85bd39b5c54d579379e3d5) |
 
 安装前核对所选仓库的标签解析提交，例如：
 
