@@ -23,6 +23,7 @@ import {
   buildTimelineElementKey,
   buildTimelineElementIdentity,
   getTimelineElementIdentity,
+  isStudioTimelineHiddenElement,
   isTimelineIgnoredElement,
   readTimelineElementZIndex,
 } from "./timelineElementHelpers";
@@ -221,7 +222,7 @@ export function filterStudioTimelineManifestClips(
       doc.querySelector(`[data-composition-id="${CSS.escape(clip.id)}"]`);
     return !host || (
       !isTimelineIgnoredElement(host) &&
-      !host.closest("[data-studio-timeline-hidden]")
+      !isStudioTimelineHiddenElement(host)
     );
   });
 }
@@ -296,7 +297,7 @@ export function parseTimelineFromDOM(doc: Document, rootDuration: number): Timel
   // fallow-ignore-next-line complexity
   nodes.forEach((node) => {
     if (node === rootComp) return;
-    if (isTimelineIgnoredElement(node)) return;
+    if (isTimelineIgnoredElement(node) || isStudioTimelineHiddenElement(node)) return;
     const el = node as HTMLElement;
     const startStr = el.getAttribute("data-start");
     if (startStr == null) return;
