@@ -4,9 +4,14 @@
 // panel section persists to disk.
 //
 // Usage:
-//   1. Copy fixtures/design-panel-qa to a scratch dir OUTSIDE the repo.
-//   2. Start the CLI there: node <repo>/packages/cli/dist/cli.js preview --no-open
-//   3. STUDIO_URL=http://localhost:3002 PROJECT_DIR=<scratch dir> node design-panel.mjs
+//   1. Copy <repo>/apps/studio/tests/e2e/fixtures/design-panel-qa to
+//      <scratch>/projects/design-panel-qa, using a fresh scratch dir OUTSIDE the repo.
+//   2. After workspace dependency setup and `bun run build` from the repo root,
+//      start the foreground Runtime from its existing source entry:
+//      bun <repo>/apps/cli/src/cli.ts start --projects-dir <scratch>/projects --data-dir <scratch>/runtime --port 3002
+//   3. STUDIO_URL=http://127.0.0.1:3002 PROJECT_DIR=<scratch>/projects/design-panel-qa node <repo>/apps/studio/tests/e2e/design-panel.mjs
+// These instructions identify the current source paths; the end-to-end fixture
+// workflow must still be verified against the chosen Runtime build.
 //
 // Requires the agent-browser CLI on PATH. Exits non-zero on any failed cell.
 // Automation notes (learned the hard way, see design-panel-qa-matrix.md):

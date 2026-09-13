@@ -2,16 +2,19 @@
 
 `chengfeng-videocut` 是 chengfeng-videocut 的本地命令行入口。它负责启动 Studio，并为 Skills、Agent 和脚本提供稳定的项目、剪切与渲染接口。
 
-## 安装
+本文记录当前公开源码 `0.4.9` 的 CLI 命令与平台边界，不是新整套 Skills 的安装教程或兼容性证明。
 
-CLI 随 [chengfeng-videocut GitHub Release](https://github.com/Agentchengfeng/chengfeng-videocut/releases/latest) 的便携包一起分发，不通过 npm 发布，也不需要 `bunx` 或 DMG。
+## 安装与版本
 
-运行要求：
+新安装与独立 Skills 入口见 [INSTALL](https://github.com/Agentchengfeng/chengfeng-videocut/blob/main/INSTALL.md)。需要使用旧 Runtime 时，先读 [v0.4.9 历史安装说明](https://github.com/Agentchengfeng/chengfeng-videocut/blob/main/docs/history/runtime-v0.4.9.md)，按确切发行的平台、资产与校验要求安装；不要把不同版本的命令或依赖混用。
+
+v0.4.9 的纯 CLI 运行要求：
 
 - Bun 1.2 或更高版本
-- FFmpeg，包含可执行的 `ffmpeg` 和 `ffprobe`
+- FFmpeg 6 或更高版本，包含可执行的 `ffmpeg` 和 `ffprobe`
+- Windows 安装阶段还需要 Node.js 20 或更高版本运行 `install.cjs`
 
-推荐使用仓库根目录 README 中的一行安装器；手动下载 Release 时也必须按根 README 用同版本 `install.sh` 把便携包落到稳定 `bin + app/current` 布局。裸解压目录只用于诊断。安装后先执行：
+以下命令假定已按对应发行说明安装 Runtime，并能调用稳定启动器。裸解压目录只用于诊断。先核对本机版本与依赖：
 
 ```bash
 chengfeng-videocut doctor
@@ -30,9 +33,9 @@ chengfeng-videocut service stop
 
 `service ensure` 是产品和 Skills 的唯一声明式入口：未安装服务时安装，已停止时启动，已健康时不重启。`--open` 会在健康身份检查通过后打开 Studio。`status` 只读服务状态，`logs` 读取产品持久日志。默认服务仅监听 `127.0.0.1:5190`，运行数据默认保存在 `~/.chengfeng-videocut`。
 
-安装器只安装 Runtime，不会自动注册 LaunchAgent。首次显式运行 `service ensure` 或由业务 Skill 调用它时，才安装并启动用户级服务。
+安装器只安装 Runtime，不会自动注册用户级服务。首次显式运行 `service ensure`，或在已授权、兼容的工作流中调用它时，才安装并启动服务。
 
-常驻服务本版只支持 macOS。其他平台会返回结构化 `service_unsupported`，不会伪装已常驻；可继续使用下方 foreground 诊断入口。
+本版源码支持 macOS 用户会话的 LaunchAgent，以及 Windows 登录会话的 Task Scheduler 与产品 supervisor。其他平台会返回结构化 `service_unsupported`；前台诊断入口不代表该平台已具备常驻服务支持。发行资产与实机验收范围以对应版本说明为准。
 
 ### 前台诊断
 
@@ -113,4 +116,4 @@ chengfeng-videocut render run <project> \
 
 CLI 与 Studio 核心流程不包含分析遥测，默认只绑定 `127.0.0.1`。用户主动选择 Google Fonts 时会访问对应字体服务；第三方 Skills、AI 服务和渲染器的网络行为由它们各自决定。
 
-需要自动化口播判断时，请另行安装 [chengfeng-videocut-skills](https://github.com/Agentchengfeng/chengfeng-videocut-skills)。Skills 调用此 CLI，不应直接修改 Studio 内部文件。
+自动化口播判断由独立 Skills 提供，安装与兼容边界见 [INSTALL](https://github.com/Agentchengfeng/chengfeng-videocut/blob/main/INSTALL.md)。Skills 应通过其支持的 CLI 合同调用 Runtime，不应直接修改 Studio 内部文件；本页不代表新独立 Skills 与 v0.4.9 已完成兼容验收。
