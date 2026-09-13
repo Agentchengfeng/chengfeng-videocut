@@ -22,7 +22,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, win32 as win32Path } from "node:path";
 
 /**
  * Where a system Chrome lives.
@@ -31,7 +31,7 @@ import { join } from "node:path";
  * the machine. If there is none, the export says so plainly rather than
  * downloading a hundred and fifty megabytes behind the user's back.
  */
-const CHROME_PATHS = [
+const POSIX_CHROME_PATHS = [
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
   "/Applications/Chromium.app/Contents/MacOS/Chromium",
   "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
@@ -40,8 +40,41 @@ const CHROME_PATHS = [
   "/usr/bin/chromium-browser",
 ];
 
-export function findSystemChrome(): string | null {
-  return CHROME_PATHS.find((path) => existsSync(path)) ?? null;
+const WINDOWS_CHROME_RELATIVE_PATH = ["Google", "Chrome", "Application", "chrome.exe"];
+
+/**
+ * Return the browser candidates for a platform and environment.
+ *
+ * Keeping this separate from `findSystemChrome` makes the Windows locations
+ * explicit and testable even when the tests run on macOS or Linux. Chrome's
+ * per-machine install uses Program Files; its per-user install uses
+ * LOCALAPPDATA. `ProgramW6432` covers a 32-bit process running on 64-bit
+ * Windows, where `ProgramFiles` may point at the 32-bit directory.
+ */
+export function chromeCandidatePaths(
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  if (platform !== "win32") return [...POSIX_CHROME_PATHS];
+
+  const roots = [
+    env.ProgramW6432,
+    env.ProgramFiles,
+    env["ProgramFiles(x86)"],
+    env.LOCALAPPDATA,
+  ].filter((root): root is string => Boolean(root?.trim()));
+  const candidates = [...new Set(
+    roots.map((root) => win32Path.join(root, ...WINDOWS_CHROME_RELATIVE_PATH)),
+  )];
+  const override = env.CHENGFENG_VIDEOCUT_CHROME_PATH?.trim();
+  return override ? [override, ...candidates] : candidates;
+}
+
+export function findSystemChrome(
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  return chromeCandidatePaths(platform, env).find((path) => existsSync(path)) ?? null;
 }
 
 interface PendingCall {
