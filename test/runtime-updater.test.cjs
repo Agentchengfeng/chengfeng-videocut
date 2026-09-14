@@ -34,7 +34,7 @@ const { gzipSync } = require("node:zlib");
 const ROOT = path.resolve(__dirname, "..");
 const INSTALLER = path.join(ROOT, "install.cjs");
 const SHELL_INSTALLER = path.join(ROOT, "install.sh");
-const VERSION = "0.4.10";
+const VERSION = "0.4.11";
 const IS_WINDOWS = process.platform === "win32";
 const PROJECT_CONTENT = "project must survive update transaction\n";
 
@@ -518,11 +518,12 @@ function createManagedTools(home, { oldVersion = "0.4.7", candidateVersion = VER
   return { toolsRoot, oldTools, candidateTools };
 }
 
-test("Windows stable launcher gives managed tools/current Bun priority", () => {
-  const source = readFileSync(INSTALLER, "utf8");
-  assert.match(source, /set "MANAGED_TOOLS=%~dp0\.\.\\\\tools\\\\current"/);
-  assert.match(source, /if exist "%MANAGED_TOOLS%\\\\bun\.exe" set "BUN_EXE=%MANAGED_TOOLS%\\\\bun\.exe"/);
-  assert.match(source, /set "PATH=%MANAGED_TOOLS%;%PATH%"/);
+test("Windows stable launcher pins the executable validated by installation", () => {
+  const { pinnedWindowsLauncher } = require(INSTALLER);
+  const source = pinnedWindowsLauncher(path.join(path.parse(process.cwd()).root, "verified Bun", "bun.exe"), "product-private-bun-shim");
+  assert.match(source, /verified Bun/);
+  assert.match(source, /product-private-bun-shim;%~dp0\.\.\\tools\\current;%PATH%/);
+  assert.doesNotMatch(source, /where bun|USERPROFILE/);
 });
 
 test("macOS shell bootstrap downloads and verifies install.cjs before a real local Release install", {
@@ -590,14 +591,12 @@ test("upgrade validates pending candidate before current, preserves projects, th
   assert.equal(existsSync(path.join(home, "app", ".pending")), true);
 });
 
-test("installer rejects Bun older than 1.2 before changing Runtime state", (t) => {
+test("installer skips Bun older than 1.2 and reuses a compatible candidate", (t) => {
   const { home, release } = fixture(t);
-  const old = createLegacyRuntime(home);
+  createLegacyRuntime(home);
   const result = invoke(home, release, { CHENGFENG_VIDEOCUT_TEST_BUN_VERSION: "1.1.35" });
-  assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /需要 Bun 1\.2 或更高版本/);
-  assert.equal(currentTarget(home), old.runtime);
-  assert.equal(existsSync(path.join(home, "installer-state.json")), false);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(currentTarget(home), path.join(home, "app", VERSION));
   assertProjectPreserved(home);
 });
 
@@ -890,6 +889,27 @@ test("same-version CLI without journal identities is not accepted as installed",
   assert.equal(currentTarget(home), fake.runtime);
   assertProjectPreserved(home);
   assert.equal(existsSync(path.join(home, "installer-state.json")), false);
+});
+
+test("Desktop launcher survives deletion of staging and starts with the promoted real Bun", { skip: IS_WINDOWS }, (t) => {
+  const { home, release } = fixture(t);
+  const { candidateTools } = createManagedTools(home);
+  const bun = execFileSync("bun", ["-e", "console.log(process.execPath)"], { encoding: "utf8" }).trim();
+  copyFileSync(bun, path.join(candidateTools, "bun"));
+  chmodSync(path.join(candidateTools, "bun"), 0o755);
+  const result = invoke(home, release, {
+    PATH: `${candidateTools}${path.delimiter}${process.env.PATH || ""}`,
+    CHENGFENG_VIDEOCUT_MANAGED_TOOLS_SOURCE_DIR: candidateTools,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  rmSync(candidateTools, { recursive: true });
+  const launcher = path.join(home, "bin", "chengfeng-videocut");
+  const started = spawnSync(launcher, ["--version"], { env: { PATH: "" }, encoding: "utf8" });
+  assert.equal(started.status, 0, started.stderr);
+  assert.equal(started.stdout.trim(), VERSION);
+  const contents = readFileSync(path.join(home, "bin", readlinkSync(launcher)), "utf8");
+  assert.ok(contents.includes(path.join(home, "tools", "current", "bun")));
+  assert.ok(!contents.includes(candidateTools));
 });
 
 test("same-version Desktop activation promotes an absent or old tools/current through the journal", async (t) => {

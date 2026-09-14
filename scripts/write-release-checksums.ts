@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { writeReleaseChecksums } from "./release-assets";
+import { releaseProfileFromArgs, writeReleaseChecksums } from "./release-assets";
 
 const rootDir = resolve(import.meta.dir, "..");
 const releaseDir = join(rootDir, "release");
@@ -8,6 +8,7 @@ const packageJson = JSON.parse(await readFile(join(rootDir, "package.json"), "ut
   version: string;
 };
 const version = packageJson.version;
-const { checksumPath, lines } = await writeReleaseChecksums({ rootDir, releaseDir, version });
+const profile = releaseProfileFromArgs(process.argv.slice(2));
+const { checksumPath, lines } = await writeReleaseChecksums({ rootDir, releaseDir, version, profile });
 console.log(`Wrote ${checksumPath}`);
 for (const line of lines) console.log(line);

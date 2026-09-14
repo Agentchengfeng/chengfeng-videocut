@@ -2,7 +2,7 @@ import { createReadStream } from "node:fs";
 import { lstat, mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
-import { verifyReleaseAssetManifest } from "./release-assets";
+import { releaseProfileFromArgs, verifyReleaseAssetManifest } from "./release-assets";
 
 const rootDir = resolve(import.meta.dir, "..");
 const releaseDir = resolve(process.env.CHENGFENG_VIDEOCUT_RELEASE_AUDIT_DIR ?? join(rootDir, "release"));
@@ -72,7 +72,8 @@ async function extractAndScan(archiveName: string, temporaryRoot: string): Promi
   await scanExtractedTree(destination);
 }
 
-const manifest = await verifyReleaseAssetManifest({ releaseDir, version: version.version });
+const profile = releaseProfileFromArgs(process.argv.slice(2));
+const manifest = await verifyReleaseAssetManifest({ releaseDir, version: version.version, profile });
 for (const name of manifest.assetNames) await scanFile(join(releaseDir, name), name);
 
 const temporaryRoot = await mkdtemp(join(tmpdir(), "chengfeng-videocut-release-audit-"));

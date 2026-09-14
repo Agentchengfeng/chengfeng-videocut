@@ -7,12 +7,16 @@ chengfeng-videocut 是一个本地优先的口播视频剪辑产品：浏览器�
 ## 下载与安装
 
 正式分发只走 [GitHub Releases](https://github.com/Agentchengfeng/chengfeng-videocut/releases)，
-不发布 npm 包，也不需要 `bunx`。**v0.4.10 是 Windows Desktop 受控测试
-prerelease**：本次 Release 提供 Windows 桌面 EXE 与 CLI 便携包，**不提供 macOS
-Desktop DMG**。桌面测试包在完成代码签名、公证与 FFmpeg 再分发复核前只作为预发布
-测试资产。
+不发布 npm 包，也不需要 `bunx`。**v0.4.11 是 CLI 安装修复预发布**：仅提供
+CLI / portable 资产，不提供 Windows EXE 或 macOS DMG。本次验证范围是 macOS arm64
+缺 Bun 时的自动准备与稳定启动入口；FFmpeg、常驻服务、其他平台及完整剪辑业务流程
+未在本次验收，不能把安装成功视为这些功能通过。
 
-v0.4.10 桌面预览包：
+安装器自身需要 Node.js 20+ 或已有 Bun 才能运行。没有兼容 Bun 时，仅 macOS arm64
+会下载固定官方 Bun 资产并核验 SHA-256，安装到产品私有目录，不修改全局 Bun 或 shell
+配置；其他平台缺 Bun 会明确失败。媒体操作仍需另外准备 FFmpeg 6+。
+
+历史 v0.4.10 桌面预览包（不是本次 v0.4.11 的产物）：
 
 - Windows 10/11 x64：NSIS EXE
 - 随包提供 Runtime、Bun、FFmpeg 与 FFprobe，不要求用户修改系统 PATH
@@ -21,13 +25,14 @@ v0.4.10 桌面预览包：
 
 macOS 用户可使用下面的 CLI Runtime 安装路径；它不会安装 Desktop App。
 
-纯 CLI / 便携包仍要求 Bun 1.2+ 与 FFmpeg 6+；Windows 的 `install.cjs` 另需
-Node.js 20+。Linux 可用 foreground `start` 做开发诊断，常驻 `service` 尚不支持。
+CLI 运行需要 Bun 1.2+（上述已验平台可由安装器准备）。Linux 可用 foreground
+`start` 做开发诊断，常驻 `service` 尚不支持；以下其他平台/常驻命令是现有使用说明，
+不是本次预发布的验收结果。
 
 macOS CLI Runtime 一行安装（非 Desktop App）：
 
 ```bash
-curl -fsSL https://github.com/Agentchengfeng/chengfeng-videocut/releases/download/v0.4.10/install.sh | sh
+curl -fsSL https://github.com/Agentchengfeng/chengfeng-videocut/releases/download/v0.4.11/install.sh | sh
 ```
 
 安装后可运行：
@@ -51,7 +56,7 @@ launcher；Electron resources 路径不会成为公开 CLI。
 
 ### 手动安装
 
-1. 从 [v0.4.10 prerelease](https://github.com/Agentchengfeng/chengfeng-videocut/releases/tag/v0.4.10) 下载同一版本的 `install.sh`、`chengfeng-videocut-portable.tar.gz` 和 `SHA256SUMS.txt` 到同一目录。
+1. 从 [v0.4.11 prerelease](https://github.com/Agentchengfeng/chengfeng-videocut/releases/tag/v0.4.11) 下载同一版本的 `install.sh`、`install.cjs`、`chengfeng-videocut-portable.tar.gz` 和 `SHA256SUMS.txt` 到同一目录。
 2. 对照 `SHA256SUMS.txt` 校验下载文件。
 3. 在该目录运行 `CHENGFENG_VIDEOCUT_DOWNLOAD_BASE="file://$PWD" sh ./install.sh`，把 Runtime 落到稳定的 `~/.chengfeng-videocut/bin` 与 `app/current` 布局。
 4. 运行 `~/.chengfeng-videocut/bin/chengfeng-videocut service ensure --open` 启动工作台。
@@ -160,6 +165,15 @@ bun run package:check
 ```
 
 发布前还应执行仓库提供的完整 Release 检查，并用全新临时目录验证便携包。
+
+本次 CLI-only 产物使用显式 profile（默认 Desktop 门禁仍要求 EXE）：
+
+```bash
+bun run package:pack
+bun run portable:pack
+bun run release:checksums --profile=cli
+bun run release:artifact-check --profile=cli
+```
 
 ## 开源许可与来源
 

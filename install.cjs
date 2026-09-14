@@ -38,7 +38,7 @@ const { spawn, spawnSync } = require("node:child_process");
 const { fileURLToPath } = require("node:url");
 
 const REPOSITORY = "Agentchengfeng/chengfeng-videocut";
-const VERSION = "0.4.10";
+const VERSION = "0.4.11";
 const ARCHIVE_NAME = "chengfeng-videocut-portable.tar.gz";
 const CHECKSUM_NAME = "SHA256SUMS.txt";
 const ARCHIVE_ROOT_NAME = `chengfeng-videocut-${VERSION}`;
@@ -567,11 +567,150 @@ async function assertSupportedBun(bunExecutable) {
   const probe = await runExecutable(bunExecutable, ["--version"], {
     timeout: BUN_VERSION_PROBE_TIMEOUT_MS,
   });
-  if (probe.error || probe.status !== 0) fail(`无法验证 Bun 版本：${probeFailureDetail(probe)}`);
+  if (probe.error || probe.status !== 0) throw executableFailure("无法验证 Bun 版本", probe);
   const match = String(probe.stdout || "").match(/(\d+)\.(\d+)\.(\d+)/);
   if (!match || Number(match[1]) < 1 || (Number(match[1]) === 1 && Number(match[2]) < 2)) {
     fail(`需要 Bun 1.2 或更高版本，实际为 ${String(probe.stdout || "").trim() || "无法识别"}。`);
   }
+}
+
+// Keep this bootstrap self-contained: install.sh downloads only install.cjs.
+const BUN_RELEASE = Object.freeze({
+  version: "1.4.2",
+  platform: "darwin-arm64",
+  url: "https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/bun-darwin-aarch64.zip",
+  sha256: "90987a3a16d7db556d886ac3d551e7b6d3edf0a1cf43acaed622e8676be1d12f",
+  entry: "bun-darwin-aarch64/bun",
+});
+
+function bunCandidates() {
+  const name = IS_WINDOWS ? "bun.exe" : "bun";
+  return [...new Set([
+    path.join(TOOLS_CURRENT_LINK, name),
+    ...((process.env.PATH || "").split(path.delimiter).filter(Boolean).map((entry) => path.resolve(entry, name))),
+    path.join(os.homedir(), ".bun", "bin", name),
+    ...(!IS_WINDOWS ? ["/opt/homebrew/bin/bun", "/usr/local/bin/bun"] : [findBun()]),
+  ].filter(Boolean))];
+}
+
+function dependencyDirectory(directory) {
+  if (pathExists(directory)) {
+    if (!lstatSync(directory).isDirectory() || lstatSync(directory).isSymbolicLink()) {
+      fail(`受管依赖目录不是普通目录：${directory}`);
+    }
+  } else mkdirSync(directory, { mode: 0o700 });
+}
+
+function verifiedBunBytes(archive, release) {
+  if (!lstatSync(archive).isFile() || lstatSync(archive).isSymbolicLink() || sha256(archive) !== release.sha256) {
+    fail("Bun SHA-256 校验失败；未改变现有 Runtime。");
+  }
+  // Extract one exact member to stdout: archive paths never become write paths.
+  const result = spawnSync("/usr/bin/unzip", ["-p", archive, release.entry], { maxBuffer: 256 * 1_048_576 });
+  if (result.error || result.status !== 0 || !result.stdout.length) fail("Bun 固定资源解包失败。");
+  return result.stdout;
+}
+
+async function ensureBun({
+  root = INSTALL_ROOT, candidates = bunCandidates(), platform = `${process.platform}-${process.arch}`,
+  release = BUN_RELEASE, downloadAsset = downloadBun, probe = assertSupportedBun,
+} = {}) {
+  const cachedExecutable = path.join(path.resolve(root), "dependencies", "bun", release.version, platform, "bun");
+  const cachedShim = bunShimIdentity(cachedExecutable, path.join(path.resolve(root), "bin"));
+  const verify = async (directory) => {
+    dependencyDirectory(directory);
+    const executable = path.join(directory, "bun");
+    const expected = verifiedBunBytes(path.join(directory, "bun.zip"), release);
+    if (!lstatSync(executable).isFile() || lstatSync(executable).isSymbolicLink() || !readFileSync(executable).equals(expected)) {
+      fail("受管 Bun 缓存内容已改变；保留现场并拒绝覆盖。");
+    }
+    await probe(executable);
+    return executable;
+  };
+  for (const candidate of candidates) {
+    if (!existsSync(candidate)) continue;
+    // A launcher-inherited PATH must not downgrade managed-cache verification
+    // to a version-only probe, including aliases pointing at the cache.
+    if (existsSync(cachedExecutable) && canonicalPath(candidate) === canonicalPath(cachedExecutable)) return verify(path.dirname(cachedExecutable));
+    // Our generated shim is a script (also on Windows), not a symlink. Verify
+    // its exact owned bytes before following its known cache target.
+    if (existsSync(cachedShim.file) && canonicalPath(candidate) === canonicalPath(cachedShim.file)) {
+      if (!lstatSync(cachedShim.file).isFile() || lstatSync(cachedShim.file).isSymbolicLink() || readFileSync(cachedShim.file, "utf8") !== cachedShim.contents) {
+        fail("受管 Bun shim 内容已改变；拒绝执行。");
+      }
+      return verify(path.dirname(cachedExecutable));
+    }
+    try { await probe(candidate); return path.resolve(candidate); } catch (error) {
+      if (hasUnconfirmedProcessTree(error) || /ETIMEDOUT/.test(String(error))) throw error;
+    }
+  }
+  if (platform !== release.platform) fail(`需要 Bun 1.2 或更高版本；${platform} 尚无已核验的自动安装资源。`);
+  dependencyDirectory(root);
+  const directories = [path.join(root, "dependencies"), path.join(root, "dependencies", "bun"), path.join(root, "dependencies", "bun", release.version)];
+  for (const directory of directories) dependencyDirectory(directory);
+  const target = path.join(directories[2], platform);
+  if (pathExists(target)) return verify(target);
+  const pending = mkdtempSync(path.join(directories[2], ".pending-"));
+  try {
+    const archive = path.join(pending, "bun.zip");
+    process.stdout.write(`正在准备产品受管 Bun ${release.version} (${platform})…\n`);
+    await downloadAsset(release.url, archive);
+    writeFileSync(path.join(pending, "bun"), verifiedBunBytes(archive, release), { mode: 0o755, flag: "wx" });
+    await verify(pending);
+    renameSync(pending, target);
+    return path.join(target, "bun");
+  } finally {
+    if (pathExists(pending)) rmSync(pending, { recursive: true, force: true });
+  }
+}
+
+async function downloadBun(url, destination) {
+  const response = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(120_000) });
+  if (!response.ok || !response.body) fail(`Bun 下载失败：HTTP ${response.status}`);
+  const chunks = [];
+  let length = 0;
+  for await (const chunk of response.body) {
+    length += chunk.length;
+    if (length > 128 * 1_048_576) fail("Bun 下载超过大小上限。");
+    chunks.push(chunk);
+  }
+  writeFileSync(destination, Buffer.concat(chunks), { flag: "wx" });
+}
+
+function quoteShell(value) { return `'${String(value).replaceAll("'", "'\\''")}'`; }
+
+function pinnedLauncher(bunExecutable, bunDirectory) {
+  return `#!/bin/sh\n# chengfeng-videocut managed Bun launcher v1\nset -eu\nexport CHENGFENG_VIDEOCUT_EXECUTABLE=${quoteShell(BIN_LINK)}\nif [ -z "\${CHENGFENG_VIDEOCUT_HOME:-}" ]; then export CHENGFENG_VIDEOCUT_HOME=${quoteShell(INSTALL_ROOT)}; fi\nif [ -z "\${CHENGFENG_VIDEOCUT_DATA_DIR:-}" ]; then export CHENGFENG_VIDEOCUT_DATA_DIR=${quoteShell(INSTALL_ROOT)}; fi\nexport PATH=${quoteShell(bunDirectory)}:${quoteShell(TOOLS_CURRENT_LINK)}:"\${PATH:-/usr/bin:/bin}"\nexec ${quoteShell(bunExecutable)} ${quoteShell(path.join(CURRENT_LINK, "cli.js"))} "$@"\n`;
+}
+
+function pinnedWindowsLauncher(bunExecutable, shimDirectory) {
+  // Reuse the exact executable proven by installation, never a different first
+  // PATH hit. Percent expansion is escaped for a batch-file literal.
+  const bun = quoteCmdArgument(bunExecutable);
+  const bunDirectory = shimDirectory.replaceAll("%", "%%");
+  return `@echo off\r\nsetlocal\r\nset "CHENGFENG_VIDEOCUT_EXECUTABLE=%~f0"\r\nfor %%I in ("%~dp0..") do if not defined CHENGFENG_VIDEOCUT_DATA_DIR set "CHENGFENG_VIDEOCUT_DATA_DIR=%%~fI"\r\nset "APP_DIR=%~dp0..\\app\\current"\r\nset "PATH=${bunDirectory};%~dp0..\\tools\\current;%PATH%"\r\n${bun} "%APP_DIR%\\cli.js" %*\r\nexit /b %ERRORLEVEL%\r\n`;
+}
+
+function bunShimIdentity(bunExecutable, binRoot = BIN_ROOT) {
+  const contents = IS_WINDOWS
+    ? `@echo off\r\n${/\.cmd$/i.test(bunExecutable) ? "call " : ""}${quoteCmdArgument(bunExecutable)} %*\r\nexit /b %ERRORLEVEL%\r\n`
+    : `#!/bin/sh\nexec ${quoteShell(bunExecutable)} "$@"\n`;
+  const digest = createHash("sha256").update(contents).digest("hex");
+  const directory = path.join(binRoot, `.bun-${digest}`);
+  return { contents, directory, file: path.join(directory, IS_WINDOWS ? "bun.cmd" : "bun") };
+}
+
+function createBunShim(bunExecutable) {
+  const { contents, directory, file: shim } = bunShimIdentity(bunExecutable);
+  dependencyDirectory(BIN_ROOT);
+  dependencyDirectory(directory);
+  if (pathExists(shim)) {
+    if (!lstatSync(shim).isFile() || lstatSync(shim).isSymbolicLink() || readFileSync(shim, "utf8") !== contents || (!IS_WINDOWS && !(lstatSync(shim).mode & 0o111))) {
+      fail("受管 Bun shim 内容已改变；拒绝覆盖。");
+    }
+  } else writeFileSync(shim, contents, { mode: 0o755, flag: "wx" });
+  if (readdirSync(directory).length !== 1) fail("受管 Bun shim 目录包含未知文件；拒绝启用。");
+  return directory;
 }
 
 function quoteCmdArgument(value) {
@@ -1294,16 +1433,34 @@ function finalizeManagedToolsVersion(transaction) {
   }
 }
 
-function createLauncher() {
+function createLauncher(bunExecutable) {
+  // Desktop's source directory is staging, deleted by its caller afterwards.
+  // Activation promotes that exact tools payload to this stable location.
+  if (MANAGED_TOOLS_SOURCE_DIR) bunExecutable = path.join(TOOLS_CURRENT_LINK, IS_WINDOWS ? "bun.exe" : "bun");
+  const bunDirectory = createBunShim(bunExecutable);
   if (IS_WINDOWS) {
-    const launcher = `@echo off\r\nsetlocal\r\nset "CHENGFENG_VIDEOCUT_EXECUTABLE=%~f0"\r\nfor %%I in ("%~dp0..") do set "CHENGFENG_VIDEOCUT_DATA_DIR=%%~fI"\r\nset "APP_DIR=%~dp0..\\app\\current"\r\nset "MANAGED_TOOLS=%~dp0..\\tools\\current"\r\nif exist "%MANAGED_TOOLS%" set "PATH=%MANAGED_TOOLS%;%PATH%"\r\nset "BUN_EXE="\r\nif exist "%MANAGED_TOOLS%\\bun.exe" set "BUN_EXE=%MANAGED_TOOLS%\\bun.exe"\r\nfor /f "delims=" %%B in ('where bun.exe 2^>nul') do if not defined BUN_EXE set "BUN_EXE=%%~fB"\r\nif not defined BUN_EXE if exist "%USERPROFILE%\\.bun\\bin\\bun.exe" set "BUN_EXE=%USERPROFILE%\\.bun\\bin\\bun.exe"\r\nfor /f "delims=" %%B in ('where bun.cmd 2^>nul') do if not defined BUN_EXE set "BUN_EXE=%%~fB"\r\nif not defined BUN_EXE (\r\n  echo chengfeng-videocut 需要 Bun 1.2 或更高版本：https://bun.sh/docs/installation 1>&2\r\n  exit /b 127\r\n)\r\n"%BUN_EXE%" "%APP_DIR%\\cli.js" %*\r\nexit /b %ERRORLEVEL%\r\n`;
-    writeFileSync(BIN_LINK, launcher);
+    writeFileSync(BIN_LINK, pinnedWindowsLauncher(bunExecutable, bunDirectory));
     return;
   }
   if (pathExists(BIN_LINK) && !isLink(BIN_LINK)) {
     fail(`${BIN_LINK} 已存在且不是链接；为避免覆盖用户文件，安装已停止。`);
   }
-  if (!pathExists(BIN_LINK)) symlinkSync(path.join("..", "app", "current", "chengfeng-videocut"), BIN_LINK, "file");
+  dependencyDirectory(BIN_ROOT);
+  const contents = pinnedLauncher(bunExecutable, bunDirectory);
+  const digest = createHash("sha256").update(contents).digest("hex");
+  const wrapper = path.join(BIN_ROOT, `launcher-${digest}.sh`);
+  if (pathExists(wrapper)) {
+    if (!lstatSync(wrapper).isFile() || lstatSync(wrapper).isSymbolicLink() || !(lstatSync(wrapper).mode & 0o111) || readFileSync(wrapper, "utf8") !== contents) {
+      fail("受管 launcher 内容已改变；拒绝覆盖。");
+    }
+  } else writeFileSync(wrapper, contents, { mode: 0o755, flag: "wx" });
+  const temporaryLink = path.join(BIN_ROOT, `.launcher-${randomUUID()}`);
+  try {
+    symlinkSync(path.basename(wrapper), temporaryLink, "file");
+    renameSync(temporaryLink, BIN_LINK);
+  } finally {
+    if (pathExists(temporaryLink)) unlinkSync(temporaryLink);
+  }
 }
 
 function captureLauncher() {
@@ -1663,7 +1820,7 @@ async function activateSameVersionDesktopTools(state, bunExecutable, candidateIn
   try {
     // Even though app/current already names this verified Runtime, the stable
     // launcher and tools/current are still one Desktop-owned activation unit.
-    createLauncher();
+    createLauncher(bunExecutable);
     state.transaction.serviceBefore = await inspectManagedService(state.active, bunExecutable);
     writeState(state);
     switchManagedTools(stageAndPromoteManagedTools(state, managedTools, transactionId), transactionId);
@@ -1745,12 +1902,6 @@ function maybeCrashAt(phase) {
 }
 
 async function main() {
-  const bunExecutable = findBun();
-  if (!bunExecutable) {
-    const hint = IS_WINDOWS ? 'powershell -c "irm bun.sh/install.ps1 | iex"' : "https://bun.sh/docs/installation";
-    fail(`需要先安装 Bun 1.2 或更高版本：${hint}`);
-  }
-  await assertSupportedBun(bunExecutable);
   mkdirSync(APP_ROOT, { recursive: true });
   mkdirSync(BIN_ROOT, { recursive: true });
   // termination_failed 是人工诊断门禁。第二个安装器在取得或清理任何锁前
@@ -1760,6 +1911,7 @@ async function main() {
   let state = null;
   try {
     state = readState();
+    const bunExecutable = await ensureBun();
     state = await recoverInterruptedTransaction(state, bunExecutable);
     assertCurrentMatches(state);
 
@@ -1815,6 +1967,7 @@ async function main() {
             candidateInfo.buildId,
           );
         }
+        if (!managedTools) createLauncher(bunExecutable);
         process.stdout.write(`chengfeng-videocut ${VERSION} 已是当前 Runtime；未改写 current。\n`);
         return;
       }
@@ -1935,7 +2088,7 @@ async function main() {
       writeState(state);
 
       try {
-        createLauncher();
+        createLauncher(bunExecutable);
         state.transaction.serviceBefore = await inspectManagedService(state.active, bunExecutable);
       } catch (error) {
         if (hasUnconfirmedProcessTree(error)) throw error;
@@ -2007,7 +2160,8 @@ async function main() {
   }
 }
 
-main().catch((error) => {
+module.exports = { ensureBun, BUN_RELEASE, pinnedLauncher, pinnedWindowsLauncher, executableFailure, createBunShim };
+if (require.main === module) main().catch((error) => {
   process.stderr.write(`错误：${error instanceof Error ? error.message : String(error)}\n`);
   process.exitCode = 1;
 });

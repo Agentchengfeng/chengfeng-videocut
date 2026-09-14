@@ -6,7 +6,17 @@ export function windowsDesktopInstallerName(version: string): string {
   return `Chengfeng-VideoCut-${version}-win-x64.exe`;
 }
 
-export function requiredReleaseAssetNames(version: string): string[] {
+export type ReleaseProfile = "desktop" | "cli";
+
+export function releaseProfileFromArgs(args: string[]): ReleaseProfile {
+  if (args.length === 0) return "desktop";
+  if (args.length === 1 && args[0] === "--profile=cli") return "cli";
+  if (args.length === 1 && args[0] === "--profile=desktop") return "desktop";
+  throw new Error("Expected --profile=cli or --profile=desktop");
+}
+
+export function requiredReleaseAssetNames(version: string, profile: ReleaseProfile = "desktop"): string[] {
+  if (profile !== "desktop" && profile !== "cli") throw new Error("Unknown release profile");
   return [
     "install.sh",
     "install.cjs",
@@ -14,7 +24,7 @@ export function requiredReleaseAssetNames(version: string): string[] {
     "chengfeng-videocut-portable.tar.gz",
     `chengfeng-videocut-${version}.tgz`,
     "chengfeng-videocut.tgz",
-    windowsDesktopInstallerName(version),
+    ...(profile === "desktop" ? [windowsDesktopInstallerName(version)] : []),
   ];
 }
 
@@ -25,9 +35,10 @@ function sha256(bytes: Uint8Array): string {
 export async function verifyReleaseAssetManifest(options: {
   releaseDir: string;
   version: string;
+  profile?: ReleaseProfile;
 }): Promise<{ assetNames: string[]; checksums: Map<string, string> }> {
   const { releaseDir, version } = options;
-  const assetNames = requiredReleaseAssetNames(version).sort((left, right) =>
+  const assetNames = requiredReleaseAssetNames(version, options.profile).sort((left, right) =>
     left.localeCompare(right, "en"),
   );
   const allowedNames = new Set([...assetNames, "SHA256SUMS.txt"]);
@@ -83,6 +94,7 @@ export async function writeReleaseChecksums(options: {
   rootDir: string;
   releaseDir: string;
   version: string;
+  profile?: ReleaseProfile;
 }): Promise<{ checksumPath: string; lines: string[] }> {
   const { rootDir, releaseDir, version } = options;
   if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) {
@@ -93,7 +105,7 @@ export async function writeReleaseChecksums(options: {
   await copyFile(join(rootDir, "install.sh"), join(releaseDir, "install.sh"));
   await copyFile(join(rootDir, "install.cjs"), join(releaseDir, "install.cjs"));
 
-  const requiredNames = requiredReleaseAssetNames(version);
+  const requiredNames = requiredReleaseAssetNames(version, options.profile);
   const entries = await readdir(releaseDir, { withFileTypes: true });
   const allowedNames = new Set([...requiredNames, "SHA256SUMS.txt"]);
   const unexpectedEntries = entries

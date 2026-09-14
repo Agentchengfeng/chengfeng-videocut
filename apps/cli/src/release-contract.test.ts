@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   requiredReleaseAssetNames,
+  releaseProfileFromArgs,
   verifyReleaseAssetManifest,
   windowsDesktopInstallerName,
   writeReleaseChecksums,
@@ -22,6 +23,25 @@ afterEach(async () => {
 });
 
 describe("release contract", () => {
+  it("requires an explicit CLI profile and keeps Desktop checks intact", async () => {
+    expect(releaseProfileFromArgs([])).toBe("desktop");
+    expect(releaseProfileFromArgs(["--profile=cli"])).toBe("cli");
+    expect(() => releaseProfileFromArgs(["--profile=typo"])).toThrow();
+    const fixtureRoot = await mkdtemp(join(tmpdir(), "videocut-release-cli-"));
+    cleanupPaths.push(fixtureRoot);
+    const releaseDir = join(fixtureRoot, "release");
+    await mkdir(releaseDir);
+    for (const name of ["install.sh", "install.cjs"]) await Bun.write(join(fixtureRoot, name), "fixture");
+    for (const name of requiredReleaseAssetNames(PRODUCT_VERSION, "cli")) {
+      await Bun.write(join(releaseDir, name), "fixture");
+    }
+    await writeReleaseChecksums({ rootDir: fixtureRoot, releaseDir, version: PRODUCT_VERSION, profile: "cli" });
+    expect((await verifyReleaseAssetManifest({ releaseDir, version: PRODUCT_VERSION, profile: "cli" })).assetNames).toHaveLength(6);
+    await expect(verifyReleaseAssetManifest({ releaseDir, version: PRODUCT_VERSION })).rejects.toThrow("missing required assets");
+    await Bun.write(join(releaseDir, windowsDesktopInstallerName(PRODUCT_VERSION)), "fixture");
+    await expect(verifyReleaseAssetManifest({ releaseDir, version: PRODUCT_VERSION, profile: "cli" })).rejects.toThrow("unexpected assets");
+  });
+
   it("keeps every product version surface aligned", async () => {
     expect(await checkVersionContract(rootDir)).toBe(PRODUCT_VERSION);
   });

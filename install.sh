@@ -6,7 +6,7 @@ set -eu
 # 各自演化出“先切 current、后验证”的两套语义。
 
 REPOSITORY="Agentchengfeng/chengfeng-videocut"
-VERSION="0.4.10"
+VERSION="0.4.11"
 CHECKSUM_NAME="SHA256SUMS.txt"
 INSTALLER_NAME="install.cjs"
 DOWNLOAD_BASE="${CHENGFENG_VIDEOCUT_DOWNLOAD_BASE:-https://github.com/$REPOSITORY/releases/download/v$VERSION}"
@@ -46,8 +46,12 @@ sha256_of() {
 
 command -v curl >/dev/null 2>&1 || fail "需要 curl 才能下载安装器。"
 [ -n "${HOME:-}" ] || fail "HOME 未设置，无法确定安装目录。"
-if ! BUN_EXECUTABLE=$(find_bun); then
-  fail "需要先安装 Bun 1.2 或更高版本：https://bun.sh/docs/installation"
+if command -v node >/dev/null 2>&1; then
+  INSTALLER_EXECUTABLE=$(command -v node)
+elif INSTALLER_EXECUTABLE=$(find_bun); then
+  :
+else
+  fail "需要 Node.js 执行安装引导（或已有 Bun）；安装器会准备受支持平台的产品受管 Bun。"
 fi
 
 TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/chengfeng-videocut.XXXXXX")
@@ -63,4 +67,4 @@ EXPECTED_HASH=$(awk -v file="$INSTALLER_NAME" '$2 == file { print $1; exit }' "$
 [ -n "$EXPECTED_HASH" ] || fail "$CHECKSUM_NAME 中没有 $INSTALLER_NAME 的校验值。"
 [ "$(sha256_of "$TMP_DIR/$INSTALLER_NAME")" = "$EXPECTED_HASH" ] || fail "install.cjs SHA-256 校验失败；安装已停止。"
 
-"$BUN_EXECUTABLE" "$TMP_DIR/$INSTALLER_NAME"
+"$INSTALLER_EXECUTABLE" "$TMP_DIR/$INSTALLER_NAME"
