@@ -22,7 +22,9 @@ chengfeng-videocut --version
 chengfeng-videocut doctor
 ```
 
-**当前范围（2026-09-13）**：公开 Runtime 源码版本仍为 `0.4.9`；六项独立 Skills 的 `v0.1.0-beta.1` 是源码预览，后续候选源码不等于新版发行。新版整套远端安装、宿主加载及匹配 Runtime 的业务验收尚未完成。具体来源和限制以 [INSTALL](INSTALL.md) 为准，不能把单包文件安装当作整套就绪。
+**安装修复预览（2026-09-14）**：[Runtime v0.4.11](https://github.com/Agentchengfeng/chengfeng-videocut/releases/tag/v0.4.11) 已提供 CLI 安装包，修复 macOS arm64 缺 Bun 时的自动准备与持久启动入口；安装引导仍需 Node.js 20+ 或已有 Bun。Codex 的公开 Plugin 入口是 [chengfeng-videocut-skills](https://github.com/Agentchengfeng/chengfeng-videocut-skills)，不是停用跳转页。请按该仓固定版本说明安装，`stable` 未因本次预发布而升级。
+
+主分支源码、Runtime 发行版本、Plugin 和独立 Skills 版本分别管理；本次安装修复不表示独立小黑的新接口、宿主加载、常驻服务或完整剪辑业务已验收。六项独立 Skills 的旧标签仍是单包源码预览。具体版本和验收结果以 [INSTALL](INSTALL.md) 及对应 Release 为准。
 
 ## 文档导航
 

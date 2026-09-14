@@ -1,15 +1,23 @@
 # 安装 chengfeng-videocut
 
-本仓库是产品总入口。安装与接入的方法只维护在 [chengfeng-videocut-install](https://github.com/Agentchengfeng/chengfeng-videocut-install)，软件本体仍由本仓库提供；业务 Skills 在各自仓库维护。
+本仓库提供工作台软件。给 Codex 使用的公开 Plugin 入口是 [chengfeng-videocut-skills](https://github.com/Agentchengfeng/chengfeng-videocut-skills)；独立 Skills 的安装方法在 [chengfeng-videocut-install](https://github.com/Agentchengfeng/chengfeng-videocut-install)。这两种入口不是同一套安装器，不要混用版本结论。
+
+## 安装修复预览 · 2026-09-14
+
+只测试工作台服务安装时，使用 [Runtime v0.4.11 CLI 预发行](https://github.com/Agentchengfeng/chengfeng-videocut/releases/tag/v0.4.11) 的安装说明与同版校验清单。安装引导需要 Node.js 20+ 或已有 Bun；macOS arm64 缺 Bun 时会下载固定官方资产，核验后保存在产品私有目录，不修改全局 Bun 或 shell 配置。其他平台的自动依赖准备、Desktop 安装包、媒体依赖与常驻服务不在本次验证范围。
+
+要让 Codex 使用工作台时，从 [Plugin 安装修复预览](https://github.com/Agentchengfeng/chengfeng-videocut-skills/releases/tag/v0.10.10) 取得固定 bootstrap / Plugin 来源。bootstrap 只安装 Plugin；Plugin 加载后，按包内说明准备配套 Runtime。文件安装、宿主发现、服务启动和实际剪辑是不同验收层。
+
+本次不推进 `stable`，也不覆盖旧版本。具体实机结果见对应 Release；不把 v0.4.11 说成满足独立小黑要求的 >=0.5.9 新接口。下面六包目录保留其原有独立源码预览身份，不是本次配套 Plugin 的全套安装清单。
 
 ## 当前能安装到哪一步
 
-截至 2026-09-13：
+以下为 2026-09-13 独立六包预览的状态，不覆盖上面的安装修复预发行：
 
 - 六项独立 Skills 的 `v0.1.0-beta.1` 是已公开的源码预览，可分别安装文件、校验和复用。
 - 安装 `chengfeng-videocut-install` 取得的是安装 Skill 本身，**不会自动安装全部业务 Skills 或 Runtime**；其中的组合脚本目前接受本地清单与路径。
 - 新整套远端安装、匹配 Runtime 的交付、宿主实际加载以及真实剪辑/导出流程仍需验收。不要把本页链接表当作已验证的整套兼容清单。
-- 工作台旧版本见 [Releases](https://github.com/Agentchengfeng/chengfeng-videocut/releases)。各版本的平台和依赖以对应说明为准，不能默认与本批 Skills 兼容；本次没有发布新工作台版本。
+- 工作台版本见 [Releases](https://github.com/Agentchengfeng/chengfeng-videocut/releases)。各版本的平台和依赖以对应说明为准，不能默认与本批独立 Skills 兼容；六包源码预览不包含工作台软件。
 
 ## 独立 Skills 源码预览
 
@@ -24,7 +32,7 @@
 | 维护与排障 | [chengfeng-videocut-maintain](https://github.com/Agentchengfeng/chengfeng-videocut-maintain) | 按请求选择排查、更新或 Bug 反馈 |
 | 镜头设计 | [chengfeng-videocut-shot-design](https://github.com/Agentchengfeng/chengfeng-videocut-shot-design) | 构图、动作节拍与镜头方案 |
 
-小黑动画未进入本次公开目录，第三方资源许可仍待核验；私人动画不公开、不默认安装。旧 diagnose、check-updates、report-bug 三项由 maintain 承担；visual 不是新的默认独立产品。
+本批六包目录不包含小黑动画；创作类包按各自发行说明和兼容要求单独核验。私人动画不公开、不默认安装。旧 diagnose、check-updates、report-bug 三项由独立 maintain 承担；visual 不是新的默认独立产品。本项说明不宣称历史 Plugin 的包内 Skills 已同步拆合。
 
 <a id="verified-preview-commits"></a>
 ## 已公开预览的固定来源
@@ -72,6 +80,6 @@ npx -y github:Agentchengfeng/chengfeng-videocut-install#v0.1.0-beta.1 doctor --h
 
 ## 旧仓库用户
 
-[chengfeng-videocut-skills](https://github.com/Agentchengfeng/chengfeng-videocut-skills) 保留旧网址、代码和标签，首页引导到本仓库。不与 install 合仓，不再维护第二套新安装流程。
+[chengfeng-videocut-skills](https://github.com/Agentchengfeng/chengfeng-videocut-skills) 保留旧版本，同时继续作为公开 Codex Plugin 安装入口。软件本体仍由本仓发行，不与独立 install Skill 合仓；新版固定快照见上面的预发行回执。
 
 现有旧 Plugin、安装器和已发布版本不会因这份说明被升级或卸载。旧命令仍可能安装旧版本；切换前必须核对当前来源、版本、本地修改与同名 Skills，按明确授权迁移，不要同时启用冲突的旧包与独立包。安装授权不包含上传视频、云端费用或自动上报 Issue。
