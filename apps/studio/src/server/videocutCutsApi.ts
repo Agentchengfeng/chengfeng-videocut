@@ -1,10 +1,10 @@
 /// <reference types="node" />
 
+import { appendFile, lstat, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { VideocutError, asVideocutError, type VideocutErrorCode } from "@video-workbench/core";
 import {
   OperationAuditStore,
-  appendProjectEvent,
   readOptionalProjectDocument,
   operationInputHash,
   resolveProject,
@@ -349,6 +349,25 @@ class KeyedMutex {
   }
 }
 
+/**
+ * Record a failed Cuts request on the project itself. Written directly rather
+ * than through the project resolver: the failures worth recording (an
+ * unfinished transaction, an unreadable document) are exactly the ones that
+ * stop the resolver, and they used to leave no trace anywhere.
+ */
+async function recordCutsFailure(projectsDir: string, projectId: string, type: string, error: VideocutError) {
+  try {
+    const directory = await realpath(resolve(projectsDir, projectId));
+    const path = join(directory, "events.jsonl");
+    const info = await lstat(path).catch(() => null);
+    if (info && (!info.isFile() || info.isSymbolicLink())) return;
+    await appendFile(path, `${JSON.stringify({ ts: new Date().toISOString(), type, actor: "studio-transcript",
+      payload: { projectId, code: error.code, message: error.message, ...(error.details ? { details: error.details } : {}) } })}\n`);
+  } catch {
+    // Logging must never turn into a second failure for the person editing.
+  }
+}
+
 export function createVideocutCutsHandler(
   options: VideocutCutsHandlerOptions,
 ): VideocutCutsHandler {
@@ -393,13 +412,11 @@ export function createVideocutCutsHandler(
       return errorResponse(405, "method_not_allowed", "Only GET and PUT are supported");
     }
 
-    let rejectedProject: Awaited<ReturnType<typeof resolveProject>> | null = null;
     try {
       // The route carries a registry id, not a cwd-relative path. Resolve the
       // exact registry entry so an unrelated `./<projectId>` directory can
       // never shadow the product project.
       const project = await resolveProject(resolve(options.projectsDir, projectId));
-      if (request.method === "PUT") rejectedProject = project;
 
       if (request.method === "GET") {
         const current = await readOptionalProjectDocument(project, CUT_SELECTION_FILE);
@@ -609,7 +626,6 @@ export function createVideocutCutsHandler(
           document: result.document,
           ...(transaction.movedInserts?.length ? { movedInserts: transaction.movedInserts } : {}),
         };
-        rejectedProject = null;
         if (admission) {
           await options.operationAuditStore!.finishSucceeded(admission.operationId, {
             result: {
@@ -630,14 +646,11 @@ export function createVideocutCutsHandler(
       const normalized = asVideocutError(error);
       // A refused edit used to leave no trace anywhere: the person saw nothing
       // happen and nobody could tell why afterwards. Record it on the project.
-      if (rejectedProject && normalized.code !== "revision_conflict") {
-        await appendProjectEvent(rejectedProject, {
-          type: "cuts_rejected",
-          actor: "studio-transcript",
-          payload: { code: normalized.code, message: normalized.message,
-            ...(normalized.details ? { details: JSON.parse(JSON.stringify(normalized.details)) } : {}) },
-        }).catch(() => undefined);
-      }
+      // Reads fail too (a page that cannot load Cuts shows 「保存失败」 on the
+      // next edit), and conflicts decide what the person sees next. Both used
+      // to vanish; record every failure with what kind it was.
+      await recordCutsFailure(options.projectsDir, projectId, request.method === "GET" ? "cuts_read_failed"
+        : normalized.code === "revision_conflict" ? "cuts_conflict" : "cuts_rejected", normalized);
       return errorResponse(
         errorStatus(normalized),
         normalized.code,

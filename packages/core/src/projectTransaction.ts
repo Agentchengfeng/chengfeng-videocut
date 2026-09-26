@@ -112,8 +112,10 @@ export async function getProjectTransactionStatus(directory: string, operationId
 async function publishFiles(directory: string, files: ProjectFiles, afterWrite?: (name: string) => Promise<void>) {
   for (const name of TRANSACTION_FILES) {
     const value = files[name], path = join(directory, name);
+    // Rewriting an unchanged file is not a no-op for everyone watching the
+    // project: each rename announces a change and makes open pages reload.
     if (value === null) await unlink(path).catch((e: any) => { if (e.code !== "ENOENT") throw e; });
-    else await atomic(path, value);
+    else if (await raw(path) !== value) await atomic(path, value);
     await afterWrite?.(name);
   }
   if (projectFilesRevision(await snapshotProjectFiles(directory)) !== projectFilesRevision(files)) fail("Transaction readback mismatch; marker retained");

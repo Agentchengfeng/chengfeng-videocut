@@ -424,6 +424,21 @@ function healthResponse(
   });
 }
 
+/** Append one line to a project's events.jsonl for a request the transaction gate refused. */
+async function recordBlockedRequest(directory: string, projectId: string, method: string, path: string, error: VideocutError) {
+  try {
+    const { appendFile, lstat, realpath } = await import("node:fs/promises");
+    const real = await realpath(directory);
+    const file = resolve(real, "events.jsonl");
+    const info = await lstat(file).catch(() => null);
+    if (info && (!info.isFile() || info.isSymbolicLink())) return;
+    await appendFile(file, `${JSON.stringify({ ts: new Date().toISOString(), type: "request_blocked", actor: "runtime",
+      payload: { projectId, method, path, code: error.code, message: error.message } })}\n`);
+  } catch {
+    // Recording is best effort; the refusal itself is already the answer.
+  }
+}
+
 export async function startStudioServer(
   options: StartStudioServerOptions = {},
 ): Promise<RunningStudioServer> {
@@ -655,7 +670,18 @@ async function startStudioServerInternal(options: StartStudioServerOptions, life
         const projectMatch = /^\/api\/(?:v1\/)?projects\/([^/]+)/.exec(url.pathname);
         if (projectMatch) {
           const id = decodeURIComponent(projectMatch[1]!);
-          if (id && !/[\\/\0]/.test(id) && id !== "." && id !== "..") await assertProjectReadable(resolve(projectsDir, id));
+          if (id && !/[\\/\0]/.test(id) && id !== "." && id !== "..") {
+            try {
+              await assertProjectReadable(resolve(projectsDir, id));
+            } catch (error) {
+              // A request refused here never reaches the API that would record
+              // it; the page only sees a failure. Leave a line on the project.
+              if (error instanceof VideocutError && error.code === "operation_in_progress") {
+                await recordBlockedRequest(resolve(projectsDir, id), id, request.method, url.pathname, error);
+              }
+              throw error;
+            }
+          }
         }
         const jobsResponse = await jobsApi(request, bunServer.requestIP(request)?.address);
         const ingestResponse = await ingestApi(request, bunServer.requestIP(request)?.address);
