@@ -211,7 +211,12 @@ export function useProjectCutSelection(
   ): Promise<boolean> => {
     const nextCut = new Set(next);
     if (!selectionReadyRef.current) {
+      // The selection never loaded (for example the service restarted while the
+      // page was open). Saying only 「保存失败」 left the person stuck until a
+      // manual refresh; reload it and tell them what happened instead.
       setSaveState("error");
+      setSaveNotice({ tone: "error", text: "删词数据刚才没读取成功，已重新读取，请再操作一次" });
+      void reloadSelection();
       return Promise.resolve(false);
     }
     const previousCut = new Set(cutWordIdsStateRef.current);

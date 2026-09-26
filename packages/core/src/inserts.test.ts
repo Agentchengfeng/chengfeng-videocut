@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { EditListDocument } from "@video-workbench/contracts";
+import type { EditListDocument, EditListSegment } from "@video-workbench/contracts";
 import { parseEditListDocument } from "./editList";
 import { applyInserts, assertInsertDocument, followCutAnchors, insertAssetPath, insertMediaLayers, stripInserts, type InsertDocument } from "./inserts";
 import { subtitleCueTimings } from "./subtitles";
@@ -99,7 +99,7 @@ describe("insert document and layers", () => {
 
 describe("followCutAnchors", () => {
   const narration = (ranges: Array<[number, number]>) => ranges.map(([a, b], i) => ({ id: `n${i}`, source: VOICE, sourceStart: a, sourceEnd: b,
-    timelineStart: 0, trackId: "a-roll", playbackRate: 1, instanceId: "original" }));
+    timelineStart: 0, trackId: "a-roll", playbackRate: 1, instanceId: "original" })) as EditListSegment[];
   test("keeps anchors that still play", () => {
     const out = followCutAnchors(doc([clip("i1", "w2")]), words, narration([[0, 4]]));
     expect(out.moved).toEqual([]);
