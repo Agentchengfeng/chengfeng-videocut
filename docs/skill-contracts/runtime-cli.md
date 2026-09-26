@@ -55,7 +55,7 @@ targets 最多100片段/段落/命中、文本200字、请求32KiB/响应512KiB�
 
 reviewedVisualReplacements 额外要求 multisourceAudio.reviewedVisualReplacementsApiVersion=1，不能仅凭产品版本推断。形状为 [{layerId,module,expectedModuleDigest,wordIds,animation:{schemaVersion:1,clock:"local0",authoredDuration,anchorWordIds,canvas?}}]，最多32项，删除请求整体最多256KiB。只用于已审阅/已发布模块替换本次部分受剪HTML层；module 是发布入口、digest 是整包摘要，存续词保持原序。plan/commit 输入原样，提交及恢复finish复验模块，动画错位继续拒绝。不能先去掉animation绑定、拉伸或换其他删除API绕过拒绝；任意批量编辑不在该合同中。
 
-主轨插入：document为{schemaVersion:1,projectId,inserts:[{id,afterWordId,assetId,sourceIn,sourceOut,fit:"contain"|"cover",label?}]}，最多64项、每词一项。afterWordId须是仍在播放的说出词，且不能落在字幕屏或画面层中间；素材须先media-import且带音轨，播放其原声，口播暂停后顺延。gainDb暂只接受0。首次插入把v1工程升级为EDL v2；单一口播加插入时cuts-put与Studio删词照常可用（删插入锚词会被拒绝），多口播来源仍用word/segment事务。插入段不能经edit-list-patch或segment-cuts单独修改；改或删都重新提交document。音效是绝对秒，plan返回warnings时须复核。
+主轨插入：document为{schemaVersion:1,projectId,inserts:[{id,afterWordId,assetId,sourceIn,sourceOut,fit:"contain"|"cover",label?}]}，最多64项、每词一项。afterWordId须是仍在播放的说出词，且不能落在字幕屏或画面层中间；素材须先media-import且带音轨，播放其原声，口播暂停后顺延。gainDb暂只接受0。首次插入把v1工程升级为EDL v2；单一口播加插入时cuts-put与Studio删词照常可用（删插入锚词时插入段自动跟到最近仍播放的词，结果含movedInserts；被拒删改记cuts_rejected事件），多口播来源仍用word/segment事务。插入段不能经edit-list-patch或segment-cuts单独修改；改或删都重新提交document。音效是绝对秒，plan返回warnings时须复核。
 
 ## 失败和未支持能力
 
