@@ -103,6 +103,7 @@ function buildMultisourceCuts(input: MultisourceWordCutsInput, clipIds?: readonl
   if (clipIds === undefined && (!Array.isArray(input.wordIds) || input.wordIds.length === 0 || input.wordIds.length > 500
     || input.wordIds.some(id => typeof id !== "string" || !id.trim()) || new Set(input.wordIds).size !== input.wordIds.length)) fail("Require 1..500 unique wordIds");
   for (const id of clipIds ?? []) if (!before.segments.some(s => s.id === id)) fail("Unknown clipId", { clipId: id });
+  for (const id of clipIds ?? []) if (before.segments.find(s => s.id === id)!.instanceId?.startsWith("insert:")) fail("Inserted clips are removed through the inserts document", { clipId: id });
   if (!input.cutSelection || !Array.isArray(input.cutSelection.cutWordIds)
     || input.cutSelection.cutWordIds.some(id => typeof id !== "string")
     || input.cutSelection.cutRanges !== undefined && !Array.isArray(input.cutSelection.cutRanges)

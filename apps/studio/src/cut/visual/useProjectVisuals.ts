@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { VisualDocument, VisualLayerTiming } from "@video-workbench/core";
+import type { InsertMediaLayer, VisualDocument, VisualLayerTiming } from "@video-workbench/core";
 
 export interface ProjectVisuals {
   document: VisualDocument | null;
+  /** Layer timings, including read-only inserted clips (see insertLayers). */
   timings: VisualLayerTiming[];
+  /** Inserted clips, derived from the edit list; never part of the document. */
+  insertLayers: InsertMediaLayer[];
   loading: boolean;
   error: string | null;
   reload: () => Promise<void>;
@@ -14,6 +17,7 @@ export interface ProjectVisuals {
 interface VisualsResponse {
   document: VisualDocument | null;
   timings: VisualLayerTiming[];
+  insertLayers: InsertMediaLayer[];
   /** Identity of each module's entry file, keyed by module path. */
   moduleStamps: Record<string, string>;
 }
@@ -52,6 +56,7 @@ export function useProjectVisuals(projectId: string): ProjectVisuals {
   const [state, setState] = useState<VisualsResponse>({
     document: null,
     timings: [],
+    insertLayers: [],
     moduleStamps: {},
   });
   const [loading, setLoading] = useState(true);
@@ -70,7 +75,7 @@ export function useProjectVisuals(projectId: string): ProjectVisuals {
         if (response.status === 404) {
           if (fingerprintRef.current !== "none") {
             fingerprintRef.current = "none";
-            setState({ document: null, timings: [], moduleStamps: {} });
+            setState({ document: null, timings: [], insertLayers: [], moduleStamps: {} });
           }
           setError(null);
           return;
@@ -79,9 +84,13 @@ export function useProjectVisuals(projectId: string): ProjectVisuals {
       }
       const payload = await response.json() as VisualsResponse & { revision?: string };
       if (request !== requestRef.current) return;
+      const insertLayers = payload.insertLayers ?? [];
       const next: VisualsResponse = {
         document: payload.document ?? null,
-        timings: payload.timings ?? [],
+        timings: [...(payload.timings ?? []), ...insertLayers.map(layer => ({
+          layerId: layer.layerId, start: layer.start, end: layer.end, duration: layer.duration, orphaned: false,
+        }))],
+        insertLayers,
         moduleStamps: payload.moduleStamps ?? {},
       };
       // Timings and stamps can change while the document revision does not —
@@ -128,7 +137,7 @@ export function useProjectVisuals(projectId: string): ProjectVisuals {
   );
 
   return useMemo(
-    () => ({ document: state.document, timings: state.timings, loading, error, reload, moduleUrl }),
-    [state.document, state.timings, loading, error, reload, moduleUrl],
+    () => ({ document: state.document, timings: state.timings, insertLayers: state.insertLayers, loading, error, reload, moduleUrl }),
+    [state.document, state.timings, state.insertLayers, loading, error, reload, moduleUrl],
   );
 }

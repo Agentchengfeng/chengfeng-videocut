@@ -30,6 +30,7 @@ import {
   type SubtitleDocument,
   type SubtitleStyle,
 } from "./subtitles";
+import { insertMediaLayers, type InsertDocument } from "./inserts";
 import { visualLayerTimings, type VisualDocument, type VisualZoom, type VisualMedia, type ResolvedVisualAnimation } from "./visuals";
 
 /**
@@ -155,6 +156,8 @@ export interface BuildExportPlanInput {
   scale?: number;
   /** Output frame rate. Defaults to the source's. */
   fps?: number;
+  /** Inserted clips; their picture layers are derived from the EDL. */
+  inserts?: InsertDocument | null;
 }
 
 function invalid(message: string, details?: Record<string, unknown>): never {
@@ -359,6 +362,10 @@ export function buildExportPlan(input: BuildExportPlanInput): ExportPlan {
       }];
     })
     .sort((left, right) => left.start - right.start);
+  for (const insert of insertMediaLayers(input.editList, input.inserts)) {
+    layers.push({ layerId: insert.layerId, module: "", media: insert.media, start: insert.start, end: insert.end, duration: insert.duration, zoom: null, cues: [] });
+  }
+  layers.sort((left, right) => left.start - right.start);
 
   // The film is a whole number of pictures, and that number is decided here
   // rather than by whichever of ffmpeg and the browser rounds first.

@@ -32,6 +32,9 @@ import {
   asVideocutError,
   parseTranscriptWords,
   visualLayerTimings,
+  assertInsertDocument,
+  insertMediaLayers,
+  type InsertMediaLayer,
   type VisualLayerTiming,
 } from "@video-workbench/core";
 import {
@@ -204,16 +207,21 @@ function parsePutBody(value: unknown): VisualsPutBody {
 async function derivedTimings(
   project: Awaited<ReturnType<typeof resolveProject>>,
   document: Awaited<ReturnType<typeof readVisuals>>,
-): Promise<{ timings: VisualLayerTiming[]; transcriptRevision: string | null }> {
-  const [transcript, editList] = await Promise.all([
+): Promise<{ timings: VisualLayerTiming[]; transcriptRevision: string | null; insertLayers: InsertMediaLayer[] }> {
+  const [transcript, editList, inserts] = await Promise.all([
     readOptionalProjectDocument(project, "transcript.json"),
     readEditList(project),
+    readOptionalProjectDocument(project, "inserts.json"),
   ]);
-  if (!document) return { timings: [], transcriptRevision: transcript?.revision ?? null };
+  // Inserted clips are derived from the EDL, never stored as visual layers,
+  // so a save of the layers document can never write them back.
+  const insertLayers = insertMediaLayers(editList?.value ?? null, inserts ? assertInsertDocument(inserts.value) : null);
+  if (!document) return { timings: [], transcriptRevision: transcript?.revision ?? null, insertLayers };
   const words = transcript ? parseTranscriptWords(transcript.value) : [];
   return {
     timings: visualLayerTimings(document.value, words, editList?.value ?? null),
     transcriptRevision: transcript?.revision ?? null,
+    insertLayers,
   };
 }
 

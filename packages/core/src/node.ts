@@ -115,6 +115,8 @@ export const PROJECT_DOCUMENT_NAMES = [
   "visuals.json",
   "visual-plan.json",
   "workbench.json",
+  // Inserted clips (main-track video with its own audio); the EDL is derived from it.
+  "inserts.json",
 ] as const;
 
 export type ProjectDocumentName = (typeof PROJECT_DOCUMENT_NAMES)[number];

@@ -50,7 +50,7 @@ async function input(args: ParsedArgs, cwd: string, operation: WorkbenchOperatio
     if (body[key] !== undefined && (typeof body[key] !== "string" || !(key === "expectedRevision" ? REV : SHA).test(body[key]))) fail("invalid_argument", "Invalid revision or SHA256 field", { field: key });
   }
   for (const key of ["operationId", "jobId"]) if (body[key] !== undefined && (typeof body[key] !== "string" || !ID.test(body[key]))) fail("invalid_argument", "Invalid bounded identifier", { field: key });
-  if (operation.includes("prepend") || operation.startsWith("word-cuts-") || operation.startsWith("segment-cuts-") || operation.startsWith("operation-")) {
+  if (operation.includes("prepend") || operation.startsWith("word-cuts-") || operation.startsWith("segment-cuts-") || operation.startsWith("inserts-") || operation.startsWith("operation-")) {
     if (body.operationId !== undefined && !/^[A-Za-z0-9_-]{1,96}$/.test(body.operationId)) fail("invalid_argument", "Transaction operationId must use 1..96 letters, digits, underscores or hyphens");
   }
   if (body.sourceProjectId !== undefined && (typeof body.sourceProjectId !== "string" || !body.sourceProjectId || /[\\/\x00-\x1f]/.test(body.sourceProjectId) || [".", ".."].includes(body.sourceProjectId))) fail("invalid_argument", "Invalid source project ID");
@@ -173,7 +173,7 @@ export async function runWorkbenchCommand(args: ParsedArgs, cwd: string): Promis
       if (result.schemaVersion !== 1 || result.editListSchemaVersion !== 2 || typeof result.revision !== "string" || !SHA.test(result.revision) || !Array.isArray(result.matches) || result.matches.length > 100) fail("workbench_response_invalid", "Invalid target snapshot");
       if (body.expectedRevision !== undefined) equal(result.revision, body.expectedRevision, "Target snapshot revision");
     }
-    if (["workflow-get", "edit-list-get", "cuts-get", "subtitles-get", "visuals-get", "config-get", "config-set", "media-get", "media-import", "sources-get", "subtitle-inputs"].includes(name)) equal(result.projectId, project, "Project ID");
+    if (["workflow-get", "edit-list-get", "cuts-get", "subtitles-get", "visuals-get", "config-get", "config-set", "media-get", "media-import", "sources-get", "subtitle-inputs", "inserts-get"].includes(name)) equal(result.projectId, project, "Project ID");
     if (["edit-list-get", "cuts-get", "subtitles-get", "visuals-get"].includes(name) && (typeof result.revision !== "string" || !REV.test(result.revision))) fail("workbench_response_invalid", "Document response lacks a valid revision");
     if (name.startsWith("ingest-")) {
       equal(result.operationId, body.operationId, "Ingest operation ID");

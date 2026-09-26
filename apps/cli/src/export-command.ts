@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import type { ExportProfile } from "@video-workbench/contracts";
-import { VideocutError, buildExportPlan, parseTranscriptWords } from "@video-workbench/core";
+import { VideocutError, assertInsertDocument, buildExportPlan, parseTranscriptWords } from "@video-workbench/core";
 import {
   readEditList,
   readSoundEffects,
@@ -30,12 +30,14 @@ export interface ExecuteExportOptions {
 export async function executeExport(options: ExecuteExportOptions): Promise<Record<string, unknown>> {
   options.signal?.throwIfAborted();
   const { project } = options;
-  const [subtitles, transcript, editList, visuals] = await Promise.all([
+  const [subtitles, transcript, editList, visuals, insertsRaw] = await Promise.all([
     readSubtitles(project),
     readOptionalProjectDocument(project, "transcript.json"),
     readEditList(project),
     readVisuals(project),
+    readOptionalProjectDocument(project, "inserts.json"),
   ]);
+  const inserts = insertsRaw ? assertInsertDocument(insertsRaw.value) : null;
   const inputVideo = (project.project as Record<string, unknown>).inputVideo;
   const mainSources = editList?.value.schemaVersion === 2 ? editList.value.sources : undefined;
   if (!mainSources && (typeof inputVideo !== "string" || !inputVideo.trim())) {
@@ -62,6 +64,7 @@ export async function executeExport(options: ExecuteExportOptions): Promise<Reco
     canvas: media.canvas,
     scale: resolvedProfile.scale ?? media.defaultScale,
     fps: resolvedProfile.fps,
+    inserts,
   });
   const soundEffects = await readSoundEffects(project.directory, true);
   if (soundEffects.document.cues.length) plan.soundEffects = soundEffects.document.cues;

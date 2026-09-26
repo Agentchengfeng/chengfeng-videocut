@@ -2,8 +2,10 @@ import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { copyFile, lstat, mkdir, realpath } from "node:fs/promises";
 import { join, resolve, extname } from "node:path";
-import { parseEditListDocument, parseTranscriptWords, assertSubtitleDocument, assertVisualDocument, subtitleCueTimings, visualLayerTimings, VideocutError, asVideocutError } from "@video-workbench/core";
+import { parseEditListDocument, parseTranscriptWords, assertSubtitleDocument, assertVisualDocument, subtitleCueTimings, visualLayerTimings, VideocutError, asVideocutError,
+  applyInserts, assertInsertDocument, createInsertDocument, insertMediaLayers, type InsertAsset, type InsertDocument } from "@video-workbench/core";
 import { assertProjectReadable, serializeProjectOperation, readModuleFile } from "@video-workbench/core/node";
+import { readMediaAsset } from "../../../../packages/core/src/mediaAssets";
 import { snapshotProjectFiles, projectFilesRevision, commitProjectTransaction, recoverProjectTransaction, readProjectTransaction, getProjectTransactionStatus, type ProjectFiles } from "../../../../packages/core/src/projectTransaction";
 import { buildMultisourceWordCuts, buildMultisourceSegmentCuts, assertReviewedVisualReplacements, type ReviewedVisualReplacement } from "../../../../packages/core/src/multisourceWordCuts";
 import { validateModuleManifest, checkResources } from "./module-api";
@@ -172,6 +174,69 @@ export function buildWordCutDocuments(before: ProjectFiles, wordIds: string[], o
   return { after, summary: built.summary, sources: sourcesFor(before, edl) };
 }
 
+/** v1 → v2 in place: the only narration becomes instance "original"; no timing changes. */
+function migrateToMultisource(files: ProjectFiles, edl: EditListDocument): { files: ProjectFiles; edl: EditListDocument } {
+  if (edl.schemaVersion === 2) return { files, edl };
+  const source = sourcesFor(files, edl)[0]!;
+  const transcript = parse(files, "transcript.json");
+  const transcriptRaw = json({ ...transcript, cues: transcript.cues.map((c: any) => ({ ...c, words: c.words.map((w: any) =>
+    ({ ...w, source: source.path, instanceId: "original", sourceWordId: w.id })) })) });
+  const transcriptRevision = hash(transcriptRaw);
+  const cuts = parse(files, "cut-selection.json");
+  const cutRaw = json(Array.isArray(cuts?.cutRanges) ? { ...cuts, cutRanges: cuts.cutRanges.map((r: any) => ({ ...r, source: source.path, instanceId: "original" })) } : cuts);
+  const next = parseEditListDocument({ ...edl, schemaVersion: 2, sources: [source], sourceDuration: source.duration,
+    segments: edl.segments.map(s => ({ ...s, instanceId: "original" })), baseTranscriptRevision: transcriptRevision, baseCutsRevision: hash(cutRaw) });
+  const rebind = (name: "subtitles.json" | "visuals.json") => { const doc = parse(files, name); return doc ? json({ ...doc, baseTranscriptRevision: transcriptRevision }) : null; };
+  return { edl: next, files: { ...files, "transcript.json": transcriptRaw, "cut-selection.json": cutRaw, "edit-list.json": json(next),
+    "subtitles.json": rebind("subtitles.json"), "visuals.json": rebind("visuals.json") } };
+}
+
+/**
+ * Pure: rebuild the magnetic A-roll with exactly these inserts. Subtitles and
+ * visual layers keep their own length; one that would be stretched across a
+ * clip is refused rather than silently re-timed.
+ */
+export function buildInsertDocuments(before: ProjectFiles, document: InsertDocument, assets: ReadonlyMap<string, InsertAsset>) {
+  const edl = parseEditListDocument(parse(before, "edit-list.json"));
+  if (edl.baseTranscriptRevision !== hash(before["transcript.json"] ?? "") || edl.baseCutsRevision !== hash(before["cut-selection.json"] ?? "")) bad("EDL must bind the current transcript and cuts revisions");
+  validateDocumentBindings(before, edl);
+  if (document.projectId !== edl.projectId) bad("inserts.json belongs to another project");
+  const migrated = migrateToMultisource(before, edl);
+  const words = parseTranscriptWords(parse(migrated.files, "transcript.json"));
+  const placed = parseEditListDocument({ ...applyInserts({ editList: migrated.edl, words, document, assets }),
+    baseTranscriptRevision: migrated.edl.baseTranscriptRevision, baseCutsRevision: migrated.edl.baseCutsRevision });
+  const insertsRaw = json(document);
+  const after: ProjectFiles = { ...migrated.files, "edit-list.json": json(placed), "inserts.json": insertsRaw };
+  validateDocumentBindings(after, placed);
+  const subtitles = parse(after, "subtitles.json"), visuals = parse(after, "visuals.json");
+  const keepLength = (prior: Array<any>, next: Array<any>, key: string) => {
+    for (const a of prior) { const b = next.find(x => x[key] === a[key]);
+      if (!a.orphaned && (!b || b.orphaned || Math.abs(b.end - b.start - (a.end - a.start)) > 0.001)) bad(`An insert point falls inside ${key === "cueId" ? "subtitle cue" : "visual layer"} ${a[key]}; anchor on its last word instead`);
+    }
+  };
+  const oldWords = parseTranscriptWords(parse(migrated.files, "transcript.json"));
+  if (subtitles) keepLength(subtitleCueTimings(subtitles, oldWords, migrated.edl), subtitleCueTimings(subtitles, words, placed), "cueId");
+  if (visuals) keepLength(visualLayerTimings(visuals, oldWords, migrated.edl), visualLayerTimings(visuals, words, placed), "layerId");
+  if (!before["index.html"]?.includes("generated-by:")) bad("Target requires a product-generated index");
+  after["index.html"] = patchKouboProjectIndex(before["index.html"]!, placed, hash(after["edit-list.json"]!));
+  const layers = insertMediaLayers(placed, document);
+  const text = new Map(words.map(w => [w.id, w.text]));
+  return { after, sources: placed.sources!, layers, summary: { mode: "inserts", migratedToMultisource: edl.schemaVersion !== 2,
+    previousDuration: edl.duration, duration: placed.duration, editListRevision: hash(after["edit-list.json"]!),
+    inserts: document.inserts.map(item => { const layer = layers.find(l => l.layerId === `insert:${item.id}`)!;
+      return { id: item.id, afterWordId: item.afterWordId, afterWordText: text.get(item.afterWordId) ?? "", assetId: item.assetId,
+        timelineStart: layer.start, duration: layer.duration, fit: item.fit, ...(item.label ? { label: item.label } : {}) }; }) } };
+}
+
+async function insertAssets(directory: string, document: InsertDocument) {
+  const assets = new Map<string, InsertAsset>();
+  for (const id of new Set(document.inserts.map(i => i.assetId))) {
+    const { manifest } = await readMediaAsset(directory, id).catch(() => bad(`Media asset ${id} is not imported; import it through media assets first`));
+    assets.set(id, { duration: manifest.duration, hasAudio: manifest.hasAudio });
+  }
+  return assets;
+}
+
 /** Verify the entire immutable package, not merely a path that looks published. */
 async function verifyReviewedModules(directory: string, replacements: readonly ReviewedVisualReplacement[]) {
   for (const replacement of replacements) {
@@ -199,8 +264,66 @@ async function verifyReviewedModules(directory: string, replacements: readonly R
 interface Options { projectsDir: string; port: number; isBusy: (directory: string) => Promise<boolean>; onChanged?: (projectId: string) => void; }
 export function createMultisourceApi(options: Options) {
   const notify = (id: string) => { try { options.onChanged?.(id); } catch { /* Commit is durable; a UI notification cannot undo it. */ } };
+  const failure = (error: unknown) => { const e = asVideocutError(error); return Response.json({ error: { code: e.code, message: e.message, ...(e.details ? { details: e.details } : {}) } }, { status: ["revision_conflict", "project_busy", "operation_in_progress", "operation_replay_stale", "operation_replay_conflict", "operation_id_conflict"].includes(e.code) ? 409 : 400 }); };
+  async function handleInserts(request: Request, url: URL, rawId: string, client?: string): Promise<Response> {
+    try {
+      const origin = trustedLoopbackOrigin(request.headers.get("host"), options.port);
+      if (!client || !isLoopbackAddress(client) || !origin || url.origin !== origin || request.headers.has("origin") && request.headers.get("origin") !== origin) return Response.json({ error: { code: "origin_forbidden" } }, { status: 403 });
+      const id = decodeURIComponent(rawId); if (!safeId(id)) bad("Invalid project id");
+      const directory = await realpath(resolve(options.projectsDir, id));
+      if (request.method === "GET") {
+        return await serializeProjectOperation(directory, async () => {
+          await assertProjectReadable(directory);
+          const files = await snapshotProjectFiles(directory);
+          assertIdentity(files, id);
+          const edl = parseEditListDocument(parse(files, "edit-list.json"));
+          const document = files["inserts.json"] === null ? createInsertDocument(id) : assertInsertDocument(parse(files, "inserts.json"));
+          return Response.json({ projectId: id, revision: projectFilesRevision(files), editListRevision: hash(files["edit-list.json"]!),
+            editListSchemaVersion: edl.schemaVersion, exists: files["inserts.json"] !== null, document, layers: insertMediaLayers(edl, document), duration: edl.duration });
+        });
+      }
+      if (request.method !== "POST" || request.headers.get("content-type")?.split(";")[0] !== "application/json") bad("Use GET or application/json POST");
+      const body = await readBody(request, 64 * 1024);
+      if (Object.keys(body).some(k => !["operationId", "expectedRevision", "document", "confirmed", "planRevision"].includes(k)) ||
+        typeof body.operationId !== "string" || !/^[A-Za-z0-9_-]{1,96}$/.test(body.operationId) || ![true, false].includes(body.confirmed) ||
+        typeof body.expectedRevision !== "string" || !/^[a-f0-9]{64}$/.test(body.expectedRevision)) bad("Invalid inserts request: require operationId, exact expectedRevision, document and confirmed");
+      const document = assertInsertDocument(body.document);
+      if (document.projectId !== id) bad("inserts document belongs to another project");
+      const inputKey = hash(json({ kind: "inserts", operationId: body.operationId, expectedRevision: body.expectedRevision, document }));
+      return await serializeProjectOperation(directory, async () => {
+        await assertProjectReadable(directory);
+        if (await options.isBusy(directory)) throw new VideocutError("project_busy", "Wait for project jobs before changing inserts");
+        const before = await snapshotProjectFiles(directory);
+        assertIdentity(before, id);
+        const old = await readProjectTransaction(directory, body.operationId);
+        if (old && old.inputKey !== inputKey) throw new VideocutError("operation_id_conflict", "operationId has different inputs");
+        if (old) {
+          const status = await getProjectTransactionStatus(directory, body.operationId);
+          if (status?.state === "prepared" || status?.state === "interrupted") throw new VideocutError("operation_in_progress", "Explicit recovery of the original operation is required");
+          if (status?.state !== "committed") throw new VideocutError("operation_replay_stale", "Operation was rolled back or has subsequent changes");
+        } else if (body.expectedRevision !== projectFilesRevision(before)) throw new VideocutError("revision_conflict", "Read the exact project revision with inserts-get before planning");
+        const built = buildInsertDocuments(old?.before ?? before, document, await insertAssets(directory, document));
+        const afterRevision = projectFilesRevision(old?.after ?? built.after);
+        if (old && projectFilesRevision(built.after) !== afterRevision) throw new VideocutError("operation_replay_conflict", "Saved operation differs from this planner; query its status instead of replaying");
+        await resolveMainSources(directory, built.sources);
+        const planRevision = hash(json({ inputKey, afterRevision }));
+        const soundEffects = await lstat(join(directory, "sound-effects.json")).then(() => true, () => false);
+        const receipt = { operationId: body.operationId, planRevision, targetRevision: projectFilesRevision(old?.before ?? before), afterRevision,
+          summary: { ...built.summary, ...(soundEffects ? { warnings: [{ code: "sound_effects_absolute_time", message: "Sound effects use absolute seconds and do not follow inserts; review them after this change." }] } : {}) },
+          restore: { method: "POST", path: `/api/v1/projects/${encodeURIComponent(id)}/sources/operations/${body.operationId}`,
+            body: { confirmed: true, action: "rollback" }, requiresCurrentRevision: afterRevision, scope: "whole_transaction", subsequentEditsAllowed: false } };
+        if (body.confirmed && body.planRevision !== planRevision) throw new VideocutError("revision_conflict", "Confirm the exact preview planRevision");
+        if (old) return Response.json({ ...receipt, changed: false, committed: true, revision: afterRevision });
+        if (!body.confirmed) return Response.json({ ...receipt, changed: false, committed: false });
+        const result = await commitProjectTransaction(directory, { schemaVersion: 1, operationId: body.operationId, inputKey, before, after: built.after });
+        notify(id); return Response.json({ ...receipt, ...result, committed: true });
+      });
+    } catch (error) { return failure(error); }
+  }
   return async (request: Request, client?: string): Promise<Response | null> => {
     const url = new URL(request.url), match = /^\/api\/v1\/projects\/([^/]+)\/sources(?:\/operations\/([A-Za-z0-9_-]+)|\/(word-cuts|segment-cuts))?$/.exec(url.pathname);
+    const insertsMatch = /^\/api\/v1\/projects\/([^/]+)\/inserts$/.exec(url.pathname);
+    if (insertsMatch) return handleInserts(request, url, insertsMatch[1]!, client);
     if (!match) return null;
     try {
       const origin = trustedLoopbackOrigin(request.headers.get("host"), options.port);

@@ -455,7 +455,9 @@ export function CutWorkspace({
     visuals.timings
       .filter((timing) => !timing.orphaned)
       .map((timing) => {
-        const layer = visuals.document?.layers.find((candidate) => candidate.id === timing.layerId);
+        const inserted = visuals.insertLayers.find((candidate) => candidate.layerId === timing.layerId);
+        const layer = visuals.document?.layers.find((candidate) => candidate.id === timing.layerId)
+          ?? (inserted ? { id: inserted.layerId, wordIds: [], media: inserted.media } : undefined);
         if (!layer) return null;
         // The script under the layer, moved onto the layer's own clock — same
         // timings the subtitles draw from, so a module and a caption can never
@@ -480,7 +482,7 @@ export function CutWorkspace({
         };
       })
       .filter((layer): layer is ActiveVisual => layer !== null)
-  ), [visuals.document, visuals.timings, visuals.moduleUrl, subtitles.document, subtitles.timings]);
+  ), [visuals.document, visuals.timings, visuals.insertLayers, visuals.moduleUrl, subtitles.document, subtitles.timings]);
 
   const activeVisual = useMemo<ActiveVisual | null>(() => {
     const timing = activeVisualLayer(visuals.timings, transport.timelineTime);
@@ -499,7 +501,8 @@ export function CutWorkspace({
       .filter((timing) => !timing.orphaned)
       .map((timing) => {
         const layer = visuals.document?.layers.find((candidate) => candidate.id === timing.layerId);
-        const folder = layer?.media ? `视频 · ${layer.id}` : layer?.module?.split("/").slice(-2, -1)[0] ?? layer?.module ?? timing.layerId;
+        const inserted = visuals.insertLayers.some((candidate) => candidate.layerId === timing.layerId);
+        const folder = inserted ? `插入 · ${timing.layerId.slice("insert:".length)}` : layer?.media ? `视频 · ${layer.id}` : layer?.module?.split("/").slice(-2, -1)[0] ?? layer?.module ?? timing.layerId;
         return {
           id: timing.layerId,
           label: folder,
@@ -507,7 +510,7 @@ export function CutWorkspace({
           duration: timing.duration,
         };
       })
-  ), [visuals.document, visuals.timings]);
+  ), [visuals.document, visuals.timings, visuals.insertLayers]);
 
   const canUndo = undoDepth > 0 && editList.saveState !== "saving" && cutSelection.saveState !== "saving";
   const undoLastChange = useCallback(async () => {

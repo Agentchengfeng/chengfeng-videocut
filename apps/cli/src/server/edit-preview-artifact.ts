@@ -453,7 +453,9 @@ export async function generatePreviewArtifactAudio(input: {
   const sourcePaths = input.sourcePaths ?? { [input.segments[0]?.source ?? ""]: input.input };
   const probes = new Map(await Promise.all(Object.entries(sourcePaths).map(async ([key, path]) => {
     const probe = await probeMedia(path);
-    if (probe.hasVideo || !probe.hasAudio) throw new Error(`Unsupported main-track source: ${key}`);
+    // Inserted clips are managed media assets; only their audio joins the preview track.
+    const insertedClip = key.startsWith(".chengfeng-videocut/media/") && key.endsWith("/source.mp4");
+    if (!probe.hasAudio || (probe.hasVideo && !insertedClip)) throw new Error(`Unsupported main-track source: ${key}`);
     return [key, probe] as const;
   })));
   const sampleRate = 48_000;

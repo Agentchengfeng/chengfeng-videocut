@@ -53,10 +53,16 @@ export async function resolveMainSources(projectDirectory: string, sources: read
       for await (const chunk of fs.createReadStream(path)) hash.update(chunk);
       if (hash.digest("hex") !== source.sha256) throw new Error(`Main source SHA-256 mismatch: ${source.path}`);
       const media = await probeMedia(path);
-      if (source.mediaKind !== "audio" || media.hasVideo || !media.hasAudio) {
-        throw new Error(`Multi-source main-track video/mixed media is not supported: ${source.path}`);
+      // Video sources are inserted clips: their picture is drawn by a derived
+      // media layer, their own audio plays on the main track.
+      const acceptable = source.mediaKind === "audio" ? !media.hasVideo && media.hasAudio : media.hasVideo && media.hasAudio;
+      if (!acceptable) {
+        throw new Error(`Main-track ${source.mediaKind} source has unsupported streams: ${source.path}`);
       }
-      if (!Number.isFinite(source.duration) || source.duration <= 0 || Math.abs(media.duration - source.duration) > 0.002) {
+      // A video's declared duration is its picture stream (media manifest); the
+      // container may be a few frames longer when its audio runs on. SHA pins identity.
+      const tolerance = source.mediaKind === "video" ? 0.5 : 0.002;
+      if (!Number.isFinite(source.duration) || source.duration <= 0 || Math.abs(media.duration - source.duration) > tolerance) {
         throw new Error(`Main source duration mismatch: ${source.path}`);
       }
       if (await sourceIdentity(root, source.path) !== identity) throw new Error(`Main source changed during verification: ${source.path}`);

@@ -27,6 +27,10 @@ workbench ingest-status请求{operationId}精确查原操作；running等待、s
 
 模块按画面Skill module-publish.md。workbench visuals-put以原expectedRevision和完整document保存已授权层，不能把module发布当层绑定。MP4按media-import/sourceSHA→media-get/assetId→visuals-put，未知按同assetId查。config-get后config-set只修改已授权aspectRatio，expectedRevision取projectRevision；不把配置revision与字幕revision混用。
 
+## 主轨插入视频段
+
+需要在某句说完后插入带原声的视频并让后面顺延时：media-import/media-get导入带音轨MP4，inserts-get取revision与现有document，在其上增删项后inserts-plan（confirmed:false）核对summary.inserts的位置、总时长与warnings，再以同operationId、planRevision和--confirmed执行inserts-commit；回读inserts-get、edit-list-get和字幕时间。它加长时间线，不是visuals-put覆盖层；任意秒数插入仍无接口。
+
 ## 导出
 
 workbench export-plan请求{profile:"fast"或"master"}，保存snapshotFingerprint/计划和新绝对outputPath。用户明确批准后export-start请求{operationId,expectedSnapshot:原指纹,profile:同档位,outputPath}加--confirmed；项目锁内冻结，已有输出不覆盖。指纹绑定项目JSON，不保证绑定全部HTML/媒体字节。

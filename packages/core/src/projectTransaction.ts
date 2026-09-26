@@ -5,7 +5,9 @@ import { VideocutError } from "./errors";
 import { serializeProjectOperation } from "./projectLock";
 
 export const TRANSACTION_MARKER = ".videocut-transaction.json";
-export const TRANSACTION_FILES = ["project.json", "transcript.json", "cut-selection.json", "edit-list.json", "subtitles.json", "visuals.json", "workbench.json", "index.html"] as const;
+export const TRANSACTION_FILES = ["project.json", "transcript.json", "cut-selection.json", "edit-list.json", "subtitles.json", "visuals.json", "workbench.json", "index.html", "inserts.json"] as const;
+/** Added after v1 journals existed: absent means null, and null is left out of the revision so older revisions stay valid. */
+const OPTIONAL_TRANSACTION_FILES: ReadonlySet<string> = new Set(["inserts.json"]);
 export type ProjectFiles = Record<(typeof TRANSACTION_FILES)[number], string | null>;
 const JOURNAL_LIMIT = 64 * 1024 * 1024;
 const digest = (s: string) => createHash("sha256").update(s).digest("hex");
@@ -31,7 +33,8 @@ export async function snapshotProjectFiles(directory: string): Promise<ProjectFi
   if (Buffer.byteLength(JSON.stringify(files)) > 24 * 1024 * 1024) fail("Project documents exceed transaction limit");
   return files;
 }
-export const projectFilesRevision = (files: ProjectFiles) => digest(JSON.stringify(TRANSACTION_FILES.map(n => [n, files[n]])));
+export const projectFilesRevision = (files: ProjectFiles) => digest(JSON.stringify(TRANSACTION_FILES
+  .filter(n => !OPTIONAL_TRANSACTION_FILES.has(n) || (files[n] ?? null) !== null).map(n => [n, files[n]])));
 
 async function atomic(path: string, content: string) {
   const tmp = path + "." + randomUUID() + ".tmp";
@@ -51,6 +54,7 @@ async function historyDirectory(directory: string, operationId: string, create =
 }
 export interface ProjectTransaction { schemaVersion: 1; operationId: string; inputKey: string; before: ProjectFiles; after: ProjectFiles; }
 function validateRecord(record: ProjectTransaction, operationId: string) {
+  for (const files of [record?.before, record?.after]) if (files) for (const n of OPTIONAL_TRANSACTION_FILES) (files as Record<string, string | null>)[n] ??= null;
   if (!record || record.schemaVersion !== 1 || record.operationId !== operationId || typeof record.inputKey !== "string" || !record.before || !record.after ||
     TRANSACTION_FILES.some(n => (record.before[n] !== null && typeof record.before[n] !== "string") || (record.after[n] !== null && typeof record.after[n] !== "string"))) fail("Invalid transaction journal");
   for (const files of [record.before, record.after]) {

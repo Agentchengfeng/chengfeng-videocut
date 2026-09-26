@@ -8,8 +8,10 @@ import { executeExport } from "../export-command";
 import { JobStore, JobStoreError } from "./store";
 
 const EXPORT_DOCUMENTS = [
-  "project.json", "edit-list.json", "transcript.json", "subtitles.json", "visuals.json", "sound-effects.json",
+  "project.json", "edit-list.json", "transcript.json", "subtitles.json", "visuals.json", "sound-effects.json", "inserts.json",
 ] as const;
+/** Optional documents are left out of the digest when absent so older frozen fingerprints stay byte-identical. */
+const OPTIONAL_FINGERPRINT_DOCUMENTS = new Set<string>(["sound-effects.json", "inserts.json"]);
 async function snapshotSoundEffects(directory: string) {
   try { await lstat(join(directory, "sound-effects.json")); }
   catch (e: any) { if(e.code === "ENOENT") return {document:{cues:[]}}; throw e; }
@@ -39,7 +41,7 @@ export async function exportInputFingerprint(projectDirectory: string): Promise<
   const digest = createHash("sha256");
   for (const name of EXPORT_DOCUMENTS) {
     // Preserve frozen fingerprints of queued pre-SFX exports byte-for-byte.
-    if (name === "sound-effects.json") {
+    if (OPTIONAL_FINGERPRINT_DOCUMENTS.has(name)) {
       try { await lstat(join(projectDirectory,name)); }
       catch(e:any) { if(e.code === "ENOENT") continue; throw e; }
     }

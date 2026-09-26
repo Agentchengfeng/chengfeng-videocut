@@ -699,6 +699,11 @@ export function applyEditListOperation(
   const index = document.segments.findIndex((segment) => segment.id === operation.clipId);
   if (index < 0) return invalid(`Unknown edit-list clip id: ${operation.clipId}`);
   const segment = document.segments[index];
+  // Inserted clips are derived from inserts.json; editing them here would be
+  // silently undone by the next inserts rebuild.
+  if (segment.instanceId?.startsWith("insert:")) {
+    return invalid("Inserted clips are edited through the inserts document", { clipId: segment.id });
+  }
   let segments = [...document.segments];
 
   if (operation.type === "move") {

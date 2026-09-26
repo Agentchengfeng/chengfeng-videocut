@@ -30,7 +30,7 @@ workbench visuals-put请求{expectedRevision,document}并带--confirmed 回读�
 sourceIn/sourceOut 是**素材内部入出点**，不是剪后时间线秒数。范围必须在已验证的视频时长内。
 起点由词锚点计算，终点为词锚点终点与可用素材时长的较早者；不拉伸、循环或冻结以填缝。
 只有覆盖第一个保留词的片头可以显式设置 includeLeadingGap=true，包含开头的未说话间隙；其他段默认省略。
-contain 保持比例留黑边，cover 保持比例居中裁满。素材自身始终静音，口播音轨仍是唯一主音轨。
+contain 保持比例留黑边，cover 保持比例居中裁满。素材自身始终静音，口播音轨仍是唯一主音轨。需要口播暂停、播放素材原声并顺延时，不用覆盖层，改走[Runtime CLI](runtime-cli.md)的主轨插入inserts-*。
 当前单画面轨不接受重叠层；不要为了达到覆盖比例改动 EDL 或字幕。计算覆盖必须用回读 timings 的区间并集，而不是 MP4 总长。
 
 ## 3. 验收
