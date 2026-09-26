@@ -231,7 +231,10 @@ export const KouboTranscriptPane = memo(function KouboTranscriptPane({
   const visibleTranscriptCues = useMemo(() => indexedTranscript.cues.filter((cue) => cue.words.some(({ word }) =>
     shouldShowTranscriptWord(word, displayedCutWordIds),
   )), [displayedCutWordIds, indexedTranscript.cues]);
-  const editingLockReason = editList.document?.schemaVersion === 2 && !insertOnlyNarration(editList.document)
+  // Only a timeline with several narration sources is locked; a single
+  // narration with inserted clips edits exactly like a single-source project.
+  const multisourceLocked = editList.document?.schemaVersion === 2 && !insertOnlyNarration(editList.document);
+  const editingLockReason = multisourceLocked
     ? "多源文稿暂仅支持定位；删词与恢复尚未支持来源实例，请使用时间线片段编辑"
     : resolveKouboEditingLockReason({
     transcriptLoading,
@@ -336,7 +339,7 @@ export const KouboTranscriptPane = memo(function KouboTranscriptPane({
   }, []);
 
   const applyRange = useCallback(async (range: KouboWordRange): Promise<boolean> => {
-    if (editList.document?.schemaVersion === 2) return false;
+    if (multisourceLocked) return false;
     const normalizedRange = normalizeRange(range);
     const selected = wordsRef.current.slice(normalizedRange.start, normalizedRange.end + 1);
     const selectedIsCut = selected.length > 0 && selected.every((word) =>
@@ -373,7 +376,7 @@ export const KouboTranscriptPane = memo(function KouboTranscriptPane({
     } catch {
       return false;
     }
-  }, [deleteOperationForRange, editList.document?.mode, editList.document?.schemaVersion, editList.patchOperation, restoreOperationForRange, updateCutWordIds]);
+  }, [deleteOperationForRange, editList.document?.mode, multisourceLocked, editList.patchOperation, restoreOperationForRange, updateCutWordIds]);
 
   useEffect(() => dismissSelection({ force: true }), [dismissSelection, projectId]);
 
@@ -621,7 +624,7 @@ export const KouboTranscriptPane = memo(function KouboTranscriptPane({
       aria-label="剪口播逐词审核"
       data-cut-transcript-pane="true"
     >
-      {editList.document?.schemaVersion === 2 && (
+      {multisourceLocked && (
         <div className="cut-transcript-notice" role="status">{editingLockReason}</div>
       )}
       {transcriptError && (
@@ -658,7 +661,7 @@ export const KouboTranscriptPane = memo(function KouboTranscriptPane({
           <button
               type="button"
               className={selectionIsCut ? "is-restore" : "is-delete"}
-              disabled={restorePending || editList.document?.schemaVersion === 2 || Boolean(editingLockReason) && editList.document?.mode !== "manual"}
+              disabled={restorePending || multisourceLocked || Boolean(editingLockReason) && editList.document?.mode !== "manual"}
               title={selectionIsCut && editList.document?.mode === "manual"
                 ? "恢复已删除的文稿范围"
                 : editingLockReason ?? undefined}

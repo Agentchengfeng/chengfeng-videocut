@@ -113,6 +113,30 @@ afterEach(() => {
 });
 
 describe("KouboTranscriptPane sidebar contract", () => {
+  it("keeps transcript cut editing for a single narration with inserted clips", async () => {
+    const state = editListFixture("cuts-derived");
+    const clip = "c".repeat(64);
+    state.document = {
+      ...state.document!, schemaVersion: 2, duration: 12,
+      sources: [{ path: "input/a.wav", duration: 10, sha256: revision, mediaKind: "audio" },
+        { path: `.chengfeng-videocut/media/${clip}/source.mp4`, duration: 2, sha256: clip, mediaKind: "video" }],
+      segments: [
+        { id: "a-roll-0001", source: "input/a.wav", instanceId: "original", sourceStart: 0, sourceEnd: 1, timelineStart: 0, trackId: "a-roll", playbackRate: 1 },
+        { id: "insert-i1", source: `.chengfeng-videocut/media/${clip}/source.mp4`, instanceId: "insert:i1", sourceStart: 0, sourceEnd: 2, timelineStart: 1, trackId: "a-roll", playbackRate: 1 },
+        { id: "a-roll-0001~i1", source: "input/a.wav", instanceId: "original", sourceStart: 1, sourceEnd: 10, timelineStart: 3, trackId: "a-roll", playbackRate: 1 },
+      ],
+    };
+    const cues = [{ id: "cue0", start: 0, end: 2, words: [
+      { id: "w0", text: "词0", start: 0, end: 1, isGap: false, source: "input/a.wav", instanceId: "original" },
+      { id: "w1", text: "词1", start: 1.2, end: 2, isGap: false, source: "input/a.wav", instanceId: "original" },
+    ] }];
+    const rendered = renderPane("cuts-derived", { editList: state, cues });
+    expect(rendered.host.textContent).not.toContain("多源文稿暂仅支持定位");
+    const word = rendered.host.querySelector<HTMLElement>('[data-word-id="w1"]')!;
+    await act(async () => word.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true })));
+    expect(rendered.updateCutWordIds).toHaveBeenCalled();
+  });
+
   it("locates same-second words by source instance and blocks v2 transcript edits", async () => {
     const state = editListFixture("manual");
     state.document = {
