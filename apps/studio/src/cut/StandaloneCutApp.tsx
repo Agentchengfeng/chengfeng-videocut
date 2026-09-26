@@ -79,7 +79,6 @@ export function StandaloneCutApp() {
           <span aria-hidden="true" />
           <p title={route.projectId ?? undefined}>{projectLabel}</p>
         </div>
-
       </header>
 
       {route.projectId ? (

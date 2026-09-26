@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { ffmpegFileArg } from "@video-workbench/core";
+import { probeMedia } from "@video-workbench/koubo-adapter";
 
 /**
  * Media for playback that never seeks.
@@ -120,6 +121,7 @@ export interface PreviewStream {
 }
 
 export interface BuildPreviewStreamInput {
+  audioOnly?: boolean;
   projectDir: string;
   /** Project-relative path of the ready preview proxy. */
   proxySource: string;
@@ -224,7 +226,9 @@ async function ensureProxyIndexes(input: BuildPreviewStreamInput): Promise<{
       .filter((value) => Number.isFinite(value))
       .sort((left, right) => left - right);
     if (keyframes.length === 0) {
-      throw new Error("Fragmented preview proxy reports no keyframes");
+      const media = await probeMedia(proxy);
+      if (media.hasVideo || !media.hasAudio) throw new Error("Fragmented preview proxy reports no keyframes");
+      keyframes.push(0); // Audio has no video keyframes; its chunks use exact source times.
     }
     const temporary = scratchPath(indexPath);
     await writeFile(temporary, JSON.stringify(keyframes), "utf8");
@@ -483,6 +487,34 @@ export function quietBoundaryAfter(
   return time;
 }
 
+/** A deleted tail can be quiet relative to its word and still stand far above
+ * the following pause. Only inspect complete paired windows before protected
+ * speech; one isolated low window must never be mistaken for a closed tail. */
+function refineDeletedTail(
+  map: { step: number; rms: number[]; quiet: number; floor: number },
+  start: number,
+  limitSeconds: number,
+): { quiet: number; boundary: number } | null {
+  if (!(map.step > 0) || limitSeconds + 1e-9 < map.step * 2) return null;
+  const first = Math.max(0, Math.ceil(start / map.step - 1e-7));
+  const last = Math.min(map.rms.length - 2,
+    Math.floor((start + limitSeconds) / map.step + 1e-7) - 2);
+  if (last < first) return null;
+  let plateau = Infinity;
+  for (let index = first; index <= last; index++) {
+    const paired = Math.max(map.rms[index]!, map.rms[index + 1]!);
+    if (Number.isFinite(paired) && paired >= 0) plateau = Math.min(plateau, paired);
+  }
+  if (!Number.isFinite(plateau)) return null;
+  const quiet = Math.min(map.quiet, Math.max(map.floor * FLOOR_RELEASE, plateau * SOUND_ABOVE_FLOOR));
+  for (let index = first; index <= last; index++) {
+    if (map.rms[index]! <= quiet && map.rms[index + 1]! <= quiet) {
+      return { quiet, boundary: roundSeconds(Math.max(start, index * map.step)) };
+    }
+  }
+  return { quiet, boundary: start };
+}
+
 function keyframeAtOrBefore(keyframes: readonly number[], time: number): number {
   let low = 0;
   let high = keyframes.length - 1;
@@ -569,6 +601,8 @@ export async function placeCutBoundaries(input: {
   proxySource: string;
   proxyCacheKey: string;
   ranges: readonly { start: number; end: number }[];
+  /** Only semantic deletion asks for a stricter, locally measured tail release. */
+  refineDeletedTails?: boolean;
 }): Promise<{ start: number; end: number }[]> {
   const { loudness } = await ensureProxyIndexes({
     projectDir: input.projectDir,
@@ -608,7 +642,7 @@ export async function placeCutBoundaries(input: {
     // the ears, which is the one mismatch this product refuses. And never up to the
     // next onset: the same hard stop the end obeys, because the first kept word is
     // exactly what a start must not eat.
-    const startRelease = { ...loudness, quiet: tailReleaseLevel(loudness, words, range.start) };
+    let startRelease = { ...loudness, quiet: tailReleaseLevel(loudness, words, range.start) };
     const spillRoom = Math.min(
       QUIET_SEARCH_SECONDS,
       (end - range.start) / 2,
@@ -616,6 +650,10 @@ export async function placeCutBoundaries(input: {
         ? QUIET_SEARCH_SECONDS
         : (nextOnsetAfter(onsets, range.start) ?? Infinity) - range.start,
     );
+    const refinedTail = input.refineDeletedTails
+      ? refineDeletedTail(startRelease, range.start, Math.max(0, spillRoom))
+      : null;
+    if (refinedTail) startRelease = { ...startRelease, quiet: refinedTail.quiet };
     // A start that continues straight on from the previous range is not a cut at
     // all — the source is contiguous there, the seam gets merged away before
     // cutting, and nothing was deleted that could spill in. Moving it would tear a
@@ -626,7 +664,7 @@ export async function placeCutBoundaries(input: {
     const start = !seam
       && !insideSpokenWord(words, range.start)
       && soundSpillsInto(startRelease, range.start)
-      ? quietBoundaryAfter(startRelease, range.start, Math.max(0, spillRoom))
+      ? refinedTail?.boundary ?? quietBoundaryAfter(startRelease, range.start, Math.max(0, spillRoom))
       : range.start;
     return { start, end };
   });
@@ -650,13 +688,13 @@ export async function buildPreviewStream(
     const end = segment.end;
     const duration = end - start;
     if (!(duration > 0)) continue;
-    const keyframe = keyframeAtOrBefore(keyframes, start);
+    const keyframe = input.audioOnly ? start : keyframeAtOrBefore(keyframes, start);
     // Keyed by what the fragment contains, not by which edit asked for it, so an
     // unchanged range is never cut twice.
     // `start` belongs in the key even though the cut runs from the keyframe: the
     // fades are placed relative to the range, so two fragments with the same
     // keyframe and end but different starts are different media.
-    const name = `${sha256(`${input.proxyCacheKey}|${keyframe.toFixed(6)}|${start.toFixed(6)}|${end.toFixed(6)}|f${SEAM_FADE_SECONDS}`)}.m4s`;
+    const name = `${sha256(`${input.audioOnly ? "audio-v1|" : ""}${input.proxyCacheKey}|${keyframe.toFixed(6)}|${start.toFixed(6)}|${end.toFixed(6)}|f${SEAM_FADE_SECONDS}`)}.m4s`;
     const path = join(directory, name);
     keep.add(name);
     if (!await exists(path)) {
@@ -667,13 +705,13 @@ export async function buildPreviewStream(
       const fadeOut = roundSeconds(fadeIn + duration - SEAM_FADE_SECONDS);
       const audio = duration > SEAM_FADE_SECONDS * 4
         ? [
-            "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
+            ...(input.audioOnly ? ["-vn"] : ["-c:v", "copy"]), "-c:a", "aac", "-b:a", "128k",
             "-af", `afade=t=in:st=${fadeIn.toFixed(6)}:d=${SEAM_FADE_SECONDS},`
               + `afade=t=out:st=${fadeOut.toFixed(6)}:d=${SEAM_FADE_SECONDS}`,
           ]
         // Too short to ramp both ends without them meeting; leave it alone rather
         // than fade a fragment into and out of itself.
-        : ["-c", "copy"];
+        : input.audioOnly ? ["-vn", "-c:a", "aac", "-b:a", "128k"] : ["-c", "copy"];
       try {
         await run("ffmpeg", [
           "-y", "-v", "error",
@@ -703,6 +741,6 @@ export async function buildPreviewStream(
   return {
     segments,
     totalSeconds: roundSeconds(out),
-    mimeType: 'video/mp4; codecs="avc1.640028, mp4a.40.2"',
+    mimeType: input.audioOnly ? 'audio/mp4; codecs="mp4a.40.2"' : 'video/mp4; codecs="avc1.640028, mp4a.40.2"',
   };
 }

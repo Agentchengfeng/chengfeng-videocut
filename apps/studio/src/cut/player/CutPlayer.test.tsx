@@ -4,6 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CutPlayer } from "./CutPlayer";
+import { projectCanvasAspect } from "../useContainedPicture";
 import { createTransportVideoRef, type EdlVideoTransport } from "./useAssembledVideoTransport";
 
 Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
@@ -45,6 +46,71 @@ function setNativeInputValue(input: HTMLInputElement, value: string) {
 }
 
 describe("CutPlayer controls", () => {
+  it("contains notices inside the preview without replacing the media or controls", () => {
+    const host = document.createElement("div"); document.body.append(host);
+    const root = createRoot(host); const transport = transportFixture();
+    const render = (notices: React.ReactNode) => root.render(<CutPlayer sourceUrl="/video.mp4"
+      transport={transport} onTimelineTimeCommit={vi.fn()} notices={notices} />);
+    act(() => render(null)); const media = host.querySelector("video");
+    act(() => render(<div role="alert">画面更新失败，保留上次画面</div>));
+    expect(host.querySelector(".cf-cut-player-stage > .cf-cut-player-notices [role=alert]")?.textContent).toContain("保留上次画面");
+    expect(host.querySelector(".cf-cut-player-canvas .cf-cut-player-notices")).toBeNull();
+    expect(host.querySelector("video")).toBe(media);
+    expect(host.querySelector('[aria-label="播放"]')).not.toBeNull();
+    act(() => render(null)); expect(host.querySelector(".cf-cut-player-notices")).toBeNull();
+    expect(host.querySelector("video")).toBe(media); act(() => root.unmount());
+  });
+  it("keeps legacy video subtitles and visuals on the source frame, while audio defaults to 16:9", () => {
+    for (const value of [undefined, "0:3", "1:999999999"]) for (const audioOnly of [false,true]) {
+      const host=document.createElement("div");document.body.append(host);const root=createRoot(host);
+      act(()=>root.render(<CutPlayer sourceUrl="/legacy.mp4" audioOnly={audioOnly} canvasAspectRatio={projectCanvasAspect(value)} transport={transportFixture()} onTimelineTimeCommit={vi.fn()} />));
+      const media=host.querySelector("video")!;
+      Object.defineProperties(media,{offsetWidth:{configurable:true,value:1200},offsetHeight:{configurable:true,value:900},videoWidth:{configurable:true,value:audioOnly?0:1440},videoHeight:{configurable:true,value:audioOnly?0:1080}});
+      act(()=>media.dispatchEvent(new Event("loadedmetadata")));
+      for(const selector of [".cf-cut-visual-overlay",".cf-cut-subtitle-overlay"]){
+        const overlay=host.querySelector<HTMLElement>(selector)!;
+        expect(overlay.style.width).toBe("1200px");expect(overlay.style.height).toBe(audioOnly?"675px":"900px");
+      }
+      act(()=>root.unmount());host.remove();
+    }
+  });
+  it("sizes audio visuals and captions on the same canvas without a second media clock", () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const transport = transportFixture();
+    const layers = [{ layerId: "intro", src: "about:blank", start: 0, duration: 8, cues: [] }];
+    act(() => root.render(<CutPlayer audioOnly sourceUrl="/voice.mp4" transport={transport}
+      visualLayers={layers} activeVisualLayerId="intro" onTimelineTimeCommit={vi.fn()} />));
+    const media = host.querySelector("video")!;
+    Object.defineProperties(media, {
+      offsetWidth: { configurable: true, value: 1280 },
+      offsetHeight: { configurable: true, value: 900 },
+    });
+    act(() => media.dispatchEvent(new Event("resize")));
+    for (const selector of [".cf-cut-visual-overlay", ".cf-cut-subtitle-overlay"]) {
+      const overlay = host.querySelector<HTMLElement>(selector)!;
+      expect(overlay.style.width).toBe("1280px");
+      expect(overlay.style.height).toBe("720px");
+    }
+    expect(host.textContent).not.toContain("纯音频口播");
+    expect(host.querySelectorAll("video, audio")).toHaveLength(1);
+    expect(media).toBe(transport.videoRef.current);
+    act(() => root.render(<CutPlayer sourceUrl="/video.mp4" transport={transport} onTimelineTimeCommit={vi.fn()} />));
+    expect(host.querySelector<HTMLElement>(".cf-cut-visual-overlay")!.style.width).toBe("");
+    act(() => root.unmount());
+  });
+
+  it("labels audio-only media while retaining exactly one playback clock", () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    act(() => root.render(<CutPlayer audioOnly sourceUrl="/voice.mp4" transport={transportFixture()} onTimelineTimeCommit={vi.fn()} />));
+    expect(host.textContent).toContain("纯音频口播");
+    expect(host.querySelectorAll("video, audio")).toHaveLength(1);
+    act(() => root.unmount());
+  });
+
   it("exposes the HyperFrames-compatible transport through the Product transport", () => {
     const host = document.createElement("div");
     document.body.append(host);

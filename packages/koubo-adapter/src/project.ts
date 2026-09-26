@@ -23,8 +23,11 @@ import {
   type EditListDocument,
   VideocutError,
   ffmpegFileArg,
+  parseCanvasAspect,
+  canvasDimensions,
 } from "@video-workbench/core";
 import { probeMedia } from "./mediaCut";
+import { sourceMediaKind, validateAudioSource } from "./sourceMedia";
 import {
   buildNaturalPausePlan,
   DEFAULT_NATURAL_PAUSE_POLICY,
@@ -744,6 +747,8 @@ async function previewProxyDescriptor(
     width: result.proxyProbe.width,
     height: result.proxyProbe.height,
     frameRate: result.proxyProbe.frameRate,
+    hasVideo: result.proxyProbe.hasVideo,
+    hasAudio: result.proxyProbe.hasAudio,
     maxKeyframeIntervalSeconds: result.proxyProbe.maxKeyframeIntervalSeconds,
   };
 }
@@ -938,12 +943,7 @@ function canonicalCutRangesMigrationCandidate(
  * 画幅比由用户的视频说了算，不是产品说了算。
  */
 export function parseAspectRatio(value: string): { w: number; h: number } | null {
-  const match = /^(\d+)[:：](\d+)$/.exec(String(value).trim());
-  if (!match) return null;
-  const w = Number(match[1]);
-  const h = Number(match[2]);
-  if (!(w > 0) || !(h > 0)) return null;
-  return { w, h };
+  return parseCanvasAspect(value);
 }
 
 /** 从视频实际尺寸推导画幅比：最大公约数化简，1080×1920 → 9:16。 */
@@ -959,11 +959,7 @@ export function deriveAspectRatio(width: number, height: number): string {
  * 这条律的特例，任意比例同样适用。解析不了保持旧的 1920×1080 兜底。
  */
 export function frameDimensions(aspectRatio: string): { width: number; height: number } {
-  const ratio = parseAspectRatio(aspectRatio);
-  if (!ratio) return { width: 1920, height: 1080 };
-  const scale = 1080 / Math.min(ratio.w, ratio.h);
-  const even = (value: number) => Math.round(value * scale / 2) * 2;
-  return { width: even(ratio.w), height: even(ratio.h) };
+  return parseCanvasAspect(aspectRatio) ? canvasDimensions(aspectRatio) : { width: 1920, height: 1080 };
 }
 
 function escapeHtml(value: unknown): string {
@@ -1801,18 +1797,15 @@ async function prepareKouboProjectSnapshot(
 
   const visualPlanPath = join(jobDir, "visual-plan.json");
   const config = isObject(project.config) ? project.config : {};
-  // 画幅比永远等于源视频的显示比例——产品没有裁切，档案里声明一个与素材
-  // 不符的比例，只会让画布、Sharp 校验和导出计划全部错位（存量项目曾被
-  // 枚举逼着给竖屏视频选 16:9，Sharp 校验因此拦下自己生成的正确预览）。
-  // prepare 是幂等修复点：探测得到显示尺寸就校正档案；探测不了保持原值。
+  // A valid project canvas is a user composition choice. Probe only repairs
+  // missing/invalid legacy metadata, never overwrites a chosen aspect ratio.
   let ratio = String(config.aspectRatio ?? previous.aspectRatio ?? "3:4");
   try {
     const probed = await probeMedia(videoPath);
     if (probed.width > 0 && probed.height > 0) {
       const derived = deriveAspectRatio(probed.width, probed.height);
-      const declared = parseAspectRatio(ratio);
-      const mismatched = !declared ||
-        Math.abs(declared.w / declared.h - probed.width / probed.height) / (probed.width / probed.height) > 0.02;
+      const declared = parseAspectRatio(String(config.aspectRatio ?? previous.aspectRatio ?? ""));
+      const mismatched = !declared;
       if (mismatched && derived !== ratio) {
         ratio = derived;
         config.aspectRatio = derived;
@@ -1967,6 +1960,7 @@ async function prepareKouboProjectSnapshot(
   delete artifacts.workbenchSuggestions;
   project.artifacts = artifacts;
   project.source = {
+    ...(extname(videoPath).toLowerCase() === ".wav" ? { mediaKind: "audio" } : {}),
     path: videoSource,
     sha256: sourceSha256,
     immutable: true,
@@ -2090,16 +2084,13 @@ export async function createKouboProject(
     }
 
     const videoExtension = extname(videoPath).toLowerCase();
-    if (![".mp4", ".mov", ".m4v", ".mkv", ".webm"].includes(videoExtension)) {
-      throw new VideocutError(
-        "invalid_argument",
-        `Unsupported task video extension: ${videoExtension || "none"}`,
-      );
-    }
+    const mediaKind = sourceMediaKind(videoPath);
+    if (mediaKind === "audio") await validateAudioSource(videoPath);
 
     // 画幅比由视频本身定义：显式传入只作覆盖。探测失败时明确报错，
     // 让调用方改传 --aspect-ratio，而不是塞一个默认值进项目档案。
-    let aspectRatio = options.aspectRatio;
+    // Audio has no frame size. This is only the Studio canvas, never source dimensions.
+    let aspectRatio = options.aspectRatio ?? (mediaKind === "audio" ? "16:9" : undefined);
     if (aspectRatio === undefined) {
       const probeVideo = options.probe ?? (async (path: string) => {
         const probed = await probeMedia(path);

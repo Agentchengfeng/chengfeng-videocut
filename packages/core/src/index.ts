@@ -12,3 +12,5 @@ export * from "./exportPlan";
 export * from "./subtitleCss";
 export * from "./subtitles";
 export * from "./visuals";
+export * from "./canvas";
+export * from './soundEffects';

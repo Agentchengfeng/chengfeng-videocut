@@ -23,7 +23,10 @@ function el(id: string, over: Partial<TimelineElement> = {}): TimelineElement {
   };
 }
 
+const cleanups = new Set<() => void>();
 afterEach(() => {
+  for (const cleanup of cleanups) cleanup();
+  vi.restoreAllMocks();
   document.body.innerHTML = "";
   usePlayerStore.getState().reset();
 });
@@ -59,6 +62,11 @@ function renderResizeHarness(
   }
 
   const root = mountReactHarness(<Harness />);
+  const cleanup = () => {
+    act(() => root.unmount());
+    cleanups.delete(cleanup);
+  };
+  cleanups.add(cleanup);
   const apply = setResizingClip!;
 
   return {
@@ -96,7 +104,7 @@ function renderResizeHarness(
       });
     },
     unmount() {
-      act(() => root.unmount());
+      cleanup();
     },
   };
 }
@@ -183,7 +191,7 @@ describe("useTimelineClipDrag — multi-select group resize (restored)", () => {
         expect.objectContaining({ element: a, duration: 2.5 }),
         expect.objectContaining({ element: b, duration: 3.5 }),
       ],
-      { coalesceKey: expect.stringMatching(/^clip-group-resize:/) },
+      { coalesceKey: "clip-group-resize:a:b", primaryElementKey: "a", multiSelection: true },
     );
     expect(h.storeById("a").duration).toBe(2.5);
     expect(h.storeById("b").duration).toBe(3.5);

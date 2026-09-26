@@ -312,6 +312,79 @@ test("a restore seam's start never moves — the source is continuous there", as
   }
 });
 
+async function deletedTailPlacement(input: {
+  tail: number[]; nextOnset?: number; floor?: number; peak?: number; start?: number;
+}) {
+  const root = await mkdtemp(join(tmpdir(), "preview-deleted-tail-"));
+  const floor = input.floor ?? 10;
+  const start = input.start ?? 0.1;
+  const nextOnset = input.nextOnset ?? 0.22;
+  const rms = new Array<number>(100).fill(floor);
+  rms.fill(input.peak ?? 3500, 0, 10);
+  rms.splice(10, input.tail.length, ...input.tail);
+  const directory = join(root, ".chengfeng-videocut", "preview-stream");
+  await mkdir(directory, { recursive: true });
+  await writeFile(join(directory, "tail.keyframes.json"), "[0]");
+  await writeFile(join(directory, "tail.loudness.json"), JSON.stringify({ step: 0.01, floor, quiet: floor * 1.5, rms }));
+  await writeFile(join(root, "transcript.json"), JSON.stringify({ cues: [{ words: [
+    { id: "deleted", text: "a", start: 0, end: 0.1 },
+    { id: "kept", text: "b", start: nextOnset, end: 0.5 },
+  ] }] }));
+  const base = { projectDir: root, proxySource: "unused.mp4", proxyCacheKey: "tail",
+    ranges: [{ start, end: 0.8 }] };
+  try {
+    const original = await placeCutBoundaries(base);
+    const explicitDefault = await placeCutBoundaries({ ...base, refineDeletedTails: false });
+    const refined = await placeCutBoundaries({ ...base, refineDeletedTails: true });
+    expect(explicitDefault).toEqual(original);
+    expect(refined[0]!.end).toBe(original[0]!.end);
+    return { original: original[0]!.start, refined: refined[0]!.start };
+  } finally { await rm(root, { recursive: true, force: true }); }
+}
+
+test("semantic tail refinement finds a local 20ms plateau instead of accepting the loud word's relative decay", async () => {
+  // Normalized measured tail: the old 525 release accepts 320/254, while the
+  // protected pause contains a 28/40 plateau and therefore a release of 60.
+  const result = await deletedTailPlacement({
+    tail: [554, 320, 254, 366, 368, 197, 129, 53, 51, 38, 28, 40],
+  });
+  expect(result.original).toBe(0.11);
+  expect(result.refined).toBe(0.17);
+  expect(result.refined).toBeLessThan(0.22);
+});
+
+test("semantic tail refinement respects high room noise and never waits for zero", async () => {
+  const result = await deletedTailPlacement({ floor: 200, peak: 5000, nextOnset: 0.2,
+    tail: [1200, 850, 700, 300, 260, 250, 245, 260, 250, 250] });
+  expect(result.original).toBe(0.12);
+  expect(result.refined).toBe(0.13);
+});
+
+test("semantic tail refinement cannot mistake a one-window dip for a closed tail", async () => {
+  const result = await deletedTailPlacement({ nextOnset: 0.2,
+    tail: [900, 20, 900, 100, 15, 14, 15, 14, 15, 14] });
+  expect(result.refined).toBe(0.14);
+});
+
+test("short protected gaps retain existing placement and an adjacent kept onset vetoes refinement", async () => {
+  const short = await deletedTailPlacement({ nextOnset: 0.115,
+    tail: [900, 800, 900, 800, 900] });
+  expect(short.refined).toBe(short.original);
+  expect(short.refined).toBe(0.1);
+  const onset = await deletedTailPlacement({ nextOnset: 0.1,
+    tail: [900, 800, 700, 100, 15, 14] });
+  expect(onset.refined).toBe(0.1);
+});
+
+test("semantic quiet windows must finish before a fractional protected onset", async () => {
+  // A low window starting at .13 crosses the .135 onset, and the next low
+  // window belongs to kept speech. Neither may prove the earlier tail closed.
+  const result = await deletedTailPlacement({ nextOnset: 0.135,
+    tail: [900, 800, 700, 10, 10, 10, 10] });
+  expect(result.refined).toBe(0.1);
+  expect(result.refined).toBeLessThan(0.135);
+});
+
 test("two builds racing for the same fragment do not fight over one scratch file", async () => {
   // One edit plus a poll is enough to line two builds up on the same fragment. They
   // used to write it through a scratch path named only after the process id — the

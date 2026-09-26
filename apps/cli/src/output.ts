@@ -93,9 +93,11 @@ export function humanService(data: StudioServiceCommandResult): string {
     return [
       `Studio service: ${data.state}`,
       `stdout (${data.paths.stdoutLogPath}):`,
-      data.logs.stdout || "(empty)",
+      data.logs.errors?.stdout ? `(unavailable: ${data.logs.errors.stdout})` : data.logs.stdout || "(empty)",
       `stderr (${data.paths.stderrLogPath}):`,
-      data.logs.stderr || "(empty)",
+      data.logs.errors?.stderr ? `(unavailable: ${data.logs.errors.stderr})` : data.logs.stderr || "(empty)",
+      `lifecycle diagnostics (${data.paths.diagnosticsDir ?? "unavailable"}):`,
+      data.logs.errors?.diagnostics ? `(unavailable: ${data.logs.errors.diagnostics})` : data.logs.diagnostics || "(empty)",
     ].join("\n");
   }
   const lines = [
@@ -112,10 +114,21 @@ export function humanService(data: StudioServiceCommandResult): string {
 
 export const HELP_TEXT = `chengfeng-videocut ${PRODUCT_VERSION}
 
+  chengfeng-videocut workbench <operation> --api-base <HTTP-loopback-origin> [--project <id>] [--file <request.json>] [--confirmed] --json
+  chengfeng-videocut workbench commands --json
+
+workbench commands lists the fixed operation/field/confirmation contract without contacting a service. Workbench uses only the explicit service registry. Write flags require prior user authorization; plan operations require JSON confirmed:false. Unknown admissions must be queried by the original operation, never retried blindly; accepted jobs are not completed results.
+
+  chengfeng-videocut module publish <project-id> --file <module-manifest.json> --api-base <HTTP-loopback-origin> --confirmed --json
+  chengfeng-videocut module publish <project-id> --file <module-manifest.json> --api-base <HTTP-loopback-origin> --dry-run --json
+  chengfeng-videocut module get <project-id> <module-id> <version> --api-base <HTTP-loopback-origin> --json
+
+Module commands require an explicit HTTP 127.0.0.1 or [::1] origin and a running compatible service. They never start a server or use a local registry. Publish requires prior user authorization; dry-run validates without submitting. Versions are immutable. Success requires identity-checked readback; an unknown publication result requires same-version get, never blind retry. Publishing does not bind visuals.
+
 Usage:
   chengfeng-videocut --help [--json]
   chengfeng-videocut --version [--json]
-  chengfeng-videocut start [--host <host>] [--port <port>] [--projects-dir <dir>] [--data-dir <dir>] [--open] [--json]
+  chengfeng-videocut start [--host <host>] [--port <port>] [--projects-dir <dir>] [--data-dir <dir>] [--idle-timeout-seconds <0..86400>] [--open] [--json]
   chengfeng-videocut service install [--json]
   chengfeng-videocut service start [--json]
   chengfeng-videocut service stop [--json]
@@ -133,7 +146,7 @@ Usage:
   chengfeng-videocut inspect <project> [--json]
   chengfeng-videocut open <project> [--origin <url>] [--json]
   chengfeng-videocut transcribe <job-dir> --video <task-local-path> --output <task-local-path> [--language <code>] [--json]
-  chengfeng-videocut project ingest <job-dir> --video <task-local-path> [--language <code>] [--aspect-ratio <W:H>] [--projects-dir <dir>] [--operation-id <id>] [--json]
+  chengfeng-videocut project ingest <job-dir> (--video <task-local-path> | --audio <task-local.wav>) [--language <code>] [--aspect-ratio <W:H>] [--projects-dir <dir>] [--operation-id <id>] [--json]
   chengfeng-videocut project create <job-dir> --video <task-local-path> --transcript <task-local-path> [--aspect-ratio <W:H>] [--projects-dir <dir>] [--json]
   chengfeng-videocut project prepare <job-dir> [--video <task-local-path>] [--transcript <task-local-path>] [--duration <seconds>] [--force-index] [--refresh-transcript] [--json]
   chengfeng-videocut artifact put <project> --type <subtitles|visual-plan|animation-manifest|timeline> --file <file> --expected-project-revision <sha256> --expected-artifact-revision <none|sha256> [--json]
@@ -164,6 +177,7 @@ Usage:
 service ensure is the product entry point: it atomically installs or recovers the managed user service (launchd on macOS, Task Scheduler on Windows) and waits for a matching ready Runtime.
 service stop disables and unloads the managed user service; service start re-enables it. Service commands fail closed on unsupported platforms and never kill an unknown process occupying port 5190.
 start serves the Studio in the foreground on 127.0.0.1:5190 by default. It remains available for development diagnostics and does not open a browser unless --open is provided.
+Idle shutdown is opt-in: --idle-timeout-seconds 900 requests a 15-minute idle period; 0 (default) disables it. Active clients, playback, unsaved edits, requests and background jobs protect the Runtime. Health/status polling alone does not keep it awake. Verify the selected startup path before enabling; refreshing an old browser URL cannot launch a stopped CLI.
 config stores machine-wide settings in ~/.chengfeng-videocut/config.json at mode 0600, and prints secrets masked. An environment variable of the same name always wins, so one command can be overridden without editing anything. The cloud transcription credential was previously an environment variable and nothing else: required by the product, assumed by the Skills, mentioned in no contract and checked by no command — a shell without it failed at the moment of the call.
 Project may be an absolute directory or an id registered in the Workbench.
 Write entry points return an operationId. Supplying the same --operation-id with the same input replays the recorded terminal result; supplying it with different input is rejected.

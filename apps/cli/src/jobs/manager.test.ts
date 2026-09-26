@@ -3,15 +3,42 @@ import { link, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JobManager } from "./manager";
+import { serializeProjectOperation } from "@video-workbench/core/node";
 import {
   candidateForOutput,
   createExportSnapshot,
   exportDependencyFingerprint,
+  exportInputFingerprint,
   fileIdentity,
 } from "./runners";
 
 const cleanup: string[] = [];
 const managers: JobManager[] = [];
+
+it("project config busy guard covers snapshot-before-queue start and active jobs",async()=>{
+ const f=await fixture();const directory=await realpath(f.projects[0]!);
+ const manager=new JobManager(f.dataDir,{workerEntrypoint:f.slowWorker});managers.push(manager);
+ expect(await manager.isBusy()).toBe(true);
+ expect(await manager.isProjectBusy(directory)).toBe(true);await manager.initialize();expect(await manager.isProjectBusy(directory)).toBe(false);
+ expect(await manager.isBusy()).toBe(false);
+ let release!:()=>void,ready!:()=>void;const entered=new Promise<void>(r=>ready=r),hold=new Promise<void>(r=>release=r);
+ const lock=serializeProjectOperation(directory,async()=>{ready();await hold;});await entered;
+ const starting=manager.start({kind:"export",target:directory,params:{outputPath:join(f.root,"config-busy.mp4")}});
+ try {for(let i=0;i<100&&!await manager.isProjectBusy(directory);i++)await Bun.sleep(5);
+   expect(await manager.isProjectBusy(directory)).toBe(true);expect(await manager.list()).toHaveLength(0);
+   expect(await manager.isBusy()).toBe(true);
+ } finally {release();}
+ await lock;const job=await starting;expect(await manager.isProjectBusy(directory)).toBe(true);expect(job.target).toBe(directory);
+ expect(await manager.isBusy()).toBe(true);
+});
+
+it("rejects a stale confirmed export snapshot before queuing work",async()=>{
+ const f=await fixture();const manager=new JobManager(f.dataDir);managers.push(manager);await manager.initialize();
+ const expected=await exportInputFingerprint(f.projects[0]!);
+ await writeFile(join(f.projects[0]!,"subtitles.json"),"{}\n");
+ await expect(manager.start({kind:"export",target:f.projects[0]!,params:{outputPath:join(f.root,"out.mp4"),expectedSnapshot:expected}})).rejects.toMatchObject({code:"revision_conflict"});
+ expect(await manager.list({})).toHaveLength(0);
+});
 // Production worker cleanup has one 5-second budget. Leave room for the
 // fail-closed state write and removal of each test's temporary directory.
 afterEach(async () => {

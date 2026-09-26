@@ -35,6 +35,7 @@ export interface TimelineClipProps {
   ariaSelected?: boolean;
   ariaLabel?: string;
   ariaHidden?: boolean;
+  titleOverride?: string;
   tabIndex?: number;
   children?: ReactNode;
 }
@@ -63,6 +64,7 @@ export const TimelineClip = memo(function TimelineClip({
   ariaSelected,
   ariaLabel,
   ariaHidden,
+  titleOverride,
   tabIndex,
   children,
 }: TimelineClipProps) {
@@ -115,9 +117,9 @@ export const TimelineClip = memo(function TimelineClip({
       aria-hidden={ariaHidden}
       tabIndex={tabIndex ?? (role === "option" ? 0 : undefined)}
       title={
-        isComposition
+        titleOverride ?? (isComposition
           ? `${el.compositionSrc} • Double-click to open`
-          : `${displayLabel} • ${el.start.toFixed(1)}s – ${(el.start + el.duration).toFixed(1)}s`
+          : `${displayLabel} • ${el.start.toFixed(1)}s – ${(el.start + el.duration).toFixed(1)}s`)
       }
       onPointerEnter={onHoverStart}
       onPointerLeave={onHoverEnd}

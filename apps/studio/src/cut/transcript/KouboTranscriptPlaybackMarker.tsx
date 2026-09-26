@@ -1,4 +1,5 @@
 import { useLayoutEffect, useMemo, useRef } from "react";
+import { timelineTimeToSourcePosition } from "@video-workbench/core";
 import {
   deriveActualCutWordIds,
   resolveSourcePlayheadTime,
@@ -135,7 +136,10 @@ export function KouboTranscriptPlaybackMarker({
     const root = findTranscriptRoot(projectId);
     if (!root) return;
     const sourceTime = resolveSourcePlayheadTime(editList.document, timelineTime);
-    const next = resolveKouboActiveTranscriptPosition(indexedTranscript.cues, sourceTime);
+    const identity = editList.document?.schemaVersion === 2
+      ? timelineTimeToSourcePosition(editList.document, timelineTime) ?? {}
+      : undefined;
+    const next = resolveKouboActiveTranscriptPosition(indexedTranscript.cues, sourceTime, identity);
     const previous = activePositionRef.current;
     const nodes = markerNodesRef.current;
     const markerIsCurrent = Boolean(nodes.cue?.isConnected)

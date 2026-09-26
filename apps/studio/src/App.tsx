@@ -14,6 +14,7 @@ import { StudioOverlays } from "./components/StudioOverlays";
 import { SaveQueuePausedBanner } from "./components/SaveQueuePausedBanner";
 import { useCaptionStore } from "./captions/store";
 import { useCaptionSync } from "./captions/hooks/useCaptionSync";
+import { useCaptionProjectIsolation } from "./hooks/useCaptionProjectIsolation";
 import { usePersistentEditHistory } from "./hooks/usePersistentEditHistory";
 import { usePanelLayout } from "./hooks/usePanelLayout";
 import { useFileManager } from "./hooks/useFileManager";
@@ -137,7 +138,6 @@ export function StudioApp({
   const renderQueue = useRenderQueue(projectId);
   const captionEditMode = useCaptionStore((s) => s.isEditMode);
   const captionHasSelection = useCaptionStore((s) => s.selectedSegmentIds.size > 0);
-  const captionSync = useCaptionSync(projectId);
   const timelineElements = usePlayerStore((s) => s.elements);
   const setSelectedTimelineElementId = usePlayerStore((s) => s.setSelectedElementId);
   const timelineDuration = usePlayerStore((s) => s.duration);
@@ -154,6 +154,10 @@ export function StudioApp({
     return Math.max(timelineDuration, maxEnd);
   }, [timelineDuration, timelineElements]);
   const { toasts, showToast, dismissToast } = useToast();
+  const handleCaptionDetectionError = useCallback(
+    (message: string) => showToast(message, "error"),
+    [showToast],
+  );
   const panelLayout = usePanelLayout({
     rightCollapsed: initialUrlStateRef.current.rightCollapsed,
     rightPanelTab: initialUrlStateRef.current.rightPanelTab,
@@ -171,6 +175,14 @@ export function StudioApp({
     domEditSaveTimestampRef,
     setRefreshKey,
   });
+  const captionSync = useCaptionSync(projectId, {
+    readProjectFile: fileManager.readProjectFile,
+    readOptionalProjectFile: fileManager.readOptionalProjectFile,
+    writeProjectFile: fileManager.writeProjectFile,
+    observeProjectFileVersion: fileManager.observeProjectFileVersion,
+    showToast,
+  });
+  useCaptionProjectIsolation(projectId);
   const masterCompPath = useMemo(
     () => resolveMasterCompositionPath(fileManager.fileTree),
     [fileManager.fileTree],
@@ -394,6 +406,7 @@ export function StudioApp({
     previewIframeRef,
     captionSync,
     setRightCollapsed: panelLayout.setRightCollapsed,
+    onError: handleCaptionDetectionError,
   });
   const renderClipContent = useRenderClipContent({
     projectIdRef: fileManager.projectIdRef,

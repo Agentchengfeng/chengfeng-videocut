@@ -5,8 +5,8 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TimelineElement } from "../store/playerStore";
 import { usePlayerStore } from "../store/playerStore";
-import { TRACK_H } from "./timelineLayout";
-import { buildStackingTimelineLayers } from "./timelineTrackOrder";
+import { TRACK_H, getTimelineRowTop } from "./timelineLayout";
+import { multiDragPassengerOffsetPx } from "./timelineMultiDragPreview";
 import type { DraggedClipState, ResizingClipState } from "./useTimelineClipDrag";
 import { useTimelineClipDrag } from "./useTimelineClipDrag";
 
@@ -44,22 +44,26 @@ function timelineElement(input: {
   };
 }
 
+const cleanups = new Set<() => void>();
 afterEach(() => {
+  for (const cleanup of cleanups) cleanup();
+  vi.restoreAllMocks();
   document.body.innerHTML = "";
   usePlayerStore.getState().reset();
 });
 
 function renderDragHarness(elements: TimelineElement[]) {
   usePlayerStore.getState().setElements(elements);
-  const layers = buildStackingTimelineLayers(elements).rows;
   const scroll = document.createElement("div");
+  Object.defineProperty(scroll, "scrollWidth", { value: 6000 });
   document.body.append(scroll);
   const onMoveElement = vi.fn();
   const onResizeElement = vi.fn();
   const onMoveElements = vi.fn();
   const onResizeElements = vi.fn();
-  const onPreviewMoveElements = vi.fn();
-  const onPreviewResizeElements = vi.fn();
+  const onStackingPatches = vi.fn();
+  let preview: ReturnType<typeof useTimelineClipDrag>;
+  let originY = 0;
   let setDraggedClip: ((state: DraggedClipState | null) => void) | null = null;
   let setResizingClip: ((state: ResizingClipState | null) => void) | null = null;
 
@@ -67,20 +71,19 @@ function renderDragHarness(elements: TimelineElement[]) {
     const hook = useTimelineClipDrag({
       scrollRef: { current: scroll },
       ppsRef: { current: 100 },
-      trackOrderRef: { current: layers.map((layer) => layer.id) },
-      timelineLayersRef: { current: layers },
-      timelineElementsRef: { current: elements },
+      durationRef: { current: Math.max(...elements.map(e => e.start + e.duration)) },
+      trackOrderRef: { current: [...new Set(elements.map(e => e.track))].sort((a, b) => a - b) },
       onMoveElement,
       onResizeElement,
       onMoveElements,
       onResizeElements,
-      onPreviewMoveElements,
-      onPreviewResizeElements,
-      onBlockedEditAttempt: vi.fn(),
+      readZIndex: (element) => element.zIndex ?? 0,
+      onStackingPatches,
       setShowPopover: vi.fn(),
       setRangeSelectionRef: { current: vi.fn() },
     });
     setDraggedClip = hook.setDraggedClip;
+    preview = hook;
     setResizingClip = hook.setResizingClip;
     return null;
   }
@@ -88,6 +91,11 @@ function renderDragHarness(elements: TimelineElement[]) {
   const host = document.createElement("div");
   document.body.append(host);
   const root = createRoot(host);
+  const cleanup = () => {
+    act(() => root.unmount());
+    cleanups.delete(cleanup);
+  };
+  cleanups.add(cleanup);
   act(() => {
     root.render(<Harness />);
   });
@@ -97,42 +105,33 @@ function renderDragHarness(elements: TimelineElement[]) {
   const applyResizingClip: (state: ResizingClipState | null) => void = setResizingClip;
 
   return {
-    layers,
     onMoveElement,
     onResizeElement,
     onMoveElements,
     onResizeElements,
-    onPreviewMoveElements,
-    onPreviewResizeElements,
+    onStackingPatches,
+    preview: () => preview,
     storeElements() {
       return usePlayerStore.getState().elements;
     },
     startDrag(element: TimelineElement, layerIndex: number) {
-      const layer =
-        layers[layerIndex] ??
-        layers.find((candidate) =>
-          candidate.elements.some((candidateElement) => candidateElement.id === element.id),
-        ) ??
-        layers[0]!;
+      originY = getTimelineRowTop(layerIndex) + TRACK_H / 2;
       act(() => {
         applyDraggedClip({
           element,
           originClientX: 0,
-          originClientY: 0,
+          originClientY: originY,
           originScrollLeft: 0,
           originScrollTop: 0,
           pointerClientX: 0,
-          pointerClientY: 0,
+          pointerClientY: originY,
           pointerOffsetX: 0,
           pointerOffsetY: 0,
           previewStart: element.start,
           previewTrack: element.track,
-          previewLayerId: layer.id,
-          previewLayerIndex: layerIndex,
-          previewStackingReorder: null,
-          snapBeatTime: null,
-          snapGuideTime: null,
-          snapGuideKind: null,
+          insertRow: null,
+          snapTime: null,
+          snapType: null,
           started: false,
         });
       });
@@ -146,8 +145,6 @@ function renderDragHarness(elements: TimelineElement[]) {
           previewStart: element.start,
           previewDuration: element.duration,
           previewPlaybackStart: element.playbackStart,
-          snapGuideTime: null,
-          snapGuideKind: null,
           started: false,
         });
       });
@@ -158,7 +155,7 @@ function renderDragHarness(elements: TimelineElement[]) {
           new MouseEvent("pointermove", {
             bubbles: true,
             clientX,
-            clientY,
+            clientY: originY + clientY,
           }),
         );
       });
@@ -169,7 +166,7 @@ function renderDragHarness(elements: TimelineElement[]) {
       });
     },
     unmount() {
-      act(() => root.unmount());
+      cleanup();
     },
   };
 }
@@ -203,22 +200,27 @@ describe("useTimelineClipDrag", () => {
     harness.movePointer(200, 0);
 
     expect(harness.storeElements().map((element) => [element.id, element.start])).toEqual([
-      ["first", 3],
-      ["second", 6],
+      ["first", 1],
+      ["second", 4],
     ]);
-    expect(harness.onPreviewMoveElements).toHaveBeenLastCalledWith([
-      { element: first, start: 3 },
-      { element: second, start: 6 },
-    ]);
+    expect(harness.preview().draggedClip?.previewStart).toBe(3);
+    expect(multiDragPassengerOffsetPx("second", 100, {
+      dragStarted: true,
+      draggedKey: "first",
+      draggedOriginStart: first.start,
+      draggedPreviewStart: harness.preview().draggedClip!.previewStart,
+      selectedKeys: usePlayerStore.getState().selectedElementIds,
+    })).toBe(200);
 
     await harness.dropPointer();
 
     expect(harness.onMoveElement).not.toHaveBeenCalled();
     expect(harness.onMoveElements).toHaveBeenCalledTimes(1);
     expect(harness.onMoveElements).toHaveBeenCalledWith([
-      { element: first, start: 3 },
-      { element: second, start: 6 },
-    ]);
+      { element: first, updates: { start: 3, track: 0 } },
+      { element: second, updates: { start: 6, track: 1 } },
+    ], undefined, "timing", undefined, { primaryElementKey: "first", multiSelection: true });
+    expect(harness.storeElements().map(e => e.start)).toEqual([3, 6]);
 
     harness.unmount();
   });
@@ -236,9 +238,9 @@ describe("useTimelineClipDrag", () => {
     await harness.dropPointer();
 
     expect(harness.onMoveElements).toHaveBeenCalledWith([
-      { element: early, start: 0 },
-      { element: grabbed, start: 3 },
-    ]);
+      { element: early, updates: { start: 0, track: 0 } },
+      { element: grabbed, updates: { start: 3, track: 1 } },
+    ], undefined, "timing", undefined, { primaryElementKey: "grabbed", multiSelection: true });
     expect(harness.onMoveElement).not.toHaveBeenCalled();
 
     harness.unmount();
@@ -267,7 +269,7 @@ describe("useTimelineClipDrag", () => {
     harness.unmount();
   });
 
-  it("does not form a group when a selected member is locked (grabbed clip moves alone)", async () => {
+  it("excludes locked members from a selected move batch (grabbed clip moves alone)", async () => {
     const first = timelineElement({ id: "first", track: 0, zIndex: 1, start: 1, duration: 2 });
     const locked = timelineElement({
       id: "locked",
@@ -286,13 +288,11 @@ describe("useTimelineClipDrag", () => {
     harness.movePointer(200, 0);
     await harness.dropPointer();
 
-    // The locked member forbids the op, so no group forms: the grabbed clip moves
-    // alone (single-clip path) and the locked clip is never touched.
-    expect(harness.onMoveElements).not.toHaveBeenCalled();
-    expect(harness.onMoveElement).toHaveBeenCalledTimes(1);
-    expect(harness.onMoveElement).toHaveBeenCalledWith(
-      first,
-      expect.objectContaining({ start: 3 }),
+    // Multi-selection keeps its atomic callback, filtering non-movable members.
+    expect(harness.onMoveElement).not.toHaveBeenCalled();
+    expect(harness.onMoveElements).toHaveBeenCalledExactlyOnceWith(
+      [{ element: first, updates: { start: 3, track: 0 } }],
+      undefined, "timing", undefined, { primaryElementKey: "first", multiSelection: true },
     );
     expect(harness.storeElements().find((el) => el.id === "locked")?.start).toBe(4);
 
@@ -329,13 +329,10 @@ describe("useTimelineClipDrag", () => {
     expect(
       harness.storeElements().map((element) => [element.id, element.start, element.duration]),
     ).toEqual([
-      ["first", 2, 3],
+      ["first", 1, 4],
       ["second", 6, 2],
     ]);
-    expect(harness.onPreviewResizeElements).toHaveBeenLastCalledWith([
-      { element: first, start: 2, duration: 3, playbackStart: undefined },
-      { element: second, start: 6, duration: 2, playbackStart: undefined },
-    ]);
+    expect(harness.preview().resizingClip).toMatchObject({ previewStart: 2, previewDuration: 3 });
 
     await harness.dropPointer();
 
@@ -344,7 +341,8 @@ describe("useTimelineClipDrag", () => {
     expect(harness.onResizeElements).toHaveBeenCalledWith([
       { element: first, start: 2, duration: 3, playbackStart: undefined },
       { element: second, start: 6, duration: 2, playbackStart: undefined },
-    ]);
+    ], { coalesceKey: "clip-group-resize:first:second", primaryElementKey: "first", multiSelection: true });
+    expect(harness.storeElements().map(e => [e.start, e.duration])).toEqual([[2, 3], [6, 2]]);
 
     harness.unmount();
   });
@@ -365,7 +363,7 @@ describe("useTimelineClipDrag", () => {
     expect(harness.onResizeElements).toHaveBeenCalledWith([
       { element: first, start: 1, duration: 5, playbackStart: undefined },
       { element: second, start: 5, duration: 4, playbackStart: undefined },
-    ]);
+    ], { coalesceKey: "clip-group-resize:first:second", primaryElementKey: "first", multiSelection: true });
 
     harness.unmount();
   });
@@ -385,7 +383,7 @@ describe("useTimelineClipDrag", () => {
     expect(harness.onResizeElements).toHaveBeenCalledWith([
       { element: short, start: 1.4, duration: 0.1, playbackStart: undefined },
       { element: long, start: 4.4, duration: 1.6, playbackStart: undefined },
-    ]);
+    ], { coalesceKey: "clip-group-resize:short:long", primaryElementKey: "short", multiSelection: true });
     expect(harness.onResizeElement).not.toHaveBeenCalled();
 
     harness.unmount();
@@ -424,7 +422,7 @@ describe("useTimelineClipDrag", () => {
     expect(harness.onResizeElements).toHaveBeenCalledWith([
       { element: audio, start: 2.5, duration: 2.5, playbackStart: 1.5 },
       { element: video, start: 5.5, duration: 3.5, playbackStart: 3 },
-    ]);
+    ], { coalesceKey: "clip-group-resize:audio:video", primaryElementKey: "audio", multiSelection: true });
 
     harness.unmount();
   });
@@ -451,55 +449,48 @@ describe("useTimelineClipDrag", () => {
     harness.unmount();
   });
 
-  it("passes a new-lane stacking intent when a vertical drag targets an overlapping lane", async () => {
+  it("atomically inserts a new lane and syncs stacking when a vertical drag targets its top gap", async () => {
     const front = timelineElement({ id: "front", track: 0, zIndex: 3 });
     const middle = timelineElement({ id: "middle", track: 1, zIndex: 2 });
     const back = timelineElement({ id: "back", track: 2, zIndex: 1 });
     const harness = renderDragHarness([front, middle, back]);
 
     harness.startDrag(back, 2);
-    harness.movePointer(0, -2 * TRACK_H);
+    harness.movePointer(0, -2 * TRACK_H - TRACK_H / 2);
     await harness.dropPointer();
 
-    expect(harness.onMoveElement).toHaveBeenCalledTimes(1);
-    expect(harness.onMoveElement.mock.calls[0]![1]).toMatchObject({
-      start: 0,
-      track: 2,
-      stackingReorder: {
-        contextKey: "root",
-        placement: { type: "above", layerId: harness.layers[0]!.id },
-        zIndexChanges: [{ key: "back", zIndex: 4 }],
-      },
-    });
+    expect(harness.onMoveElement).not.toHaveBeenCalled();
+    expect(harness.onMoveElements).toHaveBeenCalledTimes(1);
+    expect(harness.onMoveElements.mock.calls[0]![2]).toBe("track-insert");
+    expect(harness.storeElements().find(e => e.id === "back")).toMatchObject({ start: 0, track: 0 });
+    expect(harness.onStackingPatches).toHaveBeenCalledWith(
+      [{ key: "back", zIndex: 4 }], harness.onMoveElements.mock.calls[0]![1],
+    );
 
     harness.unmount();
   });
 
-  it("resolves lane stacking from the authored time span, independent of horizontal drag", async () => {
+  it("does not restack clips that no longer overlap after a horizontal and vertical drag", async () => {
     const front = timelineElement({ id: "front", track: 0, zIndex: 3 });
     const back = timelineElement({ id: "back", track: 1, zIndex: 1 });
     back.start = 0;
     front.start = 0;
     const harness = renderDragHarness([front, back]);
 
-    // Drag up one row AND rightward in time. The horizontal drift moves the
-    // clip out of overlap, but the two axes never fight: the vertical restack
-    // is resolved from the authored (overlapping) span, so it still inserts
-    // above the target lane rather than silently joining it.
+    // The committed span determines overlap: a non-overlapping clip can join
+    // the target lane without an unrelated z-index rewrite.
     harness.startDrag(back, 1);
     harness.movePointer(200, -TRACK_H);
     await harness.dropPointer();
 
-    expect(harness.onMoveElement).toHaveBeenCalledTimes(1);
-    expect(harness.onMoveElement.mock.calls[0]![1]).toMatchObject({
-      start: 2,
-      track: 1,
-      stackingReorder: {
-        contextKey: "root",
-        placement: { type: "above", layerId: harness.layers[0]!.id },
-        zIndexChanges: [{ key: "back", zIndex: 4 }],
-      },
-    });
+    expect(harness.onMoveElement).not.toHaveBeenCalled();
+    expect(harness.onMoveElements).toHaveBeenCalledTimes(1);
+    expect(harness.onMoveElements.mock.calls[0]![0]).toEqual([
+      { element: back, updates: { start: 2, track: 0 }, persistTrack: 0 },
+    ]);
+    expect(harness.onMoveElements.mock.calls[0]![2]).toBe("lane-reorder");
+    expect(harness.onStackingPatches).not.toHaveBeenCalled();
+    expect(harness.storeElements().find(e => e.id === "front")).toEqual(front);
 
     harness.unmount();
   });

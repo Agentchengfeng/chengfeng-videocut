@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { readNodeRequestBody } from "./vite.request-body.js";
 import { createViteAdapter, isPathWithin } from "./vite.adapter";
+import { VITE_RENDER_CAPABILITY } from "./vite.renderCapability";
 
 async function loadRuntimeSourceForDev(
   server: import("vite").ViteDevServer,
@@ -162,6 +163,12 @@ function devProjectApi(): Plugin {
 
       // Runtime endpoint is supplied by the versioned HyperFrames core package.
       server.middlewares.use((req, res, next) => {
+        if (req.url === "/api/health" && req.method === "GET") {
+          res.setHeader("Content-Type", "application/json; charset=utf-8");
+          res.setHeader("Cache-Control", "no-store");
+          res.end(JSON.stringify({ genericHtmlRender: VITE_RENDER_CAPABILITY }));
+          return;
+        }
         if (req.url !== "/api/runtime.js") return next();
         const serve = async () => {
           const runtimeSource = await loadRuntimeSourceForDev(server);
@@ -381,7 +388,7 @@ export default defineConfig({
     external: ["recast", "@babel/parser", "ast-types"],
   },
   test: {
-    exclude: ["data/**", "node_modules/**"],
+    exclude: ["data/**", "node_modules/**", "src/cut/timeline/hf-upstream-0.7.60/**"],
     setupFiles: ["src/test-setup.ts"],
   },
 });

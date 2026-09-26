@@ -1,4 +1,7 @@
 import { createHash } from "node:crypto";
+import { createConnectionApi } from "./connection-api";
+import {createModuleApi} from './module-api';
+import { createIngestApi } from './ingest-api';
 import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -14,6 +17,12 @@ import { createVideocutCutsHandler } from "../../../studio/src/server/videocutCu
 import { createVideocutEditListHandler } from "../../../studio/src/server/videocutEditListApi";
 import { createVideocutSubtitlesHandler } from "../../../studio/src/server/videocutSubtitlesApi";
 import { createVideocutVisualsHandler } from "../../../studio/src/server/videocutVisualsApi";
+import { createSoundEffectsApi } from "./sound-effects-api";
+import { createMediaAssetsApi } from "./media-assets-api";
+import { createProjectConfigApi } from "./project-config-api";
+import { createMultisourceApi } from "./multisource-api";
+import { assertProjectReadable } from "@video-workbench/core/node";
+import { VideocutError } from "@video-workbench/core";
 import { createVideocutTimelineMediaHandler } from "../../../studio/src/server/videocutTimelineMediaApi";
 import { createVideocutProjectSurfaceHandler } from "../../../studio/src/server/videocutProjectSurfaceApi";
 import { materializeKouboEditListIndex } from "@video-workbench/koubo-adapter";
@@ -28,11 +37,15 @@ import {
   projectInput,
 } from "./edit-preview-artifact";
 import { placeCutBoundaries } from "./preview-stream";
+import { deriveSemanticCutRanges } from "./semantic-cut-boundaries";
 import { fetchGuardedStudioApi } from "./studio-mutation-guard";
 import { createVideocutWorkflowHandler } from "./workflow-api";
+import { skillDirectoryResponse } from "./skill-directory";
 import { PRODUCT_VERSION } from "../output";
 import { JobManager } from "../jobs/manager";
 import { createJobsApi } from "./jobs-api";
+import { createLifecycleLog } from "./lifecycle";
+import { IdleLifecycle } from "./idle-lifecycle";
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 5190;
@@ -62,6 +75,10 @@ export interface StartStudioServerOptions {
   /** Backward-compatible alias for apiHandler. */
   extraApiHandler?: StudioServerApiHandler;
   installSignalHandlers?: boolean;
+  /** Opt in to process idle shutdown. Zero/default leaves it disabled. */
+  idleTimeoutSeconds?: number;
+  /** In-process test/embedding provider; never supplied through HTTP or CLI. */
+  ingest?: Parameters<typeof createIngestApi>[3];
 }
 
 export interface RunningStudioServer {
@@ -372,6 +389,25 @@ function healthResponse(
     pid: process.pid,
     runtimeMode,
     studioBuildId: buildId,
+    genericHtmlRender: {
+      schemaVersion: 1,
+      enabled: false,
+      source: "production-studio-adapter",
+      reason: "此工作台未启用通用 HTML 导出。请使用既有确认门控的产品导出流程。",
+    },
+    existingWorkflowApiVersion: 1,
+    editTargetsApiVersion: 1,
+    modulePublishApiVersion: 1,
+    mediaAssetsApiVersion: 1,
+    soundEffectsApiVersion: 1,
+    soundEffects: { schemaVersion: 1, managedWav: true, preview: true, export: true, maxCues: 64 },
+    projectConfigApiVersion: 1,
+    multisourceAudioApiVersion: 1,
+    multisourceAudio: { operations: ["prepend-project", "delete-words", "delete-segments", "recover-transaction"], segmentCutsApiVersion: 1, editListSchemaVersion: 2, mixing: false, videoSources: false,
+      semanticCuts: true, wordCutsApiVersion: 1, reviewedVisualReplacementsApiVersion: 1, legacyCutsSet: false, studioWordCuts: false, restoreMode: "unchanged-transaction-only",
+      transcriptPlayback: true, waveform: false },
+    ingestApiVersion: 1,
+    transcriptCorrectionApiVersion: 1,
     // 服务进程自己的环境里媒体工具是否可见——doctor 查的是终端环境，
     // 两者可以不一致（服务先启动、ffmpeg 后安装）。缺了服务照常跑：
     // 项目管理与账本都不需要 ffmpeg，只有预览/导出需要，用时会报具体错。
@@ -389,11 +425,26 @@ function healthResponse(
 export async function startStudioServer(
   options: StartStudioServerOptions = {},
 ): Promise<RunningStudioServer> {
+  const lifecycle = createLifecycleLog(resolve(options.dataDir ?? process.env.CHENGFENG_VIDEOCUT_DATA_DIR ?? resolve(homedir(), ".chengfeng-videocut")));
+  lifecycle.record("starting");
+  try {
+    return await startStudioServerInternal(options, lifecycle);
+  } catch (error) {
+    lifecycle.record("startup_failed", { errorName: error instanceof Error ? error.name : "UnknownError",
+      code: String((error as NodeJS.ErrnoException)?.code ?? "unknown").slice(0, 80) });
+    throw error;
+  }
+}
+
+async function startStudioServerInternal(options: StartStudioServerOptions, lifecycle: ReturnType<typeof createLifecycleLog>): Promise<RunningStudioServer> {
   const host = options.host ?? DEFAULT_HOST;
   const requestedPort = options.port ?? DEFAULT_PORT;
   if (!host.trim()) throw new Error("--host must not be empty");
   if (!Number.isInteger(requestedPort) || requestedPort < 0 || requestedPort > 65_535) {
     throw new Error("--port must be an integer from 0 to 65535");
+  }
+  if (!Number.isFinite(options.idleTimeoutSeconds ?? 0) || (options.idleTimeoutSeconds ?? 0) < 0) {
+    throw new Error("--idle-timeout-seconds must be non-negative");
   }
 
   const dataDir = resolve(
@@ -447,6 +498,9 @@ export async function startStudioServer(
   const jobs = new JobManager(dataDir, { projectsDir });
   await jobs.initialize();
   const jobsApi = createJobsApi(jobs, listenPort, { operationAuditStore });
+  const connectionApi = createConnectionApi(projectsDir, listenPort);
+  const moduleApi = createModuleApi(projectsDir,listenPort);
+  const ingestApi = createIngestApi(projectsDir, dataDir, listenPort, options.ingest);
   const editPreviewArtifacts = new EditPreviewArtifactManager(projectsDir);
   const editPreviewArtifactApi = createEditPreviewArtifactHandler(editPreviewArtifacts);
   const context: StudioServerApiContext = { projectsDir, dataDir, events };
@@ -471,8 +525,18 @@ export async function startStudioServer(
     projectsDir,
     operationAuditStore,
     materializeIndex: materializeEditListIndex,
+    async deriveCutRanges(projectDir, selection) {
+      const input = await projectInput(projectsDir, selection.previousEditList.projectId);
+      return deriveSemanticCutRanges(selection, input.previewProxySource
+        ? (ranges) => placeCutBoundaries({
+          projectDir, proxySource: input.previewProxySource!,
+          proxyCacheKey: input.previewProxyCacheKey, ranges, refineDeletedTails: true,
+        })
+        : undefined);
+    },
     onDocumentChanged(change) {
       events.publish("file-change", change);
+      editPreviewArtifacts.schedule(change.projectId);
     },
   });
   const editListApi = createVideocutEditListHandler({
@@ -515,6 +579,16 @@ export async function startStudioServer(
       events.publish("file-change", change);
     },
   });
+  const soundEffectsApi = createSoundEffectsApi(projectsDir, listenPort, {isBusy: directory => jobs.isProjectBusy(directory), onChanged: id => editPreviewArtifacts.schedule(id)});
+  const mediaAssetsApi = createMediaAssetsApi(projectsDir, listenPort);
+  const projectConfigApi = createProjectConfigApi({ projectsDir, port: listenPort,
+    isBusy: directory => jobs.isProjectBusy(directory),
+    onChanged(change) { events.publish("file-change", change); },
+  });
+  const multisourceApi = createMultisourceApi({ projectsDir, port: listenPort,
+    isBusy: directory => jobs.isProjectBusy(directory),
+    onChanged(projectId) { events.publish("file-change", { projectId, path: "edit-list.json" }); editPreviewArtifacts.schedule(projectId); },
+  });
   const workflowApi = createVideocutWorkflowHandler({
     projectsDir,
     onProjectChanged(change) {
@@ -532,6 +606,22 @@ export async function startStudioServer(
   const projectMedia = createProjectMediaHandler({ projectsDir });
   const studioAdapter = createProductionStudioAdapter({ projectsDir, rendersDir });
   const studioApi = createStudioApi(studioAdapter);
+  let eventStreams = 0;
+
+  const idle = new IdleLifecycle(options.idleTimeoutSeconds ?? 0, async () => {
+    const blockers: string[] = [];
+    if (await jobs.isBusy()) blockers.push("jobs");
+    if (ingestApi.isBusy()) blockers.push("ingest");
+    if (editPreviewArtifacts.isBusy()) blockers.push("preview");
+    // Bun owns transmission after fetch returns, including sendfile/range
+    // responses. Preserve those native bodies and subtract perpetual SSE only.
+    if (server.pendingRequests > eventStreams) blockers.push("response_streams");
+    return blockers;
+  }, async () => {
+    lifecycle.record("idle_timeout", { timeoutSeconds: options.idleTimeoutSeconds ?? 0 });
+    try { await stop(); if (options.installSignalHandlers) process.exit(0); }
+    catch { if (options.installSignalHandlers) process.exit(1); }
+  });
 
   const server = Bun.serve({
     hostname: host,
@@ -541,7 +631,16 @@ export async function startStudioServer(
     idleTimeout: STUDIO_SERVER_IDLE_TIMEOUT_SECONDS,
     async fetch(request, bunServer): Promise<Response> {
       const url = new URL(request.url);
+      // GET API status/health polling and SSE admission are not human activity.
+      // Handlers hold admission; Bun's native pendingRequests covers bodies.
+      const release = idle.admit(url.pathname !== "/api/runtime/activity" &&
+        (!url.pathname.startsWith("/api/") || !["GET", "HEAD"].includes(request.method)));
+      if (!release) return Response.json({ error: { code: "runtime_stopping" } }, { status: 503 });
       try {
+      const handle = async (): Promise<Response> => {
+      const dispatch = async (): Promise<Response> => {
+      try {
+        if (url.pathname === "/api/runtime/activity") return idle.activity(request, listenPort, bunServer.requestIP(request)?.address);
         // These product-owned offline dependencies must win before any
         // pluggable or generic API handler can claim the same /api paths.
         const vendorAsset = VENDOR_ASSETS.get(url.pathname);
@@ -549,7 +648,28 @@ export async function startStudioServer(
         if (url.pathname === "/api/health") {
           return healthResponse(request, staticSnapshot.buildId, runtimeMode, mediaToolsMissing);
         }
+        const multisourceResponse = await multisourceApi(request, bunServer.requestIP(request)?.address);
+        if (multisourceResponse) return multisourceResponse;
+        const projectMatch = /^\/api\/(?:v1\/)?projects\/([^/]+)/.exec(url.pathname);
+        if (projectMatch) {
+          const id = decodeURIComponent(projectMatch[1]!);
+          if (id && !/[\\/\0]/.test(id) && id !== "." && id !== "..") await assertProjectReadable(resolve(projectsDir, id));
+        }
         const jobsResponse = await jobsApi(request, bunServer.requestIP(request)?.address);
+        const ingestResponse = await ingestApi(request, bunServer.requestIP(request)?.address);
+        if (ingestResponse) return ingestResponse;
+        const connectionResponse = await connectionApi(request, bunServer.requestIP(request)?.address);
+        const moduleResponse = await moduleApi(request,bunServer.requestIP(request)?.address);
+        const soundEffectsResponse = await soundEffectsApi(request, bunServer.requestIP(request)?.address);
+        if (soundEffectsResponse) return soundEffectsResponse;
+        const assetResponse = await mediaAssetsApi(request, bunServer.requestIP(request)?.address);
+        const configResponse = await projectConfigApi(request, bunServer.requestIP(request)?.address);
+        if (configResponse) return configResponse;
+        if (assetResponse) return assetResponse;
+        if(moduleResponse)return moduleResponse;
+        if (connectionResponse) return connectionResponse;
+        const directoryResponse = skillDirectoryResponse(request);
+        if (directoryResponse) return directoryResponse;
         if (jobsResponse) return jobsResponse;
         const mediaResponse = await projectMedia(request);
         if (mediaResponse) return mediaResponse;
@@ -603,12 +723,53 @@ export async function startStudioServer(
         }
         return await staticResponse(request, url, staticSnapshot);
       } catch (error) {
+        if (error instanceof VideocutError && error.code === "operation_in_progress") {
+          return Response.json({ error: { code: error.code, message: error.message } }, { status: 409 });
+        }
         console.error("[chengfeng-videocut] request failed", error);
         return Response.json(
           { error: "internal_error", message: "Internal server error" },
           { status: 500 },
         );
       }
+      };
+      // Readers share the writer lock so a multi-file commit is never served
+      // halfway through. The two-project splice route acquires sorted locks itself.
+      const binding = /^\/api\/(?:v1\/)?projects\/([^/]+)/.exec(url.pathname);
+      if (binding && !/^\/api\/v1\/projects\/[^/]+\/sources(?:\/|$)/.test(url.pathname)) {
+        try {
+          const id = decodeURIComponent(binding[1]!);
+          if (id && !/[\\/\0]/.test(id) && id !== "." && id !== "..") {
+            return await serializeProjectOperation(resolve(projectsDir, id), dispatch);
+          }
+        } catch (error) {
+          if (error instanceof URIError) return Response.json({ error: "invalid_project_id" }, { status: 400 });
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") return Response.json({ error: "project_not_found" }, { status: 404 });
+          throw error;
+        }
+      }
+      return await dispatch();
+      };
+      const response = await handle();
+      // Do not even access .body for file responses: Bun materializes that
+      // stream lazily and doing so can discard its native range/sendfile path.
+      if (!response.headers.get("content-type")?.includes("text/event-stream") || !response.body) return response;
+      const reader = response.body.getReader();
+      eventStreams++;
+      let ended = false;
+      const endStream = () => { if (!ended) { ended = true; eventStreams--; } };
+      const body = new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          try {
+            const part = await reader.read();
+            if (part.done) { controller.close(); endStream(); }
+            else controller.enqueue(part.value);
+          } catch (error) { controller.error(error); endStream(); }
+        },
+        async cancel(reason) { try { await reader.cancel(reason); } finally { endStream(); } },
+      });
+      return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+      } finally { release(); }
     },
   });
 
@@ -620,21 +781,38 @@ export async function startStudioServer(
   }
   const url = `http://${hostForUrl(host)}:${port}`;
   const projectWatcher = watchRegisteredProjects(projectsDir, events);
-  let stopped = false;
+  let stopPromise: Promise<void> | undefined;
   const signalHandlers = new Map<NodeJS.Signals, () => void>();
-  const stop = async (): Promise<void> => {
-    if (stopped) return;
-    stopped = true;
+  const stopObserving = options.installSignalHandlers ? lifecycle.observe() : () => {};
+  lifecycle.record("listening", { port, host, runtimeMode });
+  const stop = (): Promise<void> => {
+    if (stopPromise) return stopPromise;
+    idle.stopAdmission();
+    lifecycle.record("stopping");
     for (const [signal, handler] of signalHandlers) process.off(signal, handler);
     projectWatcher.close();
     events.close();
-    server.stop(true);
-    await jobs.shutdown();
+    const serverClosed = server.stop(true);
+    stopPromise = (async () => { try {
+      // Admitted handlers can still create detached owners. Drain those first,
+      // then close their managers; never close a manager underneath a write.
+      await idle.drain();
+      // Wait for all owners even if one shutdown reports a failure.
+      const results = await Promise.allSettled([editPreviewArtifacts.close(), ingestApi.drain(), serverClosed, jobs.shutdown()]);
+      const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+      if (failure) throw failure.reason;
+      lifecycle.record("stopped");
+    } catch (error) {
+      lifecycle.record("stop_failed");
+      throw error;
+    } finally { stopObserving(); } })();
+    return stopPromise;
   };
 
   if (options.installSignalHandlers) {
     for (const signal of ["SIGINT", "SIGTERM"] as const) {
       const handler = () => {
+        lifecycle.record("signal", { signal });
         void stop().finally(() => process.exit(signal === "SIGINT" ? 130 : 143));
       };
       signalHandlers.set(signal, handler);
@@ -642,5 +820,6 @@ export async function startStudioServer(
     }
   }
 
+  idle.start();
   return { host, port, url, projectsDir, dataDir, events, stop };
 }

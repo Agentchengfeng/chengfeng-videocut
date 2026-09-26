@@ -25,10 +25,12 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { ExportProfile } from "@video-workbench/contracts";
 import type { ExportPlan } from "@video-workbench/core";
+import { validateVisualMedia } from "@video-workbench/core/node";
 import { cropRectForBox, ffmpegFileArg, ffmpegOutputArgs } from "@video-workbench/core";
 import { orderedSegmentManifest, probeMedia, type MediaProbe } from "../mediaCut";
 import { MARKER_STRIP_HEIGHT } from "./overlayPage";
 import { finalEncodingSettings } from "./profile";
+import { resolveMainSources, mainAudioFilter } from "./sources";
 
 /**
  * How hard the final encoder tries.
@@ -85,44 +87,73 @@ function seconds(value: number): string {
  * trip per pass is a real thing to give away.
  */
 export async function assembleCut(input: {
+  projectDirectory?: string;
   source: string;
   output: string;
   plan: ExportPlan;
+  /** Generate the plan's canvas when the immutable source has only audio. */
+  audioOnly?: boolean;
   onLine?: (line: string) => void;
   signal?: AbortSignal;
 }): Promise<void> {
   const { plan } = input;
+  if (plan.sources && (!input.projectDirectory || !input.audioOnly)) throw new Error("Multi-source export requires a project directory and audio-only main track");
+  const sourcePaths = plan.sources ? await resolveMainSources(input.projectDirectory!, plan.sources) : null;
+  if (!plan.sources && new Set(plan.spans.map(s => s.source ?? "")).size > 1) throw new Error("Multi-source spans require a verified source manifest");
+  if (plan.sources) for (const span of plan.spans) {
+    const source = plan.sources.find(s => s.path === span.source);
+    if (!source || span.sourceStart < 0 || span.sourceEnd > source.duration + 0.001) throw new Error("Main-track span exceeds its source");
+  }
   await mkdir(dirname(input.output), { recursive: true });
-  const manifestPath = `${input.output}.ffconcat`;
-  await writeFile(
-    manifestPath,
-    orderedSegmentManifest(input.source, plan.spans.map((span) => ({
-      start: span.sourceStart,
-      end: span.sourceEnd,
-    }))),
-    "utf8",
-  );
+  let videoInputs: string[];
+  let videoFilter: string;
+  if (input.audioOnly) {
+    videoInputs = [
+      "-f", "lavfi", "-i", `color=c=white:s=${plan.source.width}x${plan.source.height}:r=${plan.fps}`,
+    ];
+    videoFilter = `[0:v:0]trim=end_frame=${plan.frameCount},setpts=PTS-STARTPTS[outv]`;
+  } else {
+    const manifestPath = `${input.output}.ffconcat`;
+    await writeFile(
+      manifestPath,
+      orderedSegmentManifest(input.source, plan.spans.map((span) => ({
+        start: span.sourceStart,
+        end: span.sourceEnd,
+      }))),
+      "utf8",
+    );
+    videoInputs = [
+      "-copyts", "-segment_time_metadata", "1",
+      "-f", "concat", "-safe", "0", "-i", manifestPath,
+    ];
+    // A fractional source in-point can leave the selected CFR stream one
+    // picture shorter than round(duration*fps). Pad only the video tail and
+    // trim to the exact planned frame count; audio keeps its sample cuts.
+    videoFilter = `[0:v:0]select=concatdec_select,setpts=PTS-STARTPTS,fps=${plan.fps},tpad=stop_mode=clone:stop_duration=${seconds(1 / plan.fps)},trim=end_frame=${plan.frameCount}[outv]`;
+  }
   await runFfmpeg([
     "-y", "-v", "error",
-    "-copyts", "-segment_time_metadata", "1",
-    "-f", "concat", "-safe", "0", "-i", manifestPath,
-    "-i", ffmpegFileArg(input.source),
+    ...videoInputs,
+    ...(sourcePaths ? Object.values(sourcePaths).flatMap(path => ["-i", ffmpegFileArg(path)]) : ["-i", ffmpegFileArg(input.source)]),
     "-filter_complex",
     [
-      "[0:v:0]select=concatdec_select,setpts=PTS-STARTPTS[outv]",
+      videoFilter,
       // Audio is assembled from the original rather than from the concat
       // demuxer: video-frame boundaries round, and rounding a picture is a
       // picture while rounding a sample is a click between every two spans.
-      audioFilter(plan),
+      sourcePaths ? mainAudioFilter(plan.spans, Object.keys(sourcePaths), 1) : audioFilter(plan),
     ].join(";"),
     "-map", "[outv]", "-map", "[outa]",
     "-c:v", "libx264", "-preset", "veryfast", "-crf", INTERMEDIATE_CRF,
     "-pix_fmt", "yuv420p",
     "-fps_mode", "cfr", "-r", String(plan.fps),
     "-c:a", "flac",
-    "-t", seconds(plan.frameCount / plan.fps),
+    // The generated canvas already ends at frameCount. Let the audio finish
+    // on its own sample boundary even when the picture duration rounds down.
+    ...(input.audioOnly ? [] : ["-t", seconds(plan.frameCount / plan.fps)]),
     ...ffmpegOutputArgs("matroska", input.output),
   ], { onLine: input.onLine, signal: input.signal });
+  if (plan.sources) await resolveMainSources(input.projectDirectory!, plan.sources);
 }
 
 function audioFilter(plan: ExportPlan): string {
@@ -175,6 +206,7 @@ function audioFilter(plan: ExportPlan): string {
  * ```
  */
 export async function composeFilm(input: {
+  projectDirectory?: string;
   assembled: string;
   /** Null when nothing is written and nothing is drawn: the footage stands alone. */
   framePattern: string | null;
@@ -195,19 +227,38 @@ export async function composeFilm(input: {
   for (const [index, span] of plan.zoomSpans.entries()) {
     const count = span.endFrame - span.startFrame;
     const spanFile = join(input.workDirectory, `span-${String(index).padStart(3, "0")}.mp4`);
-    const steps = [`fps=${plan.fps}`];
+    // Input seeking can leave the first decoded frame slightly after t=0
+    // (e.g. a 24fps asset sought to 0.020s). Anchor resampling at the span's
+    // zero so that positive timestamp does not drop its first planned frame.
+    // Resetting PTS only after fps cannot recover that missing picture.
+    const steps = [`fps=${plan.fps}:start_time=0`];
+    let source = input.assembled;
+    let start = span.startFrame / plan.fps;
+    if (span.media) {
+      if (!input.projectDirectory) throw new Error("Media export requires project directory");
+      source = (await validateVisualMedia(input.projectDirectory, span.media)).path;
+      start = span.media.sourceIn + start - span.media.layerStart;
+    }
     if (span.box) {
       const crop = cropRectForBox(span.box, plan.source);
       steps.push(`crop=${crop.width}:${crop.height}:${crop.x}:${crop.y}`);
     }
     // Lanczos on the way up: the frame is 960 pixels of small white-background
     // type, and a softer kernel spends the extra resolution on nothing.
-    steps.push(`scale=${plan.output.width}:${plan.output.height}:flags=lanczos`, "setsar=1");
+    if (span.media) {
+      const { width: w, height: h } = plan.output;
+      steps.push(span.media.fit === "cover"
+        ? `scale=${w}:${h}:force_original_aspect_ratio=increase:flags=lanczos,crop=${w}:${h}`
+        : `scale=${w}:${h}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:black`);
+      // At most a final frame-period hold for fractional source frame edges.
+      steps.push(`tpad=stop_mode=clone:stop_duration=${seconds(1 / plan.fps)}`);
+    } else steps.push(`scale=${plan.output.width}:${plan.output.height}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=lanczos,pad=${plan.output.width}:${plan.output.height}:(ow-iw)/2:(oh-ih)/2:black`);
+    steps.push("setsar=1", "setpts=PTS-STARTPTS");
     await runFfmpeg([
       "-y", "-v", "error",
-      "-ss", seconds(span.startFrame / plan.fps),
+      "-ss", seconds(start),
       "-t", seconds(count / plan.fps),
-      "-i", ffmpegFileArg(input.assembled),
+      "-i", ffmpegFileArg(source),
       // The overlay frames for exactly this span, addressed by their own
       // numbers — the PNG index *is* the film's frame index, so a span can
       // never be handed the wrong drawings.

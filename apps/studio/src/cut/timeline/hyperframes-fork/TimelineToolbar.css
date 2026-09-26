@@ -1,0 +1,72 @@
+/* Adapt to the actual timeline pane width, including embedded workspaces. */
+.cf-hf-timeline-toolbar {
+  position: relative;
+  z-index: 20;
+  flex-shrink: 0;
+  min-width: 0;
+}
+
+.cf-hf-timeline-toolbar__row {
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+
+.cf-hf-timeline-toolbar__edit {
+  flex: 0 0 auto;
+}
+
+.cf-hf-timeline-toolbar__zoom {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  margin-left: auto;
+}
+
+.cf-hf-timeline-toolbar button,
+.cf-hf-timeline-toolbar__edit > div,
+.cf-hf-timeline-toolbar__zoom > span {
+  flex-shrink: 0;
+}
+
+.cf-hf-timeline-toolbar__zoom input[type="range"] {
+  flex: 0 1 96px;
+  min-width: 56px;
+  max-width: 96px;
+}
+
+.cf-hf-timeline-toolbar__notice {
+  flex: 0 0 auto;
+  margin-left: 4px;
+  color: #f6c881;
+  font-size: 10px;
+}
+
+.cf-hf-timeline-toolbar__notice summary {
+  padding: 6px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.cf-hf-timeline-toolbar__notice summary:focus-visible {
+  outline: 2px solid #3ce6ac;
+  outline-offset: -2px;
+}
+
+.cf-hf-timeline-toolbar__notice-body {
+  position: absolute;
+  top: 100%;
+  left: 8px;
+  right: 8px;
+  z-index: 1;
+  /* Reserve the wrapped toolbar's height inside the fixed timeline pane. */
+  max-height: min(160px, max(32px, calc(var(--cf-cut-timeline-height, 200px) - 76px)));
+  overflow: auto;
+  overscroll-behavior: contain;
+  overflow-wrap: anywhere;
+  padding: 8px;
+  border: 1px solid #7c5324;
+  border-radius: 6px;
+  background: #272016;
+  line-height: 16px;
+}

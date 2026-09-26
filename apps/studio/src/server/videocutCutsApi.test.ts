@@ -1,7 +1,7 @@
 /// <reference types="node" />
 
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildEditListFromCuts } from "@video-workbench/core";
@@ -111,6 +111,123 @@ async function requiredResponse(response: Promise<Response | null>): Promise<Res
 }
 
 describe("videocut cuts API", () => {
+  it("keeps repaired semantic seams when Studio submits a full selection under CAS", async () => {
+    const { projectsDir, projectDir, cutsPath } = await createFixture();
+    await writeFile(join(projectDir, "transcript.json"), JSON.stringify({ cues: [{ words: [
+      { id: "w-1", start: 0, end: 0.8 },
+      { id: "gap", start: 0.8, end: 1, isGap: true },
+      { id: "w-2", start: 1, end: 2 },
+    ] }] }));
+    await addEditListFixture(projectDir);
+    const initialRevision = sha256(await readFile(cutsPath, "utf8"));
+    let calls = 0;
+    const handle = createVideocutCutsHandler({ projectsDir, deriveCutRanges: async (directory, input) => {
+      calls++;
+      expect(directory).toBe(await realpath(projectDir));
+      expect(input.sourceDuration).toBe(2);
+      expect(input.words).toHaveLength(3);
+      expect(input.candidate.cutWordIds).toEqual(["w-1"]);
+      return [{ start: 0, end: 0.9 }];
+    } });
+    const body = { expectedRevision: initialRevision, cutWordIds: ["w-1"], mode: "semantic-overlay",
+      reasons: [{ wordIds: ["w-1"], kind: "duplicate", risk: "low" }] };
+    const first = await requiredResponse(handle(cutsRequest("PUT", body)));
+    const saved = await first.json();
+    expect(first.status, JSON.stringify(saved)).toBe(200);
+    expect(saved.document.cutRanges).toEqual([{ start: 0, end: 0.9 }]);
+    expect(saved.document.reasons).toEqual(body.reasons);
+    const edl = JSON.parse(await readFile(join(projectDir, "edit-list.json"), "utf8"));
+    expect(edl.baseCutsRevision).toBe(saved.revision);
+    expect(edl.segments[0].sourceStart).toBe(0.9);
+    const repeated = await requiredResponse(handle(cutsRequest("PUT", { ...body, expectedRevision: saved.revision })));
+    expect(await repeated.json()).toMatchObject({ changed: false, revision: saved.revision });
+    const stale = await requiredResponse(handle(cutsRequest("PUT", body)));
+    expect(stale.status).toBe(409);
+    expect(calls).toBe(2);
+    const studio = await requiredResponse(handle(cutsRequest("PUT", {
+      ...body, mode: "full-selection", expectedRevision: saved.revision,
+    })));
+    expect(studio.status).toBe(200);
+    expect(await studio.json()).toMatchObject({ changed: false, revision: saved.revision,
+      document: { cutWordIds: body.cutWordIds, reasons: body.reasons,
+        cutRanges: [{ start: 0, end: 0.9 }] } });
+    expect(calls).toBe(3);
+    expect(JSON.parse(await readFile(join(projectDir, "edit-list.json"), "utf8"))).toEqual(edl);
+    const staleStudio = await requiredResponse(handle(cutsRequest("PUT", {
+      ...body, mode: "full-selection",
+    })));
+    expect(staleStudio.status).toBe(409);
+    expect(calls).toBe(3);
+    await writeFile(join(projectDir, "edit-list.json"), JSON.stringify({ ...edl, mode: "manual" }));
+    await requiredResponse(handle(cutsRequest("PUT", { ...body, expectedRevision: saved.revision })));
+    expect(calls).toBe(3);
+    const currentRevision = sha256(await readFile(cutsPath, "utf8"));
+    const full = await requiredResponse(handle(cutsRequest("PUT", {
+      ...body, mode: "full-selection", expectedRevision: currentRevision,
+    })));
+    expect(full.status).toBe(200);
+    expect(calls).toBe(3);
+  });
+
+  it("repairs full-selection boundaries without reselecting a restored baseline gap", async () => {
+    const { projectsDir, projectDir, cutsPath } = await createFixture();
+    await writeFile(join(projectDir, "transcript.json"), JSON.stringify({ cues: [{ words: [
+      { id: "w-1", start: 0, end: 0.8 },
+      { id: "seam-gap", start: 0.8, end: 1, isGap: true },
+      { id: "w-2", start: 1, end: 2 },
+      { id: "restored-gap", start: 2, end: 2.5, isGap: true },
+      { id: "w-3", start: 2.5, end: 3 },
+    ] }] }));
+    const reasons = [{ wordIds: ["w-1"], kind: "duplicate", risk: "low" }];
+    await writeFile(cutsPath, JSON.stringify({ ...storedSelection, reasons,
+      cutWordIds: ["w-1", "restored-gap"],
+      initialization: { ...storedSelection.initialization, baselineCutWordIds: ["restored-gap"] },
+    }));
+    await addEditListFixture(projectDir, "cuts-derived", 3);
+    const initialRevision = sha256(await readFile(cutsPath, "utf8"));
+    let calls = 0;
+    const handle = createVideocutCutsHandler({ projectsDir, deriveCutRanges: async (_directory, input) => {
+      calls++;
+      expect(input.candidate.cutWordIds).toEqual(["w-1"]);
+      expect(input.candidate.reasons).toEqual(reasons);
+      return [{ start: 0, end: 0.9 }];
+    } });
+    const body = { mode: "full-selection", expectedRevision: initialRevision,
+      cutWordIds: ["w-1"], reasons };
+    const response = await requiredResponse(handle(cutsRequest("PUT", body)));
+    const saved = await response.json();
+    expect(response.status, JSON.stringify(saved)).toBe(200);
+    expect(saved.document.cutWordIds).toEqual(body.cutWordIds);
+    expect(saved.document.reasons).toEqual(reasons);
+    expect(saved.document.cutRanges).toEqual([{ start: 0, end: 0.9 }]);
+    expect(saved.document.initialization.baselineCutWordIds).toEqual(["restored-gap"]);
+    const edlRaw = await readFile(join(projectDir, "edit-list.json"), "utf8");
+    expect(JSON.parse(edlRaw).segments).toMatchObject([{ sourceStart: 0.9, sourceEnd: 3 }]);
+    const repeated = await requiredResponse(handle(cutsRequest("PUT", { ...body, expectedRevision: saved.revision })));
+    expect(await repeated.json()).toMatchObject({ changed: false, revision: saved.revision });
+    expect(calls).toBe(2);
+    const stale = await requiredResponse(handle(cutsRequest("PUT", body)));
+    expect(stale.status).toBe(409);
+    expect(calls).toBe(2);
+    expect(await readFile(join(projectDir, "edit-list.json"), "utf8")).toBe(edlRaw);
+  });
+
+  it("rejects a Product boundary callback failure without committing Cuts or EDL", async () => {
+    const { projectsDir, projectDir, cutsPath } = await createFixture();
+    await addEditListFixture(projectDir);
+    const cuts = await readFile(cutsPath, "utf8");
+    const edl = await readFile(join(projectDir, "edit-list.json"), "utf8");
+    const handle = createVideocutCutsHandler({ projectsDir, deriveCutRanges: async () => {
+      throw new Error("probe unavailable");
+    } });
+    const response = await requiredResponse(handle(cutsRequest("PUT", {
+      mode: "semantic-overlay", expectedRevision: sha256(cuts), cutWordIds: ["w-1"],
+    })));
+    expect(response.status).toBe(500);
+    expect(await readFile(cutsPath, "utf8")).toBe(cuts);
+    expect(await readFile(join(projectDir, "edit-list.json"), "utf8")).toBe(edl);
+  });
+
   it("returns the current revision and represents a missing selection as none", async () => {
     const { projectsDir, cutsPath } = await createFixture();
     const handle = createVideocutCutsHandler({ projectsDir });

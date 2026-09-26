@@ -19,6 +19,41 @@ import {
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 
+test("busy covers scheduled input reads and pending debounce, then close drains", async () => {
+  const f = await fixture();
+  await f.writeEdit(2);
+  let release!: () => void;
+  const hold = new Promise<void>(resolve => { release = resolve; });
+  const manager = new EditPreviewArtifactManager(f.projectsDir, {
+    debounceMs: 60_000,
+    readProjectInput: async () => { await hold; return await projectInput(f.projectsDir, f.projectId); },
+  });
+  try {
+    expect(manager.isBusy()).toBe(false);
+    manager.schedule(f.projectId); expect(manager.isBusy()).toBe(true);
+    release(); await Bun.sleep(30);
+    expect(manager.isBusy()).toBe(true); // debounce remains owned after reads end
+    await manager.close(); expect(manager.isBusy()).toBe(false);
+  } finally { release(); await manager.close(); await rm(f.projectsDir, { recursive: true, force: true }); }
+});
+
+test("busy covers status reads while closing awaits their settlement", async () => {
+  const f = await fixture();
+  await f.writeEdit(2);
+  let release!: () => void;
+  const hold = new Promise<void>(resolve => { release = resolve; });
+  const manager = new EditPreviewArtifactManager(f.projectsDir, {
+    readProjectInput: async () => { await hold; return await projectInput(f.projectsDir, f.projectId); },
+  });
+  try {
+    const status = manager.status(f.projectId).catch(() => undefined);
+    expect(manager.isBusy()).toBe(true);
+    let closed = false; const closing = manager.close().then(() => { closed = true; });
+    await Bun.sleep(10); expect(closed).toBe(false);
+    release(); await status; await closing; expect(manager.isBusy()).toBe(false);
+  } finally { release(); await manager.close(); await rm(f.projectsDir, { recursive: true, force: true }); }
+});
+
 async function fixture(options: { frameRate?: number | null } = {}) {
   const projectsDir = await mkdtemp(join(tmpdir(), "preview-artifact-test-"));
   const projectId = "demo";

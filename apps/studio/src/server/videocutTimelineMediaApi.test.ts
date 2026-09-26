@@ -71,6 +71,22 @@ async function required(value: Promise<Response | null>): Promise<Response> {
 }
 
 describe("videocut Timeline frame API", () => {
+  it("accepts real WAV waveforms without pretending the source has video frames", async () => {
+    const { projectsDir, projectDir, cacheDir } = await fixture();
+    const path = join(projectDir, "input", "voice.wav");
+    const result = spawnSync("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "sine=duration=1", "-y", path]);
+    expect(result.status).toBe(0);
+    const before = await readFile(path);
+    const handle = createVideocutTimelineMediaHandler({ projectsDir, cacheDir });
+    const response = await required(handle(new Request(waveformUrl({ source: "input/voice.wav" }))));
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.peaks.length).toBeGreaterThan(0);
+    expect(body.peaks.some((value: number) => value > 0)).toBe(true);
+    expect((await required(handle(new Request(frameUrl({ source: "input/voice.wav" }))))).status).toBe(415);
+    expect(await readFile(path)).toEqual(before);
+  });
+
   it("deduplicates in-flight work, persists only disposable cache, and supports HEAD/ETag", async () => {
     const { projectsDir, projectDir, cacheDir, sourcePath } = await fixture();
     const sourceBefore = await readFile(sourcePath, "utf8");

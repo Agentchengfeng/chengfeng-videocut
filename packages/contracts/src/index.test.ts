@@ -43,10 +43,13 @@ describe("Runtime capability and command contract", () => {
       product: "chengfeng-videocut",
       studioVersion: "0.5.8",
       features: {
+        audioOnlyPreviewVersion: 1,
         topLevelViews: ["storyboard", "preview", "koubo"],
         legacyWorkbenchPanel: false,
         managedTimelineEditing: true,
         projectIngestVersion: 1,
+        ingestApiVersion: 1,
+        transcriptCorrectionApiVersion: 1,
         transcriptPlaybackPagingVersion: 1,
         durableJobsApiVersion: 1,
         durableJobKinds: ["export"],

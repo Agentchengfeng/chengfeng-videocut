@@ -136,11 +136,11 @@ const KouboTranscriptCue = memo(function KouboTranscriptCue({
                 pending ? "已选择" : "",
                 cut ? "已删除" : "",
               ].filter(Boolean).join("，")}
-              title={manualMode
+              title={editingLockReason ?? (manualMode
                 ? cut
                   ? "单击定位；拖动划选或 Shift 单击恢复"
                   : "单击定位；拖动划选或 Shift 单击删除"
-                : editingLockReason ?? "单击定位；拖动划选；Shift 单击删除或恢复"}
+                : "单击定位；拖动划选；Shift 单击删除或恢复")}
               onPointerDown={(event) => onWordPointerDown(startIndex, endIndex, event)}
               onKeyDown={(event) => onWordKeyDown(
                 event,
@@ -230,7 +230,9 @@ export const KouboTranscriptPane = memo(function KouboTranscriptPane({
   const visibleTranscriptCues = useMemo(() => indexedTranscript.cues.filter((cue) => cue.words.some(({ word }) =>
     shouldShowTranscriptWord(word, displayedCutWordIds),
   )), [displayedCutWordIds, indexedTranscript.cues]);
-  const editingLockReason = resolveKouboEditingLockReason({
+  const editingLockReason = editList.document?.schemaVersion === 2
+    ? "多源文稿暂仅支持定位；删词与恢复尚未支持来源实例，请使用时间线片段编辑"
+    : resolveKouboEditingLockReason({
     transcriptLoading,
     selectionLoading,
     selectionReady,
@@ -270,8 +272,10 @@ export const KouboTranscriptPane = memo(function KouboTranscriptPane({
   const seekSourceTime = useCallback((
     sourceTime: number,
     options?: { keepPlaying?: boolean },
+    identity?: { source?: string; instanceId?: string },
   ) => {
-    const timelineTime = resolveTranscriptSeekTime(editList.document, sourceTime);
+    const timelineTime = resolveTranscriptSeekTime(editList.document, sourceTime, [], identity);
+    if (!Number.isFinite(timelineTime)) return;
     if (options) onSeek(timelineTime, options);
     else onSeek(timelineTime);
   }, [editList.document, onSeek]);
@@ -331,6 +335,7 @@ export const KouboTranscriptPane = memo(function KouboTranscriptPane({
   }, []);
 
   const applyRange = useCallback(async (range: KouboWordRange): Promise<boolean> => {
+    if (editList.document?.schemaVersion === 2) return false;
     const normalizedRange = normalizeRange(range);
     const selected = wordsRef.current.slice(normalizedRange.start, normalizedRange.end + 1);
     const selectedIsCut = selected.length > 0 && selected.every((word) =>
@@ -367,7 +372,7 @@ export const KouboTranscriptPane = memo(function KouboTranscriptPane({
     } catch {
       return false;
     }
-  }, [deleteOperationForRange, editList.document?.mode, editList.patchOperation, restoreOperationForRange, updateCutWordIds]);
+  }, [deleteOperationForRange, editList.document?.mode, editList.document?.schemaVersion, editList.patchOperation, restoreOperationForRange, updateCutWordIds]);
 
   useEffect(() => dismissSelection({ force: true }), [dismissSelection, projectId]);
 
@@ -440,7 +445,7 @@ export const KouboTranscriptPane = memo(function KouboTranscriptPane({
         }
         if (!drag.seekedOnPointerDown) {
           const word = wordsRef.current[drag.start];
-          if (word) seekSourceTime(word.start);
+          if (word) seekSourceTime(word.start, undefined, word);
         }
         return;
       }
@@ -556,7 +561,7 @@ export const KouboTranscriptPane = memo(function KouboTranscriptPane({
     setSelectionRange(null);
     if (seekedOnPointerDown) {
       const word = wordsRef.current[start];
-      if (word) seekSourceTime(word.start, { keepPlaying: true });
+      if (word) seekSourceTime(word.start, { keepPlaying: true }, word);
     }
   }, [seekSourceTime]);
 
@@ -579,7 +584,7 @@ export const KouboTranscriptPane = memo(function KouboTranscriptPane({
           void applyRange(range);
         }
       }
-      else seekSourceTime(sourceTime);
+      else seekSourceTime(sourceTime, undefined, wordsRef.current[range.start]);
       return;
     }
     if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(
@@ -615,6 +620,9 @@ export const KouboTranscriptPane = memo(function KouboTranscriptPane({
       aria-label="剪口播逐词审核"
       data-cut-transcript-pane="true"
     >
+      {editList.document?.schemaVersion === 2 && (
+        <div className="cut-transcript-notice" role="status">{editingLockReason}</div>
+      )}
       {transcriptError && (
         <div className="cut-transcript-notice is-error" role="alert">{transcriptError}</div>
       )}
@@ -649,7 +657,7 @@ export const KouboTranscriptPane = memo(function KouboTranscriptPane({
           <button
               type="button"
               className={selectionIsCut ? "is-restore" : "is-delete"}
-              disabled={restorePending || Boolean(editingLockReason) && editList.document?.mode !== "manual"}
+              disabled={restorePending || editList.document?.schemaVersion === 2 || Boolean(editingLockReason) && editList.document?.mode !== "manual"}
               title={selectionIsCut && editList.document?.mode === "manual"
                 ? "恢复已删除的文稿范围"
                 : editingLockReason ?? undefined}

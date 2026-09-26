@@ -1,0 +1,7 @@
+cff-version: 1.2.0
+message: "Keep upstream attribution when reusing this Skill."
+title: "chengfeng-videocut-install"
+authors:
+  - name: "成峰 / AI产品自由"
+version: "0.1.0-beta.2"
+license: "Apache-2.0"

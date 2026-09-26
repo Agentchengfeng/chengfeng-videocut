@@ -62,6 +62,7 @@
         "@hyperframes/sdk": "0.7.60",
         "@hyperframes/studio-server": "0.7.60",
         "@phosphor-icons/react": "^2.1.10",
+        "@video-workbench/contracts": "workspace:*",
         "@video-workbench/core": "workspace:*",
         "bpm-detective": "^2.0.5",
         "dompurify": "^3.2.4",

@@ -222,6 +222,19 @@ describe("edit-list model", () => {
     })).toThrow("does not reproduce");
   });
 
+  it("atomically restores a proven split snapshot and rejects fabricated inverses", () => {
+    const before = fixture();
+    const inverse = { type: "split" as const, clipId: before.segments[0].id, offset: 1, newClipId: "exact-right" };
+    const after = applyEditListOperation(before, inverse);
+    const undo = { type: "restore-snapshot" as const, expectedSegments: after.segments,
+      beforeSegments: before.segments, beforeMode: before.mode, inverse };
+    expect(applyEditListOperation(after, undo)).toEqual(before);
+    expect(applyEditListOperation(applyEditListOperation(after, undo), inverse)).toEqual(after);
+    expect(() => applyEditListOperation(after, {...undo, inverse: {...inverse, offset: 1.1}})).toThrow("does not reproduce");
+    expect(() => applyEditListOperation(after, {...undo, inverse: {type: "move", clipId: inverse.clipId, start: 0}})).toThrow("delete-range or split");
+    expect(after.segments.some(s => s.id === "exact-right")).toBe(true);
+  });
+
   it("rejects invalid, non-overlapping, and final-content delete ranges without mutating input", () => {
     const document = fixture();
     const original = structuredClone(document);

@@ -1,3 +1,4 @@
+import type { SoundEffectCue } from "./soundEffects";
 /**
  * The export plan: what the film is, decided before a single frame is touched.
  *
@@ -29,7 +30,7 @@ import {
   type SubtitleDocument,
   type SubtitleStyle,
 } from "./subtitles";
-import { visualLayerTimings, type VisualDocument, type VisualZoom } from "./visuals";
+import { visualLayerTimings, type VisualDocument, type VisualZoom, type VisualMedia, type ResolvedVisualAnimation } from "./visuals";
 
 /**
  * How much bigger than the source the film is rendered.
@@ -43,6 +44,8 @@ import { visualLayerTimings, type VisualDocument, type VisualZoom } from "./visu
  * it is given and allocates a larger frame more bits.
  */
 export const EXPORT_DEFAULT_SCALE = 2;
+/** Bound new explicit canvas captures to 256 MB of raw RGBA per frame. */
+export const EXPORT_CANVAS_MAX_PIXELS = 64_000_000;
 
 /** A frame's pixel dimensions. Always even, because 4:2:0 chroma is subsampled. */
 export interface ExportFrameSize {
@@ -52,6 +55,8 @@ export interface ExportFrameSize {
 
 /** One retained span of the source, in the order it plays. */
 export interface ExportSourceSpan {
+  source?: string;
+  instanceId?: string;
   sourceStart: number;
   sourceEnd: number;
 }
@@ -75,6 +80,7 @@ export interface ExportVisibleBox {
 
 /** A stretch of the cut timeline held at one push-in (or at none). */
 export interface ExportZoomSpan {
+  media?: VisualMedia & { layerStart: number };
   start: number;
   end: number;
   /**
@@ -104,6 +110,8 @@ export interface ExportSubtitleCue {
 
 /** A drawn layer, timed on the cut, with the script under it on its own clock. */
 export interface ExportVisualLayer {
+  animation?: ResolvedVisualAnimation;
+  media?: VisualMedia;
   layerId: string;
   /** Project-relative path to the module's HTML. */
   module: string;
@@ -115,6 +123,8 @@ export interface ExportVisualLayer {
 }
 
 export interface ExportPlan {
+  soundEffects?: SoundEffectCue[];
+  sources?: Array<{ path: string; sha256: string; duration: number; mediaKind: "audio" | "video" }>;
   /** Length of the finished film, in seconds. */
   duration: number;
   fps: number;
@@ -139,6 +149,8 @@ export interface BuildExportPlanInput {
   subtitles: SubtitleDocument | null;
   visuals: VisualDocument | null;
   source: ExportFrameSize & { duration: number; frameRate: number };
+  /** Composition canvas before quality scaling; source remains crop metadata. */
+  canvas?: ExportFrameSize;
   /** Output size multiplier. Defaults to {@link EXPORT_DEFAULT_SCALE}. */
   scale?: number;
   /** Output frame rate. Defaults to the source's. */
@@ -195,6 +207,9 @@ function spansFromEditList(editList: EditListDocument | null): {
   if (segments.length === 0) {
     invalid("This project has no edit list, so there is nothing to export");
   }
+  if (editList?.schemaVersion !== 2 && new Set(segments.map(s => s.source)).size > 1) {
+    invalid("Multi-source export requires an explicit v2 source manifest");
+  }
   const offSpeed = segments.find((segment) => segment.playbackRate !== 1);
   if (offSpeed) {
     // Speed changes would have to be applied to the footage, the audio and the
@@ -206,6 +221,7 @@ function spansFromEditList(editList: EditListDocument | null): {
     });
   }
   const spans = segments.map((segment) => ({
+    ...(editList?.schemaVersion === 2 ? { source: segment.source, instanceId: segment.instanceId } : {}),
     sourceStart: segment.sourceStart,
     sourceEnd: segment.sourceEnd,
   }));
@@ -274,10 +290,15 @@ export function buildExportPlan(input: BuildExportPlanInput): ExportPlan {
   const fps = input.fps ?? input.source.frameRate;
   if (!(fps > 0) || !Number.isFinite(fps)) invalid("The source has no readable frame rate");
 
+  const canvas = input.canvas ?? input.source;
+  if (![canvas.width, canvas.height].every(n => Number.isFinite(n) && n >= 2)) invalid("Invalid canvas dimensions");
   const output: ExportFrameSize = {
-    width: evenUp(input.source.width * scale),
-    height: evenUp(input.source.height * scale),
+    width: evenUp(canvas.width * scale),
+    height: evenUp(canvas.height * scale),
   };
+  if (input.canvas && (output.width > 16384 || output.height > 16384 || output.width * output.height > EXPORT_CANVAS_MAX_PIXELS)) {
+    invalid("Export canvas exceeds 16384 pixels per edge or 64 megapixels");
+  }
 
   const subtitleTimings = input.subtitles
     ? subtitleCueTimings(input.subtitles, input.words, input.editList)
@@ -311,12 +332,19 @@ export function buildExportPlan(input: BuildExportPlanInput): ExportPlan {
     .flatMap((timing) => {
       const layer = layerById.get(timing.layerId);
       if (!layer) return [];
+      if (timing.animation?.issues.length) {
+        throw new VideocutError("invalid_visuals", `Animation ${layer.id} needs review before export`, {
+          layerId: layer.id, issues: timing.animation.issues,
+        });
+      }
       return [{
         layerId: layer.id,
-        module: layer.module,
+        module: layer.module ?? "",
+        media: layer.media,
         start: timing.start,
         end: timing.end,
         duration: timing.duration,
+        ...(timing.animation ? { animation: timing.animation } : {}),
         zoom: layer.zoom ?? null,
         // The script under the layer, moved onto the layer's own clock. Same
         // list the preview hands a module, so a module written against the
@@ -335,7 +363,22 @@ export function buildExportPlan(input: BuildExportPlanInput): ExportPlan {
   // The film is a whole number of pictures, and that number is decided here
   // rather than by whichever of ffmpeg and the browser rounds first.
   const frameCount = Math.max(1, Math.round(duration * fps));
-  const zoomSpans = zoomSpansForLayers(layers, frameCount, fps);
+  let zoomSpans = zoomSpansForLayers(layers, frameCount, fps);
+  // Split only at visible media boundaries. Video replaces the base, while
+  // captions/HTML remain in the existing overlay pass and narration is untouched.
+  const mediaLayers = layers.filter(l => l.media);
+  if (mediaLayers.length) {
+    const boundaries = [...new Set([0, frameCount, ...zoomSpans.flatMap(s => [s.startFrame, s.endFrame]),
+      ...mediaLayers.flatMap(l => [Math.max(0, Math.ceil(l.start * fps - 1e-8)), Math.min(frameCount, Math.ceil(l.end * fps - 1e-8))])])].sort((a,b) => a-b);
+    zoomSpans = boundaries.slice(0,-1).map((startFrame, i) => {
+      const endFrame = boundaries[i+1]!;
+      const t = startFrame / fps;
+      const layer = mediaLayers.find(l => t + 1e-8 >= l.start && t < l.end - 1e-8);
+      const base = zoomSpans.find(s => s.startFrame <= startFrame && s.endFrame > startFrame);
+      return { startFrame, endFrame, start: t, end: endFrame / fps, box: layer ? null : base?.box ?? null,
+        ...(layer?.media ? { media: { ...layer.media, layerStart: layer.start } } : {}) };
+    });
+  }
   for (const span of zoomSpans) {
     if (!span.box) continue;
     const cropWidth = evenDown(span.box.width * input.source.width);
@@ -347,6 +390,7 @@ export function buildExportPlan(input: BuildExportPlanInput): ExportPlan {
 
   return {
     duration,
+    ...(input.editList?.schemaVersion === 2 ? { sources: input.editList.sources } : {}),
     fps,
     frameCount,
     source: { width: input.source.width, height: input.source.height },

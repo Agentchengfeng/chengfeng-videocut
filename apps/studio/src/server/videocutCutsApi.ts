@@ -9,6 +9,8 @@ import {
   resolveProject,
   writeCutSelectionWithEditList,
   type CutSelectionWriteMode,
+  type DeriveCutRangesInput,
+  type DeriveCutRanges,
 } from "@video-workbench/core/node";
 
 const API_SCHEMA_VERSION = 1 as const;
@@ -27,6 +29,7 @@ export interface VideocutCutsHandlerOptions {
   operationAuditStore?: OperationAuditStore;
   materializeIndex?: (change: VideocutCutsChange) => void | Promise<void>;
   onDocumentChanged?: (change: VideocutCutsChange) => void | Promise<void>;
+  deriveCutRanges?: (projectDir: string, input: DeriveCutRangesInput) => ReturnType<DeriveCutRanges>;
 }
 
 type VideocutCutsHandler = (request: Request) => Promise<Response | null>;
@@ -518,7 +521,12 @@ export function createVideocutCutsHandler(
               cutWordIds: body.cutWordIds,
               ...(body.reasons === undefined ? {} : { reasons: body.reasons }),
             },
-            { expectedRevision: body.expectedRevision, mode: body.mode, actor: "skill" },
+            {
+              expectedRevision: body.expectedRevision, mode: body.mode, actor: "skill",
+              deriveCutRanges: options.deriveCutRanges
+                ? (input) => options.deriveCutRanges!(project.directory, input)
+                : undefined,
+            },
           ),
         );
       } catch (error) {

@@ -1,4 +1,6 @@
+import { readSoundEffects } from "@video-workbench/core/node";
 import { createHash } from "node:crypto";
+import { cachedPlaybackTranscript } from "../../../packages/core/src/playbackCache";
 import { createReadStream } from "node:fs";
 import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
@@ -57,6 +59,7 @@ import {
   readSubtitleState,
   readSubtitles,
   readVisuals,
+  validateVisualMedia,
   registerProject,
   resolveProject,
   writeCutSelection,
@@ -64,6 +67,10 @@ import {
   writeVisuals,
 } from "@video-workbench/core/node";
 import { parseArgs, type CliCommand } from "./args";
+import { exportSource } from "./export-source";
+import { runModuleCommand } from "./module-command";
+import { runWorkbenchCommand } from "./workbench-command";
+import { resolveMainSources } from "@video-workbench/koubo-adapter";
 import { openBrowser as defaultOpenBrowser } from "./server/open-browser";
 import {
   startStudioServer as defaultStartStudioServer,
@@ -1087,7 +1094,7 @@ export async function runCli(
   const io = options.io ?? defaultIo;
   const cwd = resolve(options.cwd ?? process.cwd());
   const wantsJson = argv[0] === "job" || argv.includes("--json") || argv.some((arg) => arg.startsWith("--json="));
-  let command = argv[0] === "cuts" && argv[1]
+  let command = argv[0] === "module" && argv[1] ? `module.${argv[1]}` : argv[0] === "cuts" && argv[1]
     ? `cuts.${argv[1]}`
     : argv[0] === "service" && argv[1]
       ? `service.${argv[1]}`
@@ -1098,6 +1105,19 @@ export async function runCli(
   try {
     const parsed = parseArgs(argv);
     command = parsed.command;
+    if (parsed.command === "workbench") {
+      command = `workbench.${parsed.action}`;
+      const data = await runWorkbenchCommand(parsed, cwd);
+      if (parsed.json) io.stdout(JSON.stringify(successEnvelope(`workbench.${parsed.action}`, data)));
+      else io.stdout(JSON.stringify(data, null, 2));
+      return 0;
+    }
+    if (parsed.command === "module.publish" || parsed.command === "module.get") {
+      const data = await runModuleCommand(parsed, cwd);
+      if (parsed.json) io.stdout(JSON.stringify(successEnvelope(parsed.command, data)));
+      else io.stdout(JSON.stringify(data, null, 2));
+      return 0;
+    }
     const projectsDir = configuredProjectsDir(parsed.projectsDir);
     const dataDir = configuredDataDir(parsed.dataDir);
     if (parsed.command === "help") {
@@ -1199,6 +1219,7 @@ export async function runCli(
         projectsDir,
         dataDir: parsed.dataDir,
         installSignalHandlers: true,
+        idleTimeoutSeconds: parsed.idleTimeoutSeconds ?? 0,
       });
       if (parsed.openBrowser) {
         try {
@@ -1216,6 +1237,7 @@ export async function runCli(
         pid: process.pid,
         projectsDir: server.projectsDir,
         dataDir: server.dataDir,
+        idleTimeoutSeconds: parsed.idleTimeoutSeconds ?? 0,
       };
       if (parsed.json) io.stdout(JSON.stringify(successEnvelope(parsed.command, data)));
       else io.stdout(`${BRAND_NAME} running at ${server.url}`);
@@ -1492,6 +1514,23 @@ export async function runCli(
       };
       if (parsed.json) io.stdout(JSON.stringify(successEnvelope(parsed.command, data)));
       else io.stdout(`${data.url}\nPrepared ${data.directory}`);
+      return 0;
+    }
+
+    // An explicit API base identifies the Runtime that owns the project
+    // registry.  For a read-only workflow lookup, let that Runtime resolve the
+    // id instead of requiring a duplicate local registry entry first.  Writes
+    // and path-based operations still resolve locally so their revision and
+    // registration gates remain unchanged.
+    if (parsed.command === "workflow.get" && parsed.apiBase && parsed.project &&
+        !/[\\/]/.test(parsed.project) && parsed.project !== "." && parsed.project !== "..") {
+      const projectId = projectInput(parsed.command, parsed.project);
+      const data = await requestWorkflowApi({
+        apiBase: parsed.apiBase,
+        projectId,
+      });
+      if (parsed.json) io.stdout(JSON.stringify(successEnvelope(parsed.command, data)));
+      else io.stdout(JSON.stringify(data, null, 2));
       return 0;
     }
 
@@ -1792,7 +1831,8 @@ export async function runCli(
       if (typeof inputVideo !== "string" || !inputVideo.trim()) {
         throw new VideocutError("invalid_project", "This project has no inputVideo to sample");
       }
-      const sourcePath = resolve(project.directory, inputVideo);
+      const sourcePaths = editList?.value.schemaVersion === 2 ? await resolveMainSources(project.directory, editList.value.sources!) : null;
+      const sourcePath = sourcePaths ? Object.values(sourcePaths)[0]! : resolve(project.directory, inputVideo);
       const frames: Array<{ cutTime: number; sourceTime: number; file: string }> = [];
       for (let index = 0; index < count; index += 1) {
         // Sample inside the span, never on its edges: the first and last frames
@@ -1832,16 +1872,12 @@ export async function runCli(
       }
       const sourcePath = resolve(project.directory, inputVideo);
       const probe = await probeMedia(sourcePath);
-      if (!probe.hasVideo) {
-        throw new VideocutError("invalid_project", "The source is not a readable video", {
-          sourcePath,
-        });
-      }
+      const media = exportSource(probe, (project.project.config as { aspectRatio?: unknown } | undefined)?.aspectRatio);
       const resolvedProfile = resolveExportProfile({
         profile: parsed.profile,
-        sourceWidth: probe.width,
-        sourceHeight: probe.height,
-        sourceFrameRate: probe.frameRate ?? 30,
+        sourceWidth: media.canvas.width,
+        sourceHeight: media.canvas.height,
+        sourceFrameRate: media.source.frameRate,
         scale: parsed.scale,
         fps: parsed.fps,
       });
@@ -1850,18 +1886,17 @@ export async function runCli(
         words: transcript ? parseTranscriptWords(transcript.value) : [],
         subtitles: subtitles?.value ?? null,
         visuals: visuals?.value ?? null,
-        source: {
-          width: probe.width,
-          height: probe.height,
-          duration: probe.duration,
-          frameRate: probe.frameRate ?? 30,
-        },
-        scale: resolvedProfile.scale,
+        source: media.source,
+        canvas: media.canvas,
+        scale: resolvedProfile.scale ?? media.defaultScale,
         fps: resolvedProfile.fps,
       });
+      const soundEffects = await readSoundEffects(project.directory, true);
+      if (soundEffects.document.cues.length) plan.soundEffects = soundEffects.document.cues;
       const outputPath = parsed.outFile
         ? resolve(cwd, parsed.outFile)
         : join(project.directory, "成片.mp4");
+      for (const layer of plan.layers) if (layer.media) await validateVisualMedia(project.directory, layer.media);
       const summary = {
         projectId: project.projectId,
         profile: resolvedProfile.profile,
@@ -1870,6 +1905,7 @@ export async function runCli(
         fps: plan.fps,
         frameCount: plan.frameCount,
         source: plan.source,
+        audioOnly: media.audioOnly,
         outputSize: plan.output,
         cutSegments: plan.spans.length,
         subtitleScreens: plan.subtitleCues.length,
@@ -2113,11 +2149,7 @@ export async function runCli(
         readProjectDocument(project, "transcript.json"),
         readEditList(project),
       ]);
-      const playback = buildPlaybackTranscript(
-        project.projectId,
-        parseTranscriptWords(transcript.value),
-        editList?.value ?? null,
-      );
+      const playback = cachedPlaybackTranscript(project.directory, project.projectId, transcript.raw, editList?.raw ?? null);
       const data = playbackPage({
         playback,
         transcriptRevision: transcript.revision,

@@ -26,6 +26,7 @@ export interface RuntimeJobLockHooks {
 }
 
 export type RuntimeLockOwnerParser = (raw: string, path: string) => RuntimeLockOwner;
+export type RuntimeLockProcessState = "alive" | "dead" | "unknown";
 
 export interface RuntimeJobLockOptions extends RuntimeJobLockHooks {
   /** Override the default `<dataDir>/jobs` ownership directory. */
@@ -36,6 +37,7 @@ export interface RuntimeJobLockOptions extends RuntimeJobLockHooks {
   pid?: number;
   ownerHostname?: string;
   processExists?: (pid: number) => boolean;
+  processProbe?: (pid: number) => RuntimeLockProcessState;
   now?: () => number;
   /** Accept a previous on-disk owner schema while still publishing version 1. */
   parseOwner?: RuntimeLockOwnerParser;
@@ -45,12 +47,16 @@ const OWNER_NAME = "owner.json";
 const LOCK_NAME = ".runtime-owner.json";
 const MAX_ACQUIRE_ATTEMPTS = 16;
 
-function processExists(pid: number): boolean {
+/** Only ESRCH proves absence; permission and unexpected probe failures fence the owner. */
+export function probeRuntimeLockProcess(
+  pid: number,
+  signalZero: (pid: number) => unknown = (pid) => process.kill(pid, 0),
+): RuntimeLockProcessState {
   try {
-    process.kill(pid, 0);
-    return true;
+    signalZero(pid);
+    return "alive";
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
+    return error && (error as NodeJS.ErrnoException).code === "ESRCH" ? "dead" : "unknown";
   }
 }
 
@@ -79,9 +85,21 @@ function sameOwner(left: RuntimeLockOwner, right: RuntimeLockOwner): boolean {
   return left.token === right.token && left.pid === right.pid && left.hostname === right.hostname;
 }
 
-function conflict(owner: RuntimeLockOwner, path: string): JobStoreError {
-  return new JobStoreError("job_runtime_conflict", "Another Runtime owns the durable job registry", {
+type ConflictReason = "hostname_mismatch" | "process_alive" | "process_probe_unknown";
+
+function conflict(owner: RuntimeLockOwner, path: string, currentHostname: string, reason: ConflictReason): JobStoreError {
+  const diagnostic = {
+    hostname_mismatch: "Owner hostname differs; local PID probing cannot establish whether this owner is stale. Recovery requires identity verification.",
+    process_alive: "Owner PID exists locally; this does not verify process identity or exclude PID reuse.",
+    process_probe_unknown: "Owner PID state could not be established; automatic recovery is refused pending verification.",
+  }[reason];
+  return new JobStoreError("job_runtime_conflict", "Runtime ownership cannot be safely acquired", {
     ownerPid: owner.pid,
+    ownerHostname: owner.hostname,
+    currentHostname,
+    reason,
+    recoveryRequired: reason !== "process_alive",
+    diagnostic,
     acquiredAt: owner.acquiredAt,
     path,
   });
@@ -152,7 +170,7 @@ export class RuntimeJobLock {
   readonly #garbagePrefix: string;
   readonly #pid: number;
   readonly #ownerHostname: string;
-  readonly #processExists: (pid: number) => boolean;
+  readonly #processProbe: (pid: number) => RuntimeLockProcessState;
   readonly #now: () => number;
   readonly #parseOwner: RuntimeLockOwnerParser;
   #lifecycleTail: Promise<void> = Promise.resolve();
@@ -177,7 +195,9 @@ export class RuntimeJobLock {
     this.#garbagePrefix = `${lockName}.garbage.`;
     this.#pid = ownerPid;
     this.#ownerHostname = options.ownerHostname ?? hostname();
-    this.#processExists = options.processExists ?? processExists;
+    this.#processProbe = options.processProbe ?? (options.processExists
+      ? (pid) => options.processExists!(pid) ? "alive" : "dead"
+      : probeRuntimeLockProcess);
     this.#now = options.now ?? Date.now;
     this.#parseOwner = options.parseOwner ?? parseRuntimeLockOwner;
   }
@@ -229,9 +249,7 @@ export class RuntimeJobLock {
         if (isMissing(error)) continue;
         throw error;
       }
-      if (existing.owner.hostname !== this.#ownerHostname || this.#processExists(existing.owner.pid)) {
-        throw conflict(existing.owner, this.path);
-      }
+      this.#assertStale(existing);
 
       await this.#hooks.afterStaleOwnerRead?.(Object.freeze({ ...existing.owner }));
       const tombstonePath = join(this.jobsDirectory, `${this.#tombstonePrefix}${randomUUID()}`);
@@ -257,9 +275,7 @@ export class RuntimeJobLock {
         // record until that owner releases or becomes stale.
         continue;
       }
-      if (claimed.owner.hostname !== this.#ownerHostname || this.#processExists(claimed.owner.pid)) {
-        throw conflict(claimed.owner, tombstonePath);
-      }
+      this.#assertStale(claimed);
 
       try {
         await this.#hooks.afterStaleOwnerClaimed?.(Object.freeze({ ...claimed.owner }), tombstonePath);
@@ -365,14 +381,25 @@ export class RuntimeJobLock {
         if (isMissing(error)) continue;
         throw error;
       }
-      if (record.owner.hostname !== this.#ownerHostname || this.#processExists(record.owner.pid)) {
-        throw conflict(record.owner, path);
-      }
+      this.#assertStale(record);
       // Tombstone names are never reused, so deleting this exact stale path is
       // immune to the canonical compare-delete race.
       await this.#retireTombstone(record).catch((error) => {
         if (!isMissing(error)) throw error;
       });
+    }
+  }
+
+  #assertStale(record: RuntimeLockRecord): void {
+    if (record.owner.hostname !== this.#ownerHostname) {
+      throw conflict(record.owner, record.path, this.#ownerHostname, "hostname_mismatch");
+    }
+    let state: RuntimeLockProcessState = "unknown";
+    try { state = this.#processProbe(record.owner.pid); }
+    catch { /* An injected probe failure is also unknown, never proof of absence. */ }
+    if (state !== "dead") {
+      throw conflict(record.owner, record.path, this.#ownerHostname,
+        state === "alive" ? "process_alive" : "process_probe_unknown");
     }
   }
 

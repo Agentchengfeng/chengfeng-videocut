@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { lstat, mkdtemp, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
-import { RuntimeJobLock } from "./runtime-lock";
+import { probeRuntimeLockProcess, RuntimeJobLock } from "./runtime-lock";
 
 const cleanup: string[] = [];
 
@@ -59,6 +59,114 @@ async function ownerTokens(jobsDir: string): Promise<string[]> {
 }
 
 describe("RuntimeJobLock stale-owner CAS", () => {
+  it("only treats ESRCH as proof that a PID is absent", () => {
+    expect(probeRuntimeLockProcess(123, () => true)).toBe("alive");
+    for (const code of ["ESRCH", "EPERM", "EACCES", "EINVAL", "EIO", undefined]) {
+      expect(probeRuntimeLockProcess(123, () => { throw Object.assign(new Error("probe failed"), { code }); }))
+        .toBe(code === "ESRCH" ? "dead" : "unknown");
+    }
+    expect(probeRuntimeLockProcess(123, () => { throw null; })).toBe("unknown");
+  });
+
+  for (const location of ["canonical", "tombstone"] as const) {
+    for (const format of ["file", "directory"] as const) {
+      it(`preserves a foreign-host ${location} ${format} even with a locally absent PID`, async () => {
+        const f = await fixture();
+        const path = location === "canonical" ? f.lockPath : join(f.jobsDir, `.runtime-owner.json.tombstone.${randomUUID()}`);
+        const foreign = { ...owner(2_000_000_000), hostname: "foreign-owner-host" };
+        const raw = `${JSON.stringify(foreign)}\n`;
+        if (format === "directory") await writeOwnerDirectory(path, foreign);
+        else await writeFile(path, raw, { mode: 0o600 });
+        const initial = await lstat(path);
+        const names = await readdir(f.jobsDir);
+        let probes = 0;
+        const lock = new RuntimeJobLock(f.dataDir, {
+          ownerHostname: "current-host",
+          processExists: () => { probes += 1; return false; },
+        });
+        let failure: unknown;
+        try { await lock.acquire(); } catch (error) { failure = error; }
+        expect(failure).toMatchObject({ code: "job_runtime_conflict", details: {
+          reason: "hostname_mismatch", ownerHostname: foreign.hostname,
+          currentHostname: "current-host", recoveryRequired: true,
+        } });
+        expect(JSON.stringify(failure)).not.toContain(foreign.token);
+        expect(probes).toBe(0);
+        expect(lock.held).toBe(false);
+        expect(await readFile(format === "directory" ? join(path, "owner.json") : path, "utf8")).toBe(raw);
+        expect((await lstat(path)).ino).toBe(initial.ino);
+        expect(await readdir(f.jobsDir)).toEqual(names);
+      });
+    }
+
+    for (const code of ["EPERM", "EACCES", "EINVAL", "EIO", undefined]) {
+      it(`preserves a ${location} on unknown process probe error ${code}`, async () => {
+        const f = await fixture();
+        const path = location === "canonical" ? f.lockPath : join(f.jobsDir, `.runtime-owner.json.tombstone.${randomUUID()}`);
+        const existing = owner(2_000_000_000);
+        await writeOwnerDirectory(path, existing);
+        const raw = await readFile(join(path, "owner.json"), "utf8");
+        const initial = await lstat(path);
+        const lock = new RuntimeJobLock(f.dataDir, {
+          processProbe: (pid) => probeRuntimeLockProcess(pid, () => {
+            throw Object.assign(new Error("probe failed"), { code });
+          }),
+        });
+        await expect(lock.acquire()).rejects.toMatchObject({ code: "job_runtime_conflict", details: {
+          reason: "process_probe_unknown", ownerHostname: hostname(), currentHostname: hostname(), recoveryRequired: true,
+        } });
+        expect(lock.held).toBe(false);
+        expect(await readFile(join(path, "owner.json"), "utf8")).toBe(raw);
+        expect((await lstat(path)).ino).toBe(initial.ino);
+        expect(await readdir(f.jobsDir)).toEqual([path.split("/").at(-1)!]);
+      });
+    }
+
+    it(`reclaims a ${location} when the process probe reports ESRCH`, async () => {
+      const f = await fixture();
+      const path = location === "canonical" ? f.lockPath : join(f.jobsDir, `.runtime-owner.json.tombstone.${randomUUID()}`);
+      await writeOwnerDirectory(path, owner(2_000_000_000));
+      const lock = new RuntimeJobLock(f.dataDir, {
+        processProbe: (pid) => probeRuntimeLockProcess(pid, () => { throw Object.assign(new Error("absent"), { code: "ESRCH" }); }),
+      });
+      await lock.acquire();
+      expect(lock.held).toBe(true);
+      expect(await ownerTokens(f.jobsDir)).toEqual([lock.token]);
+      await lock.release();
+      expect(await runtimePaths(f.jobsDir)).toEqual([]);
+    });
+  }
+
+  it("retains the claimed tombstone if its second process probe becomes unknown", async () => {
+    const f = await fixture();
+    const existing = owner(2_000_000_000);
+    await writeOwnerDirectory(f.lockPath, existing);
+    let probes = 0;
+    const lock = new RuntimeJobLock(f.dataDir, {
+      processProbe: () => ++probes === 1 ? "dead" : "unknown",
+    });
+    await expect(lock.acquire()).rejects.toMatchObject({ code: "job_runtime_conflict", details: {
+      reason: "process_probe_unknown", recoveryRequired: true,
+    } });
+    expect(lock.held).toBe(false);
+    expect(probes).toBe(2);
+    expect(await ownerTokens(f.jobsDir)).toEqual([existing.token]);
+    const paths = await runtimePaths(f.jobsDir);
+    expect(paths).toHaveLength(1);
+    expect(paths[0]).toStartWith(".runtime-owner.json.tombstone.");
+  });
+
+  it("fails closed if an injected probe throws", async () => {
+    const f = await fixture();
+    await writeOwnerDirectory(f.lockPath, owner(2_000_000_000));
+    const raw = await readFile(join(f.lockPath, "owner.json"), "utf8");
+    const lock = new RuntimeJobLock(f.dataDir, { processProbe: () => { throw new Error("probe unavailable"); } });
+    await expect(lock.acquire()).rejects.toMatchObject({ code: "job_runtime_conflict", details: {
+      reason: "process_probe_unknown", recoveryRequired: true,
+    } });
+    expect(await readFile(join(f.lockPath, "owner.json"), "utf8")).toBe(raw);
+  });
+
   it("allows only one of two barrier-synchronized stale contenders to acquire", async () => {
     const f = await fixture();
     await writeFile(f.lockPath, `${JSON.stringify(owner(2_000_000_000))}\n`, { mode: 0o600 });
@@ -218,7 +326,7 @@ describe("RuntimeJobLock stale-owner CAS", () => {
 
     await expect(new RuntimeJobLock(f.dataDir).acquire()).rejects.toMatchObject({
       code: "job_runtime_conflict",
-      details: { ownerPid: process.pid },
+      details: { ownerPid: process.pid, reason: "process_alive", recoveryRequired: false },
     });
     expect(await readFile(f.lockPath, "utf8")).toBe(raw);
     expect(await runtimePaths(f.jobsDir)).toEqual([".runtime-owner.json"]);

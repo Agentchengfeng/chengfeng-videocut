@@ -6,6 +6,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { EditListDocument, EditListOperation } from "@video-workbench/core";
 import type { TimelineElement } from "../player";
 import { useTimelineEditing } from "./useTimelineEditing";
+import { useKouboTimelineEditingAdapter } from "../extensions/koubo/useKouboTimelineEditingAdapter";
+
+const bridge = vi.hoisted(() => ({ patchOperation: vi.fn() }));
+vi.mock("../components/useProjectEditList", () => ({ useProjectEditList: () => bridge }));
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -53,6 +57,7 @@ afterEach(() => {
 describe("useTimelineEditing EDL routing", () => {
   it("routes single move, trim and delete to the CAS EDL operation channel", async () => {
     const patchOperation = vi.fn(async (_operation: EditListOperation) => editListDocument);
+    bridge.patchOperation = patchOperation;
     const showToast = vi.fn();
     let hook: ReturnType<typeof useTimelineEditing> | null = null;
 
@@ -69,7 +74,7 @@ describe("useTimelineEditing EDL routing", () => {
         previewIframeRef: { current: null },
         pendingTimelineEditPathRef: { current: new Set() },
         uploadProjectFiles: vi.fn(),
-        editList: { document: editListDocument, patchOperation },
+        timelineEditingAdapter: useKouboTimelineEditingAdapter("demo"),
       });
       return null;
     }
@@ -97,8 +102,9 @@ describe("useTimelineEditing EDL routing", () => {
     act(() => root.unmount());
   });
 
-  it("blocks M1 group operations when a selection contains a managed segment", async () => {
+  it("allows single gestures but rejects explicit managed multi-selection", async () => {
     const patchOperation = vi.fn(async (_operation: EditListOperation) => editListDocument);
+    bridge.patchOperation = patchOperation;
     const showToast = vi.fn();
     let hook: ReturnType<typeof useTimelineEditing> | null = null;
 
@@ -115,7 +121,7 @@ describe("useTimelineEditing EDL routing", () => {
         previewIframeRef: { current: null },
         pendingTimelineEditPathRef: { current: new Set() },
         uploadProjectFiles: vi.fn(),
-        editList: { document: editListDocument, patchOperation },
+        timelineEditingAdapter: useKouboTimelineEditingAdapter("demo"),
       });
       return null;
     }
@@ -126,22 +132,26 @@ describe("useTimelineEditing EDL routing", () => {
     act(() => root.render(<Harness />));
 
     await act(async () => {
+      await hook!.handleTimelineGroupMove([{ element: managedElement, start: 2 }]);
+      await hook!.handleTimelineGroupResize([{ element: managedElement, start: 1, duration: 3, playbackStart: 11 }]);
+      expect(patchOperation).toHaveBeenCalledTimes(2);
+      patchOperation.mockClear();
       await expect(
-        hook!.handleTimelineGroupMove([{ element: managedElement, start: 2 }]),
-      ).rejects.toThrow("M1 does not support moving managed clips as a group");
+        hook!.handleTimelineGroupMove([{ element: managedElement, start: 2 }], { multiSelection: true }),
+      ).rejects.toThrow("Managed A-roll clips must be moved one at a time");
       await expect(hook!.handleTimelineGroupResize([
         { element: managedElement, start: 1, duration: 3, playbackStart: 11 },
-      ])).rejects.toThrow("M1 does not support trimming managed clips as a group");
+      ], { multiSelection: true })).rejects.toThrow("Managed A-roll clips must be resized one at a time");
     });
 
     expect(patchOperation).not.toHaveBeenCalled();
     expect(showToast).toHaveBeenCalledWith(
-      "口播主轨暂不支持多选移动，请逐个调整。",
-      "info",
+      "Managed A-roll clips must be moved one at a time",
+      "error",
     );
     expect(showToast).toHaveBeenCalledWith(
-      "口播主轨暂不支持多选剪裁，请逐个调整。",
-      "info",
+      "Managed A-roll clips must be resized one at a time",
+      "error",
     );
     act(() => root.unmount());
   });

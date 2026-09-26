@@ -1,0 +1,18 @@
+.cf-skills { width: min(850px, calc(100vw - 40px)); max-height: calc(100vh - 48px); padding: 24px; border: 1px solid #d9dfdf; border-radius: 16px; color: #21332f; background: #fafcfa; box-shadow: 0 24px 90px #14282038; overflow: auto; }
+.cf-skills::backdrop { background: #10251d70; }
+.cf-skills header { display: flex; justify-content: space-between; gap: 16px; align-items: start; }
+.cf-skills h2 { margin: 0; font-size: 22px; }
+.cf-skills h3 { margin: 0 0 8px; font-size: 15px; }
+.cf-skills p { font-size: 14px; line-height: 1.6; }
+.cf-skills button, .cf-skills-open { border: 1px solid #becdc6; border-radius: 7px; background: white; color: #245345; padding: 8px 12px; cursor: pointer; font-size: 13px; }
+.cf-skills button:focus-visible, .cf-skills input:focus-visible, .cf-skills textarea:focus-visible, .cf-skills-open:focus-visible { outline: 2px solid #22755a; outline-offset: 2px; }
+.cf-skills-notice { padding: 12px; border-radius: 8px; background: #edf2ee; }
+.cf-skills-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.cf-skills-meta, .cf-skills small { color: #586d62; font-size: 12px; line-height: 1.6; }
+.cf-skills label { display: grid; gap: 6px; font-size: 13px; }
+.cf-skills input, .cf-skills textarea { width: 100%; box-sizing: border-box; border: 1px solid #becdc6; border-radius: 6px; padding: 10px; font: inherit; background: white; color: #21332f; }
+.cf-skills-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(290px, 100%), 1fr)); gap: 12px; }
+.cf-skills article { border: 1px solid #dbe3dd; border-radius: 10px; padding: 16px; background: white; }
+.cf-skills article button { margin-top: 12px; display: block; }
+.cf-skills-prompt { margin-top: 18px; border-top: 1px solid #dbe3dd; padding-top: 16px; }
+.cf-skills-prompt button { margin: 10px 10px 0 0; }

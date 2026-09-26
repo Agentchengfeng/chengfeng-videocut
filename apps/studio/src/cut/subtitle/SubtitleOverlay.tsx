@@ -11,6 +11,7 @@ export interface ActiveSubtitle {
 
 export interface SubtitleOverlayProps {
   subtitle: ActiveSubtitle | null;
+  fallbackAspect?: number | null;
 }
 
 /**
@@ -37,9 +38,9 @@ function overlayTextStyle(style: SubtitleStyle): CSSProperties {
  *
  * It never intercepts a click: the video underneath it is the play/pause target.
  */
-export function SubtitleOverlay({ subtitle }: SubtitleOverlayProps) {
+export function SubtitleOverlay({ subtitle, fallbackAspect = null }: SubtitleOverlayProps) {
   const hostRef = useRef<HTMLDivElement>(null);
-  const picture = useContainedPicture(hostRef);
+  const picture = useContainedPicture(hostRef, fallbackAspect, true);
 
   return (
     <div

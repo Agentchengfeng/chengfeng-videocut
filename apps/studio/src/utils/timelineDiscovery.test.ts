@@ -1,90 +1,36 @@
+// @vitest-environment happy-dom
 import { describe, expect, it } from "vitest";
-import {
-  TIMELINE_TOGGLE_SHORTCUT_LABEL,
-  getTimelineToggleTitle,
-  shouldHandleTimelineToggleHotkey,
-} from "./timelineDiscovery";
+import { isEditableTarget } from "./timelineDiscovery";
 
-describe("shouldHandleTimelineToggleHotkey", () => {
-  it("accepts Shift+T when focus is not inside an editor", () => {
-    expect(
-      shouldHandleTimelineToggleHotkey({
-        key: "T",
-        shiftKey: true,
-        metaKey: false,
-        ctrlKey: false,
-        altKey: false,
-        target: {
-          tagName: "DIV",
-          isContentEditable: false,
-          closest: () => null,
-        },
-      } as KeyboardEvent),
-    ).toBe(true);
+describe("isEditableTarget — hotkey and nudge text-editing guard", () => {
+  it.each(["input", "textarea", "select"])("guards %s controls", (tag) => {
+    expect(isEditableTarget(document.createElement(tag))).toBe(true);
   });
-
-  it("ignores the shortcut inside text inputs", () => {
-    expect(
-      shouldHandleTimelineToggleHotkey({
-        key: "t",
-        shiftKey: true,
-        metaKey: false,
-        ctrlKey: false,
-        altKey: false,
-        target: {
-          tagName: "TEXTAREA",
-          isContentEditable: false,
-          closest: () => null,
-        },
-      } as KeyboardEvent),
-    ).toBe(false);
+  it.each(["textbox", "searchbox", "combobox"])("guards role=%s", (role) => {
+    const element = document.createElement("div");
+    element.setAttribute("role", role);
+    expect(isEditableTarget(element)).toBe(true);
   });
-
-  it("ignores the shortcut inside contenteditable editors", () => {
-    expect(
-      shouldHandleTimelineToggleHotkey({
-        key: "t",
-        shiftKey: true,
-        metaKey: false,
-        ctrlKey: false,
-        altKey: false,
-        target: {
-          tagName: "DIV",
-          isContentEditable: true,
-          closest: () => null,
-        },
-      } as KeyboardEvent),
-    ).toBe(false);
+  it.each(["contenteditable", "textbox", "cm-editor"])("guards descendants of %s", (kind) => {
+    const editor = document.createElement("div");
+    if (kind === "contenteditable") editor.setAttribute("contenteditable", "true");
+    else if (kind === "textbox") editor.setAttribute("role", "textbox");
+    else editor.className = "cm-editor";
+    const child = document.createElement("span");
+    editor.append(child);
+    expect(isEditableTarget(child)).toBe(true);
   });
-
-  it("requires Shift without other modifiers", () => {
-    expect(
-      shouldHandleTimelineToggleHotkey({
-        key: "t",
-        shiftKey: false,
-        metaKey: false,
-        ctrlKey: false,
-        altKey: false,
-        target: null,
-      } as KeyboardEvent),
-    ).toBe(false);
-
-    expect(
-      shouldHandleTimelineToggleHotkey({
-        key: "t",
-        shiftKey: true,
-        metaKey: true,
-        ctrlKey: false,
-        altKey: false,
-        target: null,
-      } as KeyboardEvent),
-    ).toBe(false);
+  it("guards the native contenteditable flag", () => {
+    const element = document.createElement("div");
+    Object.defineProperty(element, "isContentEditable", { value: true });
+    expect(isEditableTarget(element)).toBe(true);
   });
-});
-
-describe("getTimelineToggleTitle", () => {
-  it("includes the shortcut in both show and hide titles", () => {
-    expect(getTimelineToggleTitle(true)).toContain(TIMELINE_TOGGLE_SHORTCUT_LABEL);
-    expect(getTimelineToggleTitle(false)).toContain(TIMELINE_TOGGLE_SHORTCUT_LABEL);
+  it("allows ordinary timeline targets, disabled contenteditable and absent targets", () => {
+    const element = document.createElement("div");
+    element.setAttribute("contenteditable", "false");
+    expect(isEditableTarget(element)).toBe(false);
+    expect(isEditableTarget(document.createElement("button"))).toBe(false);
+    expect(isEditableTarget(null)).toBe(false);
+    expect(isEditableTarget(new EventTarget())).toBe(false);
   });
 });

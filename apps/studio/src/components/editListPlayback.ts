@@ -1,11 +1,14 @@
 import {
   sourceTimeToTimelineTime,
   timelineTimeToSourceTime,
+  timelineTimeToSourcePosition,
   type EditListDocument,
 } from "@video-workbench/core";
 import type { TranscriptWord } from "./kouboTranscript";
 
 export interface ManagedTimelineSegment {
+  source?: string;
+  instanceId?: string;
   sourceStart: number;
   sourceEnd: number;
   timelineStart: number;
@@ -71,14 +74,19 @@ export function resolveTranscriptSeekTime(
   document: EditListDocument | null,
   sourceTime: number,
   fallbackSegments: readonly ManagedTimelineSegment[] = [],
+  identity?: { source?: string; instanceId?: string },
 ): number {
+  if (document?.schemaVersion === 2 && (!identity?.source || !identity.instanceId)) return Number.NaN;
   if (!document && fallbackSegments.length === 0) return sourceTime;
   const direct = document
-    ? sourceTimeToTimelineTime(document, sourceTime)
+    ? sourceTimeToTimelineTime(document, sourceTime, identity)
     : fallbackSourceTimeToTimelineTime(fallbackSegments, sourceTime);
   if (direct != null) return direct;
 
-  const segments = document?.segments ?? fallbackSegments;
+  const segments = (document?.segments ?? fallbackSegments).filter(segment =>
+    document?.schemaVersion !== 2 || segment.source === identity?.source && segment.instanceId === identity?.instanceId,
+  );
+  if (document?.schemaVersion === 2 && segments.length === 0) return Number.NaN;
   const next = segments.reduce<(typeof segments)[number] | null>((nearest, segment) => {
     if (segment.sourceStart < sourceTime) return nearest;
     if (!nearest || segment.sourceStart < nearest.sourceStart) return segment;
@@ -133,6 +141,7 @@ export function resolveEditListPlaybackTransition(input: {
     input.newEditList,
     previousSourceTime,
     input.managedSegments,
+    input.oldEditList ? timelineTimeToSourcePosition(input.oldEditList, input.currentTimelineTime) ?? undefined : undefined,
   );
 
   const nextDuration = input.newEditList?.duration ?? (() => {
@@ -146,8 +155,8 @@ export function resolveEditListPlaybackTransition(input: {
   const hasForwardContent = nextDuration <= 0 || timelineTime < nextDuration;
 
   return {
-    timelineTime,
-    keepPlaying: input.wasPlaying && hasForwardContent,
+    timelineTime: Number.isFinite(timelineTime) ? timelineTime : nextDuration,
+    keepPlaying: input.wasPlaying && Number.isFinite(timelineTime) && hasForwardContent,
   };
 }
 
@@ -172,7 +181,9 @@ export function deriveActualCutWordIds(
   for (const word of words) {
     const midpoint = word.start + (word.end - word.start) / 2;
     const covered = segments.some(
-      (segment) => midpoint >= segment.sourceStart && midpoint < segment.sourceEnd,
+      (segment) => (document?.schemaVersion !== 2 || Boolean(word.source && word.instanceId)
+        && segment.source === word.source && segment.instanceId === word.instanceId)
+        && midpoint >= segment.sourceStart && midpoint < segment.sourceEnd,
     );
     if (!covered) actualCuts.add(word.id);
   }

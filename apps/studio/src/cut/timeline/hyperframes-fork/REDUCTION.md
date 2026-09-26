@@ -21,7 +21,7 @@ The live Product bundle deliberately reduces the outer height owner while
 keeping the Timeline render chain:
 
 ```text
-CutWorkspace (four-zone grid owns pane height)
+CutWorkspace (Product grid owns pane height)
   + TimelineToolbar
   + Timeline
       + TimelineCanvas
@@ -43,7 +43,19 @@ Only these upstream branches are deleted from the live Product fork:
 | HyperFrames drag/resize persistence and optimistic revisions | One Product EditList CAS transaction commits each edit. |
 | composition drill-down and context menus | No nested composition exists in the talking-head workspace. |
 | marquee/range/keyframe selection | Product selection is one linked A/V group. |
-| mounted `TimelinePane` / `TimelineResizeDivider` height owner | The Product four-zone grid is the single layout owner. The source files remain traceable in the fork, while the live grid row is sized to the upstream 242px canvas plus toolbar instead of creating a second height store. |
+| mounted `TimelinePane` / `TimelineResizeDivider` height owner | The Product grid is the single layout owner. The source files remain traceable in the fork; the live pane is bounded by available workspace height and its canvas scrolls internally, without a second height store. |
+
+The Product top breathing pad is 8px rather than the immutable upstream 50px.
+The shared `TRACKS_TOP_PAD` feeds row rendering, canvas height and pointer/drop
+inversion together; no CSS translation offsets the clips. The ruler stays 24px,
+track rows 48px and bottom pad 72px, yielding a 248px three-row canvas.
+Horizontal gutter, left pad, ticks, fit and time/pixel mapping remain unchanged.
+
+An optional Product editing notice is exposed through native details in the
+toolbar edit group. Its bounded scrollable body is absolutely positioned below
+the toolbar, so neither the collapsed nor expanded notice adds a timeline row.
+The entry states the irreversible multi-source split/delete restriction without
+changing any action handler, undo semantics or global keyboard listener.
 
 The following applicable upstream controls remain: selection, snapping,
 split, fit, logarithmic zoom, pinch zoom, ruler, two lanes, clips, trim handles

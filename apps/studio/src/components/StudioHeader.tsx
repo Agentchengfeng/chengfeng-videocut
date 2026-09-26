@@ -222,6 +222,8 @@ export function StudioHeader({
   const { projectId, editHistory, handleUndo, handleRedo, renderQueue } = useStudioShellContext();
   const { rightCollapsed, setRightCollapsed, setRightPanelTab } = usePanelLayoutContext();
   const isRendering = renderQueue.isRendering;
+  const renderAllowed = renderQueue.renderCapability?.enabled === true;
+  const renderReason = renderQueue.renderCapability?.reason ?? "尚未确认此工作台的通用 HTML 导出能力。";
 
   return (
     <div className="flex items-center justify-between h-10 px-3 bg-neutral-900 border-b border-neutral-800 flex-shrink-0">
@@ -386,15 +388,16 @@ export function StudioHeader({
         </Tooltip>
         <Tooltip
           label={
-            isRendering ? "A render is already in progress" : "Render and export this composition"
+            !renderAllowed ? renderReason : isRendering ? "A render is already in progress" : "Render and export this composition"
           }
           side="bottom"
         >
           <button
             type="button"
-            disabled={isRendering}
+            disabled={isRendering || !renderAllowed}
+            title={!renderAllowed ? renderReason : undefined}
             onClick={() => {
-              if (isRendering) return;
+              if (isRendering || !renderAllowed) return;
               setRightPanelTab("renders");
               setRightCollapsed(false);
               onExport?.();

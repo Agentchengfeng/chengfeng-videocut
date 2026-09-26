@@ -51,7 +51,9 @@ export const RUNTIME_DOCTOR_CAPABILITIES = {
   serviceOperations: RUNTIME_SERVICE_OPERATIONS,
   managedStudioService: true,
   serviceParentProcessIndependent: true,
-  serviceCrashRestart: true,
+  // Do not promise automatic crash recovery across platforms. Managed services
+  // may stop on failure; recovery requires an explicit, observed restart.
+  serviceCrashRestart: false,
   durableJobsApiVersion: 1,
   durableJobKinds: RUNTIME_DURABLE_JOB_KINDS,
   operationAdmissionVersion: 1,
@@ -62,6 +64,7 @@ export const RUNTIME_DOCTOR_CAPABILITIES = {
   managedArollProjection: true,
   expectedEditListRevision: true,
   projectIngestVersion: 1,
+  audioOnlyIngestVersion: 1,
   transcriptPlaybackPagingVersion: 1,
   cloudTranscriptionProvider: "volcengine",
   cloudTranscriptionTaskLocalOnly: true,
@@ -74,6 +77,9 @@ export const STUDIO_CAPABILITY_FEATURES = {
   legacyWorkbenchPanel: false,
   managedTimelineEditing: true,
   projectIngestVersion: RUNTIME_DOCTOR_CAPABILITIES.projectIngestVersion,
+  ingestApiVersion: 1,
+  transcriptCorrectionApiVersion: 1,
+  audioOnlyPreviewVersion: 1,
   transcriptPlaybackPagingVersion: RUNTIME_DOCTOR_CAPABILITIES.transcriptPlaybackPagingVersion,
   durableJobsApiVersion: RUNTIME_DOCTOR_CAPABILITIES.durableJobsApiVersion,
   durableJobKinds: RUNTIME_DURABLE_JOB_KINDS,
@@ -94,6 +100,9 @@ export interface RuntimeStudioCapabilityManifest {
     legacyWorkbenchPanel: false;
     managedTimelineEditing: true;
     projectIngestVersion: 1;
+    ingestApiVersion: 1;
+    transcriptCorrectionApiVersion: 1;
+    audioOnlyPreviewVersion?: 1;
     transcriptPlaybackPagingVersion: 1;
     durableJobsApiVersion: 1;
     durableJobKinds: readonly RuntimeDurableJobKind[];
@@ -116,6 +125,9 @@ export function createStudioCapabilityManifest(
       legacyWorkbenchPanel: STUDIO_CAPABILITY_FEATURES.legacyWorkbenchPanel,
       managedTimelineEditing: STUDIO_CAPABILITY_FEATURES.managedTimelineEditing,
       projectIngestVersion: STUDIO_CAPABILITY_FEATURES.projectIngestVersion,
+      ingestApiVersion: STUDIO_CAPABILITY_FEATURES.ingestApiVersion,
+      transcriptCorrectionApiVersion: STUDIO_CAPABILITY_FEATURES.transcriptCorrectionApiVersion,
+      audioOnlyPreviewVersion: STUDIO_CAPABILITY_FEATURES.audioOnlyPreviewVersion,
       transcriptPlaybackPagingVersion: STUDIO_CAPABILITY_FEATURES.transcriptPlaybackPagingVersion,
       durableJobsApiVersion: STUDIO_CAPABILITY_FEATURES.durableJobsApiVersion,
       durableJobKinds: [...STUDIO_CAPABILITY_FEATURES.durableJobKinds],
@@ -244,6 +256,9 @@ export const RUNTIME_CLI_COMMANDS = {
   "subtitle.get": { public: true, features: [] },
   "subtitle.build": { public: true, features: [] },
   "subtitle.set": { public: true, features: [] },
+  "module.publish": { public: true, features: [] },
+  "workbench": { public: true, features: [] },
+  "module.get": { public: true, features: [] },
   "visual.get": { public: true, features: [] },
   "visual.add": { public: true, features: [] },
   "visual.remove": { public: true, features: [] },
@@ -456,11 +471,21 @@ export interface EditListSegment {
   timelineStart: number;
   trackId: "a-roll";
   playbackRate: number;
+  /** One use of a source; preserved by split and trim. Required in v2. */
+  instanceId?: string;
+}
+
+export interface EditListSource {
+  /** Project-owned relative media path, also used by segment.source. */
+  path: string;
+  sha256: string;
+  duration: number;
+  mediaKind: "audio" | "video";
 }
 
 /** Product-owned, non-destructive edit decision list. */
 export interface EditListDocument {
-  schemaVersion: typeof EDIT_LIST_SCHEMA_VERSION;
+  schemaVersion: typeof EDIT_LIST_SCHEMA_VERSION | 2;
   projectId: string;
   sourceDuration: number;
   baseCutsRevision: string;
@@ -468,6 +493,8 @@ export interface EditListDocument {
   mode: EditListMode;
   duration: number;
   segments: EditListSegment[];
+  /** Required for v2. v1 readers reject v2 instead of ignoring extra sources. */
+  sources?: EditListSource[];
 }
 
 export interface EditListDeleteRangeOperation {
@@ -492,7 +519,7 @@ export interface EditListRestoreSnapshotOperation {
   expectedSegments: EditListSegment[];
   beforeSegments: EditListSegment[];
   beforeMode: EditListMode;
-  inverse: EditListDeleteRangeOperation;
+  inverse: EditListDeleteRangeOperation | { type: "split"; clipId: string; offset: number; newClipId?: string };
 }
 
 export type EditListOperation =
@@ -646,3 +673,12 @@ export function isKnownNaturalPausePolicyVersion(
   return typeof value === "string"
     && (NATURAL_PAUSE_POLICY_VERSIONS as readonly string[]).includes(value);
 }
+export { SKILL_DIRECTORY } from "./skill-directory.generated";
+export type {
+  SkillResultMetadata,
+  SkillResultReview,
+  SkillResultReviewSnapshot,
+  SkillResultSources,
+  SkillResultState,
+  SubtitleCandidateReceipt,
+} from "./skillResults";

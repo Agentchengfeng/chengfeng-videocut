@@ -1,8 +1,17 @@
 import { useEffect, useState, type RefObject } from "react";
+import { parseCanvasAspect } from "@video-workbench/core";
 
 export interface PictureSize {
   width: number;
   height: number;
+}
+
+/** The composition canvas is distinct from the source video's intrinsic frame. */
+export function projectCanvasAspect(value: unknown): number | undefined {
+  const aspect = parseCanvasAspect(value);
+  // Preserve absence until the player knows whether the source has a picture.
+  // Video uses its intrinsic frame; audio explicitly supplies the 16:9 fallback.
+  return aspect ? aspect.w / aspect.h : undefined;
 }
 
 /**
@@ -15,7 +24,7 @@ export interface PictureSize {
  * been quietly wrong about the export. CSS cannot know the media's shape, so
  * this is measured.
  */
-export function containedPicture(video: HTMLVideoElement): PictureSize | null {
+export function containedPicture(video: HTMLVideoElement, fallbackAspect: number | null = null, preferCanvas = false): PictureSize | null {
   // offsetWidth/offsetHeight, never getBoundingClientRect: the push-in
   // transforms this element, and a rect measured while a zoom is up is
   // inflated by the zoom scale. That exact mistake was fixed once inside the
@@ -24,8 +33,12 @@ export function containedPicture(video: HTMLVideoElement): PictureSize | null {
   // point every overlay grew 1.6x and the picture slid off its frame.
   const width = video.offsetWidth;
   const height = video.offsetHeight;
-  const aspect = video.videoWidth / video.videoHeight;
-  if (!Number.isFinite(aspect) || aspect <= 0 || width <= 0 || height <= 0) return null;
+  const mediaAspect = video.videoWidth / video.videoHeight;
+  // Canvas-anchored content uses the saved project ratio for both audio and
+  // video. Source-anchored annotations retain the intrinsic picture geometry.
+  const aspect = preferCanvas && fallbackAspect !== null ? fallbackAspect
+    : Number.isFinite(mediaAspect) && mediaAspect > 0 ? mediaAspect : fallbackAspect;
+  if (aspect === null || !Number.isFinite(aspect) || aspect <= 0 || width <= 0 || height <= 0) return null;
   return width / height > aspect
     ? { width: height * aspect, height }
     : { width, height: width / aspect };
@@ -39,16 +52,16 @@ export function containedPicture(video: HTMLVideoElement): PictureSize | null {
  * subtitles and visuals have to land in the same coordinate space or the export
  * cannot reproduce what the preview showed.
  */
-export function useContainedPicture(hostRef: RefObject<HTMLElement | null>): PictureSize | null {
+export function useContainedPicture(hostRef: RefObject<HTMLElement | null>, fallbackAspect: number | null = null, preferCanvas = false): PictureSize | null {
   const [picture, setPicture] = useState<PictureSize | null>(null);
 
   useEffect(() => {
     const video = hostRef.current?.closest(".cf-cut-player-stage")?.querySelector("video");
     if (!video) return;
     const measure = () => {
-      const next = containedPicture(video);
+      const next = containedPicture(video, fallbackAspect, preferCanvas);
       setPicture((previous) => {
-        if (!next) return previous;
+        if (!next) return null;
         // Resize fires continuously during a drag; only a real change may set
         // state, or the whole player re-renders for every pixel.
         if (
@@ -71,7 +84,7 @@ export function useContainedPicture(hostRef: RefObject<HTMLElement | null>): Pic
       video.removeEventListener("resize", measure);
       observer.disconnect();
     };
-  }, [hostRef]);
+  }, [hostRef, fallbackAspect, preferCanvas]);
 
   return picture;
 }

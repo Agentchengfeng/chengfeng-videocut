@@ -3,6 +3,7 @@ import {
   type EditListDocument,
   type EditListOperation,
   type EditListSegment,
+  type EditListSource,
 } from "@video-workbench/contracts";
 import type { CutTimeRange } from "./cuts";
 import { VideocutError } from "./errors";
@@ -100,6 +101,7 @@ function parseSegment(
     timelineStart: roundTime(timelineStart),
     trackId: "a-roll",
     playbackRate,
+    ...(value.instanceId !== undefined ? { instanceId: nonEmptyString(value.instanceId, `segments[${index}].instanceId`) } : {}),
   };
 }
 
@@ -130,7 +132,7 @@ function documentWithSegments(
 
 export function parseEditListDocument(payload: unknown): EditListDocument {
   if (!isObject(payload)) return invalid("edit-list.json must contain a JSON object");
-  if (payload.schemaVersion !== EDIT_LIST_SCHEMA_VERSION) {
+  if (payload.schemaVersion !== EDIT_LIST_SCHEMA_VERSION && payload.schemaVersion !== 2) {
     return invalid(`edit-list.json schemaVersion must be ${EDIT_LIST_SCHEMA_VERSION}`);
   }
   const projectId = nonEmptyString(payload.projectId, "projectId");
@@ -147,8 +149,42 @@ export function parseEditListDocument(payload: unknown): EditListDocument {
   if (!Array.isArray(payload.segments) || payload.segments.length === 0) {
     return invalid("segments must contain at least one A-roll segment");
   }
-  const parsed = payload.segments.map((segment, index) =>
-    parseSegment(segment, index, sourceDuration));
+  let sources: EditListSource[] | undefined;
+  if (payload.schemaVersion === 2) {
+    if (!Array.isArray(payload.sources) || payload.sources.length === 0 || payload.sources.length > 256) {
+      return invalid("v2 requires 1..256 verified sources");
+    }
+    const paths = new Set<string>();
+    sources = payload.sources.map((item, index) => {
+      if (!isObject(item)) return invalid(`sources[${index}] must be an object`);
+      const path = nonEmptyString(item.path, "source.path");
+      if (path.startsWith("/") || /[\\\\:\u0000]/.test(path) || path.split("/").some(p => !p || p === "." || p === "..") || paths.has(path)) {
+        return invalid("Source path must be a unique safe project-relative path");
+      }
+      paths.add(path);
+      const duration = finite(item.duration, "source.duration");
+      if (duration <= 0) return invalid("Source duration must be positive");
+      if (item.mediaKind !== "audio" && item.mediaKind !== "video") return invalid("Invalid source mediaKind");
+      return { path, sha256: revision(item.sha256, "source.sha256"), duration, mediaKind: item.mediaKind };
+    });
+    if (Math.abs(sourceDuration - Math.max(...sources.map(s => s.duration))) > TIME_EPSILON) {
+      return invalid("v2 sourceDuration must equal maximum source duration; use sources for individual bounds");
+    }
+  } else if (payload.sources !== undefined || payload.segments.some(s => isObject(s) && s.instanceId !== undefined)) {
+    return invalid("Source registry and instances require edit-list v2");
+  }
+  const parsed = payload.segments.map((segment, index) => {
+    const entry = sources?.find(s => isObject(segment) && s.path === segment.source);
+    if (sources && (!entry || !isObject(segment) || typeof segment.instanceId !== "string" || !segment.instanceId.trim())) {
+      return invalid("v2 segment requires registered source and instanceId");
+    }
+    return parseSegment(segment, index, entry?.duration ?? sourceDuration);
+  });
+  const instances = new Map<string, string>();
+  for (const segment of parsed) if (segment.instanceId) {
+    if (instances.has(segment.instanceId) && instances.get(segment.instanceId) !== segment.source) return invalid("One instance cannot reference different sources");
+    instances.set(segment.instanceId, segment.source);
+  }
   const seen = new Set<string>();
   for (const segment of parsed) {
     if (seen.has(segment.id)) return invalid(`Segment id is not unique: ${segment.id}`);
@@ -160,12 +196,13 @@ export function parseEditListDocument(payload: unknown): EditListDocument {
   );
   const normalized = documentWithSegments(
     {
-      schemaVersion: EDIT_LIST_SCHEMA_VERSION,
+      schemaVersion: payload.schemaVersion,
       projectId,
       sourceDuration: roundTime(sourceDuration),
       baseCutsRevision,
       baseTranscriptRevision,
       mode: payload.mode,
+      ...(sources ? { sources } : {}),
     },
     ordered,
   );
@@ -318,8 +355,8 @@ export function parseEditListOperation(payload: unknown): EditListOperation {
       return invalid("Restore snapshot requires expectedSegments, beforeSegments, and inverse");
     }
     const inverse = parseEditListOperation(value.inverse);
-    if (inverse.type !== "delete-range") {
-      return invalid("Restore snapshot inverse must be delete-range");
+    if (inverse.type !== "delete-range" && inverse.type !== "split") {
+      return invalid("Restore snapshot inverse must be delete-range or split");
     }
     return {
       type,
@@ -513,6 +550,7 @@ function manualDocumentWithSegments(
 ): EditListDocument {
   return documentWithSegments(
     {
+      ...document,
       schemaVersion: document.schemaVersion,
       projectId: document.projectId,
       sourceDuration: document.sourceDuration,
@@ -605,6 +643,7 @@ function snapshotDocument(
   }
   const next = documentWithSegments(
     {
+      ...document,
       schemaVersion: document.schemaVersion,
       projectId: document.projectId,
       sourceDuration: document.sourceDuration,
@@ -633,6 +672,9 @@ export function applyEditListOperation(
 ): EditListDocument {
   const document = parseEditListDocument(input);
   const operation = parseEditListOperation(rawOperation);
+  if (document.schemaVersion === 2 && ["restore", "restore-snapshot", "delete-range"].includes(operation.type)) {
+    return invalid("Multisource source-range edits require instance-aware operations; use segment edits");
+  }
   if (operation.type === "restore") {
     // Restore only restores. It must never delete anything else in the same
     // operation — a restore that silently removes a later identical sentence
@@ -670,7 +712,8 @@ export function applyEditListOperation(
   } else if (operation.type === "trim") {
     const sourceStart = roundTime(operation.sourceStart);
     const sourceEnd = roundTime(operation.sourceEnd);
-    if (sourceStart < 0 || sourceEnd > document.sourceDuration + TIME_EPSILON) {
+    const duration = document.sources?.find(s => s.path === segment.source)?.duration ?? document.sourceDuration;
+    if (sourceStart < 0 || sourceEnd > duration + TIME_EPSILON) {
       return invalid("Trim exceeds the source duration", {
         sourceStart,
         sourceEnd,
@@ -693,6 +736,7 @@ export function applyEditListOperation(
     const overlapped = document.segments.find((candidate) =>
       candidate.id !== segment.id
       && candidate.source === segment.source
+      && candidate.instanceId === segment.instanceId
       && rangesOverlap(sourceStart, sourceEnd, candidate.sourceStart, candidate.sourceEnd),
     );
     if (overlapped) {
@@ -735,6 +779,7 @@ export function applyEditListOperation(
 
   return documentWithSegments(
     {
+      ...document,
       schemaVersion: document.schemaVersion,
       projectId: document.projectId,
       sourceDuration: document.sourceDuration,
@@ -746,10 +791,20 @@ export function applyEditListOperation(
   );
 }
 
-export function timelineTimeToSourceTime(
+export interface EditListSourcePosition {
+  segmentId: string;
+  /** Project-scoped source reference; not a globally unique media identity. */
+  source: string;
+  sourceTime: number;
+  instanceId?: string;
+}
+
+/** Preserve source and occurrence identity when resolving the playback cursor.
+ * This does not enable multi-source ingestion or relax document validation. */
+export function timelineTimeToSourcePosition(
   input: EditListDocument,
   timelineTime: number,
-): number | null {
+): EditListSourcePosition | null {
   const document = parseEditListDocument(input);
   if (!Number.isFinite(timelineTime) || timelineTime < 0 || timelineTime > document.duration) {
     return null;
@@ -758,23 +813,39 @@ export function timelineTimeToSourceTime(
     const duration = editListSegmentDuration(segment);
     const end = segment.timelineStart + duration;
     if (timelineTime < end || (index === document.segments.length - 1 && timelineTime <= end)) {
-      return roundTime(
-        segment.sourceStart + Math.max(0, timelineTime - segment.timelineStart) * segment.playbackRate,
-      );
+      return {
+        segmentId: segment.id,
+        source: segment.source,
+        ...(segment.instanceId ? { instanceId: segment.instanceId } : {}),
+        sourceTime: roundTime(
+          segment.sourceStart + Math.max(0, timelineTime - segment.timelineStart) * segment.playbackRate,
+        ),
+      };
     }
   }
   return null;
 }
 
+/** Legacy numeric projection. New source-aware callers should use the position. */
+export function timelineTimeToSourceTime(
+  input: EditListDocument,
+  timelineTime: number,
+): number | null {
+  return timelineTimeToSourcePosition(input, timelineTime)?.sourceTime ?? null;
+}
+
 export function sourceTimeToTimelineTime(
   input: EditListDocument,
   sourceTime: number,
+  identity?: { source?: string; instanceId?: string },
 ): number | null {
   const document = parseEditListDocument(input);
+  if (document.schemaVersion === 2 && (!identity?.source || !identity.instanceId)) return null;
   if (!Number.isFinite(sourceTime) || sourceTime < 0 || sourceTime > document.sourceDuration) {
     return null;
   }
   for (const [index, segment] of document.segments.entries()) {
+    if (identity?.source && identity.source !== segment.source || identity?.instanceId && identity.instanceId !== segment.instanceId) continue;
     const includesEnd = index === document.segments.length - 1;
     if (
       sourceTime >= segment.sourceStart - TIME_EPSILON &&

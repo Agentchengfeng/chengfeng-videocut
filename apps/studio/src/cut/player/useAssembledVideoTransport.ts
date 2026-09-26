@@ -111,7 +111,8 @@ export function useAssembledVideoTransport(input: {
   const timelineTimeRef = useRef(Math.max(0, input.initialTimelineTime));
   const playingIntentRef = useRef(false);
   const seekGenerationRef = useRef(0);
-  const pendingRestoreRef = useRef<{ timelineTime: number; shouldPlay: boolean } | null>(null);
+  const pendingRestoreRef = useRef<{ timelineTime: number; shouldPlay: boolean } | null>({ timelineTime: timelineTimeRef.current, shouldPlay: false });
+  const readyRef = useRef(false);
   const objectUrlRef = useRef<string | null>(null);
   const [timelineTime, setTimelineTimeState] = useState(timelineTimeRef.current);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -125,6 +126,7 @@ export function useAssembledVideoTransport(input: {
   const [error, setError] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const [assembledDuration, setAssembledDuration] = useState<number | null>(null);
+  const [metadataDuration, setMetadataDuration] = useState<number | null>(null);
 
   const target = useMemo<AssembleTarget>(() => ({
     // Fragment list plus order: two edits that retain the same ranges in the same
@@ -137,7 +139,7 @@ export function useAssembledVideoTransport(input: {
   }), [input.stream, input.sourceUrl]);
 
   const duration = assembledDuration
-    ?? (input.duration > 0 ? input.duration : input.stream?.totalSeconds ?? 0);
+    ?? (input.duration > 0 ? input.duration : input.stream?.totalSeconds ?? metadataDuration ?? 0);
 
   const publishTimelineTime = useCallback((value: number, force = false) => {
     const next = Math.max(0, value);
@@ -151,8 +153,12 @@ export function useAssembledVideoTransport(input: {
   useEffect(() => {
     if (!video) return;
     let cancelled = false;
+    readyRef.current = false;
+    seekGenerationRef.current++;
+    pendingRestoreRef.current ??= { timelineTime: timelineTimeRef.current, shouldPlay: playingIntentRef.current };
     setReady(false);
     setAssembledDuration(null);
+    setMetadataDuration(null);
     setError(null);
 
     const releaseObjectUrl = () => {
@@ -164,14 +170,28 @@ export function useAssembledVideoTransport(input: {
 
     if (!target.stream) {
       releaseObjectUrl();
+      const metadata = (event: Event) => {
+        if (cancelled || video.readyState < 1) return;
+        if (event.type !== "loadedmetadata" && !readyRef.current) return;
+        readyRef.current = true;
+        setReady(true);
+        if (Number.isFinite(video.duration) && video.duration > 0) setMetadataDuration(video.duration);
+      };
+      video.addEventListener("loadedmetadata", metadata);
+      video.addEventListener("durationchange", metadata);
       if (target.sourceUrl) {
         video.src = target.sourceUrl;
-        setReady(true);
+        // Do not inspect readyState eagerly: it can still describe the previous
+        // source until the browser runs the load reset. Wait for new metadata.
       } else {
         video.removeAttribute("src");
         video.load();
       }
-      return () => { cancelled = true; };
+      return () => {
+        cancelled = true; readyRef.current = false; seekGenerationRef.current++;
+        video.removeEventListener("loadedmetadata", metadata);
+        video.removeEventListener("durationchange", metadata);
+      };
     }
 
     const stream = target.stream;
@@ -221,6 +241,7 @@ export function useAssembledVideoTransport(input: {
         if (cancelled) return;
         if (mediaSource.readyState === "open") mediaSource.endOfStream();
         setAssembledDuration(stream.totalSeconds);
+        readyRef.current = true;
         setReady(true);
       } catch (cause) {
         if (cancelled) return;
@@ -230,6 +251,8 @@ export function useAssembledVideoTransport(input: {
 
     return () => {
       cancelled = true;
+      readyRef.current = false;
+      seekGenerationRef.current++;
       // Hand the buffered media back.
       //
       // Marking the build cancelled only stops this code; it does not release what
@@ -263,17 +286,24 @@ export function useAssembledVideoTransport(input: {
     options: { keepPlaying?: boolean } = {},
   ): Promise<void> => {
     const video = videoRef.current;
-    if (!video) return;
     const keepPlaying = options.keepPlaying ?? playingIntentRef.current;
     playingIntentRef.current = keepPlaying;
     setDesiredPlaying(keepPlaying);
     const generation = seekGenerationRef.current + 1;
     seekGenerationRef.current = generation;
-    const bounded = Math.min(Math.max(0, rawTimelineTime), Math.max(0, duration));
+    const requested = Math.max(0, rawTimelineTime);
+    pendingRestoreRef.current = { timelineTime: requested, shouldPlay: keepPlaying };
+    if (!keepPlaying) video?.pause();
+    if (!video || !readyRef.current || video.readyState < 1 || !Number.isFinite(duration) || duration <= 0) {
+      publishTimelineTime(requested, true);
+      return;
+    }
+    const bounded = Math.min(requested, duration);
     publishTimelineTime(bounded, true);
     setIsSeeking(true);
     try {
       video.currentTime = bounded;
+      pendingRestoreRef.current = null;
     } catch {
       // A seek before the buffer exists is not a failure; readiness re-applies it.
       pendingRestoreRef.current = { timelineTime: bounded, shouldPlay: keepPlaying };
@@ -286,7 +316,7 @@ export function useAssembledVideoTransport(input: {
       try {
         await video.play();
       } catch {
-        setIsPlaying(false);
+        if (generation === seekGenerationRef.current && videoRef.current === video) setIsPlaying(false);
       }
     }
   }, [duration, publishTimelineTime]);
@@ -302,30 +332,48 @@ export function useAssembledVideoTransport(input: {
       }
       return;
     }
-    pendingRestoreRef.current = null;
     void seek(pending.timelineTime, { keepPlaying: pending.shouldPlay });
   }, [ready, seek]);
 
+  // MSE may finish assembling before its metadata event. Retry the same intent,
+  // not an incidental zero timeupdate generated while the source initializes.
+  useEffect(() => {
+    if (!video) return;
+    const retry = () => {
+      const pending = pendingRestoreRef.current;
+      if (pending) void seek(pending.timelineTime, { keepPlaying: pending.shouldPlay });
+    };
+    video.addEventListener("loadedmetadata", retry);
+    video.addEventListener("canplay", retry);
+    return () => { video.removeEventListener("loadedmetadata", retry); video.removeEventListener("canplay", retry); };
+  }, [seek, video]);
+
   const play = useCallback(async () => {
     const video = videoRef.current;
-    if (!video) return;
     playingIntentRef.current = true;
     setDesiredPlaying(true);
+    if (pendingRestoreRef.current || !video || !readyRef.current) {
+      await seek(pendingRestoreRef.current?.timelineTime ?? timelineTimeRef.current, { keepPlaying: true });
+      return;
+    }
     // At the end, play means play again from the start — never silently continue
     // into whatever follows.
     if (duration > 0 && video.currentTime >= duration - END_EPSILON_SECONDS) {
       await seek(0, { keepPlaying: true });
       return;
     }
+    const generation = ++seekGenerationRef.current;
     try {
       await video.play();
     } catch {
-      setIsPlaying(false);
+      if (generation === seekGenerationRef.current && videoRef.current === video) setIsPlaying(false);
     }
   }, [duration, seek]);
 
   const pause = useCallback(() => {
     playingIntentRef.current = false;
+    seekGenerationRef.current++;
+    if (pendingRestoreRef.current) pendingRestoreRef.current.shouldPlay = false;
     setDesiredPlaying(false);
     videoRef.current?.pause();
   }, []);
@@ -342,15 +390,8 @@ export function useAssembledVideoTransport(input: {
     nextTimelineTime: number,
     shouldPlay: boolean,
   ): Promise<void> => {
-    if (!ready) {
-      pendingRestoreRef.current = { timelineTime: nextTimelineTime, shouldPlay };
-      publishTimelineTime(nextTimelineTime, true);
-      playingIntentRef.current = shouldPlay;
-      setDesiredPlaying(shouldPlay);
-      return;
-    }
     await seek(nextTimelineTime, { keepPlaying: shouldPlay });
-  }, [publishTimelineTime, ready, seek]);
+  }, [seek]);
 
   const setPlaybackRate = useCallback((rate: number) => {
     const next = Number.isFinite(rate) && rate > 0 ? rate : 1;
@@ -380,16 +421,18 @@ export function useAssembledVideoTransport(input: {
   useEffect(() => {
     if (!video) return;
     const onTime = () => {
+      if (pendingRestoreRef.current || !readyRef.current) return;
       publishTimelineTime(video.currentTime);
       setIsSeeking(false);
     };
-    const onPlaying = () => { setIsPlaying(true); setIsWaiting(false); };
+    const onPlaying = () => { if (!readyRef.current || pendingRestoreRef.current || !playingIntentRef.current) return; setIsPlaying(true); setIsWaiting(false); };
     const onPause = () => setIsPlaying(false);
     const onWaiting = () => setIsWaiting(true);
     const onSeeking = () => setIsSeeking(true);
-    const onSeeked = () => { setIsSeeking(false); publishTimelineTime(video.currentTime, true); };
+    const onSeeked = () => { if (pendingRestoreRef.current || !readyRef.current) return; setIsSeeking(false); publishTimelineTime(video.currentTime, true); };
     const onError = () => setError(mediaErrorMessage(video));
     const onEnded = () => {
+      if (!readyRef.current || pendingRestoreRef.current) return;
       setIsPlaying(false);
       if (loopEnabled) {
         void seek(0, { keepPlaying: true });

@@ -4,14 +4,16 @@ import { createReadStream } from "node:fs";
 import { lstat, readFile, mkdir, mkdtemp, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { cutVideoBySegments, probeMedia, probePreviewProxyMedia } from "@video-workbench/koubo-adapter";
+import { cutVideoBySegments, mixSoundEffects, probeMedia, probePreviewProxyMedia, resolveMainSources, mainAudioFilter, type MainSource } from "@video-workbench/koubo-adapter";
 import {
   parseEditListDocument,
   ffmpegFileArg,
   ffmpegOutputArgs,
   runWithFfmpegComplexFilterFile,
 } from "@video-workbench/core";
-import { serializeProjectOperation as serializeProjectOperationDefault } from "@video-workbench/core/node";
+import { readSoundEffects } from "@video-workbench/core/node";
+import type { SoundEffectCue } from "@video-workbench/core";
+import { serializeProjectOperation as serializeProjectOperationDefault, assertProjectReadable } from "@video-workbench/core/node";
 import { isSafeProjectId } from "./project-media";
 import { buildPreviewStream, type PreviewStream } from "./preview-stream";
 
@@ -68,17 +70,23 @@ export interface EditPreviewArtifactState {
 }
 
 interface PreviewArtifactGenerateInput {
+  sourcePaths?: Record<string, string>;
+  audioOnly?: boolean;
   input: string;
   output: string;
   frameRate: number;
   profile: "sharp-canonical-v1" | "fast-proxy-v1";
-  segments: readonly { start: number; end: number }[];
+  segments: readonly { start: number; end: number; source?: string; playbackRate?: number }[];
 }
 
 type PreviewArtifactGenerate = (input: PreviewArtifactGenerateInput) => ReturnType<typeof cutVideoBySegments>;
 type ProjectOperationSerializer = typeof serializeProjectOperationDefault;
 
 export interface ProjectInput {
+  soundEffects?: { revision: string | null; cues: SoundEffectCue[] };
+  sourcePaths?: Record<string, string>;
+  sourceManifest?: MainSource[];
+  audioOnly?: boolean;
   projectId: string;
   projectDir: string;
   editRevision: string;
@@ -104,6 +112,7 @@ export interface ProjectInput {
 
 export interface EditPreviewArtifactDependencies {
   generate?: PreviewArtifactGenerate;
+  prune?: typeof pruneEncodedArtifacts;
   /** Injectable so unit tests need not supply decodable media to exercise state. */
   buildStream?: typeof buildPreviewStream;
   probe?: typeof probeMedia;
@@ -222,6 +231,13 @@ function expectedSharpPreviewDimensions(input: ProjectInput): { width: number; h
 }
 
 function assertArtifactQuality(input: ProjectInput, media: Awaited<ReturnType<typeof probeMedia>>): void {
+  if (input.audioOnly) {
+    if (media.hasVideo || !media.hasAudio || !Number.isFinite(media.duration)
+      || Math.abs(media.duration - input.duration) > 0.002) {
+      throw new Error(`Generated audio preview validation failed: duration=${media.duration}`);
+    }
+    return;
+  }
   if (!media.hasVideo || !media.hasAudio || Math.abs(media.duration - input.duration) > 0.12) {
     throw new Error(`Generated preview validation failed: duration=${media.duration}`);
   }
@@ -420,6 +436,98 @@ export async function generatePreviewArtifactVideo(input: {
   }
 }
 
+/** Encode the committed audio edit once. A regular MP4 edit list compensates
+ * the encoder's one initial delay; per-range AAC fragments cannot do that. */
+export async function generatePreviewArtifactAudio(input: {
+  sourcePaths?: Record<string, string>;
+  input: string;
+  output: string;
+  segments: readonly { start: number; end: number; source?: string; playbackRate?: number }[];
+}): ReturnType<typeof cutVideoBySegments> {
+  const source = await probeMedia(input.input);
+  if (source.hasVideo || !source.hasAudio || !(source.duration > 0)) {
+    throw new Error(`Input is not readable audio-only media: ${input.input}`);
+  }
+  if (input.segments.length === 0) throw new Error("Edit list must retain at least one segment");
+  if (!input.sourcePaths && new Set(input.segments.map((segment) => segment.source ?? "")).size > 1) throw new Error("Audio preview requires a verified source manifest");
+  const sourcePaths = input.sourcePaths ?? { [input.segments[0]?.source ?? ""]: input.input };
+  const probes = new Map(await Promise.all(Object.entries(sourcePaths).map(async ([key, path]) => {
+    const probe = await probeMedia(path);
+    if (probe.hasVideo || !probe.hasAudio) throw new Error(`Unsupported main-track source: ${key}`);
+    return [key, probe] as const;
+  })));
+  const sampleRate = 48_000;
+  const segments = input.segments.map((segment, index) => {
+    const source = probes.get(segment.source ?? "");
+    if (!source) throw new Error(`Unresolved audio source #${index}`);
+    if (!Number.isFinite(segment.start) || !Number.isFinite(segment.end)
+      || segment.start < 0 || segment.end > source.duration + 0.001
+      || segment.end <= segment.start || (segment.playbackRate ?? 1) !== 1) {
+      throw new Error(`Invalid or unsupported audio preview segment #${index}`);
+    }
+    const start = Math.round(segment.start * sampleRate);
+    const end = Math.round(Math.min(source.duration, segment.end) * sampleRate);
+    if (end <= start) throw new Error(`Empty audio preview segment #${index}`);
+    return { start, end };
+  });
+  const duration = segments.reduce((sum, segment) => sum + segment.end - segment.start, 0) / sampleRate;
+  await mkdir(dirname(input.output), { recursive: true });
+  const temporaryOutput = writerTempOutput(input.output);
+  const workDir = await mkdtemp(join(tmpdir(), "chengfeng-videocut-audio-preview-"));
+  try {
+    const filterPath = join(workDir, "audio-edl-filter.txt");
+    const filters = [
+      `[0:a:0]aresample=${sampleRate},asetpts=PTS-STARTPTS,asplit=${segments.length}`
+        + segments.map((_, index) => `[src${index}]`).join(""),
+      ...segments.map((segment, index) => {
+        const seconds = (segment.end - segment.start) / sampleRate;
+        // Keep the old fragment player's 5ms de-click envelope, but apply it to
+        // PCM before the single encode. No inserted silence or boundary shift.
+        const fade = seconds > 0.02
+          ? `,afade=t=in:st=0:d=0.005,afade=t=out:st=${(seconds - 0.005).toFixed(8)}:d=0.005`
+          : "";
+        return `[src${index}]atrim=start_sample=${segment.start}:end_sample=${segment.end},`
+          + `asetpts=PTS-STARTPTS${fade}[a${index}]`;
+      }),
+      segments.map((_, index) => `[a${index}]`).join("")
+        + `concat=n=${segments.length}:v=0:a=1,asetpts=N/SR/TB[outa]`,
+    ];
+    await writeFile(filterPath, input.sourcePaths
+      ? mainAudioFilter(input.segments.map(s => ({ source: s.source, sourceStart: s.start, sourceEnd: s.end })), Object.keys(sourcePaths))
+      : `${filters.join(";\n")}\n`, "utf8");
+    await runWithFfmpegComplexFilterFile(filterPath, (filterArgs) =>
+      runCommand("ffmpeg", [
+        "-nostdin", "-y", "-v", "error", ...Object.values(sourcePaths).flatMap(path => ["-i", ffmpegFileArg(path)]),
+        ...filterArgs, "-map", "[outa]", "-vn", "-sn", "-dn",
+        "-c:a", "aac", "-b:a", "128k", "-ar", String(sampleRate), "-ac", "2",
+        // Keep the negative encoder packet and its edit list. Making timestamps
+        // nonnegative or fragmenting this output exposes the priming as silence.
+        "-use_editlist", "1", "-movflags", "+faststart",
+        ...ffmpegOutputArgs("mp4", temporaryOutput),
+      ]));
+    const [media, timing] = await Promise.all([
+      probeMedia(temporaryOutput), probePreviewProxyMedia(temporaryOutput),
+    ]);
+    if (media.hasVideo || !media.hasAudio || !Number.isFinite(media.duration)
+      || Math.abs(media.duration - duration) > 0.002
+      || Math.abs(timing.audioStartTime ?? Infinity) > 1 / sampleRate) {
+      throw new Error(`Audio preview timing validation failed: duration=${media.duration}, start=${timing.audioStartTime}`);
+    }
+    await rename(temporaryOutput, input.output);
+    return {
+      input: input.input, output: input.output, originalDuration: source.duration,
+      newDuration: media.duration, deletedDuration: Math.max(0, source.duration - media.duration),
+      savedPercent: Math.max(0, source.duration - media.duration) / source.duration * 100,
+      cutRanges: [], keepSegments: segments.map((segment) => ({
+        start: segment.start / sampleRate, end: segment.end / sampleRate,
+      })), hasAudio: true, width: 0, height: 0,
+    };
+  } finally {
+    await rm(workDir, { recursive: true, force: true });
+    await rm(temporaryOutput, { force: true });
+  }
+}
+
 export function editPreviewArtifactCacheKey(input: {
   sourceSha256: string;
   editRevision: string;
@@ -440,11 +548,14 @@ export function editPreviewArtifactConfig(input: ProjectInput) {
   const profile = input.previewProfile ?? "fast-proxy-v1";
   return {
     ...EDIT_PREVIEW_CONFIG,
+    ...(input.soundEffects?.cues.length ? {soundEffects: input.soundEffects} : {}),
+    ...(input.audioOnly ? { video: "none", audio: "aac-continuous-edit-list-fade5ms-v2", audioSampleRate: 48_000 } : {}),
     profile,
     sourceKind,
     frameRate: input.previewFrameRate,
     gopFrames: gopFrames(input.previewFrameRate),
     canonicalSource: input.sourceProxy,
+    ...(input.sourceManifest ? { sourceManifest: input.sourceManifest, multiSourceAudio: "pcm48k-stereo-fade5ms-v1" } : {}),
     sourceFrameRate: input.previewFrameRate,
     playbackProjection: input.segments.map((segment) => ({
       source: (segment as { source?: unknown }).source ?? "",
@@ -494,12 +605,27 @@ export async function projectInput(projectsDir: string, projectId: string): Prom
   if (!entryInfo.isSymbolicLink() && !isWithin(realProjectsDir, realProjectDir)) {
     throw new Error("Project directory escapes projects root");
   }
+  await assertProjectReadable(realProjectDir);
   const [editRaw, workbenchRaw, projectRaw] = await Promise.all([
     readFile(join(realProjectDir, "edit-list.json"), "utf8"),
     readFile(join(realProjectDir, "workbench.json"), "utf8"),
     readFile(join(realProjectDir, "project.json"), "utf8").catch(() => "{}"),
   ]);
   const edit = parseEditListDocument(JSON.parse(editRaw));
+  const soundEffectsState = await readSoundEffects(realProjectDir, true);
+  const soundEffects = {revision:soundEffectsState.revision,cues:soundEffectsState.document.cues};
+  if (edit.schemaVersion === 2) {
+    const sourcePaths = await resolveMainSources(realProjectDir, edit.sources!);
+    await assertProjectReadable(realProjectDir);
+    return {
+      soundEffects, projectId, projectDir: realProjectDir, audioOnly: true,
+      editRevision: sha256(editRaw), sourceSha256: sha256(JSON.stringify(edit.sources)),
+      sourceProxy: Object.values(sourcePaths)[0]!, sourcePaths, sourceManifest: edit.sources,
+      sourceKind: "canonical", previewProfile: "sharp-canonical-v1", previewFrameRate: 30,
+      previewProxyRevision: "", previewProxyCacheKey: "", duration: edit.duration,
+      segments: edit.segments.map(s => ({ source: s.source, start: s.sourceStart, end: s.sourceEnd, playbackRate: s.playbackRate })),
+    };
+  }
   const workbench = JSON.parse(workbenchRaw) as Record<string, any>;
   const project = JSON.parse(projectRaw) as Record<string, any>;
   const sourceSha256 = String(workbench.sourceSha256 ?? "");
@@ -534,14 +660,19 @@ export async function projectInput(projectsDir: string, projectId: string): Prom
   const sourceProbe = sourceKind === "canonical"
     ? await verifyCanonicalSource(sourceProxy, sourceSha256)
     : null;
+  const audioOnly = project.source?.mediaKind === "audio"
+    && workbench.previewProxy?.hasVideo === false && workbench.previewProxy?.hasAudio === true;
   const previewFrameRate = Math.min(
     60,
     finiteFrameRate(sourceProbe?.frameRate) ?? finiteFrameRate(workbench.previewProxy?.frameRate) ?? 0,
   );
-  if (!previewFrameRate) throw new Error("Current project source has no verified frame-rate contract");
+  if (!previewFrameRate && !audioOnly) throw new Error("Current project source has no verified frame-rate contract");
+  await assertProjectReadable(realProjectDir);
   return {
     projectId,
     projectDir: realProjectDir,
+    soundEffects,
+    audioOnly,
     editRevision: sha256(editRaw),
     sourceSha256,
     sourceProxy,
@@ -627,6 +758,8 @@ async function pruneEncodedArtifacts(
 // single playbackRate, and per-segment speed would need it changed mid-stream in
 // a way that drifts audio). Those two cases keep the encoded artifact path.
 export function canPlayFromLedger(input: ProjectInput): boolean {
+  if (input.soundEffects?.cues.length) return false;
+  if (input.audioOnly) return false;
   if (!input.previewProxySource) return false;
   if (input.segments.length === 0) return false;
   const sources = new Set(input.segments.map((segment) => segment.source ?? ""));
@@ -650,6 +783,7 @@ async function ledgerProxyState(
   // exist before the state claims to be playable, or the player would assemble
   // from files that are not there yet.
   const stream = await buildStream({
+    audioOnly: input.audioOnly,
     projectDir: input.projectDir,
     proxySource: input.previewProxySource as string,
     proxyCacheKey: input.previewProxyCacheKey || sha256(input.previewProxySource as string),
@@ -673,7 +807,7 @@ async function ledgerProxyState(
     // The assembled length, not the proxy's: what plays is the stream.
     duration: stream.totalSeconds,
     byteLength: input.previewProxyByteLength ?? null,
-    hasVideo: true,
+    hasVideo: !input.audioOnly,
     hasAudio: true,
     generatedAt,
     generationMs: 0,
@@ -760,6 +894,9 @@ function writerTempOutput(output: string): string {
 }
 
 export class EditPreviewArtifactManager {
+  private closed = false;
+  private closePromise?: Promise<void>;
+  private readonly pending = new Set<Promise<unknown>>();
   private readonly desired = new Map<string, string>();
   private readonly running = new Map<string, Promise<void>>();
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -770,6 +907,7 @@ export class EditPreviewArtifactManager {
   private readonly ledgerBuilds = new Map<string, { revision: string; promise: Promise<EditPreviewArtifactState> }>();
   private readonly ledgerSyncBudgetMs: number;
   private readonly generate: PreviewArtifactGenerate;
+  private readonly prune: typeof pruneEncodedArtifacts;
   private readonly probe: typeof probeMedia;
   private readonly readProjectInput: (projectsDir: string, projectId: string) => Promise<ProjectInput>;
   private readonly serializeProjectOperation: ProjectOperationSerializer;
@@ -778,7 +916,9 @@ export class EditPreviewArtifactManager {
   private readonly debounceMs: number;
 
   constructor(private readonly projectsDir: string, dependencies: EditPreviewArtifactDependencies = {}) {
-    this.generate = dependencies.generate ?? generatePreviewArtifactVideo;
+    this.generate = dependencies.generate ?? ((input) => input.audioOnly
+      ? generatePreviewArtifactAudio(input) : generatePreviewArtifactVideo(input));
+    this.prune = dependencies.prune ?? pruneEncodedArtifacts;
     this.buildStream = dependencies.buildStream ?? buildPreviewStream;
     this.probe = dependencies.probe ?? probeMedia;
     this.readProjectInput = dependencies.readProjectInput ?? projectInput;
@@ -788,8 +928,44 @@ export class EditPreviewArtifactManager {
     this.debounceMs = dependencies.debounceMs ?? 180;
   }
 
-  async status(projectId: string): Promise<EditPreviewArtifactState> {
+  private track<T>(task: Promise<T>): Promise<T> {
+    this.pending.add(task);
+    void task.then(() => this.pending.delete(task), () => this.pending.delete(task));
+    return task;
+  }
+
+  isBusy(): boolean {
+    return this.pending.size > 0 || this.timers.size > 0 || this.running.size > 0 || this.ledgerBuilds.size > 0;
+  }
+
+  /** Stop admission synchronously, then drain every task which already owns I/O. */
+  close(): Promise<void> {
+    if (this.closePromise) return this.closePromise;
+    this.closed = true;
+    for (const timer of this.timers.values()) clearTimeout(timer);
+    this.timers.clear();
+    this.closePromise = (async () => {
+      // A tracked status/run may register a child while it finishes. Recheck
+      // instead of taking a single snapshot of the in-flight ledger builds.
+      while (this.pending.size) await Promise.allSettled([...this.pending]);
+    })();
+    return this.closePromise;
+  }
+
+  private backgroundFailure(projectId: string, error: unknown): void {
+    const previous = this.states.get(projectId) ?? blankState(projectId);
+    this.states.set(projectId, { ...previous, schemaVersion: 2, projectId, phase: "failed", error: String(error) });
+    console.error("[chengfeng-videocut] preview background failed", { projectId, error: String(error) });
+  }
+
+  status(projectId: string): Promise<EditPreviewArtifactState> {
+    if (this.closed) return Promise.reject(new Error("Preview manager is closed"));
+    return this.track(this.statusInternal(projectId));
+  }
+
+  private async statusInternal(projectId: string): Promise<EditPreviewArtifactState> {
     const input = await this.readProjectInput(this.projectsDir, projectId);
+    if (this.closed) throw new Error("Preview manager is closed");
     if (canPlayFromLedger(input)) {
       // No artifact, so nothing can be stale and nothing may be scheduled. Drop
       // any state left by the encoded path so a previously rendered artifact can
@@ -812,7 +988,7 @@ export class EditPreviewArtifactManager {
       if (inflight && inflight.revision === input.editRevision) {
         build = inflight.promise;
       } else {
-        build = ledgerProxyState(input, new Date(this.now()).toISOString(), this.buildStream);
+        build = this.track(ledgerProxyState(input, new Date(this.now()).toISOString(), this.buildStream));
         const entry = { revision: input.editRevision, promise: build };
         this.ledgerBuilds.set(projectId, entry);
         build.then(
@@ -852,10 +1028,10 @@ export class EditPreviewArtifactManager {
       // Ledger playback reads none of the encoded artifacts, so whatever a
       // previously encoded history left behind is now dead weight. Keep a few
       // generations in case the project later needs the fallback path.
-      void pruneEncodedArtifacts(
+      if (!this.closed) this.track(this.prune(
         join(input.projectDir, ".chengfeng-videocut", "preview-edited"),
         [],
-      ).catch(() => undefined);
+      ).catch(error => { console.error("[chengfeng-videocut] preview cache pruning failed", { projectId, error: String(error) }); }));
       return state;
     }
     const expectedCacheKey = expectedCacheKeyForInput(input);
@@ -924,11 +1100,12 @@ export class EditPreviewArtifactManager {
   }
 
   schedule(projectId: string): void {
+    if (this.closed) return;
     const epoch = (this.scheduleEpochs.get(projectId) ?? 0) + 1;
     this.scheduleEpochs.set(projectId, epoch);
     this.publishEpochs.set(projectId, (this.publishEpochs.get(projectId) ?? 0) + 1);
-    void this.readProjectInput(this.projectsDir, projectId).then(async (input) => {
-      if (this.scheduleEpochs.get(projectId) !== epoch) return;
+    this.track(this.readProjectInput(this.projectsDir, projectId).then(async (input) => {
+      if (this.closed || this.scheduleEpochs.get(projectId) !== epoch) return;
       this.desired.set(projectId, input.editRevision);
       if (canPlayFromLedger(input)) {
         // Ledger playback has no generation step. Publish the current state and
@@ -945,7 +1122,7 @@ export class EditPreviewArtifactManager {
       const cacheKey = expectedCacheKeyForInput(input);
       const previous = this.states.get(projectId);
       const source = await trustedPreviousPreviewSource(input.projectDir, previous?.source);
-      if (this.scheduleEpochs.get(projectId) !== epoch) return;
+      if (this.closed || this.scheduleEpochs.get(projectId) !== epoch) return;
       this.states.set(projectId, {
         ...(previous ?? blankState(projectId, input.editRevision)),
         schemaVersion: 2,
@@ -968,14 +1145,12 @@ export class EditPreviewArtifactManager {
       }, this.debounceMs));
     }).catch((error) => {
       if (this.scheduleEpochs.get(projectId) !== epoch) return;
-      const previous = this.states.get(projectId) ?? blankState(projectId);
-      this.states.set(projectId, {
-        ...previous, schemaVersion: 2, projectId, phase: "failed", error: String(error),
-      });
-    });
+      this.backgroundFailure(projectId, error);
+    }));
   }
 
   retry(projectId: string): void {
+    if (this.closed) return;
     this.states.delete(projectId);
     this.ledgerBuilds.delete(projectId);
     this.schedule(projectId);
@@ -988,15 +1163,21 @@ export class EditPreviewArtifactManager {
   }
 
   private async run(projectId: string): Promise<void> {
-    if (this.running.has(projectId)) return;
-    const promise = this.runLoop(projectId).finally(() => this.running.delete(projectId));
+    if (this.closed || this.running.has(projectId)) return;
+    // Includes initial input/metadata reads before runLoop's artifact try block.
+    // Timer callbacks have no caller to receive a rejection: retain failed state
+    // and log the cause, rather than creating an unhandled background rejection.
+    const promise = this.track(this.runLoop(projectId)
+      .catch(error => this.backgroundFailure(projectId, error))
+      .finally(() => this.running.delete(projectId)));
     this.running.set(projectId, promise);
     await promise;
   }
 
   private async runLoop(projectId: string): Promise<void> {
-    while (true) {
+    while (!this.closed) {
       const input = await this.readProjectInput(this.projectsDir, projectId);
+      if (this.closed) return;
       const revision = input.editRevision;
       const runEpoch = this.publishEpochs.get(projectId) ?? 0;
       this.desired.set(projectId, this.desired.get(projectId) ?? revision);
@@ -1067,14 +1248,24 @@ export class EditPreviewArtifactManager {
             continue;
           }
         }
+        if (this.closed) return;
         temporaryOutput = writerTempOutput(output);
         await this.generate({
+          sourcePaths: input.sourcePaths,
+          audioOnly: input.audioOnly,
           input: input.sourceProxy,
           output: temporaryOutput,
           frameRate: input.previewFrameRate,
           profile: input.previewProfile ?? "fast-proxy-v1",
           segments: input.segments,
         });
+        if (input.soundEffects?.cues.some(c=>!c.mute)) {
+          const mixed = `${temporaryOutput}.sfx.mp4`;
+          try {
+            await mixSoundEffects({source:temporaryOutput,output:mixed,projectDirectory:input.projectDir,cues:input.soundEffects.cues,duration:input.duration});
+            await rename(mixed,temporaryOutput);
+          } finally { await rm(mixed,{force:true}); }
+        }
         let validated: Awaited<ReturnType<typeof validate>>;
         try {
           validated = await validate(temporaryOutput);
@@ -1158,7 +1349,7 @@ export class EditPreviewArtifactManager {
         // Bound the cache. Never remove the artifact just published, nor the one
         // the manifest points at — those two can differ for a moment while a
         // concurrent reader still holds the old manifest.
-        await pruneEncodedArtifacts(artifactDir, [
+        await this.prune(artifactDir, [
           basename(String(publishResult.state.source ?? "")),
           basename(relativeSource),
         ].filter(Boolean));

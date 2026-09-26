@@ -21,6 +21,9 @@ export type TranscriptSuggestion =
 
 export interface TranscriptWord {
   id: string;
+  source?: string;
+  instanceId?: string;
+  sourceWordId?: string;
   text: string;
   start: number;
   end: number;
@@ -79,6 +82,8 @@ export function buildTranscriptDisplayCues(
       const joinsPreviousGap =
         word.isGap &&
         previous?.isGap === true &&
+        word.source === previous.source &&
+        word.instanceId === previous.instanceId &&
         word.start <= previous.end + ADJACENT_GAP_EPSILON &&
         cutWordIds.has(word.id) === cutWordIds.has(previous.sourceWordIds[0] ?? previous.id);
 
@@ -232,6 +237,9 @@ function normalizeWord(
   if (!isGap && !text.trim()) return null;
   return {
     id: String(value.id ?? value.wordId ?? fallbackId),
+    ...(typeof value.source === "string" ? { source: value.source } : {}),
+    ...(typeof value.instanceId === "string" ? { instanceId: value.instanceId } : {}),
+    ...(typeof value.sourceWordId === "string" ? { sourceWordId: value.sourceWordId } : {}),
     text,
     start,
     end,
@@ -313,6 +321,8 @@ function cuesFromWordArray(values: unknown[]): TranscriptCue[] {
   };
 
   for (const word of words) {
+    const previous = current.at(-1);
+    if (previous && (previous.source !== word.source || previous.instanceId !== word.instanceId)) flush();
     current.push(word);
     const longGap = word.isGap && word.end - word.start >= 0.5;
     const sentenceEnd = !word.isGap && /[。！？!?]$/.test(word.text);
@@ -326,10 +336,14 @@ export function parseTranscriptPayload(payload: unknown): TranscriptCue[] {
   if (Array.isArray(payload)) return cuesFromWordArray(payload);
   if (!isRecord(payload)) return [];
   const rawCues = Array.isArray(payload.cues) ? payload.cues : [];
-  return rawCues
+  const cues = rawCues
     .map(normalizeCue)
-    .filter((cue): cue is TranscriptCue => Boolean(cue))
-    .sort((left, right) => left.start - right.start);
+    .filter((cue): cue is TranscriptCue => Boolean(cue));
+  // Source seconds restart for every imported recording. Preserve document
+  // order when identities are present, instead of interleaving independent sources.
+  return cues.some(cue => cue.words.some(word => word.source || word.instanceId))
+    ? cues
+    : cues.sort((left, right) => left.start - right.start);
 }
 
 export function buildCutTimeRanges(

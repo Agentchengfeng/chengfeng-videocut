@@ -1,0 +1,20 @@
+{
+  "name": "chengfeng-videocut",
+  "version": "0.1.0-local.1",
+  "description": "Local candidate installation guide and pinned local Skill catalog. No bundled business Skills or MCP.",
+  "author": {
+    "name": "成峰 / AI产品自由"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "成峰剪辑 · 安装与接入",
+    "shortDescription": "按固定清单安装独立 Skills 的本地候选入口",
+    "longDescription": "提供安装方法及固定本地候选清单。先预检来源、摘要和已有安装，再按授权安装或复用。业务 Skills 独立维护；远端发行、Runtime 安装及宿主加载须另行验收。",
+    "developerName": "成峰 / AI产品自由",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": [
+      "检查 chengfeng-videocut 的本地候选清单和已有安装，先给出安装计划，不要直接覆盖或更新。"
+    ]
+  }
+}

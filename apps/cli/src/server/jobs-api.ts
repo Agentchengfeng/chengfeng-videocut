@@ -16,6 +16,7 @@ function responseError(status: number, code: string, message: string, details?: 
 }
 
 function statusFor(code: string): number {
+  if (code === "revision_conflict") return 409;
   if (code === "job_not_found") return 404;
   if (code === "project_not_found") return 404;
   if (code === "job_target_conflict" || code === "job_not_cancellable" || code === "job_state_conflict" || code === "job_output_exists" || code === "operation_id_conflict" || code === "operation_in_progress" || code === "operation_replay_stale" || code === "operation_replay_conflict") return 409;
@@ -40,12 +41,12 @@ function asError(error: unknown): { code: string; message: string; details?: Rec
   return { code: "internal_error", message: "Request failed" };
 }
 
-function isLoopbackAddress(address: string): boolean {
+export function isLoopbackAddress(address: string): boolean {
   const normalized = address.toLowerCase().split("%")[0]!;
   return normalized === "::1" || normalized.startsWith("127.") || normalized.startsWith("::ffff:127.");
 }
 
-function trustedLoopbackOrigin(hostHeader: string | null, expectedPort: number): string | null {
+export function trustedLoopbackOrigin(hostHeader: string | null, expectedPort: number): string | null {
   if (!hostHeader) return null;
   const match = /^(127\.0\.0\.1|localhost|\[::1\])(?::([0-9]+))?$/i.exec(hostHeader);
   if (!match) return null;
@@ -153,6 +154,20 @@ export function createJobsApi(
       return responseError(403, "origin_forbidden", "Cross-origin durable job requests are forbidden");
     }
     try {
+      if (url.pathname === "/api/v1/jobs/by-operation" && request.method === "GET") {
+        const operationId = url.searchParams.get("operationId") ?? "";
+        if (!OPERATION_ID_PATTERN.test(operationId)) return responseError(400,"invalid_operation_id","Invalid operationId");
+        const projectId = url.searchParams.get("projectId") ?? "";
+        if (!projectId || projectId.length > 128 || /[\\/\x00-\x1f]/.test(projectId) || projectId === "." || projectId === "..") return responseError(400,"invalid_argument","An exact projectId is required");
+        const record = await options.operationAuditStore?.read(operationId);
+        if (!record || record.kind !== "job.start.export") return responseError(404,"operation_not_found","Export operation not found");
+        const jobId = record.result?.jobId;
+        const job = typeof jobId === "string" ? await manager.read(jobId) : null;
+        // Pending/rejected admissions may not have a job yet. Bind their original target
+        // exactly, never by basename (legacy absolute targets cannot prove project scope).
+        if (job ? job.projectId !== projectId || job.kind !== "export" : record.target.kind !== "export" || record.target.targetHash !== operationInputHash(projectId)) return responseError(409,"job_target_conflict","Project identity is mismatched or cannot be proven for this admission");
+        return Response.json({schemaVersion:1,operationId,projectId,status:record.succeeded?"succeeded":record.failed?"failed":record.rejected?"rejected":"pending",errorCode:record.errorCode??null,job:job?publicJob(job):null});
+      }
       if (url.pathname === "/api/v1/jobs") {
         if (request.method === "POST") {
           let body: unknown;

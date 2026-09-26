@@ -145,21 +145,21 @@ select:focus-visible,
 /* Shell ----------------------------------------------------------- */
 
 .cf-cut-workspace {
+  --cf-cut-timeline-height: clamp(160px, 30dvh, 300px);
   display: grid;
   grid-template-columns:
     var(--cf-cut-transcript-width, 320px)
     3px
-    minmax(420px, 1fr);
-  /* HyperFrames' two-lane canvas is 242px plus a 33px toolbar. Keep the pane
-     at or above that source geometry instead of clipping its bottom breathing
-     area and making both tracks look pinned to the bottom edge. */
-  grid-template-rows: minmax(0, 1fr) clamp(276px, 30vh, 340px);
+    minmax(0, 1fr);
+  /* Keep transport and timeline on screen; long content scrolls within panes. */
+  grid-template-rows: minmax(0, 1fr) var(--cf-cut-timeline-height);
   column-gap: 0;
   row-gap: 3px;
   min-width: 0;
   min-height: 0;
   padding: 1px;
   overflow: hidden;
+  overscroll-behavior: contain;
   background: var(--workspace);
 }
 
@@ -315,6 +315,7 @@ select:focus-visible,
 /* Player ---------------------------------------------------------- */
 
 .cf-cut-player {
+  position: relative;
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;
 }
@@ -328,6 +329,7 @@ select:focus-visible,
 }
 
 .cf-cut-player-stage {
+  container-type: size;
   position: relative;
   display: flex;
   align-items: center;
@@ -341,14 +343,38 @@ select:focus-visible,
 
 .cf-cut-player-stage video {
   display: block;
-  width: min(100%, calc((100vh - 230px) * 4 / 3));
+  width: 100%;
   max-width: 100%;
   height: 100%;
   max-height: 100%;
-  aspect-ratio: 4 / 3;
   object-fit: contain;
   outline: none;
 }
+
+.cf-cut-player-canvas {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #111;
+}
+
+.cf-canvas-settings { position: static; flex: 0 0 auto; }
+.cf-canvas-settings > button { font-size: 12px; white-space: nowrap; }
+.cf-canvas-settings__panel {
+  position: absolute; top: 8px; left: 8px; z-index: 60;
+  width: min(280px, calc(100% - 16px)); max-height: calc(100% - 112px);
+  overflow: auto; overscroll-behavior: contain;
+  padding: 12px; display: grid; gap: 10px;
+  background: #18181b; border: 1px solid #52525b; border-radius: 8px;
+  color: #e4e4e7; font-size: 12px;
+}
+.cf-canvas-settings__panel label { display: flex; gap: 8px; align-items: center; }
+.cf-canvas-settings__panel input, .cf-canvas-settings__panel select { width: 120px; color: #eee; background: #27272a; border: 1px solid #52525b; padding: 4px; }
+.cf-canvas-settings__panel [role="alert"] { color: #fca5a5; }
+.cf-canvas-settings__panel [role="status"] { color: #86efac; }
+.cf-canvas-settings__actions { display: flex; gap: 12px; }
+.cf-cut-player-controls .cf-canvas-settings__actions button { padding: 0 10px; background: #27272a; }
 
 .cf-cut-player-empty {
   color: var(--text-3);
@@ -392,12 +418,29 @@ select:focus-visible,
 
 .cf-cut-player-controls {
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   min-height: 48px;
   padding: 8px 12px calc(8px + env(safe-area-inset-bottom));
   background: #0a0a0b;
+}
+
+.cf-cut-player-notices {
+  position: absolute;
+  z-index: 12;
+  top: 8px;
+  left: 8px;
+  right: 8px;
+  max-height: 40%;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  padding: 8px;
+  border: 1px solid #7c5324;
+  border-radius: 6px;
+  background: #272016;
+  color: #fde68a;
+  font-size: 12px;
 }
 
 .cf-cut-player-controls button {
@@ -594,7 +637,7 @@ select:focus-visible,
 }
 
 .cf-cut-speed-control {
-  position: relative;
+  position: static;
   flex: 0 0 auto;
 }
 
@@ -610,10 +653,13 @@ select:focus-visible,
 .cf-cut-speed-menu {
   position: absolute;
   z-index: 50;
-  right: 0;
-  bottom: calc(100% + 6px);
+  right: 8px;
+  top: 8px;
   min-width: 56px;
-  overflow: hidden;
+  max-width: calc(100% - 16px);
+  max-height: calc(100% - 112px);
+  overflow: auto;
+  overscroll-behavior: contain;
   border: 1px solid rgb(255 255 255 / 8%);
   border-radius: 8px;
   background: var(--panel-input);
@@ -644,7 +690,7 @@ select:focus-visible,
 }
 
 .cf-cut-tools-control {
-  position: relative;
+  position: static;
   flex: 0 0 auto;
 }
 
@@ -665,10 +711,12 @@ select:focus-visible,
 .cf-cut-tools-panel {
   position: absolute;
   z-index: 55;
-  right: 0;
-  bottom: calc(100% + 6px);
-  width: 286px;
-  overflow: hidden;
+  right: 8px;
+  top: 8px;
+  width: min(286px, calc(100% - 16px));
+  max-height: calc(100% - 112px);
+  overflow: auto;
+  overscroll-behavior: contain;
   border: 1px solid rgb(255 255 255 / 9%);
   border-radius: 10px;
   background: #18181b;
@@ -1254,6 +1302,28 @@ select:focus-visible,
   list-style: none;
   scrollbar-gutter: stable;
 }
+
+.cf-subtitle-result {
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--hairline);
+  color: var(--text-3);
+  font-size: 11px;
+}
+.cf-subtitle-result summary { padding: 9px 16px; cursor: pointer; }
+.cf-subtitle-result[data-status="stale"] summary { color: #f6c881; }
+.cf-subtitle-result__body { padding: 0 16px 12px; max-height: 260px; overflow: auto; }
+.cf-subtitle-result__body p { margin: 6px 0; overflow-wrap: anywhere; }
+.cf-subtitle-result__body label { display: block; margin: 10px 0 5px; }
+.cf-subtitle-result__body textarea {
+  box-sizing: border-box; width: 100%; padding: 7px; border: 1px solid var(--hairline);
+  border-radius: 5px; background: var(--panel); color: var(--text-2); font: inherit; resize: vertical;
+}
+.cf-subtitle-result__body button, .cf-subtitle-result__failure button {
+  border: 1px solid var(--hairline); border-radius: 5px; padding: 5px 8px;
+  background: transparent; color: var(--text-2); cursor: pointer; font: inherit;
+}
+.cf-subtitle-result__body button:disabled { opacity: .4; cursor: default; }
+.cf-subtitle-result__failure { padding: 8px 16px; color: #fca5a5; font-size: 11px; }
 
 /* One row per screen, cut from the same cloth as .cut-transcript-cue: a flat
    row, hairline below, a right-aligned mono index gutter on the left. */
@@ -2051,8 +2121,9 @@ select:focus-visible,
 
 @media (width < 960px) {
   .cf-cut-workspace {
-    grid-template-columns: clamp(260px, 34vw, 300px) minmax(0, 1fr);
-    grid-template-rows: minmax(240px, 1fr) clamp(276px, 32vh, 320px);
+    /* Content and preview remain visible together, including narrow windows.
+       Scale the split instead of replacing either pane with a view toggle. */
+    grid-template-columns: clamp(120px, 40vw, 320px) minmax(0, 1fr);
   }
 
   .cf-cut-workspace > .cf-cut-feature-panel {
@@ -2089,46 +2160,10 @@ select:focus-visible,
     grid-template-rows: 40px minmax(0, 1fr);
   }
 
-  .cf-cut-workspace {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows:
-      minmax(260px, 52vh)
-      minmax(300px, 62vh)
-      minmax(276px, 34vh);
-    align-content: start;
-    overflow-x: hidden;
-    overflow-y: auto;
-    overscroll-behavior-y: contain;
-    scrollbar-gutter: stable;
-    -webkit-overflow-scrolling: touch;
-  }
-
-  .cf-cut-workspace > .cf-cut-feature-panel {
-    grid-column: 1;
-    grid-row: 1;
-  }
-
-  .cf-cut-workspace > .cf-cut-player {
-    grid-column: 1;
-    grid-row: 2;
-  }
-
-  .cf-cut-transcript-resizer {
-    display: none;
-  }
-
-  .cf-cut-workspace > .cf-cut-timeline {
-    grid-column: 1;
-    grid-row: 3;
-  }
-
-  .cf-cut-timeline-actions input {
-    width: 64px;
-  }
-
   .cf-cut-player-controls {
-    flex-wrap: wrap;
     align-content: center;
+    padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
+    gap: 4px;
   }
 
   .cf-cut-volume-control {
@@ -2136,6 +2171,27 @@ select:focus-visible,
     flex: 0 1 88px;
   }
 
+}
+
+@media (width < 480px) {
+  .cf-cut-feature-tabs {
+    /* A loaded subtitle document adds a third tab. Keep it visible rather
+       than clipping its entry in the narrow content column. */
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+    padding: 0 4px;
+  }
+
+  .cf-cut-feature-tab {
+    min-width: 0;
+    padding: 0 8px;
+  }
+}
+
+@media (height < 480px) {
+  .cf-cut-workspace {
+    --cf-cut-timeline-height: clamp(112px, 32dvh, 152px);
+  }
 }
 
 @media (prefers-reduced-motion: no-preference) {

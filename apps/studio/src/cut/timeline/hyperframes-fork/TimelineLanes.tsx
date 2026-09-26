@@ -142,6 +142,7 @@ function TimelineLane({
             >
               <TimelineClip
                 el={element}
+                titleOverride={segment.titleOverride}
                 pps={pixelsPerSecond}
                 clipY={CLIP_Y}
                 isSelected={segment.selected}

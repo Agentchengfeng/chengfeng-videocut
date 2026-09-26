@@ -8,9 +8,24 @@ import { serializeProjectOperation } from "@video-workbench/core/node";
 import { materializeKouboEditListIndex } from "@video-workbench/koubo-adapter";
 import { PRODUCT_VERSION } from "../output";
 import { startStudioServer, type RunningStudioServer } from "./start";
+import { TRANSACTION_MARKER } from "../../../../packages/core/src/projectTransaction";
 
 const cleanupPaths: string[] = [];
 const servers: RunningStudioServer[] = [];
+
+it("blocks all project reads during an incomplete transaction with a structured recovery error", async () => {
+  const fixture = await serverFixture();
+  const server = await startStudioServer({ ...fixture, port: 0, dataDir: join(fixture.root, "data"), installSignalHandlers: false });
+  servers.push(server);
+  await writeFile(join(fixture.projectDir, TRANSACTION_MARKER), JSON.stringify({ operationId: "interrupted-test", sha256: "a".repeat(64) }));
+  for (const route of ["/api/projects/demo/edit-list", "/api/projects/demo/transcript", "/api/v1/projects/demo/project-config"]) {
+    const response = await fetch(server.url + route);
+    expect(response.status).toBe(409);
+    expect((await response.json()).error.code).toBe("operation_in_progress");
+  }
+  const missing = await fetch(server.url + "/api/projects/nonexistent/edit-list");
+  expect(missing.status).toBe(404);
+});
 
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.stop()));
@@ -586,6 +601,10 @@ describe("packaged Studio server", () => {
       productVersion: PRODUCT_VERSION,
       pid: process.pid,
       runtimeMode: "foreground",
+      genericHtmlRender: {
+        schemaVersion: 1, enabled: false, source: "production-studio-adapter",
+        reason: "此工作台未启用通用 HTML 导出。请使用既有确认门控的产品导出流程。",
+      },
     });
     const capabilityResponse = await fetch(
       `${server.url}/chengfeng-videocut-capabilities.json`,

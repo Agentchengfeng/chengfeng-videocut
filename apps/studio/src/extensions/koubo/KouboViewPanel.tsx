@@ -422,6 +422,7 @@ export function KouboViewPanel({ projectId, active }: KouboViewPanelProps) {
     setPopover(null);
   };
 
+  if (editList.document?.schemaVersion === 2) return <div role="alert">多源工程请使用剪口播工作台打开；旧版面板不支持来源与实例定位。</div>;
   return (
     <main
       ref={rootRef}

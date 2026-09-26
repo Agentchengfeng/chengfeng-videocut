@@ -4,7 +4,39 @@ chengfeng-videocut 是一个本地优先的口播视频剪辑产品：浏览器�
 
 产品本体与 Skills 分开发布。用户只需安装一次工作台；不同 Skills 通过 CLI 填充项目、读取状态和提交剪切结果，无需复制工作台源码。
 
+## 从这里开始
+
+**本仓库是 Runtime 主产品入口。** 先读 [安装说明](INSTALL.md)；Codex Plugin 的统一安装入口是 `Agentchengfeng/chengfeng-videocut-skills`，不需要同时安装两套同名工具。
+
+```text
+Agentchengfeng/chengfeng-videocut-skills（Codex Plugin：统一安装入口）
+  → 按宿主 Plugin marketplace 流程安装并回读
+  → 需要工作台时，再按本仓库的 Runtime 发行说明准备
+```
+
+Plugin 和 Runtime 是两个交付层。Plugin 的固定来源为 `Agentchengfeng/chengfeng-videocut-skills`，当前核验提交为 `1487e02b1c0c39ea74d079e8ce45da56bf59bc32`；本仓库只负责工作台、CLI 与 Runtime 发行说明。
+
+| 你要找什么 | 去哪里 |
+|---|---|
+| 工作台软件、完整产品安装与版本说明 | 本仓库的 [INSTALL.md](INSTALL.md) 与 [Releases](https://github.com/Agentchengfeng/chengfeng-videocut/releases)；以具体版本说明为准 |
+| Codex Plugin 与 Skills 安装入口 | [chengfeng-videocut-skills](https://github.com/Agentchengfeng/chengfeng-videocut-skills)；固定提交 `1487e02b1c0c39ea74d079e8ce45da56bf59bc32` |
+| 剪口播、字幕、导出、维护、镜头设计 | [独立 Skills 目录](INSTALL.md#独立-skills-源码预览)；各自维护、单装，整套按清单组合 |
+| 工作台软件与 Runtime | 本仓库的 [INSTALL.md](INSTALL.md) 与 [Releases](https://github.com/Agentchengfeng/chengfeng-videocut/releases) |
+
+软件本体在本仓库，Plugin 安装不等于 Runtime/Studio 已安装；两层必须分别回读。业务 Skill、Plugin 清单与 Runtime 版本不能互相冒充。
+
 ## 下载与安装
+
+**Plugin 安装：** 使用 `Agentchengfeng/chengfeng-videocut-skills` 的固定提交，通过 Codex 原生 Plugin marketplace 安装；不要把 Runtime 仓库当作 Plugin 来源。候选清单 [skills.local-candidate.json](skills.local-candidate.json) 只用于本地开发验证。
+
+```sh
+codex plugin marketplace add Agentchengfeng/chengfeng-videocut-skills --ref 1487e02b1c0c39ea74d079e8ce45da56bf59bc32 --json
+codex plugin marketplace upgrade chengfeng-videocut --json
+codex plugin add chengfeng-videocut@chengfeng-videocut --json
+codex plugin list --json
+```
+
+### 既有 0.5.9 安装背景（不代表新包已发布）
 
 0.5.9 的目标入口是 Codex Plugin 与 npm CLI。用户或 Codex 先准备一次 Node LTS，随后以
 `npx @chengfeng/videocut <命令>` 启动产品；Node 只负责该入口。Plugin 调用平台原生 installer，用户机器不需要预装
@@ -16,7 +48,9 @@ Bun、FFmpeg、FFprobe 或 Chrome。installer 用已校验的
 Chrome for Testing Headless Shell 的来源与使用许可复核、macOS/Windows 签名和 Windows 实机安装尚未
 完成。仓库中的 `UNVERIFIED` 不是免责声明式通过，而是 fail-closed 发布门禁。
 
-正式资产契约见 [docs/distribution.md](docs/distribution.md)。`install.sh`、Node 执行
+Skills 只读目录的来源、更新和安装边界见 [docs/skill-directory.md](docs/skill-directory.md)。
+
+分发架构与历史说明见 [docs/distribution.md](docs/distribution.md)。`install.sh`、Node 执行
 `install.cjs` 和 Desktop/Companion 只保留历史兼容或实验用途；用户入口为 npm CLI 或 Codex Plugin。
 Windows PowerShell 可能被执行策略阻止 `npx.ps1`，因此 Codex 应通过 `npx.cmd` / `cmd.exe` 调用，
 不应让用户放宽 execution policy。当前 Windows x64 测试包仍需显式传入
@@ -90,7 +124,7 @@ chengfeng-videocut 负责确定性的产品能力：
 - 已确认任务的渲染调用与结果验证
 - 面向自动化的本地 CLI/API
 
-Skills 负责判断与编排，例如转录、口误/重复等语义识别、让用户审核和决定是否执行剪切。普通停顿由产品的 `natural-pause-v5-compress-long-gaps` 确定性策略负责。公开 Skills 位于 [Agentchengfeng/chengfeng-videocut-skills](https://github.com/Agentchengfeng/chengfeng-videocut-skills)。
+Skills 负责判断与编排，例如转录、口误/重复等语义识别、让用户审核和决定是否执行剪切。普通停顿由产品的 `natural-pause-v5-compress-long-gaps` 确定性策略负责。当前独立 Skills 见 [安装说明](INSTALL.md#独立-skills-源码预览)；旧 Skills 仓只保留历史与迁移指引。
 
 ## 本地与网络说明
 

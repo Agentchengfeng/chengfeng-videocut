@@ -57,11 +57,14 @@ export function useProjectVisuals(projectId: string): ProjectVisuals {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const fingerprintRef = useRef("");
+  const requestRef = useRef(0);
 
   const load = useCallback(async (options?: { background?: boolean }) => {
+    const request = ++requestRef.current;
     if (!options?.background) setLoading(true);
     try {
       const response = await fetch(visualsUrl(projectId), { headers: { Accept: "application/json" } });
+      if (request !== requestRef.current) return;
       if (!response.ok) {
         // A project with no visuals is the normal case, not a failure.
         if (response.status === 404) {
@@ -75,6 +78,7 @@ export function useProjectVisuals(projectId: string): ProjectVisuals {
         throw new Error(`视觉层读取失败：HTTP ${response.status}`);
       }
       const payload = await response.json() as VisualsResponse & { revision?: string };
+      if (request !== requestRef.current) return;
       const next: VisualsResponse = {
         document: payload.document ?? null,
         timings: payload.timings ?? [],
@@ -90,13 +94,11 @@ export function useProjectVisuals(projectId: string): ProjectVisuals {
       }
       setError(null);
     } catch (cause) {
-      // A background poll that fails says nothing the person can act on — the
-      // next one recovers by itself. Only a requested load reports.
-      if (!options?.background) {
+      if (request === requestRef.current) {
         setError(cause instanceof Error ? cause.message : String(cause));
       }
     } finally {
-      if (!options?.background) setLoading(false);
+      if (request === requestRef.current) setLoading(false);
     }
   }, [projectId]);
 
@@ -110,7 +112,7 @@ export function useProjectVisuals(projectId: string): ProjectVisuals {
     const timer = setInterval(() => {
       void load({ background: true });
     }, POLL_MS);
-    return () => clearInterval(timer);
+    return () => { ++requestRef.current; clearInterval(timer); };
   }, [load]);
 
   const moduleUrl = useCallback(

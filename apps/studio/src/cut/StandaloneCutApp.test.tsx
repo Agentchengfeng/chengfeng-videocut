@@ -40,6 +40,9 @@ describe("StandaloneCutApp transcript layout route", () => {
     act(() => root.render(<StandaloneCutApp />));
 
     expect(host.querySelector('.cf-cut-header [role="tablist"]')).toBeNull();
+    expect(host.querySelector(".cf-skills-open")).toBeNull();
+    expect(host.querySelector(".cf-cut-header")?.textContent).not.toContain("Skills 能力");
+    expect(host.querySelector("dialog")).toBeNull();
     expect(cutWorkspaceSpy).toHaveBeenCalledWith(expect.objectContaining({
       projectId: "demo",
       initialTimelineTime: 12,
@@ -51,6 +54,22 @@ describe("StandaloneCutApp transcript layout route", () => {
     expect(host.querySelector("[data-single-track-operations]")?.getAttribute(
       "data-single-track-operations",
     )).toBe("move,trim,split,delete,restore,delete-range,restore-snapshot");
+
+    act(() => root.unmount());
+  });
+
+  it("does not show a Skills directory entry when no project is selected", () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+
+    act(() => root.render(<StandaloneCutApp />));
+
+    expect(host.textContent).toContain("没有找到项目");
+    expect(host.querySelector(".cf-skills-open")).toBeNull();
+    expect(host.textContent).not.toContain("Skills 能力");
+    expect(host.querySelector("dialog")).toBeNull();
+    expect(cutWorkspaceSpy).not.toHaveBeenCalled();
 
     act(() => root.unmount());
   });

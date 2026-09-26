@@ -311,6 +311,70 @@ describe("buildSubtitleCues", () => {
 });
 
 describe("subtitleCueTimings", () => {
+  function singleWordTiming(start: number, end: number, editList: EditListDocument | null) {
+    const words: TimedWord[] = [{ id: "word-cli", text: "CLI", start, end, isGap: false }];
+    const document: SubtitleDocument = {
+      schemaVersion: SUBTITLE_SCHEMA_VERSION,
+      projectId: "p",
+      baseTranscriptRevision: "tr",
+      style: DEFAULT_SUBTITLE_STYLE,
+      cues: [{ id: "sub-0066", wordIds: ["word-cli"], text: "CLI" }],
+    };
+    return subtitleCueTimings(document, words, editList)[0]!;
+  }
+
+  it("starts at the retained portion when a word's original start was cut", () => {
+    const editList = fullEditList(352.3);
+    editList.segments[0] = {
+      ...editList.segments[0]!,
+      sourceStart: 197.26,
+      sourceEnd: 200.095,
+      timelineStart: 123.5225,
+    };
+    const timing = singleWordTiming(197.06, 197.86, editList);
+    expect(timing.start).toBeCloseTo(123.5225, 8);
+    expect(timing.end).toBeCloseTo(124.1225, 8);
+    expect(timing.duration).toBeCloseTo(0.6, 8);
+    expect(timing.orphaned).toBe(false);
+  });
+
+  it("ends at the retained portion when a word's original end was cut", () => {
+    const timing = singleWordTiming(0.2, 0.8, editListWithHole(1, 0.5, 0.9));
+    expect(timing.start).toBeCloseTo(0.2, 8);
+    expect(timing.end).toBeCloseTo(0.5, 8);
+  });
+
+  it("maps an interior retained interval even when both word endpoints were cut", () => {
+    const editList = fullEditList(1);
+    editList.segments[0] = { ...editList.segments[0]!, sourceStart: 0.3, sourceEnd: 0.6 };
+    const timing = singleWordTiming(0.2, 0.8, editList);
+    expect(timing.start).toBeCloseTo(0, 8);
+    expect(timing.end).toBeCloseTo(0.3, 8);
+    expect(timing.orphaned).toBe(false);
+  });
+
+  it("takes outer boundaries across multiple retained intervals and playback rates", () => {
+    const editList = editListWithHole(1, 0.4, 0.6);
+    editList.segments[1] = { ...editList.segments[1]!, timelineStart: 0.4, playbackRate: 2 };
+    const timing = singleWordTiming(0.2, 0.8, editList);
+    expect(timing.start).toBeCloseTo(0.2, 8);
+    expect(timing.end).toBeCloseTo(0.5, 8);
+  });
+
+  it("includes repeated source intervals at their own timeline positions", () => {
+    const editList = fullEditList(1);
+    editList.segments.push({ ...editList.segments[0]!, id: "repeat", timelineStart: 2 });
+    const timing = singleWordTiming(0.2, 0.8, editList);
+    expect(timing.start).toBeCloseTo(0.2, 8);
+    expect(timing.end).toBeCloseTo(2.8, 8);
+  });
+
+  it("keeps fully retained timing and treats deleted or boundary-touching words as orphaned", () => {
+    expect(singleWordTiming(0.2, 0.8, fullEditList(1))).toMatchObject({ start: 0.2, end: 0.8, orphaned: false });
+    expect(singleWordTiming(0.4, 0.6, editListWithHole(1, 0.4, 0.6)).orphaned).toBe(true);
+    expect(singleWordTiming(0.2, 0.8, null).orphaned).toBe(true);
+  });
+
   it("reads timing off the edit list, not off the cue", () => {
     const words = speech(0, "今天我们");
     const document = createSubtitleDocument("p", "tr", words, fullEditList(1), {

@@ -568,6 +568,17 @@ describe("画幅比：由视频定义，不再限枚举", () => {
 });
 
 describe("prepareKouboProject natural-pause migration", () => {
+  it("preserves a chosen canvas different from real video source dimensions", async () => {
+    const job = await fixture();
+    const file = join(job, "project.json");
+    const project = JSON.parse(await readFile(file,"utf8"));
+    project.config.aspectRatio="1:1";
+    await writeFile(file,JSON.stringify(project));
+    const { runFfmpeg } = await import("./export/compose");
+    await runFfmpeg(["-y","-v","error","-f","lavfi","-i","color=blue:s=160x90:r=10:d=6","-c:v","libx264",join(job,project.inputVideo)]);
+    await prepareKouboProject(job,{duration:6,now:fixedNow});
+    expect(JSON.parse(await readFile(file,"utf8")).config.aspectRatio).toBe("1:1");
+  });
   it("is byte-for-byte repeatable across refreshes", async () => {
     const job = await fixture();
     const options = { duration: 6, now: fixedNow };

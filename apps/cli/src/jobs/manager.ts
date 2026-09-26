@@ -106,6 +106,7 @@ export class JobManager {
   readonly #beforePublishingLease?: JobManagerOptions["beforePublishingLease"];
   readonly #beforeWorkerSpawn?: JobManagerOptions["beforeWorkerSpawn"];
   readonly #pending: string[] = [];
+  readonly #startingTargets = new Map<string, number>();
   readonly #pendingSet = new Set<string>();
   readonly #running = new Map<string, RunningWorker>();
   readonly #launching = new Set<string>();
@@ -190,9 +191,15 @@ export class JobManager {
     const jobDirectory = this.store.jobDirectory(jobId);
     const workDirectory = resolve(jobDirectory, "work");
     const snapshotDirectory = resolve(jobDirectory, "snapshot");
+    this.#startingTargets.set(project.directory, (this.#startingTargets.get(project.directory) ?? 0) + 1);
     try {
       const frozen = await serializeProjectOperation(project.directory, async () => {
         const current = await resolveProject(project.directory, { cwd: "/" });
+        if (params.expectedSnapshot !== undefined &&
+            (typeof params.expectedSnapshot !== "string" || !/^[a-f0-9]{64}$/.test(params.expectedSnapshot) ||
+             await exportInputFingerprint(current.directory) !== params.expectedSnapshot)) {
+          throw new JobStoreError("revision_conflict", "Export inputs changed after confirmation; review a new plan");
+        }
         const snapshot = await createExportSnapshot(current.directory, snapshotDirectory);
         const inputVideo = (current.project as Record<string, unknown>).inputVideo;
         if (typeof inputVideo !== "string" || !inputVideo.trim()) {
@@ -230,7 +237,25 @@ export class JobManager {
       // taken from an untrusted record.
       await rm(snapshotDirectory, { recursive: true, force: true }).catch(() => undefined);
       throw error;
+    } finally {
+      const remaining = (this.#startingTargets.get(project.directory) ?? 1) - 1;
+      if (remaining) this.#startingTargets.set(project.directory, remaining);
+      else this.#startingTargets.delete(project.directory);
     }
+  }
+
+  /** Global owner probe; errors deliberately propagate as unknown/busy. */
+  async isBusy(): Promise<boolean> {
+    if (!this.#initialized || this.#stopping || this.#startingTargets.size || this.#pending.length || this.#launching.size || this.#running.size) return true;
+    return (await this.store.list()).some(job =>
+      ["queued", "running", "cancelling", "recovery_blocked"].includes(job.state));
+  }
+
+  /** Called under the same project lock as a config edit; covers snapshot-before-queue races. */
+  async isProjectBusy(directory: string): Promise<boolean> {
+    if (!this.#initialized || this.#stopping || this.#startingTargets.has(directory)) return true;
+    return (await this.store.list()).some(job => job.target === directory &&
+      ["queued", "running", "cancelling", "recovery_blocked"].includes(job.state));
   }
 
   read(jobId: string): Promise<DurableJob | null> { return this.store.read(jobId); }

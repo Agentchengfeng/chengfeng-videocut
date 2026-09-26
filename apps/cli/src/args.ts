@@ -6,6 +6,7 @@ import {
   type RuntimeCliCommand,
 } from "@video-workbench/contracts";
 import { VideocutError } from "@video-workbench/core";
+import { WORKBENCH_OPERATIONS } from "./workbench-commands";
 
 export type CliCommand = RuntimeCliCommand;
 
@@ -23,6 +24,8 @@ export interface ParsedArgs {
   dataDir?: string;
   host?: string;
   port?: number;
+  /** Explicit opt-in until the selected launch/reconnect path is verified; 0 disables. */
+  idleTimeoutSeconds?: number;
   openBrowser: boolean;
   apiBase?: string;
   video?: string;
@@ -44,6 +47,8 @@ export interface ParsedArgs {
   maxColumns?: number;
   breakPauseSeconds?: number;
   modulePath?: string;
+  moduleId?: string;
+  moduleVersion?: string;
   /** Subtitle screens a visual layer covers. The layer binds their words. */
   cueIds?: string[];
   layerId?: string;
@@ -90,8 +95,10 @@ const VALUE_OPTIONS = new Set([
   "--data-dir",
   "--host",
   "--port",
+  "--idle-timeout-seconds",
   "--api-base",
   "--video",
+  "--audio",
   "--transcript",
   "--output",
   "--language",
@@ -217,6 +224,16 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     }
   }
 
+  const idleTimeoutValue = values.get("--idle-timeout-seconds");
+  let idleTimeoutSeconds: number | undefined;
+  if (idleTimeoutValue !== undefined) {
+    if (!/^\d+$/.test(idleTimeoutValue)) usageError("--idle-timeout-seconds must be an integer from 0 to 86400 (0 disables)");
+    idleTimeoutSeconds = Number(idleTimeoutValue);
+    if (!Number.isSafeInteger(idleTimeoutSeconds) || idleTimeoutSeconds > 86_400) {
+      usageError("--idle-timeout-seconds must be an integer from 0 to 86400 (0 disables)");
+    }
+  }
+
   const linesValue = values.get("--lines");
   let logLines: number | undefined;
   if (linesValue !== undefined) {
@@ -265,9 +282,10 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     dataDir: values.get("--data-dir"),
     host: values.get("--host"),
     port,
+    idleTimeoutSeconds,
     openBrowser,
     apiBase: values.get("--api-base"),
-    video: values.get("--video"),
+    video: values.get("--video") ?? values.get("--audio"),
     transcript: values.get("--transcript"),
     output: values.get("--output"),
     language: values.get("--language"),
@@ -314,6 +332,43 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
       usageError("--open is only valid for start or service ensure");
     }
   };
+
+  if (positionals[0] === "workbench") {
+    if (positionals.length !== 2) usageError("Usage: workbench <operation> [--api-base <origin>] [--project <id>] [--file <request.json>] [--confirmed] --json");
+    const action = positionals[1]!;
+    if (action === "commands") {
+      assertOptions([]);
+      return { ...common, command: "workbench", action };
+    }
+    if (!Object.hasOwn(WORKBENCH_OPERATIONS, action)) usageError("Unknown workbench operation; use workbench commands");
+    assertOptions(["--api-base", "--project", "--file"], ["--confirmed"]);
+    if (!values.get("--api-base")) usageError("workbench requires explicit --api-base <HTTP loopback origin>");
+    const definition = WORKBENCH_OPERATIONS[action as keyof typeof WORKBENCH_OPERATIONS];
+    const project = values.get("--project");
+    if (definition.project ? !project || project.length > 128 || /[\\/\x00-\x1f]/.test(project) || [".", ".."].includes(project) : project !== undefined) usageError("This operation requires its declared project-ID scope (never a local directory)");
+    if (definition.mode !== "write" && common.confirmed) usageError("--confirmed is valid only for write operations; plans require confirmed:false");
+    if (definition.required.length && !values.get("--file")) usageError("This operation requires --file <request.json>");
+    if (!definition.fields.length && values.has("--file")) usageError("This operation does not accept a request file");
+    return { ...common, command: "workbench", action, project, file: values.get("--file") };
+  }
+
+  if (positionals[0] === "module") {
+    const action = positionals[1];
+    if (!values.get("--api-base")) usageError("module requires explicit --api-base <HTTP loopback origin>");
+    const project = positionals[2];
+    if (!project || /[\\/\0]/.test(project) || project === "." || project === "..") usageError("module requires a project ID, not a path");
+    if (action === "publish" && positionals.length === 3) {
+      assertOptions(["--api-base", "--file"], ["--confirmed"], true);
+      if (!values.get("--file")) usageError("module publish requires --file <module-manifest.json>");
+      return { ...common, command: "module.publish", project, file: values.get("--file") };
+    }
+    if (action === "get" && positionals.length === 5) {
+      assertOptions(["--api-base"]);
+      for (const id of positionals.slice(3)) if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(id)) usageError("Invalid module ID or version");
+      return { ...common, command: "module.get", project, moduleId: positionals[3], moduleVersion: positionals[4] };
+    }
+    usageError("Usage: module publish <project-id> --file <manifest> --api-base <origin> [--confirmed|--dry-run]; module get <project-id> <module-id> <version> --api-base <origin>");
+  }
 
   if (positionals[0] === "job") {
     const action = positionals[1];
@@ -362,7 +417,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     if (positionals.length !== 1) {
       usageError("Usage: chengfeng-videocut start [--host <host>] [--port <port>]");
     }
-    assertOptions(["--host", "--port", "--projects-dir", "--data-dir"]);
+    assertOptions(["--host", "--port", "--projects-dir", "--data-dir", "--idle-timeout-seconds"]);
     return { command: "start", ...common };
   }
 
@@ -420,13 +475,15 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
         "Usage: chengfeng-videocut project ingest <job-dir> --video <task-local-path> [--language <code>] [--aspect-ratio <W:H>]",
       );
     }
-    const video = values.get("--video");
+    if (values.has("--audio") && values.has("--video")) usageError("Choose exactly one of --audio or --video");
+    const video = values.get("--video") ?? values.get("--audio");
+    if (values.has("--audio") && !/\.wav$/i.test(video ?? "")) usageError("--audio currently supports WAV input");
     const aspectRatio = values.get("--aspect-ratio");
-    if (!video) usageError("project ingest requires --video <task-local-path>");
+    if (!video) usageError("project ingest requires --video <task-local-path> or --audio <task-local.wav>");
     if (aspectRatio !== undefined && !/^\d+[:：]\d+$/.test(aspectRatio)) {
       usageError("project ingest --aspect-ratio must be W:H (e.g. 3:4, 16:9, 1:1); omit it to derive from the video");
     }
-    assertOptions(["--video", "--language", "--aspect-ratio", "--projects-dir", "--operation-id"]);
+    assertOptions(["--video", "--audio", "--language", "--aspect-ratio", "--projects-dir", "--operation-id"]);
     return {
       command: "project.ingest",
       project: positionals[2],

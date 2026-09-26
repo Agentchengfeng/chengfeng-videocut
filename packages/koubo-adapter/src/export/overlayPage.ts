@@ -91,22 +91,26 @@ export function renderOverlayPage(plan: ExportPlan, moduleBase: string): string 
   const offsetPx = style ? ((style.offsetY / 100) * height).toFixed(3) : "0";
   const anchor = style?.anchor ?? "bottom";
 
-  const frames = plan.layers
+  const frames = plan.layers.filter(layer => !layer.media)
     .map((layer) => {
       const src = `${moduleBase}${layer.module.split("/").map(encodeURIComponent).join("/")}`;
-      return `    <iframe class="ov-frame" data-layer="${escapeHtml(layer.layerId)}" src="${escapeHtml(src)}" scrolling="no"></iframe>`;
+      const scale = Math.min(width / plan.source.width, height / plan.source.height);
+      const sourceWidth = plan.source.width * scale, sourceHeight = plan.source.height * scale;
+      const bounds = layer.animation?.canvas === "project" ? "" : ` style="width:${sourceWidth}px;height:${sourceHeight}px;left:${(width - sourceWidth) / 2}px;top:${(height - sourceHeight) / 2}px"`;
+      return `    <iframe class="ov-frame" data-layer="${escapeHtml(layer.layerId)}" src="${escapeHtml(src)}"${bounds} scrolling="no"></iframe>`;
     })
     .join("\n");
 
   const data = JSON.stringify({
     cues: plan.subtitleCues.map((cue) => ({ text: cue.text, start: cue.start, end: cue.end })),
-    layers: plan.layers.map((layer) => ({
+    layers: plan.layers.filter(layer => !layer.media).map((layer) => ({
       layerId: layer.layerId,
       start: layer.start,
       end: layer.end,
       duration: layer.duration,
       zoom: layer.zoom,
       cues: layer.cues,
+      animation: layer.animation,
     })),
   });
 
@@ -200,16 +204,28 @@ const marker = document.getElementById("ov-marker");
 const text = document.getElementById("ov-text");
 const frames = new Map();
 const acked = new Map();
+const pending = new Map();
+const seekErrors = new Map();
 
 for (const frame of document.querySelectorAll(".ov-frame")) {
   frames.set(frame.dataset.layer, frame);
 }
+window.addEventListener("message", (event) => {
+  const data = event.data;
+  if (!data || (data.type !== "videocut:seek-applied" && data.type !== "videocut:seek-error")) return;
+  for (const [id, frame] of frames) {
+    if (event.source !== frame.contentWindow || pending.get(id) !== data.token) continue;
+    if (!PLAN.layers.find(layer => layer.layerId === id)?.animation) continue;
+    if (data.type === "videocut:seek-error") seekErrors.set(id, typeof data.message === "string" ? data.message.slice(0, 240) : "module seek failed");
+    else acked.set(id, data.token);
+  }
+});
 
 /**
- * Ready when every module has loaded and has been given an acknowledgement
- * hook inside its own window.
+ * Ready when every module has loaded. Legacy modules receive a compatibility
+ * acknowledgement hook; opt-in animation modules must explicitly reply.
  *
- * The hook is the whole trick. A module's seek handler is registered while its
+ * For legacy modules only, the seek handler is registered while its
  * document is parsing; a listener the parent adds afterwards therefore runs
  * *after* it for the same event. So "our listener saw the message" means "the
  * module has already processed it" — a handshake that needs no cooperation
@@ -220,7 +236,7 @@ const ready = Promise.all(Array.from(frames.entries()).map(([id, frame]) => new 
     try {
       frame.contentWindow.addEventListener("message", (event) => {
         const data = event.data;
-        if (data && data.type === SEEK) acked.set(id, data.token);
+        if (!PLAN.layers.find(layer => layer.layerId === id)?.animation && data && data.type === SEEK) acked.set(id, data.token);
       });
     } catch (error) {
       // Cross-origin would mean the module is not being served from this
@@ -293,20 +309,25 @@ window.__seek = async (time) => {
   if (!layer) return mine;
 
   const frame = frames.get(layer.layerId);
+  pending.set(layer.layerId, mine);
+  seekErrors.delete(layer.layerId);
   frame.contentWindow.postMessage({
     type: SEEK,
     time: Math.max(0, time - layer.start),
     duration: layer.duration,
     cues: layer.cues,
+    ...(layer.animation ? { animation: layer.animation, wordCues: layer.animation.wordCues } : {}),
     zoom: layer.zoom,
     token: mine,
   }, "*");
 
   const deadline = performance.now() + 5000;
   while (acked.get(layer.layerId) !== mine) {
+    if (seekErrors.has(layer.layerId)) throw new Error("module seek failed: " + layer.layerId + ": " + seekErrors.get(layer.layerId));
     if (performance.now() > deadline) throw new Error("module did not answer a seek: " + layer.layerId);
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
+  pending.delete(layer.layerId);
   return mine;
 };
 </script>

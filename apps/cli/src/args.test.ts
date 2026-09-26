@@ -56,6 +56,9 @@ const publicCommandSamples = {
   "subtitle.build": ["subtitle", "build", "demo"],
   "subtitle.set": ["subtitle", "set", "demo", "--file", "subtitles.json"],
   "visual.get": ["visual", "get", "demo"],
+  "module.publish": ["module", "publish", "demo", "--file", "module-manifest.json", "--api-base", "http://127.0.0.1:1234", "--confirmed"],
+  workbench: ["workbench", "commands"],
+  "module.get": ["module", "get", "demo", "scene", "v1", "--api-base", "http://127.0.0.1:1234"],
   "visual.add": ["visual", "add", "demo", "--module", "layers/title.html", "--cues", "cue-1"],
   "visual.remove": ["visual", "remove", "demo", "--id", "layer-1"],
   "visual.frame": ["visual", "frame", "demo", "--cues", "cue-1"],
@@ -103,6 +106,7 @@ function commandIdFromUsageLine(line: string): RuntimeCliCommand | null {
     cuts: "cuts",
     "edit-list": "editList",
     job: "job",
+    module: "module",
     project: "project",
     render: "render",
     service: "service",
@@ -121,6 +125,17 @@ function commandIdFromUsageLine(line: string): RuntimeCliCommand | null {
 }
 
 describe("start argument parser", () => {
+  it("requires explicit module source and rejects unrelated write and local registry options", () => {
+    expect(parseArgs([...publicCommandSamples["module.publish"], "--dry-run"]).dryRun).toBe(true);
+    for (const argv of [
+      ["module", "get", "demo", "scene", "v1"],
+      ["module", "publish", "demo", "--api-base", "http://127.0.0.1:1234"],
+      [...publicCommandSamples["module.get"], "--confirmed"],
+      [...publicCommandSamples["module.get"], "--dry-run"],
+      [...publicCommandSamples["module.publish"], "--projects-dir", "/tmp/projects"],
+      ["module", "get", "../demo", "scene", "v1", "--api-base", "http://127.0.0.1:1234"],
+    ]) expect(() => parseArgs(argv)).toThrow();
+  });
   it("keeps public command contract, help text, and parser coverage aligned", () => {
     const contractIds = publicCommandIds().sort();
     expect(helpCommandIds().sort()).toEqual(contractIds);
@@ -367,6 +382,9 @@ describe("start argument parser", () => {
   });
 
   it("parses Product-owned project ingest without raw transcript paths", () => {
+    expect(parseArgs(["project", "ingest", "job", "--audio", "voice.wav"]).video).toBe("voice.wav");
+    expect(() => parseArgs(["project", "ingest", "job", "--audio", "voice.mp3"])).toThrow();
+    expect(() => parseArgs(["project", "ingest", "job", "--audio", "voice.wav", "--video", "a.mp4"])).toThrow();
     expect(parseArgs([
       "project", "ingest", "/tmp/job",
       "--video", "uploads/talk.mp4",

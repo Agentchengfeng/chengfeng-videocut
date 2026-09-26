@@ -250,11 +250,12 @@ function parseRoute(url: URL): TimelineMediaRoute | null {
   if (!validProjectRelativePath(source)) {
     throw new TimelineFrameError(400, "invalid_source", "source 必须是安全的项目相对路径");
   }
-  if (!VIDEO_EXTENSIONS.has(extname(source).toLowerCase())) {
+  const audioWaveform = waveformMatch && extname(source).toLowerCase() === ".wav";
+  if (!VIDEO_EXTENSIONS.has(extname(source).toLowerCase()) && !audioWaveform) {
     throw new TimelineFrameError(
       415,
       "unsupported_media_type",
-      "只支持 mp4、mov、m4v 和 webm 视频源",
+      "画面仅支持 mp4、mov、m4v 和 webm 视频源；波形另外支持 WAV 音频",
     );
   }
 

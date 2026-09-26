@@ -9,6 +9,7 @@ export const OPERATION_IDEMPOTENCY_VERSION = 1 as const;
 
 export type OperationAuditKind =
   | "project.ingest"
+  | "transcript.correct"
   | "cuts.set"
   | "job.start.export";
 
@@ -134,7 +135,7 @@ function assertSafeMetadataLabel(
 
 function assertRecord(record: OperationAuditRecord): void {
   assertOperationId(record.operationId);
-  if (!["project.ingest", "cuts.set", "job.start.export"].includes(record.kind)) {
+  if (!["project.ingest", "transcript.correct", "cuts.set", "job.start.export"].includes(record.kind)) {
     throw new VideocutError("operation_audit_corrupt", "Operation audit record has an unknown kind");
   }
   if (!SHA256_PATTERN.test(record.inputHash)) {

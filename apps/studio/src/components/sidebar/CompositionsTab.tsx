@@ -8,6 +8,7 @@ interface CompositionsTabProps {
   onSelect: (comp: string) => void;
   onRenderComposition?: (comp: string) => void;
   isRendering?: boolean;
+  renderDisabledReason?: string;
   lintFindingsByFile?: Map<string, { count: number; messages: string[] }>;
 }
 
@@ -114,6 +115,7 @@ function CompCard({
   onSelect,
   onRender,
   isRendering,
+  renderDisabledReason,
   lintInfo,
 }: {
   projectId: string;
@@ -122,6 +124,7 @@ function CompCard({
   onSelect: () => void;
   onRender?: () => void;
   isRendering?: boolean;
+  renderDisabledReason?: string;
   lintInfo?: { count: number; messages: string[] };
 }) {
   const [hovered, setHovered] = useState(false);
@@ -235,11 +238,12 @@ function CompCard({
       {onRender && (
         <button
           type="button"
-          title={isRendering ? "Rendering..." : `Render ${name}`}
+          title={renderDisabledReason ?? (isRendering ? "Rendering..." : `Render ${name}`)}
           aria-label={isRendering ? "Rendering..." : `Render ${name}`}
-          disabled={isRendering}
+          disabled={isRendering || Boolean(renderDisabledReason)}
           onClick={(e) => {
             e.stopPropagation();
+            if (isRendering || renderDisabledReason) return;
             onRender();
           }}
           className={`flex-shrink-0 p-1 rounded transition-colors ${
@@ -275,6 +279,7 @@ export const CompositionsTab = memo(function CompositionsTab({
   onSelect,
   onRenderComposition,
   isRendering,
+  renderDisabledReason,
   lintFindingsByFile,
 }: CompositionsTabProps) {
   if (compositions.length === 0) {
@@ -296,6 +301,7 @@ export const CompositionsTab = memo(function CompositionsTab({
           onSelect={() => onSelect(comp)}
           onRender={onRenderComposition ? () => onRenderComposition(comp) : undefined}
           isRendering={isRendering}
+          renderDisabledReason={renderDisabledReason}
           lintInfo={lintFindingsByFile?.get(comp)}
         />
       ))}

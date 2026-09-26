@@ -113,6 +113,33 @@ afterEach(() => {
 });
 
 describe("KouboTranscriptPane sidebar contract", () => {
+  it("locates same-second words by source instance and blocks v2 transcript edits", async () => {
+    const state = editListFixture("manual");
+    state.document = {
+      ...state.document!, schemaVersion: 2, duration: 4,
+      sources: ["input/a.wav", "input/b.wav"].map(path => ({ path, duration: 10, sha256: revision, mediaKind: "audio" })),
+      segments: ["input/a.wav", "input/b.wav"].map((source, index) => ({
+        id: `s${index}`, source, instanceId: `i${index}`, sourceStart: 0, sourceEnd: 2,
+        timelineStart: index * 2, trackId: "a-roll", playbackRate: 1,
+      })),
+    };
+    const multiCues = state.document.segments.map((segment, index) => ({
+      id: `cue${index}`, start: 0, end: 1,
+      words: [{ id: `w${index}`, text: `词${index}`, start: 0, end: 1, isGap: false,
+        source: segment.source, instanceId: segment.instanceId }],
+    }));
+    const rendered = renderPane("manual", { editList: state, cues: multiCues });
+    expect(rendered.host.textContent).toContain("多源文稿暂仅支持定位");
+    const second = rendered.host.querySelector<HTMLElement>('[data-word-id="w1"]')!;
+    act(() => second.dispatchEvent(pointerEvent("pointerdown", { clientX: 10, clientY: 10 })));
+    expect(rendered.onSeek).toHaveBeenLastCalledWith(2, { keepPlaying: true });
+    await act(async () => second.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true })));
+    const editButton = rendered.host.querySelector<HTMLButtonElement>('button[disabled]');
+    expect(editButton).not.toBeNull();
+    expect(state.patchOperation).not.toHaveBeenCalled();
+    expect(rendered.updateCutWordIds).not.toHaveBeenCalled();
+    act(() => rendered.root.unmount());
+  });
   it("uses the borderless full-width cue density contract", () => {
     const css = readFileSync(resolve(process.cwd(), "src/cut/cut.css"), "utf8");
     const cueRule = css.match(/\.cut-transcript-cue \{[\s\S]*?\n\}/)?.[0] ?? "";

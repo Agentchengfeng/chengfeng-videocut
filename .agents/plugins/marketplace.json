@@ -1,0 +1,20 @@
+{
+  "name": "chengfeng-videocut-bootstrap-local",
+  "interface": {
+    "displayName": "Chengfeng Videocut Bootstrap Local"
+  },
+  "plugins": [
+    {
+      "name": "chengfeng-videocut",
+      "source": {
+        "source": "local",
+        "path": "./plugins/chengfeng-videocut"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

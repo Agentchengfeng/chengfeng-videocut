@@ -34,11 +34,37 @@ interface UseClipboardOptions {
   timelineEditingAdapter?: StudioTimelineEditingAdapter | null;
 }
 
-function getElementOuterHtml(
+const MANAGED_CLIPBOARD_SELECTOR = [
+  "[data-edl-segment-id]", "[data-videocut-edl-backing]",
+  "[data-chengfeng-videocut-edl-player]", "[data-chengfeng-videocut-edl-payload]",
+  "[data-videocut-projection-schema]", "[data-videocut-edl-audio]",
+].join(",");
+// A projection root also contains ordinary editable B-roll: only local managed
+// media ownership propagates to a selected descendant.
+const MANAGED_CLIPBOARD_ANCESTOR_SELECTOR =
+  "[data-edl-segment-id],[data-videocut-edl-backing],[data-videocut-edl-audio]";
+
+/** Inspect parsed nodes, not IDs: renaming a copied wrapper cannot release ownership. */
+export function isEditListManagedClipboardHtml(html: string): boolean {
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  const containsManaged = (node: Node): boolean => {
+    if (node.nodeType === 8 && /chengfeng-videocut:a-roll:(start|end)/.test(node.nodeValue ?? "")) return true;
+    if (node.nodeType === 1) {
+      const element = node as Element;
+      if (element.matches(MANAGED_CLIPBOARD_SELECTOR)) return true;
+      if (element.tagName === "TEMPLATE" && containsManaged((element as HTMLTemplateElement).content)) return true;
+    }
+    return Array.from(node.childNodes).some(containsManaged);
+  };
+  return containsManaged(template.content);
+}
+
+function getElementForClipboard(
   iframeRef: React.MutableRefObject<HTMLIFrameElement | null>,
   selection: DomEditSelection,
   activeCompositionPath: string | null,
-): string | null {
+): Element | null {
   let doc: Document | null = null;
   try {
     doc = iframeRef.current?.contentDocument ?? null;
@@ -47,7 +73,7 @@ function getElementOuterHtml(
   }
   if (!doc) return null;
 
-  return findElementForSelection(doc, selection, activeCompositionPath)?.outerHTML ?? null;
+  return findElementForSelection(doc, selection, activeCompositionPath);
 }
 
 export function useClipboard({
@@ -68,8 +94,8 @@ export function useClipboard({
   const projectIdRef = useRef(projectId);
   projectIdRef.current = projectId;
 
-  // The copy-mode branches predate this change; this diff only replaces its
-  // duplicated DOM lookup with the canonical composition-aware resolver.
+  // Keep composition-aware selection lookup and reject managed ownership before
+  // either branch can create a clipboard payload (and before cut deletes).
   // fallow-ignore-next-line complexity
   const handleCopy = useCallback((): boolean => {
     const { selectedElementId, elements } = usePlayerStore.getState();
@@ -85,11 +111,11 @@ export function useClipboard({
       const targetPath = element.sourceFile || activeCompPath || "index.html";
 
       let html: string | null = null;
+      let managedAncestor = false;
       try {
         const doc = previewIframeRef.current?.contentDocument;
         if (doc) {
-          html =
-            findElementForSelection(
+          const node = findElementForSelection(
               doc,
               {
                 hfId: element.hfId,
@@ -99,7 +125,9 @@ export function useClipboard({
                 sourceFile: targetPath,
               },
               activeCompPath,
-            )?.outerHTML ?? null;
+            );
+          html = node?.outerHTML ?? null;
+          managedAncestor = Boolean(node?.closest(MANAGED_CLIPBOARD_ANCESTOR_SELECTOR));
         }
       } catch {
         // cross-origin frame
@@ -107,6 +135,11 @@ export function useClipboard({
 
       if (!html) {
         showToast("Unable to copy this element.", "info");
+        return false;
+      }
+
+      if (managedAncestor || isEditListManagedClipboardHtml(html)) {
+        showToast("This managed A-roll content cannot be copied into composition HTML.", "info");
         return false;
       }
 
@@ -119,9 +152,14 @@ export function useClipboard({
     // DOM element copy
     const domSelection = domEditSelectionRef.current;
     if (domSelection) {
-      const html = getElementOuterHtml(previewIframeRef, domSelection, activeCompPath);
+      const node = getElementForClipboard(previewIframeRef, domSelection, activeCompPath);
+      const html = node?.outerHTML;
       if (!html) {
         showToast("Unable to copy this element.", "info");
+        return false;
+      }
+      if (node?.closest(MANAGED_CLIPBOARD_ANCESTOR_SELECTOR) || isEditListManagedClipboardHtml(html)) {
+        showToast("This managed A-roll content cannot be copied into composition HTML.", "info");
         return false;
       }
       const targetPath = domSelection.sourceFile || activeCompPath || "index.html";
@@ -144,6 +182,10 @@ export function useClipboard({
     const payload = clipboardRef.current;
     if (!payload) {
       showToast("Nothing to paste.", "info");
+      return;
+    }
+    if (isEditListManagedClipboardHtml(payload.html)) {
+      showToast("Managed A-roll content cannot be pasted into composition HTML.", "info");
       return;
     }
     const pid = projectIdRef.current;

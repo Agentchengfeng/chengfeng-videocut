@@ -13,6 +13,9 @@ import {
   getTimelineCanvasHeight,
   getTimelineDisplayContentWidth,
   getTimelineFitPps,
+  getTimelineRowTop,
+  getTimelineRowFromY,
+  resolveTimelineAssetDrop,
 } from "./timelineLayout";
 import {
   MAX_TIMELINE_ZOOM_PERCENT,
@@ -76,11 +79,11 @@ describe("Product-owned HyperFrames 0.7.60 Timeline fork boundary", () => {
       gutter: 32,
       leftPad: 48,
       ruler: 24,
-      topPad: 50,
+      topPad: 8,
       videoLane: 48,
       audioLane: 48,
       bottomPad: 72,
-      canvas: 242,
+      canvas: 200,
     });
     expect(MIN_TIMELINE_EXTENT_S).toBe(60);
 
@@ -95,6 +98,27 @@ describe("Product-owned HyperFrames 0.7.60 Timeline fork boundary", () => {
       viewportWidth,
       pps: shortFitPps,
     })).toBeCloseTo(60 * shortFitPps, 12);
+  });
+
+  it("shares compact vertical geometry between rows, canvas and drop inversion without changing time mapping", () => {
+    expect(getTimelineRowTop(0)).toBe(32);
+    expect(getTimelineCanvasHeight(3)).toBe(248);
+    for (const row of [0, 1, 2]) {
+      expect(getTimelineRowFromY(getTimelineRowTop(row))).toBe(row);
+      expect(getTimelineRowFromY(getTimelineRowTop(row) + TRACK_H / 2)).toBe(row + 0.5);
+      const rectLeft = 20;
+      const rectTop = 40;
+      const scrollLeft = 15;
+      const scrollTop = 12;
+      const pixelsPerSecond = 10;
+      const time = 7.5;
+      expect(resolveTimelineAssetDrop({
+        rectLeft, rectTop, scrollLeft, scrollTop, pixelsPerSecond,
+        duration: 60, trackHeight: TRACK_H, trackOrder: [3, 5, 7],
+      }, rectLeft - scrollLeft + GUTTER + TRACKS_LEFT_PAD + time * pixelsPerSecond,
+      rectTop - scrollTop + getTimelineRowTop(row) + TRACK_H / 2))
+        .toEqual({ start: time, track: [3, 5, 7][row] });
+    }
   });
 
   it("retains the 10%-2000% logarithmic zoom contract", () => {

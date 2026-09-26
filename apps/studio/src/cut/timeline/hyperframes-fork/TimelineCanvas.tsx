@@ -21,6 +21,7 @@ import { defaultTimelineTheme } from "./timelineTheme";
  * The official Ruler -> Lanes -> Playhead composition remains intact.
  */
 export const TimelineCanvas = memo(function TimelineCanvas({
+  soundEffectsTrack,
   segments,
   pixelsPerSecond,
   displayContentWidth,
@@ -46,7 +47,7 @@ export const TimelineCanvas = memo(function TimelineCanvas({
 }: TimelineCanvasProps) {
   // Three rows once a project can carry visual layers. The height function has
   // always taken a track count; only the number passed here changed.
-  const totalHeight = getTimelineCanvasHeight(3);
+  const totalHeight = getTimelineCanvasHeight(3) + (soundEffectsTrack ? 76 : 0);
 
   return (
     <div
@@ -78,6 +79,7 @@ export const TimelineCanvas = memo(function TimelineCanvas({
 
       <div aria-hidden="true" style={{ height: TRACKS_TOP_PAD }} />
 
+      {soundEffectsTrack}
       <TimelineLanes
         segments={segments}
         visualLayers={visualLayers}

@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { act } from "react";
+import { act, type ReactNode } from "react";
 import { readFileSync } from "node:fs";
 import { createRoot } from "react-dom/client";
 import {
@@ -35,6 +35,7 @@ const harness = vi.hoisted(() => ({
   usePreviewArtifact: vi.fn(),
   useProjectEditList: vi.fn(),
   useProjectSubtitles: vi.fn(),
+  useProjectVisuals: vi.fn(),
 }));
 
 vi.mock("../components/useProjectEditList", () => ({
@@ -47,6 +48,14 @@ vi.mock("../components/useProjectCutSelection", () => ({
 
 vi.mock("../components/useProjectSubtitles", () => ({
   useProjectSubtitles: harness.useProjectSubtitles,
+}));
+
+vi.mock("../components/useProjectWorkflow", () => ({
+  useProjectWorkflow: () => ({ workflow: { project: { config: { aspectRatio: "4:3" } } } }),
+}));
+
+vi.mock("./visual/useProjectVisuals", () => ({
+  useProjectVisuals: harness.useProjectVisuals,
 }));
 
 vi.mock("../extensions/koubo/useKouboTranscript", () => ({
@@ -65,7 +74,9 @@ vi.mock("./player/previewArtifact", () => ({
 vi.mock("./player/CutPlayer", () => ({
   CutPlayer: (props: Record<string, unknown>) => {
     harness.cutPlayerProps.push(props);
-    return <section data-testid="cut-player" data-source-url={String(props.sourceUrl ?? "")} />;
+    return <section data-testid="cut-player" data-source-url={String(props.sourceUrl ?? "")}>
+      {props.notices as ReactNode}
+    </section>;
   },
 }));
 
@@ -219,6 +230,8 @@ const halfOpenBoundaryDocument = {
 };
 
 beforeEach(() => {
+  harness.useProjectVisuals.mockReset();
+  harness.useProjectVisuals.mockReturnValue({ document: null, timings: [], moduleUrl: vi.fn() });
   harness.cutPlayerProps = [];
   harness.cutTimelineProps = [];
   harness.transcriptProps = [];
@@ -346,6 +359,113 @@ function latestTranscriptProps(): TranscriptPropsSnapshot {
 }
 
 describe("CutWorkspace single-page layout contract", () => {
+  it("keeps content and preview mounted together while feature tabs preserve their nodes", () => {
+    const host = document.createElement("div"); document.body.append(host);
+    const root = createRoot(host);
+    try {
+      act(() => root.render(<CutWorkspace projectId="layout-contract" initialTimelineTime={2.5} onTimelineTimeCommit={vi.fn()} />));
+      const player = host.querySelector('[data-testid="cut-player"]');
+      const timeline = host.querySelector('[data-testid="cut-timeline"]');
+      const transcript = host.querySelector('[data-testid="koubo-transcript"]');
+      expect(host.querySelector('.cf-cut-compact-switcher')).toBeNull();
+      expect(host.querySelector('.cf-cut-workspace')?.hasAttribute('data-compact-view')).toBe(false);
+      expect(host.querySelector('.cf-cut-feature-panel')?.parentElement).toBe(player?.parentElement);
+      const subtitleTab = Array.from(host.querySelectorAll<HTMLButtonElement>('[role="tab"]')).find(button => button.textContent === '字幕')!;
+      const cutTab = Array.from(host.querySelectorAll<HTMLButtonElement>('[role="tab"]')).find(button => button.textContent === '剪口播')!;
+      act(() => subtitleTab.click());
+      expect(subtitleTab.getAttribute('aria-selected')).toBe('true');
+      act(() => cutTab.click());
+      expect(cutTab.getAttribute('aria-selected')).toBe('true');
+      expect(host.querySelector('[data-testid="cut-player"]')).toBe(player);
+      expect(host.querySelector('[data-testid="cut-timeline"]')).toBe(timeline);
+      expect(host.querySelector('[data-testid="koubo-transcript"]')).toBe(transcript);
+      expect(harness.patchOperation).not.toHaveBeenCalled();
+      expect(harness.useProjectCutSelection.mock.results.at(-1)?.value.updateCutWordIds).not.toHaveBeenCalled();
+    } finally { act(() => root.unmount()); host.remove(); }
+  });
+
+  it("keeps a single player transport owner through viewport changes", () => {
+    const host = document.createElement("div"); document.body.append(host);
+    const root = createRoot(host);
+    const commit = vi.fn();
+    const render = () => act(() => root.render(<CutWorkspace projectId="layout-contract" initialTimelineTime={2.5} onTimelineTimeCommit={commit} />));
+    try {
+      render();
+      const transport = harness.useAssembledVideoTransport.mock.results.at(-1)?.value;
+      const player = host.querySelector('[data-testid="cut-player"]');
+      const originalWidth = window.innerWidth;
+      try {
+        for (const width of [678, 320, 1280]) {
+          Object.defineProperty(window, 'innerWidth', { configurable: true, value: width });
+          act(() => window.dispatchEvent(new Event('resize')));
+          render();
+          expect(host.querySelectorAll('[data-testid="cut-player"]')).toHaveLength(1);
+          expect(host.querySelector('[data-testid="cut-player"]')).toBe(player);
+          expect(harness.cutPlayerProps.at(-1)?.transport).toBe(transport);
+          expect(host.querySelector('.cf-cut-compact-switcher__play-button')).toBeNull();
+        }
+      } finally { Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalWidth }); }
+      expect(transport.play).not.toHaveBeenCalled();
+      expect(transport.pause).not.toHaveBeenCalled();
+      expect(commit).not.toHaveBeenCalled();
+      expect(harness.patchOperation).not.toHaveBeenCalled();
+    } finally { act(() => root.unmount()); host.remove(); }
+  });
+
+  it("anchors the timeline below side-by-side content and preview at narrow widths", () => {
+    const css = readFileSync('src/cut/cut.css', 'utf8');
+    const shell = css.match(/\.cf-cut-workspace \{([^}]+)\}/)?.[1] ?? '';
+    expect(shell).toContain('grid-template-rows: minmax(0, 1fr) var(--cf-cut-timeline-height)');
+    expect(shell).toContain('overflow: hidden');
+    const narrow = css.slice(css.indexOf('@media (width < 960px)'), css.indexOf('@media (height < 480px)'));
+    expect(narrow).toContain('grid-template-columns: clamp(120px, 40vw, 320px) minmax(0, 1fr)');
+    expect(narrow).toMatch(/\.cf-cut-workspace > \.cf-cut-feature-panel\s*\{[^}]*grid-column:\s*1;[^}]*grid-row:\s*1;/);
+    expect(narrow).toMatch(/\.cf-cut-workspace > \.cf-cut-player\s*\{[^}]*grid-column:\s*2;[^}]*grid-row:\s*1;/);
+    expect(narrow).toMatch(/\.cf-cut-workspace > \.cf-cut-timeline\s*\{[^}]*grid-column:\s*1\s*\/\s*-1;[^}]*grid-row:\s*2;/);
+    expect(css).not.toContain('data-compact-view');
+    expect(css).not.toContain('cf-cut-compact-switcher');
+    expect(css).not.toContain('clamp(140px, 24dvh, 220px)');
+  });
+
+  it("lets all three feature tabs wrap without shrinking their strip in narrow content columns", () => {
+    const css = readFileSync('src/cut/cut.css', 'utf8');
+    const compactTabs = css.slice(css.indexOf('@media (width < 480px)'), css.indexOf('@media (height < 480px)'));
+    const strip = compactTabs.match(/\.cf-cut-feature-tabs\s*\{([^}]+)\}/)?.[1] ?? '';
+    const tab = compactTabs.match(/\.cf-cut-feature-tab\s*\{([^}]+)\}/)?.[1] ?? '';
+    expect(strip).toContain('flex: 0 0 auto');
+    expect(strip).toContain('flex-wrap: wrap');
+    expect(tab).toContain('min-width: 0');
+    expect(tab).toContain('padding: 0 8px');
+  });
+
+  it("contains orphan notices in the player without activating or deleting the animation", () => {
+    const documentValue = { layers: [{ id: "removed-scene", wordIds: ["w1"], module: "modules/user-edited.html" }] };
+    const before = JSON.stringify(documentValue);
+    harness.useProjectVisuals.mockReturnValue({ document: documentValue, moduleUrl: vi.fn(), timings: [
+      { layerId: "removed-scene", start: 0, end: 0, duration: 0, orphaned: true,
+        animation: { clock: "local0", authoredDuration: 2, canvas: "project", issues: ["orphaned"], wordCues: [] } },
+    ] });
+    const host = document.createElement("div"); document.body.append(host);
+    const root = createRoot(host);
+    try {
+      act(() => root.render(<CutWorkspace projectId="layout-contract" initialTimelineTime={1} onTimelineTimeCommit={vi.fn()} />));
+      expect(Array.from(host.querySelectorAll('[role="status"]')).some(node => node.textContent?.includes("整句已删除"))).toBe(true);
+      expect(host.textContent).toContain("源码与用户修改保留");
+      expect(host.querySelector('[data-testid="cut-player"] [role="status"]')?.textContent).toContain("整句已删除");
+      expect(host.querySelector('.cf-cut-workspace > [role="status"]')).toBeNull();
+      expect(harness.cutPlayerProps.at(-1)?.visualLayers).toEqual([]);
+      expect(JSON.stringify(documentValue)).toBe(before);
+      expect(harness.patchOperation).not.toHaveBeenCalled();
+    } finally { act(() => root.unmount()); host.remove(); }
+  });
+  it("forwards the saved project aspect ratio to the audio canvas", () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    act(() => root.render(<CutWorkspace projectId="layout-contract" initialTimelineTime={1} onTimelineTimeCommit={vi.fn()} />));
+    expect(harness.cutPlayerProps.at(-1)?.canvasAspectRatio).toBe(4 / 3);
+    act(() => root.unmount());
+  });
   it("uses one ordered history for timeline then transcript commands", async () => {
     let currentDocument = reorderableDocument;
     let cutWordIds = new Set<string>();
@@ -604,22 +724,110 @@ describe("CutWorkspace single-page layout contract", () => {
     });
     expect(latestTimelineProps().canUndo).toBe(true);
 
+    const splitSnapshot = structuredClone(currentDocument);
     await act(async () => {
       await latestTimelineProps().onUndo();
     });
 
     expect(harness.patchOperation).toHaveBeenNthCalledWith(2, {
-      type: "trim",
-      clipId: "a-roll-0002",
-      sourceStart: 4,
-      sourceEnd: 8,
+      type: "restore-snapshot",
+      expectedSegments: splitSnapshot.segments,
+      beforeSegments: reorderableDocument.segments,
+      beforeMode: reorderableDocument.mode,
+      inverse: { type: "split", clipId: "a-roll-0002", offset: 2 },
     });
-    expect(harness.patchOperation).toHaveBeenNthCalledWith(3, {
-      type: "delete",
-      clipId: "a-roll-0002__split_6000",
+    expect(harness.patchOperation).toHaveBeenCalledTimes(2);
+    expect(currentDocument).toEqual(reorderableDocument);
+    expect(latestTimelineProps().canUndo).toBe(false);
+
+    // The current global history exposes Undo only. Re-applying the same split
+    // verifies redo geometry without inventing an unsupported redo command.
+    await act(async () => {
+      await latestTimelineProps().editList.patchOperation({ type: "split", clipId: "a-roll-0002", offset: 2 });
     });
+    expect(currentDocument).toEqual(splitSnapshot);
 
     act(() => root.unmount());
+  });
+
+  for (const failure of ["persistence", "external-edit"] as const) {
+    it(`retains split undo history and current document after ${failure} rejection`, async () => {
+      let currentDocument = structuredClone(reorderableDocument);
+      let rejectRestore = false;
+      harness.patchOperation.mockImplementation(async (operation: EditListOperation) => {
+        if (rejectRestore && operation.type === "restore-snapshot") throw new Error("persistence failed");
+        currentDocument = applyEditListOperation(currentDocument, operation);
+        return currentDocument;
+      });
+      harness.useProjectEditList.mockImplementation(() => ({
+        projectId: "layout-contract", document: currentDocument, revision, loading: false,
+        ready: true, saveState: "idle", reload: vi.fn(async () => true),
+        patchOperation: harness.patchOperation, canUndo: false,
+        undoLastEditListChange: harness.undoLastEditListChange,
+      }));
+      const host = document.createElement("div"); document.body.append(host);
+      const root = createRoot(host);
+      act(() => root.render(<CutWorkspace projectId="layout-contract" initialTimelineTime={1} onTimelineTimeCommit={vi.fn()} />));
+      try {
+        await act(async () => {
+          await latestTimelineProps().editList.patchOperation({ type: "split", clipId: "a-roll-0002", offset: 2 });
+        });
+        if (failure === "persistence") rejectRestore = true;
+        else currentDocument = applyEditListOperation(currentDocument, { type: "move", clipId: "a-roll-0001", start: 6 });
+        const beforeAttempt = structuredClone(currentDocument);
+        await act(async () => {
+          await expect(latestTimelineProps().onUndo()).rejects.toThrow(failure === "persistence" ? "persistence failed" : "no longer matches");
+        });
+        expect(currentDocument).toEqual(beforeAttempt);
+        expect(latestTimelineProps().canUndo).toBe(true);
+        expect(harness.patchOperation).toHaveBeenCalledTimes(2);
+        if (failure === "persistence") {
+          rejectRestore = false;
+          await act(async () => { await latestTimelineProps().onUndo(); });
+          expect(currentDocument).toEqual(reorderableDocument);
+          expect(latestTimelineProps().canUndo).toBe(false);
+        }
+      } finally { act(() => root.unmount()); }
+    });
+  }
+
+  for (const operation of [{ type: "split" as const, clipId: "a-roll-0002", offset: 2 }, { type: "delete" as const, clipId: "a-roll-0002" }]) {
+    it(`does not expose unsafe v2 ${operation.type} undo`, async () => {
+      let currentDocument: EditListDocument = {
+        ...structuredClone(reorderableDocument), schemaVersion: 2,
+        sources: [{path:"input/source.mp4",sha256:revision,duration:12,mediaKind:"audio"}],
+        segments: reorderableDocument.segments.map(s=>({...s,instanceId:"original"})),
+      };
+      harness.patchOperation.mockImplementation(async (op: EditListOperation) => {
+        currentDocument=applyEditListOperation(currentDocument,op);return currentDocument;
+      });
+      harness.useProjectEditList.mockImplementation(()=>({
+        projectId:"layout-contract",document:currentDocument,revision,loading:false,ready:true,
+        saveState:"idle",reload:vi.fn(async()=>true),patchOperation:harness.patchOperation,
+        canUndo:false,undoLastEditListChange:harness.undoLastEditListChange,
+      }));
+      const host=document.createElement("div");document.body.append(host);const root=createRoot(host);
+      act(()=>root.render(<CutWorkspace projectId="layout-contract" initialTimelineTime={1} onTimelineTimeCommit={vi.fn()} />));
+      try {
+        await act(async()=>{await latestTimelineProps().editList.patchOperation({type:"move",clipId:"a-roll-0002",start:0});});
+        expect(latestTimelineProps().canUndo).toBe(true);
+        await act(async()=>{await latestTimelineProps().editList.patchOperation(operation);});
+        expect(latestTimelineProps().canUndo).toBe(false);
+      } finally {act(()=>root.unmount());}
+    });
+  }
+
+  it("preserves source instance when mapping multi-source workspace anchors", () => {
+    const multi = {
+      schemaVersion: 2 as const, projectId: "multi", sourceDuration: 2, duration: 4, mode: "manual" as const,
+      baseCutsRevision: "a".repeat(64), baseTranscriptRevision: "a".repeat(64),
+      sources: ["input/a.wav", "input/b.wav"].map(path => ({ path, sha256: "a".repeat(64), duration: 2, mediaKind: "audio" as const })),
+      segments: ["input/a.wav", "input/b.wav"].map((source, index) => ({ id: `s${index}`, source, instanceId: `i${index}`,
+        sourceStart: 0, sourceEnd: 2, timelineStart: index * 2, trackId: "a-roll", playbackRate: 1 })),
+    };
+    expect(resolveTimelineAnchorForSourceTime(multi, 0.5, { source: "input/b.wav", instanceId: "i1" }))
+      .toMatchObject({ timelineTime: 2.5, segmentId: "s1", reason: "retained" });
+    expect(resolveTimelineAnchorForSourceTime(multi, 0.5)).toMatchObject({ timelineTime: 4, reason: "end" });
   });
 
   it("maps source anchors to retained content and falls to the next retained segment when the anchor was deleted", () => {
@@ -1285,7 +1493,11 @@ describe("CutWorkspace single-page layout contract", () => {
   it("keeps the resizer desktop-only while Timeline remains a full-width row", () => {
     const css = readFileSync("src/cut/cut.css", "utf8");
     expect(css).toContain("var(--cf-cut-transcript-width, 320px)");
-    expect(css).toContain("minmax(420px, 1fr)");
+    expect(css.replace(/\s+/g, " ")).toContain("var(--cf-cut-transcript-width, 320px) 3px minmax(0, 1fr)");
+    // The resizer already clamps this preference; another CSS cap makes
+    // the visible width disagree with pointer/keyboard and ARIA values.
+    expect(css).not.toContain("min(var(--cf-cut-transcript-width");
+    expect(css).not.toContain("minmax(420px, 1fr)");
     expect(css).not.toContain("cf-cut-inspector-width");
     expect(css).not.toContain(".cf-cut-inspector");
     expect(css).toContain("column-gap: 0;");

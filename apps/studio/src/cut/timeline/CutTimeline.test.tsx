@@ -240,6 +240,46 @@ afterEach(() => {
 });
 
 describe("CutTimeline HyperFrames-style trim interaction", () => {
+  it("labels v2 source instances and never draws single-source waveform or filmstrip", () => {
+    const base = editListFixture();
+    const multi: EditListDocument = {
+      ...base, schemaVersion: 2, duration: 8,
+      sources: ["input/a/source.wav", "input/b/source.wav"].map(path => ({ path, sha256: revision, duration: 10, mediaKind: "audio" })),
+      segments: base.segments.map((segment, index) => ({
+        ...segment, source: `input/${index ? "b" : "a"}/source.wav`, instanceId: `use-${index}`,
+        sourceStart: index * 2, sourceEnd: index * 2 + 4, timelineStart: index * 4,
+      })),
+    };
+    const rendered = renderTimeline(stateFixture(multi));
+    expect(rendered.host.textContent).toContain("素材1 · source.wav");
+    expect(rendered.host.textContent).toContain("素材2 · source.wav");
+    expect(rendered.host.textContent).toContain("波形与缩略图待生成");
+    const notice = rendered.host.querySelector<HTMLDetailsElement>(".cf-hf-timeline-toolbar__notice")!;
+    expect(notice.open).toBe(false);
+    expect(notice.querySelector("summary")?.getAttribute("aria-label")).toBe("多源编辑限制：分割、删除不可撤销");
+    expect(notice.textContent).toContain("并会清空当前撤销记录");
+    expect(rendered.host.querySelector(".cut-transcript-notice")).toBeNull();
+    expect(rendered.host.querySelectorAll(".cf-cut-audio-waveform__placeholder")).toHaveLength(0);
+    for (const row of ["video", "audio"]) {
+      const clip = rendered.host.querySelector<HTMLElement>(`[data-el-id="${row}:a-roll-0002"]`)!;
+      expect(clip.title).toContain("素材2 · source.wav");
+      expect(clip.title).toContain("input/b/source.wav");
+      expect(clip.title).toContain("实例 use-1");
+      expect(clip.title).toContain("源 2.00–6.00s");
+      expect(clip.title).toContain("时间线 4.00–8.00s");
+      expect(clip.title).not.toContain("0.0s – 4.0s");
+    }
+    expect(visualHarness.audio).not.toHaveBeenCalled();
+    expect(visualHarness.video).not.toHaveBeenCalled();
+    expect(rendered.host.querySelector('[title*="use-1"]')).not.toBeNull();
+    act(() => rendered.root.unmount());
+  });
+  it("keeps legacy v1 inner tooltip unchanged", () => {
+    const rendered = renderTimeline(stateFixture(editListFixture()));
+    expect(rendered.host.querySelector<HTMLElement>('[data-el-id="video:a-roll-0002"]')?.title)
+      .toBe("口播 02 • 0.0s – 6.0s");
+    act(() => rendered.root.unmount());
+  });
   it("exposes global undo in the Timeline toolbar and maps Cmd/Ctrl+Z to the same action", () => {
     const editList = {
       ...stateFixture(editListFixture()),
@@ -327,12 +367,12 @@ describe("CutTimeline HyperFrames-style trim interaction", () => {
     expect(canvas.dataset.gutterWidth).toBe("32");
     expect(canvas.dataset.leftPadding).toBe("48");
     expect(canvas.dataset.rulerHeight).toBe("24");
-    expect(canvas.dataset.topPadding).toBe("50");
+    expect(canvas.dataset.topPadding).toBe("8");
     expect(canvas.dataset.trackHeight).toBe("48");
     expect(canvas.dataset.bottomPadding).toBe("72");
     // Three rows now: video, audio, and the visual layers drawn over them.
-    // 24 ruler + 50 top pad + 3×48 tracks + 72 bottom pad.
-    expect(canvas.style.height).toBe("290px");
+    // 24 ruler + 8 product top pad + 3×48 tracks + 72 bottom pad.
+    expect(canvas.style.height).toBe("248px");
     expect(rendered.host.querySelector("[data-hyperframes-timeline-lane='visual']")).not.toBeNull();
     expect(groups).toHaveLength(2);
     for (const group of groups) {

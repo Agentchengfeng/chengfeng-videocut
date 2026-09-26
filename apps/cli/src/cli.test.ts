@@ -33,7 +33,11 @@ async function fixture(): Promise<{ root: string; projectDir: string; projectsDi
   await mkdir(join(projectDir, "input"), { recursive: true });
   await mkdir(join(projectDir, "剪口播/1_转录"), { recursive: true });
   await mkdir(join(projectDir, "剪口播/2_分析"), { recursive: true });
-  await writeFile(join(projectDir, "input/source.mp4"), "fixture-media");
+  // Production cuts probe the source. Use valid local media, not text with an
+  // MP4 extension, while keeping all existing revision/boundary assertions.
+  const media = Bun.spawn(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=c=black:s=160x120:r=10:d=3.5", "-f", "lavfi", "-i", "sine=frequency=440:duration=3.5", "-af", "volume=0:enable='between(t,1,2)'", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", join(projectDir, "input/source.mp4")], { stdout: "ignore", stderr: "pipe" });
+  const [mediaExit, mediaError] = await Promise.all([media.exited, new Response(media.stderr).text()]);
+  expect(mediaExit, mediaError).toBe(0);
   await writeFile(join(projectDir, "剪口播/1_转录/subtitles_words.json"), JSON.stringify({
     schemaVersion: 1,
     cues: [{ id: "source-cue", words: [
@@ -675,6 +679,34 @@ describe("chengfeng-videocut CLI", () => {
       .toContain("校对字幕");
   });
 
+  it("keeps two real-media cuts separate when a retained spoken word lies between them", async () => {
+    const { root, projectDir, projectsDir } = await fixture();
+    await registerFixture(projectDir, projectsDir);
+    await rm(join(projectDir, "index.html"));
+    await writeFile(join(projectDir, "剪口播/1_转录/subtitles_words.json"), JSON.stringify({ schemaVersion: 1, cues: [{ id: "separated", words: [
+      { id: "remove-first", text: "删", start: 0, end: .4 },
+      { id: "keep-middle", text: "保留", start: .4, end: .9 },
+      { id: "remove-second", text: "删", start: .9, end: 1.4 },
+      { id: "keep-last", text: "继续", start: 1.4, end: 3.5 },
+    ] }] }));
+    const prepared = captureIo();
+    expect(await runCli(["project", "prepare", projectDir, "--duration", "3.5", "--projects-dir", projectsDir, "--json"], { io: prepared.io })).toBe(0);
+    const revision = createHash("sha256").update(await readFile(join(projectDir, "cut-selection.json"))).digest("hex");
+    const staticDir = join(root, "static"); await mkdir(staticDir);
+    await writeFile(join(staticDir, "index.html"), "<!doctype html><title>separated cuts</title>");
+    const server = await startStudioServer({ port: 0, projectsDir, dataDir: join(root, "data"), staticDir, installSignalHandlers: false });
+    try {
+      const proposal = join(root, "proposal.json");
+      await writeFile(proposal, JSON.stringify({ cutWordIds: ["remove-first", "remove-second"] }));
+      const result = captureIo();
+      expect(await runCli(["cuts", "set", projectDir, "--file", proposal, "--expected-revision", revision, "--projects-dir", projectsDir, "--api-base", server.url, "--json"], { io: result.io }), result.stdout.join("\n")).toBe(0);
+      const cuts = JSON.parse(await readFile(join(projectDir, "cut-selection.json"), "utf8"));
+      expect(cuts.cutRanges).toEqual([{ start: 0, end: .4 }, { start: .9, end: 1.4 }]);
+      const edit = JSON.parse(await readFile(join(projectDir, "edit-list.json"), "utf8"));
+      expect(edit.segments.map((s: any) => [s.sourceStart, s.sourceEnd])).toEqual([[.4, .9], [1.4, 3.5]]);
+    } finally { await server.stop(); }
+  });
+
   it("writes cuts through the Core and returns the new revision", async () => {
     const { root, projectDir, projectsDir } = await fixture();
     await registerFixture(projectDir, projectsDir);
@@ -721,17 +753,21 @@ describe("chengfeng-videocut CLI", () => {
     expect(code, `${capture.stderr.join(" | ")} ${capture.stdout.join(" | ")}`).toBe(0);
     const written = JSON.parse(await readFile(join(projectDir, "cut-selection.json"), "utf8"));
 
+    console.log(JSON.stringify({ test: "real-media-cut-boundaries", initial: initialCuts.cutRanges, actual: written.cutRanges }));
+
     expect(payload.data).toMatchObject({
       cutWordCount: expectedCutWordCount,
-      // v5 keeps the first short breath in the generated pause baseline, so
-      // deleting w-1 does not merge through that retained room into the
-      // separately-compressed long pause.
-      cutRangeCount: 2,
+      // The production natural-pause policy extends the deleted first word
+      // to 100 ms before w-2, overlapping the initial 1.4..1.9 gap cut.
+      cutRangeCount: 1,
       changed: true,
     });
     expect(payload.data.revision).toMatch(/^[a-f0-9]{64}$/);
     expect(written.cutWordIds).toEqual(expect.arrayContaining(["w-1", ...baselineCutWordIds]));
     expect(written.initialization.baselineCutWordIds).toEqual(baselineCutWordIds);
+    expect(written.cutRanges).toEqual([{ start: 0, end: 1.9 }]);
+    const edited = JSON.parse(await readFile(join(projectDir, "edit-list.json"), "utf8"));
+    expect(edited.segments.map((segment: any) => [segment.sourceStart, segment.sourceEnd])).toEqual([[1.9, 3.5]]);
 
     const readCapture = captureIo();
     const readCode = await runCli([
@@ -753,7 +789,7 @@ describe("chengfeng-videocut CLI", () => {
         exists: true,
         revision: payload.data.revision,
         cutWordCount: expectedCutWordCount,
-        cutRangeCount: 2,
+        cutRangeCount: 1,
         document: {
           schemaVersion: 3,
           cutWordIds: written.cutWordIds,
@@ -853,6 +889,38 @@ describe("chengfeng-videocut CLI", () => {
     const onDisk = JSON.parse(await readFile(join(projectDir, "edit-list.json"), "utf8"));
     expect(createHash("sha256").update(JSON.stringify(onDisk)).digest("hex")).toBeTruthy();
     expect(onDisk.duration).toBe(patched.data.duration);
+  });
+
+  it("resolves a read-only workflow id from the explicit Runtime API registry", async () => {
+    const { root, projectDir, projectsDir: runtimeProjectsDir } = await fixture();
+    await registerFixture(projectDir, runtimeProjectsDir);
+    const cliProjectsDir = join(root, "cli-registry");
+    await mkdir(cliProjectsDir, { recursive: true });
+    const staticDir = join(root, "static-remote-workflow");
+    await mkdir(staticDir, { recursive: true });
+    await writeFile(join(staticDir, "index.html"), "<!doctype html><title>test</title>");
+    const server = await startStudioServer({
+      port: 0,
+      projectsDir: runtimeProjectsDir,
+      dataDir: join(root, "data-remote-workflow"),
+      staticDir,
+    });
+    const capture = captureIo();
+    const code = await runCli([
+      "workflow", "get", "demo",
+      "--projects-dir", cliProjectsDir,
+      "--api-base", server.url,
+      "--json",
+    ], { io: capture.io });
+    await server.stop();
+
+    expect(code, capture.stderr.join(" | ")).toBe(0);
+    const payload = JSON.parse(capture.stdout[0]);
+    expect(payload).toMatchObject({
+      command: "workflow.get",
+      ok: true,
+      data: { projectId: "demo", project: { jobId: "demo" } },
+    });
   });
 
   it("reads and transitions workflow through the running product API", async () => {
@@ -1255,6 +1323,7 @@ describe("chengfeng-videocut CLI", () => {
             plistPath: "/tmp/home/Library/LaunchAgents/com.chengfeng.videocut.studio.plist",
             stdoutLogPath: "/tmp/home/.chengfeng-videocut/logs/studio.stdout.log",
             stderrLogPath: "/tmp/home/.chengfeng-videocut/logs/studio.stderr.log",
+            diagnosticsDir: "/tmp/home/.chengfeng-videocut/logs/diagnostics-v1",
             operationLockPath: "/tmp/home/.chengfeng-videocut/service-operation.lock",
           },
         };

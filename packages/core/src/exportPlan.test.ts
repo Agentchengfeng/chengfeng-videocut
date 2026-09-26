@@ -76,6 +76,22 @@ function plan(overrides: Partial<BuildExportPlanInput> = {}) {
 }
 
 describe("export plan", () => {
+  it("bounds explicit canvas pixel allocation without changing legacy source-only plans", () => {
+    expect(plan({canvas:{width:8000,height:8000},scale:1}).output).toEqual({width:8000,height:8000});
+    expect(() => plan({canvas:{width:8002,height:8000},scale:1})).toThrow("64 megapixels");
+    expect(() => plan({canvas:{width:16386,height:2},scale:1})).toThrow();
+    expect(plan({source:{width:16384,height:16384,duration:100,frameRate:30},scale:1}).output.width).toBe(16384);
+  });
+  it("exports valid local0 cues and rejects changed authoring bases", () => {
+    const document = visuals([{ id: "animation", wordIds: [words[0]!.id] }]);
+    const word = words[0]!;
+    document.layers[0]!.animation = { schemaVersion: 1, clock: "local0", authoredDuration: word.end - word.start, anchorWordIds: [word.id] };
+    const result = plan({ visuals: document });
+    expect(result.layers[0]!.animation?.issues).toEqual([]);
+    expect(result.layers[0]!.animation?.wordCues[0]!.id).toBe(word.id);
+    document.layers[0]!.animation!.authoredDuration += 1;
+    expect(() => plan({ visuals: document })).toThrow("needs review before export");
+  });
   it("makes the film a whole number of pictures and doubles the frame by default", () => {
     const result = plan();
     expect(result.duration).toBeCloseTo(10, 6);

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -11,6 +11,8 @@ import {
   type StudioServiceDependencies,
 } from "./index";
 import { PRODUCT_VERSION } from "../output";
+import { createDiagnosticLog } from "./diagnostics";
+import { randomUUID } from "node:crypto";
 
 const cleanup: string[] = [];
 
@@ -130,6 +132,129 @@ function fakeRuntime(homeDir: string, owner: "none" | "managed" | "foreground" |
 }
 
 describe("Studio user service", () => {
+  it("returns partial logs with explicit source errors when old stdout and stderr are unsafe", async () => {
+    const home = await testHome();
+    const { state, dependencies } = fakeRuntime(home);
+    const paths = studioServicePaths(home, undefined, undefined, "darwin");
+    createDiagnosticLog(paths.dataDir, randomUUID()).record("idle_timeout");
+    await mkdir(paths.stdoutLogPath);
+    const secret = join(home, "private.txt");
+    await writeFile(secret, "credential-not-for-logs");
+    await symlink(secret, paths.stderrLogPath);
+    const before = (await readdir(home, { recursive: true })).sort();
+    const result = await runStudioServiceCommand("logs", {}, dependencies);
+    expect(result.logs?.diagnostics).toContain("idle_timeout");
+    expect(result.logs?.errors).toEqual({ stdout: "log_source_unsafe", stderr: "log_source_unsafe" });
+    expect(JSON.stringify(result.logs)).not.toContain("credential-not-for-logs");
+    expect(result.changed).toBe(false);
+    expect(state.operations.every(op => op.startsWith("print "))).toBe(true);
+    expect((await readdir(home, { recursive: true })).sort()).toEqual(before);
+    expect(await readFile(secret, "utf8")).toBe("credential-not-for-logs");
+  });
+  it("reads offline diagnostics without waking and wakes one loaded stopped instance via ensure", async () => {
+    const home = await testHome();
+    const { state, dependencies } = fakeRuntime(home);
+    const installed = await runStudioServiceCommand("ensure", {}, dependencies);
+    state.pid = null;
+    state.owner = "none";
+    state.operations.length = 0;
+    createDiagnosticLog(installed.paths.dataDir, randomUUID()).record("idle_timeout");
+    expect((await runStudioServiceCommand("status", {}, dependencies)).ready).toBe(false);
+    const logs = await runStudioServiceCommand("logs", {}, dependencies);
+    expect(logs.logs?.diagnostics).toContain("idle_timeout");
+    expect(state.operations.every(op => op.startsWith("print "))).toBe(true);
+    state.operations.length = 0;
+    const [first, second] = await Promise.all([
+      runStudioServiceCommand("ensure", {}, dependencies),
+      runStudioServiceCommand("ensure", {}, dependencies),
+    ]);
+    expect(first.pid).toBe(second.pid);
+    expect(first.pid).not.toBe(installed.pid);
+    expect(state.operations.filter(op => op.startsWith("kickstart ")).length).toBe(1);
+    expect(state.operations.some(op => /^(bootstrap|bootout) /.test(op))).toBe(false);
+  });
+  for (const conflictingSource of ["CHENGFENG_VIDEOCUT_HOME", "CHENGFENG_VIDEOCUT_EXECUTABLE"]) {
+    it(`rejects conflicting ${conflictingSource} before writes while reporting it in read-only status`, async () => {
+      const home = await testHome();
+      const { state, dependencies } = fakeRuntime(home);
+      const defaultRoot = join(home, ".chengfeng-videocut");
+      const otherRoot = join(home, "development");
+      const environment = {
+        CHENGFENG_VIDEOCUT_DATA_DIR: defaultRoot,
+        [conflictingSource]: conflictingSource.endsWith("EXECUTABLE")
+          ? join(otherRoot, "bin", "chengfeng-videocut") : otherRoot,
+      };
+      const before = (await readdir(home, { recursive: true })).sort();
+      await expect(runStudioServiceCommand("ensure", {}, { ...dependencies, environment }))
+        .rejects.toMatchObject({ code: "service_target_conflict" });
+      expect(state.operations).toEqual([]);
+      expect((await readdir(home, { recursive: true })).sort()).toEqual(before);
+      const status = await runStudioServiceCommand("status", {}, { ...dependencies, environment });
+      expect(status.paths.dataDir).toBe(defaultRoot);
+      expect(status.paths.selectionConflicts?.[0]).toContain(conflictingSource);
+      expect(status.changed).toBe(false);
+    });
+  }
+
+  it("honors DATA_DIR first and refuses its custom root instead of falling back to HOME", async () => {
+    const home = await testHome();
+    const { state, dependencies } = fakeRuntime(home);
+    const environment = {
+      CHENGFENG_VIDEOCUT_DATA_DIR: join(home, "development"),
+      CHENGFENG_VIDEOCUT_HOME: join(home, ".chengfeng-videocut"),
+    };
+    const selected = resolveStudioServicePaths({ ...dependencies, environment });
+    expect(selected.dataDir).toBe(environment.CHENGFENG_VIDEOCUT_DATA_DIR);
+    await expect(runStudioServiceCommand("ensure", {}, { ...dependencies, environment }))
+      .rejects.toMatchObject({ code: "service_target_conflict" });
+    expect(state.operations).toEqual([]);
+  });
+
+  for (const platform of ["darwin", "win32"]) {
+    for (const action of ["install", "start", "stop", "restart", "ensure"] as const) {
+      it(`rejects ${platform} ${action} on a custom root before any OS call or filesystem write`, async () => {
+        const home = await testHome();
+        const { state, dependencies } = fakeRuntime(home);
+        const before = (await readdir(home, { recursive: true })).sort();
+        await expect(runStudioServiceCommand(action, {}, {
+          ...dependencies, platform, dataDir: join(home, "development"),
+        })).rejects.toMatchObject({ code: "service_target_conflict" });
+        expect(state.operations).toEqual([]);
+        expect((await readdir(home, { recursive: true })).sort()).toEqual(before);
+      });
+    }
+  }
+
+  it("rejects a development launcher paired with the default root before writing", async () => {
+    const home = await testHome();
+    const { state, dependencies } = fakeRuntime(home);
+    const before = (await readdir(home, { recursive: true })).sort();
+    await expect(runStudioServiceCommand("ensure", {}, {
+      ...dependencies, launcherPath: join(home, "development", "cli.js"),
+    })).rejects.toMatchObject({ code: "service_target_conflict" });
+    expect(state.operations).toEqual([]);
+    expect((await readdir(home, { recursive: true })).sort()).toEqual(before);
+  });
+
+  for (const alias of ["root", "bin", "launcher"] as const) {
+    it(`rejects a symlinked ${alias} redirect without changing the service`, async () => {
+      const home = await testHome();
+      const paths = studioServicePaths(home, undefined, undefined, "darwin");
+      const target = alias === "root" ? paths.dataDir : alias === "bin" ? join(paths.dataDir, "bin") : paths.launcherPath;
+      const destination = join(home, "development");
+      // Remove only this test fixture target; never a real Product path.
+      await rm(target, { recursive: true, force: true });
+      if (alias === "launcher") await writeFile(destination, "#!/bin/sh\nexit 0\n");
+      else await mkdir(destination);
+      await symlink(destination, target, alias === "launcher" ? "file" : "junction");
+      const before = await readdir(home);
+      const { state, dependencies } = fakeRuntime(home);
+      await expect(runStudioServiceCommand("stop", {}, dependencies)).rejects.toMatchObject({ code: "service_target_conflict" });
+      expect(state.operations).toEqual([]);
+      expect(await readdir(home)).toEqual(before);
+    });
+  }
+
   it("resolves a Windows supervisor to the stable launcher's install root", async () => {
     const root = await testHome();
     const launcher = join(root, "bin", "chengfeng-videocut.cmd");
@@ -149,14 +274,14 @@ describe("Studio user service", () => {
     }
   });
 
-  it("renders a stable, throttled LaunchAgent contract without a source path", async () => {
+  it("renders an explicit-first-start LaunchAgent without infinite crash restart", async () => {
     const home = await testHome();
     const paths = studioServicePaths(home, undefined, undefined, "darwin");
     const plist = renderStudioLaunchAgent(paths);
     expect(plist).toContain("com.chengfeng.videocut.studio");
     expect(plist).toContain(paths.launcherPath);
-    expect(plist).toContain("<key>RunAtLoad</key>");
-    expect(plist).toContain("<key>KeepAlive</key>");
+    expect(plist).toContain("<key>RunAtLoad</key>\n  <true/>");
+    expect(plist).toContain("<key>KeepAlive</key>\n  <false/>");
     expect(plist).toContain("<key>ThrottleInterval</key>");
     expect(plist).toContain("CHENGFENG_VIDEOCUT_SERVICE");
     expect(plist).toContain("<key>HOME</key>");
@@ -173,14 +298,13 @@ describe("Studio user service", () => {
     await chmod(launcherPath, 0o755);
     const { dependencies } = fakeRuntime(home);
 
-    const result = await runStudioServiceCommand("ensure", {}, {
+    const result = await runStudioServiceCommand("status", {}, {
       ...dependencies,
       dataDir: runtimeRoot,
       launcherPath,
     });
 
-    expect(result.ready).toBe(true);
-    expect(result.configured).toBe(true);
+    expect(result.changed).toBe(false);
     expect(result.paths.homeDir).toBe(home);
     expect(result.paths.dataDir).toBe(runtimeRoot);
     expect(result.paths.launcherPath).toBe(launcherPath);
@@ -190,12 +314,9 @@ describe("Studio user service", () => {
       "LaunchAgents",
       "com.chengfeng.videocut.studio.plist",
     ));
-    const plist = await readFile(result.paths.plistPath, "utf8");
-    expect(plist).toContain(launcherPath);
-    expect(plist).toContain(runtimeRoot);
   });
 
-  it("uses an explicit managed install root while keeping the user LaunchAgents directory", async () => {
+  it("reads logs from the explicitly selected root without creating a service or lock", async () => {
     const home = await testHome();
     const { dependencies } = fakeRuntime(home);
     const customRoot = join(home, "custom-videocut-home");
@@ -204,14 +325,35 @@ describe("Studio user service", () => {
     await writeFile(customPaths.launcherPath, "#!/bin/sh\nexit 0\n");
     await chmod(customPaths.launcherPath, 0o755);
 
-    const result = await runStudioServiceCommand("ensure", {}, {
+    const result = await runStudioServiceCommand("logs", {}, {
       ...dependencies,
       dataDir: customRoot,
     });
 
     expect(result.paths.dataDir).toBe(customRoot);
     expect(result.paths.plistPath).toBe(join(home, "Library", "LaunchAgents", "com.chengfeng.videocut.studio.plist"));
-    expect(await readFile(result.paths.plistPath, "utf8")).toContain(customPaths.launcherPath);
+    expect(result.changed).toBe(false);
+    expect(result.logs?.stdout).toBe("");
+    expect(await readdir(customRoot)).toEqual(["bin"]);
+  });
+
+  it("preserves an unknown environment launcher instead of silently falling back to managed bin", async () => {
+    const home = await testHome();
+    const launcher = join(home, "development", "cli.js");
+    const previousExecutable = process.env.CHENGFENG_VIDEOCUT_EXECUTABLE;
+    const previousHome = process.env.CHENGFENG_VIDEOCUT_HOME;
+    try {
+      process.env.CHENGFENG_VIDEOCUT_EXECUTABLE = launcher;
+      process.env.CHENGFENG_VIDEOCUT_HOME = join(home, ".chengfeng-videocut");
+      const paths = resolveStudioServicePaths({ platform: "darwin" });
+      expect(paths.launcherPath).toBe(launcher);
+      expect(paths.dataDir).toBe(join(home, ".chengfeng-videocut"));
+    } finally {
+      if (previousExecutable === undefined) delete process.env.CHENGFENG_VIDEOCUT_EXECUTABLE;
+      else process.env.CHENGFENG_VIDEOCUT_EXECUTABLE = previousExecutable;
+      if (previousHome === undefined) delete process.env.CHENGFENG_VIDEOCUT_HOME;
+      else process.env.CHENGFENG_VIDEOCUT_HOME = previousHome;
+    }
   });
 
   it("installs once and makes concurrent ensure calls converge on one PID", async () => {

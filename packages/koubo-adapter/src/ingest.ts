@@ -15,6 +15,8 @@ import {
   type TranscribeKouboVideoOptions,
 } from "./transcription";
 
+import { sourceMediaKind, validateAudioSource } from "./sourceMedia";
+
 const INGEST_TRANSCRIPTION_CONTRACT = "volcengine-source-transcript-v1";
 
 const MANAGED_PROJECT_OUTPUTS = [
@@ -214,7 +216,7 @@ async function assertReusableStage(input: {
   }
 }
 
-async function assertFreshProjectState(jobDir: string): Promise<void> {
+export async function assertFreshProjectState(jobDir: string): Promise<void> {
   for (const name of MANAGED_PROJECT_OUTPUTS) {
     const path = join(jobDir, name);
     if (await directoryEntryExists(path)) {
@@ -404,6 +406,8 @@ export async function ingestKouboProject(
 ): Promise<IngestKouboProjectResult> {
   const jobDir = await resolveTaskDirectory(inputDirectory);
   const media = await resolveTaskVideo(jobDir, options.video);
+  const mediaKind = sourceMediaKind(media.path);
+  if (mediaKind === "audio") await validateAudioSource(media.path);
   const identity = transcriptionIdentity(options);
   const stage = ingestStagePath({
     video: options.video,

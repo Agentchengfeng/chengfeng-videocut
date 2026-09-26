@@ -20,6 +20,7 @@ export interface TimelineSegmentView {
   label: string;
   audioLabel: string;
   title: string;
+  titleOverride?: string;
   selected: boolean;
   hovered: boolean;
   dragging: boolean;
@@ -72,6 +73,7 @@ export interface TimelineLaneBaseProps {
 }
 
 export interface TimelineCanvasProps extends Omit<TimelineLaneBaseProps, "theme"> {
+  soundEffectsTrack?: ReactNode;
   /** Canonical EDL duration shown by ruler labels and assistive text. */
   rulerDuration: number;
   currentTime: number;

@@ -6,6 +6,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { EditListDocument, EditListOperation } from "@video-workbench/core";
 import { usePlayerStore, type TimelineElement } from "../player";
 import { useRazorSplit } from "./useRazorSplit";
+import { useKouboTimelineEditingAdapter } from "../extensions/koubo/useKouboTimelineEditingAdapter";
+
+const bridge = vi.hoisted(() => ({ patchOperation: vi.fn() }));
+vi.mock("../components/useProjectEditList", () => ({ useProjectEditList: () => bridge }));
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -48,8 +52,9 @@ afterEach(() => {
 });
 
 describe("useRazorSplit EDL routing", () => {
-  it("routes a single split and blocks split-all in M1", async () => {
+  it("routes single and pure managed split-all through the adapter, rejecting mixed clips", async () => {
     const patchOperation = vi.fn(async (_operation: EditListOperation) => editListDocument);
+    bridge.patchOperation = patchOperation;
     const showToast = vi.fn();
     let hook: ReturnType<typeof useRazorSplit> | null = null;
 
@@ -62,7 +67,7 @@ describe("useRazorSplit EDL routing", () => {
         recordEdit: vi.fn(),
         domEditSaveTimestampRef: { current: 0 },
         reloadPreview: vi.fn(),
-        editList: { document: editListDocument, patchOperation },
+        timelineEditingAdapter: useKouboTimelineEditingAdapter("demo"),
       });
       return null;
     }
@@ -78,16 +83,16 @@ describe("useRazorSplit EDL routing", () => {
       await hook!.handleRazorSplitAll(1.5);
     });
 
-    expect(patchOperation).toHaveBeenCalledOnce();
+    expect(patchOperation).toHaveBeenCalledTimes(2);
     expect(patchOperation).toHaveBeenCalledWith({
       type: "split",
       clipId: "segment-1",
       offset: 1.5,
     });
-    expect(showToast).toHaveBeenCalledWith(
-      "口播主轨暂不支持批量拆分，请逐个拆分。",
-      "info",
-    );
+    usePlayerStore.getState().setElements([managed, { ...managed, id: "ordinary", edlSegmentId: undefined }]);
+    await act(async () => { await hook!.handleRazorSplitAll(1.5); });
+    expect(patchOperation).toHaveBeenCalledTimes(2);
+    expect(showToast).toHaveBeenCalledWith("Managed A-roll and composition clips cannot be split together", "error");
     act(() => root.unmount());
   });
 });

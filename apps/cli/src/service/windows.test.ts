@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { ChildProcess, spawn } from "node:child_process";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PRODUCT_NAME, PRODUCT_VERSION } from "../output";
+import { createDiagnosticLog } from "./diagnostics";
+import { randomUUID } from "node:crypto";
 import {
   StudioServiceError,
   runStudioServiceCommand,
@@ -13,6 +16,7 @@ import {
   parseWindowsUserSid,
   renderStudioScheduledTask,
   resolveWindowsTaskUserId,
+  runStudioSupervisor,
   windowsSupervisorStatePath,
 } from "./windows";
 
@@ -43,7 +47,7 @@ async function makeFixture(scenario: Partial<Scenario> = {}) {
   const root = await mkdtemp(join(tmpdir(), "videocut-windows-service-"));
   cleanupPaths.push(root);
   const homeDir = join(root, "home");
-  const dataDir = join(root, "data");
+  const dataDir = join(homeDir, ".chengfeng-videocut");
   const launcherPath = join(dataDir, "bin", "chengfeng-videocut.cmd");
   await mkdir(join(dataDir, "bin"), { recursive: true });
   await writeFile(launcherPath, "@echo off\r\n", { mode: 0o755 });
@@ -132,6 +136,220 @@ async function makeFixture(scenario: Partial<Scenario> = {}) {
 }
 
 describe("Windows scheduled-task service", () => {
+  it("returns persisted diagnostics and source errors without starting or repairing unreadable old logs", async () => {
+    const { paths, state, deps, root } = await makeFixture();
+    createDiagnosticLog(paths.dataDir, randomUUID()).record("idle_timeout");
+    await mkdir(paths.stdoutLogPath);
+    await mkdir(paths.stderrLogPath);
+    const before = (await readdir(root, { recursive: true })).sort();
+    const result = await runStudioServiceCommand("logs", {}, deps);
+    expect(result.logs?.diagnostics).toContain("idle_timeout");
+    expect(result.logs?.errors).toEqual({ stdout: "log_source_unsafe", stderr: "log_source_unsafe" });
+    expect(result.changed).toBe(false);
+    expect(state.commands.every(command => command[1] === "/Query")).toBe(true);
+    expect((await readdir(root, { recursive: true })).sort()).toEqual(before);
+  });
+  it("reads stopped-task diagnostics without starting, then ensure wakes once and reuses", async () => {
+    const { paths, state, deps } = await makeFixture({ registered: true });
+    await writeFile(paths.plistPath, Buffer.from(`\ufeff${renderStudioScheduledTask(paths, "S-1-5-21-1000")}`, "utf16le"));
+    createDiagnosticLog(paths.dataDir, randomUUID()).record("idle_timeout");
+    expect((await runStudioServiceCommand("status", {}, deps)).ready).toBe(false);
+    expect((await runStudioServiceCommand("logs", {}, deps)).logs?.diagnostics).toContain("idle_timeout");
+    expect(state.commands.every(command => command[1] === "/Query")).toBe(true);
+    const first = await runStudioServiceCommand("ensure", {}, deps);
+    const second = await runStudioServiceCommand("ensure", {}, deps);
+    expect(first.ready).toBe(true);
+    expect(second.pid).toBe(first.pid);
+    expect(second.changed).toBe(false);
+    expect(state.commands.filter(command => command[1] === "/Run").length).toBe(1);
+    expect(state.commands.some(command => command[1] === "/Create")).toBe(false);
+  });
+  for (const ownerState of ["alive", "unknown"] as const) {
+    it(`preserves previous ${ownerState} supervisor state without spawning or writing`, async () => {
+      const { paths } = await makeFixture();
+      const statePath = windowsSupervisorStatePath(paths);
+      await mkdir(join(paths.dataDir, "service"), { recursive: true });
+      const raw = JSON.stringify({ supervisorPid: 987654, serverPid: 987655 });
+      await writeFile(statePath, raw);
+      const before = (await readdir(paths.dataDir, { recursive: true })).sort();
+      let starts = 0;
+      const result = runStudioSupervisor(paths, {
+        platform: "win32", probeProcess: () => ownerState,
+        spawn: () => { starts += 1; throw new Error("must not spawn"); },
+      });
+      if (ownerState === "alive") expect(await result).toBe(0);
+      else await expect(result).rejects.toMatchObject({ code: "service_supervisor_owner_unknown" });
+      expect(starts).toBe(0);
+      expect(await readFile(statePath, "utf8")).toBe(raw);
+      expect((await readdir(paths.dataDir, { recursive: true })).sort()).toEqual(before);
+    });
+  }
+
+  for (const raw of ["not-json", "{}", "null", '{"supervisorPid":-1}']) {
+    it(`rejects corrupt supervisor state ${raw} without replacing it`, async () => {
+      const { paths } = await makeFixture();
+      const statePath = windowsSupervisorStatePath(paths);
+      await mkdir(join(paths.dataDir, "service"), { recursive: true });
+      await writeFile(statePath, raw);
+      await expect(runStudioSupervisor(paths, { platform: "win32" }))
+        .rejects.toMatchObject({ code: "service_supervisor_state_corrupt" });
+      expect(await readFile(statePath, "utf8")).toBe(raw);
+    });
+  }
+
+  it("rejects unreadable supervisor state instead of treating it as first start", async () => {
+    const { paths } = await makeFixture();
+    const statePath = windowsSupervisorStatePath(paths);
+    await rm(statePath);
+    await mkdir(statePath, { recursive: true });
+    await expect(runStudioSupervisor(paths, { platform: "win32" }))
+      .rejects.toMatchObject({ code: "service_supervisor_state_unreadable" });
+    expect(await readdir(statePath)).toEqual([]);
+  });
+
+  it("permits a single isolated child only after the previous owner is proven dead", async () => {
+    const { paths } = await makeFixture();
+    const statePath = windowsSupervisorStatePath(paths);
+    await mkdir(join(paths.dataDir, "service"), { recursive: true });
+    await writeFile(statePath, JSON.stringify({ supervisorPid: 987654 }));
+    let starts = 0;
+    const result = await runStudioSupervisor(paths, {
+      platform: "win32", probeProcess: () => "dead",
+      spawn: (_executable, _args, options) => {
+        starts += 1;
+        return spawn(process.execPath, ["-e", "process.exit(0)"], options);
+      },
+    });
+    expect(result).toBe(0);
+    expect(starts).toBe(1);
+  });
+
+  it("reports bounded cleanup failure without masking the publication failure or respawning", async () => {
+    const { paths } = await makeFixture();
+    const failure = new Error("injected publication failure");
+    const child = new ChildProcess(); // Deliberately no OS child for the unkillable fixture.
+    const signals: string[] = [];
+    child.kill = (signal) => { signals.push(String(signal)); return false; };
+    let error: unknown;
+    try {
+      await runStudioSupervisor(paths, {
+        platform: "win32", cleanupTimeoutMs: 5, probeProcess: () => "dead",
+        publishState: async () => { throw failure; },
+        spawn: () => child,
+      });
+    } catch (caught) { error = caught; }
+    expect(error).toBeInstanceOf(AggregateError);
+    expect((error as AggregateError).errors[0]).toBe(failure);
+    expect((error as AggregateError).errors[1]).toMatchObject({ code: "service_child_cleanup_failed" });
+    expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
+  });
+  for (const ignoreTerm of [false, true]) {
+    it(`cleans up its child when initial state publication fails (force=${ignoreTerm})`, async () => {
+      const { paths } = await makeFixture();
+      const listenersBefore = process.listeners("SIGTERM");
+      const signals: string[] = [];
+      let childClosed = false;
+      let starts = 0;
+      const failure = new Error("injected supervisor state publication failure");
+      await expect(runStudioSupervisor(paths, {
+        platform: "win32",
+        cleanupTimeoutMs: 100,
+        probeProcess: () => "dead",
+        publishState: async () => { throw failure; },
+        spawn: (_executable, _args, options) => {
+          starts += 1;
+          const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], options);
+          const kill = child.kill.bind(child);
+          child.kill = (signal) => {
+            signals.push(String(signal));
+            if (ignoreTerm && signal === "SIGTERM") return true;
+            return kill(signal);
+          };
+          child.once("close", () => { childClosed = true; });
+          return child;
+        },
+      })).rejects.toBe(failure);
+      expect(childClosed).toBe(true);
+      expect(starts).toBe(1);
+      expect(signals).toEqual(ignoreTerm ? ["SIGTERM", "SIGKILL"] : ["SIGTERM"]);
+      expect(process.listeners("SIGTERM")).toEqual(listenersBefore);
+    });
+  }
+
+  it("does not kill a normally exited child when final state publication fails", async () => {
+    const { paths } = await makeFixture();
+    let kills = 0;
+    const failure = new Error("injected final state publication failure");
+    await expect(runStudioSupervisor(paths, {
+      platform: "win32",
+      publishState: async (pid) => { if (pid === null) throw failure; },
+      probeProcess: () => "dead",
+      spawn: (_executable, _args, options) => {
+        const child = spawn(process.execPath, ["-e", "process.exit(0)"], options);
+        const kill = child.kill.bind(child);
+        child.kill = (signal) => { kills += 1; return kill(signal); };
+        return child;
+      },
+    })).rejects.toBe(failure);
+    expect(kills).toBe(0);
+  });
+
+  it("does not configure Task Scheduler failure retries", async () => {
+    const { paths } = await makeFixture();
+    const xml = renderStudioScheduledTask(paths, "S-1-5-21-1000");
+    expect(xml).not.toContain("RestartOnFailure");
+    expect(xml).toContain("<LogonTrigger>");
+  });
+  for (const exitCode of [0, 10, 2]) {
+    it(`supervises one isolated child and preserves exit ${exitCode} without restart`, async () => {
+      const { paths } = await makeFixture();
+      let starts = 0;
+      const listenersBefore = process.listenerCount("SIGTERM");
+      const result = await runStudioSupervisor(paths, {
+        platform: "win32",
+        probeProcess: () => "dead",
+        spawn: (_executable, _args, options) => {
+          starts += 1;
+          expect(options.env?.CHENGFENG_VIDEOCUT_DATA_DIR).toBe(paths.dataDir);
+          expect(options.env?.CHENGFENG_VIDEOCUT_HOME).toBe(paths.dataDir);
+          return spawn(process.execPath, ["-e", `process.exit(${exitCode})`], options);
+        },
+      });
+      expect(result).toBe(exitCode);
+      expect(starts).toBe(1);
+      expect(JSON.parse(await readFile(windowsSupervisorStatePath(paths), "utf8")).serverPid).toBeNull();
+      expect(process.listenerCount("SIGTERM")).toBe(listenersBefore);
+    });
+  }
+
+  it("explicit supervisor stop terminates only its isolated child and does not respawn", async () => {
+    const { paths } = await makeFixture();
+    const previousListeners = process.listeners("SIGTERM");
+    let starts = 0;
+    const result = await runStudioSupervisor(paths, {
+      platform: "win32",
+      probeProcess: () => "dead",
+      spawn: (_executable, _args, options) => {
+        starts += 1;
+        const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], options);
+        const stop = process.listeners("SIGTERM").find((listener) => !previousListeners.includes(listener));
+        if (!stop) throw new Error("supervisor stop handler is missing");
+        setTimeout(() => stop("SIGTERM"), 20);
+        return child;
+      },
+    });
+    expect(result).toBe(0);
+    expect(starts).toBe(1);
+    expect(process.listeners("SIGTERM")).toEqual(previousListeners);
+    expect(JSON.parse(await readFile(windowsSupervisorStatePath(paths), "utf8")).serverPid).toBeNull();
+  });
+
+  it("rejects a custom-root supervise entry before creating state or launching a process", async () => {
+    const { paths } = await makeFixture();
+    const customPaths = studioServicePaths(paths.homeDir, join(paths.homeDir, "development"), undefined, "win32");
+    await expect(runStudioSupervisor(customPaths)).rejects.toMatchObject({ code: "service_target_conflict" });
+    await expect(readFile(windowsSupervisorStatePath(customPaths), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
   const windowsOnly = process.platform === "win32" ? it : it.skip;
 
   it("extracts a SID from whoami's invariant CSV output", () => {

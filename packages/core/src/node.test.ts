@@ -180,7 +180,7 @@ describe("project store", () => {
       serviceOperations: ["install", "start", "stop", "restart", "status", "logs", "ensure"],
       managedStudioService: true,
       serviceParentProcessIndependent: true,
-      serviceCrashRestart: true,
+      serviceCrashRestart: false,
       durableJobsApiVersion: 1,
       durableJobKinds: ["export"],
       operationAdmissionVersion: 1,
@@ -269,8 +269,11 @@ describe("project store", () => {
     const previousExecutable = process.env.CHENGFENG_VIDEOCUT_EXECUTABLE;
     const previousDataDir = process.env.CHENGFENG_VIDEOCUT_DATA_DIR;
     const previousExecPath = process.execPath;
-    process.env.CHENGFENG_VIDEOCUT_EXECUTABLE = join(root, "app", "chengfeng-videocut");
-      process.env.CHENGFENG_VIDEOCUT_DATA_DIR = root;
+    await mkdir(join(root, "bin"), { recursive: true });
+    const launcher = join(root, "bin", process.platform === "win32" ? "chengfeng-videocut.cmd" : "chengfeng-videocut");
+    await writeFile(launcher, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    process.env.CHENGFENG_VIDEOCUT_EXECUTABLE = launcher;
+    process.env.CHENGFENG_VIDEOCUT_DATA_DIR = root;
     process.execPath = bun;
     try {
       const result = await doctor({ projectsDir: join(root, "projects") });
@@ -400,7 +403,10 @@ describe("project store", () => {
     const previousExecutable = process.env.CHENGFENG_VIDEOCUT_EXECUTABLE;
     const previousDataDir = process.env.CHENGFENG_VIDEOCUT_DATA_DIR;
     const previousExecPath = process.execPath;
-    process.env.CHENGFENG_VIDEOCUT_EXECUTABLE = join(root, "bin", "chengfeng-videocut");
+    await mkdir(join(root, "bin"), { recursive: true });
+    const launcher = join(root, "bin", process.platform === "win32" ? "chengfeng-videocut.cmd" : "chengfeng-videocut");
+    await writeFile(launcher, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    process.env.CHENGFENG_VIDEOCUT_EXECUTABLE = launcher;
     process.env.CHENGFENG_VIDEOCUT_DATA_DIR = root;
     process.execPath = bun;
     try {
@@ -560,6 +566,47 @@ describe("project store", () => {
     expect(
       (await resolveProject("output-demo", { cwd, projectsDir, outputDir })).directory,
     ).toBe(await realpath(outputProjectDir));
+  });
+
+  it("inspects committed seam ranges only when current derived EDL certifies their complement", async () => {
+    const { projectDir } = await createFixture();
+    const project = await resolveProject(projectDir);
+    const cutsPath = join(projectDir, "cut-selection.json");
+    const edlPath = join(projectDir, "edit-list.json");
+    const transcript = await readFile(join(projectDir, "transcript.json"), "utf8");
+    const initial = await writeCutSelection(project, { cutWordIds: ["w-2"] });
+    const saved = { ...initial.document, cutRanges: [{ start: 0.5, end: 2 }] };
+    const raw = JSON.stringify(saved);
+    await writeFile(cutsPath, raw);
+    const edl = buildEditListFromCuts({ projectId: "demo", source: "input/source.mp4", sourceDuration: 3,
+      cutsRevision: sha256(raw), transcriptRevision: sha256(transcript), cutRanges: saved.cutRanges });
+    const inspectCuts = async () => ((await inspectProject(project)).documents as any).cuts;
+    // Without a current ledger, legacy generic verification remains authoritative.
+    expect(await inspectCuts()).toMatchObject({ rangesMatchTranscript: false, cutDuration: 1 });
+    await writeFile(edlPath, JSON.stringify(edl));
+    expect(await inspectCuts()).toMatchObject({ rangesMatchTranscript: true, cutDuration: 1.5, cutRangeCount: 1 });
+    expect((await inspectProject(project)).warnings).not.toContain("cutRanges does not match transcript.json + cutWordIds");
+    for (const changed of [
+      { ...edl, baseCutsRevision: "0".repeat(64) },
+      { ...edl, baseTranscriptRevision: "0".repeat(64) },
+      { ...edl, mode: "manual" },
+      buildEditListFromCuts({ projectId: "demo", source: "input/source.mp4", sourceDuration: 3,
+        cutsRevision: sha256(raw), transcriptRevision: sha256(transcript), cutRanges: [{ start: 1, end: 2 }] }),
+    ]) {
+      await writeFile(edlPath, JSON.stringify(changed));
+      expect(await inspectCuts()).toMatchObject({ rangesMatchTranscript: false, cutDuration: 1 });
+    }
+    // A matching revision is not sufficient: malformed ranges or speech damage
+    // must not gain legitimacy from a linked timeline.
+    for (const ranges of [[{ start: -1, end: 2 }], [{ start: 0.5, end: 2.1 }],
+      [{ start: 1.1, end: 2 }], [{ start: 0.5, end: 2 }, { start: 1, end: 2 }]]) {
+      const tampered = JSON.stringify({ ...saved, cutRanges: ranges });
+      await writeFile(cutsPath, tampered);
+      await writeFile(edlPath, JSON.stringify({ ...edl, baseCutsRevision: sha256(tampered) }));
+      expect(await inspectCuts()).toMatchObject({ rangesMatchTranscript: false, cutDuration: 1 });
+    }
+    await writeFile(edlPath, JSON.stringify({ ...edl, mode: "manual", segments: "broken" }));
+    await expect(inspectProject(project)).rejects.toMatchObject({ code: "invalid_edit_list" });
   });
 
   it("atomically writes derived cuts and preserves initialization", async () => {
@@ -725,6 +772,97 @@ describe("project store", () => {
       { sourceStart: 1, sourceEnd: 1.12, timelineStart: 0 },
       { sourceStart: 2, sourceEnd: 3, timelineStart: 0.12 },
     ]);
+  });
+
+  it.each(["semantic-overlay", "full-selection"] as const)("rebuilds same-selection %s seams once, preserving decisions and rejecting stale CAS before derivation", async (mode) => {
+    const { projectDir } = await createFixture();
+    const project = await resolveProject(projectDir);
+    const initial = await writeCutSelection(project, {
+      cutWordIds: ["w-2"], reasons: [{ wordIds: ["w-2"], kind: "duplicate", risk: "low" }],
+    });
+    const transcript = await readFile(join(projectDir, "transcript.json"), "utf8");
+    await writeEditList(project, buildEditListFromCuts({ projectId: "demo", source: "input/source.mp4",
+      sourceDuration: 3, cutsRevision: initial.revision, transcriptRevision: sha256(transcript),
+      cutRanges: initial.document.cutRanges }), { expectedRevision: "none" });
+    let calls = 0;
+    const derive = async (input: import("./node").DeriveCutRangesInput) => {
+      calls++;
+      expect(input.sourceDuration).toBe(3);
+      expect(input.words).toHaveLength(3);
+      expect(input.previous?.cutWordIds).toEqual(["w-2"]);
+      // Mutation of extension inputs cannot mutate accepted decisions.
+      input.candidate.cutWordIds.length = 0;
+      input.words[2]!.start = 99;
+      return [{ start: 0.5, end: 2 }];
+    };
+    const proposal = { cutWordIds: initial.document.cutWordIds, reasons: initial.document.reasons };
+    const repaired = await writeCutSelectionWithEditList(project, proposal, {
+      mode, expectedRevision: initial.revision, deriveCutRanges: derive,
+    });
+    expect(repaired.cuts.changed).toBe(true);
+    expect(repaired.cuts.document.cutWordIds).toEqual(initial.document.cutWordIds);
+    expect(repaired.cuts.document.reasons).toEqual(initial.document.reasons);
+    expect(repaired.cuts.document.cutRanges).toEqual([{ start: 0.5, end: 2 }]);
+    expect(repaired.editList?.document.baseCutsRevision).toBe(repaired.cuts.revision);
+    const repeated = await writeCutSelectionWithEditList(project, proposal, {
+      mode, expectedRevision: repaired.cuts.revision, deriveCutRanges: derive,
+    });
+    expect(repeated.cuts.changed).toBe(false);
+    expect(repeated.editList).toBeNull();
+    await expect(writeCutSelectionWithEditList(project, proposal, {
+      mode, expectedRevision: initial.revision, deriveCutRanges: derive,
+    })).rejects.toMatchObject({ code: "revision_conflict" });
+    expect(calls).toBe(2);
+    const concurrent = await Promise.allSettled([0.6, 0.7].map((start) =>
+      writeCutSelectionWithEditList(project, proposal, {
+        mode, expectedRevision: repaired.cuts.revision,
+        deriveCutRanges: async () => [{ start, end: 2 }],
+      })));
+    expect(concurrent.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const rejected = concurrent.find((result) => result.status === "rejected");
+    expect(rejected?.status === "rejected" && rejected.reason.code).toBe("revision_conflict");
+    expect(await readFile(join(projectDir, "transcript.json"), "utf8")).toBe(transcript);
+  });
+
+  it.each(["semantic-overlay", "full-selection"] as const)("validates %s seam output before writes and leaves manual paths alone", async (mode) => {
+    const { projectDir } = await createFixture();
+    const project = await resolveProject(projectDir);
+    const initial = await writeCutSelection(project, { cutWordIds: ["w-2"] });
+    const transcript = await readFile(join(projectDir, "transcript.json"), "utf8");
+    const edl = buildEditListFromCuts({ projectId: "demo", source: "input/source.mp4",
+      sourceDuration: 3, cutsRevision: initial.revision, transcriptRevision: sha256(transcript),
+      cutRanges: initial.document.cutRanges });
+    await writeEditList(project, edl, { expectedRevision: "none" });
+    const paths = ["cut-selection.json", "edit-list.json"].map((name) => join(projectDir, name));
+    const before = await Promise.all(paths.map((path) => readFile(path, "utf8")));
+    const badRanges = [null, [], [{ start: 1.1, end: 2 }], [{ start: NaN, end: 2 }], [{ start: -1, end: 2 }],
+      [{ start: 1, end: 4 }], [{ start: 2, end: 1 }], [{ start: 1, end: 2.1 }],
+      [{ start: 0, end: 1.5 }, { start: 1, end: 2 }],
+      [{ start: 1, end: 2 }, { start: 0, end: 0.5 }]];
+    for (const ranges of badRanges) {
+      await expect(writeCutSelectionWithEditList(project, { cutWordIds: ["w-2"] }, {
+        mode, expectedRevision: initial.revision,
+        deriveCutRanges: async () => ranges as any,
+      })).rejects.toMatchObject({ code: "invalid_cut_selection" });
+      expect(await Promise.all(paths.map((path) => readFile(path, "utf8")))).toEqual(before);
+    }
+    const fail = async (): Promise<never> => { throw new Error("boundary probe failed"); };
+    await expect(writeCutSelectionWithEditList(project, { cutWordIds: ["w-2"] }, {
+      mode, deriveCutRanges: fail,
+    })).rejects.toThrow("boundary probe failed");
+    expect(await Promise.all(paths.map((path) => readFile(path, "utf8")))).toEqual(before);
+    for (const deriveCutRanges of [undefined, false] as const) {
+      expect((await writeCutSelectionWithEditList(project, { cutWordIds: ["w-2"] }, {
+        mode, deriveCutRanges,
+      })).cuts.changed).toBe(false);
+    }
+    // Manual arrangements must never invoke the seam rebuild extension.
+    await writeFile(paths[1]!, JSON.stringify({ ...edl, mode: "manual" }));
+    const manual = await readFile(paths[1]!, "utf8");
+    await writeCutSelectionWithEditList(project, { cutWordIds: ["w-2"] }, {
+      mode, deriveCutRanges: fail,
+    });
+    expect(await readFile(paths[1]!, "utf8")).toBe(manual);
   });
 
   it("rejects stale revisions and invalid ids without modifying the file", async () => {

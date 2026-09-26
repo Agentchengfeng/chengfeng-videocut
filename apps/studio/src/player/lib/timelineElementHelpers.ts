@@ -84,10 +84,14 @@ export function isTimelineIgnoredElement(el: Element): boolean {
         "[data-hyperframes-picker-ignore]",
         "[data-hf-ignore]",
         "[data-hf-color-grading-canvas]",
-        "[data-studio-timeline-hidden]",
       ].join(","),
     ),
   );
+}
+
+/** UI visibility is not runtime ownership or content-duration exclusion. */
+export function isStudioTimelineHiddenElement(el: Element): boolean {
+  return Boolean(el.closest("[data-studio-timeline-hidden]"));
 }
 
 /**
@@ -107,7 +111,9 @@ export function furthestClipEndFromDocument(doc: Document | null | undefined): n
     const start = Number.parseFloat(node.getAttribute("data-start") ?? "");
     const duration = readDurationAttribute(node);
     if (!Number.isFinite(start) || start < 0 || duration <= 0) continue;
-    maxEnd = Math.max(maxEnd, start + duration);
+    const end = start + duration;
+    if (!Number.isFinite(end)) continue;
+    maxEnd = Math.max(maxEnd, end);
   }
   return maxEnd;
 }
@@ -349,7 +355,7 @@ export function deriveTimelineStoreKey(params: {
 function getTimelineDomNodes(doc: Document): Element[] {
   const rootComp = doc.querySelector("[data-composition-id]");
   return Array.from(doc.querySelectorAll("[data-start]")).filter(
-    (node) => node !== rootComp && !isTimelineIgnoredElement(node),
+    (node) => node !== rootComp && !isTimelineIgnoredElement(node) && !isStudioTimelineHiddenElement(node),
   );
 }
 
@@ -405,6 +411,7 @@ export function findTimelineDomNodeForClip(
 export function isImplicitTimelineLayerCandidate(root: Element, el: Element): el is HTMLElement {
   if (!isHtmlElement(el)) return false;
   if (isTimelineIgnoredElement(el)) return false;
+  if (isStudioTimelineHiddenElement(el)) return false;
   if (el.parentElement !== root) return false;
   const tagName = el.tagName.toLowerCase();
   if (IMPLICIT_TIMELINE_LAYER_SKIP_TAGS.has(tagName)) return false;

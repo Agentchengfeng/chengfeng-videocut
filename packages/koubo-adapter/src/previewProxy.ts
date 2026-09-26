@@ -371,6 +371,17 @@ export async function probePreviewProxyMedia(
 
 export function buildPreviewProxyFfmpegArgs(input: PreviewProxyTranscodeInput): string[] {
   const { config, sourceProbe } = input;
+  if (!sourceProbe.hasVideo) {
+    return [
+      "-nostdin", "-y", "-v", "error", "-i", ffmpegFileArg(input.sourcePath),
+      "-map", "0:a:0", "-vn", "-sn", "-dn",
+      "-af", `aresample=${config.audioSampleRate}:async=1:first_pts=0,asetpts=PTS-STARTPTS`,
+      "-c:a", "aac", "-b:a", `${config.audioBitrateKbps}k`,
+      "-ar", String(config.audioSampleRate), "-ac", String(config.audioChannels),
+      "-t", sourceProbe.duration.toFixed(6), "-movflags", "+faststart",
+      ...ffmpegOutputArgs("mp4", input.temporaryPath),
+    ];
+  }
   const gopFrames = Math.max(
     1,
     Math.floor(config.frameRate * config.maxKeyframeIntervalSeconds + 1e-9),
@@ -475,6 +486,7 @@ async function existingRegularFile(path: string): Promise<boolean> {
 }
 
 function validateSourceProbe(probe: PreviewProxyMediaProbe): PreviewProxyFailureReason | null {
+  if (!probe.hasVideo && probe.hasAudio && Number.isFinite(probe.duration) && probe.duration > 0) return null;
   if (!probe.hasVideo || !(probe.duration > 0) || !(probe.width > 0) || !(probe.height > 0)) {
     return "source-without-video";
   }
@@ -487,6 +499,15 @@ function validateProxyProbe(
   proxy: PreviewProxyMediaProbe,
   config: PreviewProxyConfig,
 ): void {
+  if (!source.hasVideo) {
+    if (proxy.hasVideo || !proxy.hasAudio || proxy.audioCodec !== "aac"
+      || !Number.isFinite(proxy.duration) || Math.abs(proxy.duration - source.duration) > 0.12
+      || proxy.audioStartTime === null || Math.abs(proxy.audioStartTime) > 0.05
+      || Math.abs(proxy.startTime) > 0.05) {
+      throw new PreviewProxyValidationError("Audio preview must contain only AAC, start at zero and preserve duration");
+    }
+    return;
+  }
   if (!proxy.hasVideo || !proxy.hasAudio) {
     throw new PreviewProxyValidationError("Preview proxy must contain video and audio");
   }

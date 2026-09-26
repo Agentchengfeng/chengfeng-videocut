@@ -12,6 +12,14 @@ interface CaptionPropertyPanelProps {
   iframeRef: React.RefObject<HTMLIFrameElement | null>;
 }
 
+function CaptionDraftNotice() {
+  return (
+    <p role="note" className="flex-shrink-0 border-b border-neutral-800 px-3 py-2 text-xs leading-relaxed text-amber-200">
+      实验编辑：逐词样式与时间修改仅保存为编辑草稿（面板、时间条）；预览画面与导出暂不应用这些修改。组级修改暂不支持保存。
+    </p>
+  );
+}
+
 export const CaptionPropertyPanel = memo(function CaptionPropertyPanel({
   iframeRef,
 }: CaptionPropertyPanelProps) {
@@ -165,8 +173,11 @@ export const CaptionPropertyPanel = memo(function CaptionPropertyPanel({
   // Empty state — after all hooks
   if (selectedSegmentIds.size === 0) {
     return (
-      <div className="flex items-center justify-center h-full px-4 text-center">
-        <p className="text-xs text-neutral-500">Select caption words to edit their style</p>
+      <div className="flex flex-col h-full min-h-0">
+        <CaptionDraftNotice />
+        <div className="flex flex-1 items-center justify-center px-4 text-center">
+          <p className="text-xs text-neutral-500">Select caption words to edit their style</p>
+        </div>
       </div>
     );
   }
@@ -185,6 +196,7 @@ export const CaptionPropertyPanel = memo(function CaptionPropertyPanel({
 
   return (
     <div className="flex flex-col h-full min-h-0">
+      <CaptionDraftNotice />
       {/* Header */}
       <div className="px-3 py-2 border-b border-neutral-800 flex-shrink-0">
         <div className="flex items-center justify-between mb-1.5">

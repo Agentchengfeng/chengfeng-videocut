@@ -28,7 +28,10 @@ export interface VideocutEditListHandlerOptions {
   materializeIndex?: (change: VideocutEditListChange) => void | Promise<void>;
   onDocumentChanged?: (change: VideocutEditListChange) => void | Promise<void>;
   /**
-   * Put each cut where the sound actually stops, before the document is written.
+   * Put derived cut boundaries where the sound actually stops, before writing.
+   * Explicit trims/splits and proven snapshot restores bypass this callback:
+   * Core validates their exact geometry; re-placement would change unrelated
+   * manual edits and break the snapshot proof used for atomic undo.
    *
    * Supplied by the Runtime because it needs the audio. Leave it out and boundaries
    * are written exactly as asked — the honest fallback, since guessing where speech
@@ -239,7 +242,11 @@ export function createVideocutEditListHandler(
       }
 
       const body = patchBody(await requestJson(request));
-      const place = options.placeBoundaries;
+      // Explicit cuts and proven snapshot restores already carry exact source
+      // boundaries. Re-placing them changes unrelated segments and invalidates
+      // the snapshot inverse, even when the client submitted a correct CAS.
+      const place = ["trim", "split", "restore-snapshot"].includes(body.operation.type)
+        ? undefined : options.placeBoundaries;
       const result = await patchEditList(project, body.operation, {
         expectedRevision: body.expectedRevision,
         ...(place ? { placeBoundaries: async (document) => {

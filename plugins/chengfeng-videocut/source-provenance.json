@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "sourceId": "chengfeng-videocut-install",
+  "contentSha256": "e2feff21a5c82283d0c3aa8fece37d5d1eb3bf8299aab97d86c8fe787ad14554",
+  "files": {
+    "CITATION.cff": "697e78db73807ba91b11bff4ae3ba34aa178a3dcf2cfaedc15f33e51e70448eb",
+    "LICENSE": "4259155fb06f127687ee7b0a8a3682d45132db0f2da26cbc0b7a2d1e796436b8",
+    "NOTICE.md": "9b2792e7532736a25c781dc861ac0d8bbc5f95fd1886fdebd70698be946606f5",
+    "SKILL.md": "5761768402f5cfa05e144efb2714886c458713809d43728d5b5c12c33bd17ca6",
+    "agents/openai.yaml": "55e3d05484a57cb5e905e83f540c9f96490e62ab88f7804ecd9848082e8adf16",
+    "references/shared/ai-term-dictionary.md": "d1a62bea810094c64c614396e7c878ef34afd66d070773bbc7377cea15f3dc21",
+    "references/shared/business-workflow-contract.md": "c311396e3d10f179c46a4a568acedcd22f384a61af654ae787d49f550f9fe97f",
+    "references/shared/existing-workflow.md": "93db2354e23dcca8aceeebb971b3f3deee62850ec01ea9324c206eace33e6ac2",
+    "references/shared/media-assets.md": "af5b42bf17729167413137f92f93dff7581fd5efb497d294a4cee10aac8f97b5",
+    "references/shared/module-publish.md": "86bc57dc5faafd1581aff3c80c4994dce16522fb542fb1bbe8345478fe2fb8da",
+    "references/shared/plugin-access.md": "fc7c42d6d9b56f2a83b898c992f5eef27b965481efe997b3690eb1ad499cc22a",
+    "references/shared/provenance.json": "beacbb9e4eb1392f994da254b1f543957a522cb5333fec5ff40474b5e2daaa55",
+    "references/shared/runtime-cli.md": "d6e40ea6dcb938e2a6d2875b4ce3ae374b814a02c844d197ac61cf9adcb23c28",
+    "references/shared/visual-integration.md": "dc47c21bfcf99422cd08302be91237faebaab11897951a7bb3834f61388b72d1",
+    "references/shared/visual-module-contract.md": "a63d4e688599ea44207cd734b1afea518931127f199b4629093dad56af5d665b",
+    "scripts/skill-package-installer.cjs": "5252bb3894346f8589edc1eb0516569646baffea95e8ad17f973f18de5bb8f9f",
+    "scripts/skill-suite-installer.cjs": "5ea346849dc1d264d7f78bdc81b286eeb7de09daaa2e40777e84558b62792177"
+  },
+  "catalogSha256": "c2f7d46cb08e74dfa18c09ce0816b078b0b481a72e77f2c0483e47c91de1b35d"
+}

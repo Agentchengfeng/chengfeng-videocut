@@ -1,4 +1,5 @@
 import {
+  type ReactNode,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -12,11 +13,12 @@ import {
   applyEditListOperation,
   editListSegmentDuration,
   sourceTimeToTimelineTime,
-  timelineTimeToSourceTime,
+  timelineTimeToSourcePosition,
   type EditListOperation,
   type EditListSegment,
 } from "@video-workbench/core";
 import type { ProjectEditListState } from "../../components/useProjectEditList";
+import { useRuntimeProtection } from "../../runtime/useRuntimeProtection";
 import {
   buildDeleteOperation,
   buildMoveOperation,
@@ -115,6 +117,7 @@ function isInteractiveShortcutTarget(target: EventTarget | null): boolean {
 }
 
 export function CutTimeline({
+  soundEffectsTrack,
   projectId,
   editList,
   timelineTime,
@@ -125,6 +128,7 @@ export function CutTimeline({
   activeVisualLayerId,
   onVisualLayerClick,
 }: {
+  soundEffectsTrack?: (pixelsPerSecond: number, displayContentWidth: number) => ReactNode;
   projectId: string;
   editList: ProjectEditListState;
   timelineTime: number;
@@ -152,6 +156,7 @@ export function CutTimeline({
   const [draggingClipId, setDraggingClipId] = useState<string | null>(null);
   const [movePreview, setMovePreview] = useState<MovePreview | null>(null);
   const [trimPreview, setTrimPreview] = useState<TrimPreview | null>(null);
+  useRuntimeProtection(Boolean(movePreview || trimPreview || draggingClipId), false, `cut-gesture:${projectId}`);
   const [zoomMode, setZoomMode] = useState<"fit" | "manual">("fit");
   const [manualZoomPercent, setManualZoomPercent] = useState(100);
   const [snappingEnabled, setSnappingEnabled] = useState(true);
@@ -189,9 +194,9 @@ export function CutTimeline({
   const duration = document?.duration ?? 0;
   const renderedTimelineTime = useMemo(() => {
     if (!document || !previewDocument || previewDocument === document) return timelineTime;
-    const sourceTime = timelineTimeToSourceTime(document, timelineTime);
-    if (sourceTime === null) return Math.min(previewDocument.duration, Math.max(0, timelineTime));
-    return sourceTimeToTimelineTime(previewDocument, sourceTime) ??
+    const position = timelineTimeToSourcePosition(document, timelineTime);
+    if (position === null) return Math.min(previewDocument.duration, Math.max(0, timelineTime));
+    return sourceTimeToTimelineTime(previewDocument, position.sourceTime, position) ??
       Math.min(previewDocument.duration, Math.max(0, timelineTime));
   }, [document, previewDocument, timelineTime]);
   const fitPixelsPerSecond = getTimelineFitPps(viewportWidth, duration);
@@ -645,7 +650,7 @@ export function CutTimeline({
         segment,
         edge,
         trimTimeAtClientX(clientX, segment.id),
-        document.sourceDuration,
+        document.sources?.find(source => source.path === segment.source)?.duration ?? document.sourceDuration,
       ) as TrimOperation;
       setTrimPreview({ segmentId: segment.id, edge, operation: currentOperation });
     };
@@ -745,14 +750,21 @@ export function CutTimeline({
         segment.timelineStart,
         segment.timelineStart + segmentDuration,
       );
+      const isMultiSource = document?.schemaVersion === 2;
+      const sourceIndex = document?.sources?.findIndex(source => source.path === segment.source) ?? -1;
+      const sourceLabel = `素材${sourceIndex >= 0 ? sourceIndex + 1 : "?"} · ${segment.source.split("/").at(-1) ?? segment.source}`;
+      const title = isMultiSource
+        ? `${sourceLabel} · ${segment.source} · 实例 ${segment.instanceId} · 源 ${segment.sourceStart.toFixed(2)}–${segment.sourceEnd.toFixed(2)}s · 时间线 ${segment.timelineStart.toFixed(2)}–${(segment.timelineStart + segmentDuration).toFixed(2)}s`
+        : `${index + 1}. ${segment.sourceStart.toFixed(2)}–${segment.sourceEnd.toFixed(2)}s`;
       return {
         id: segment.id,
         index,
         start: segment.timelineStart,
         duration: segmentDuration,
-        label: `口播 ${String(index + 1).padStart(2, "0")}`,
-        audioLabel: "原声",
-        title: `${index + 1}. ${segment.sourceStart.toFixed(2)}–${segment.sourceEnd.toFixed(2)}s`,
+        label: isMultiSource ? sourceLabel : `口播 ${String(index + 1).padStart(2, "0")}`,
+        audioLabel: isMultiSource ? `素材${sourceIndex >= 0 ? sourceIndex + 1 : "?"} · 原声` : "原声",
+        title,
+        titleOverride: isMultiSource ? title : undefined,
         selected,
         hovered,
         dragging,
@@ -760,19 +772,19 @@ export function CutTimeline({
         active,
         videoContent: (
           <>
-            <CutVideoFilmstrip
+            {document?.schemaVersion !== 2 && !mediaSegment.source.toLowerCase().endsWith(".wav") && <CutVideoFilmstrip
               projectId={projectId}
               segment={mediaSegment}
               segmentWidth={mediaSegmentWidth}
               sourceDuration={sourceDuration}
-            />
+            />}
             {segmentDuration * pixelsPerSecond >= 58 && (
               <small className="timeline-clip__timecode">{rangeLabel}</small>
             )}
           </>
         ),
         audioContent: (
-          <CutAudioWaveform
+          document?.schemaVersion === 2 ? null : <CutAudioWaveform
             projectId={projectId}
             segment={mediaSegment}
             segmentWidth={mediaSegmentWidth}
@@ -781,6 +793,7 @@ export function CutTimeline({
         ),
       };
     }), [
+      document,
       committedSegmentsById,
       draggingClipId,
       hoveredClipId,
@@ -811,6 +824,9 @@ export function CutTimeline({
       data-hyperframes-timeline-fork="active"
     >
       <TimelineToolbar
+        {...(document.schemaVersion === 2 ? {
+          editingNotice: "多源顺序口播：波形与缩略图待生成；分割、删除暂不支持撤销，并会清空当前撤销记录。",
+        } : {})}
         selectionActive
         canUndo={canUndo}
         onUndo={onUndo}
@@ -843,6 +859,7 @@ export function CutTimeline({
       )}
 
       <Timeline
+        soundEffectsTrack={soundEffectsTrack?.(pixelsPerSecond, displayContentWidth)}
         scrollRef={scrollRef}
         segments={timelineSegments}
         visualLayers={visualLayers}

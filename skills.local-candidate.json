@@ -1,0 +1,367 @@
+{
+  "schemaVersion": 1,
+  "status": "local-candidate",
+  "publicReleaseReady": false,
+  "description": "Seven current Skills and four non-default compatibility entries. Explicit local sources, not published download identities.",
+  "skills": [
+    {
+      "id": "chengfeng-videocut-install",
+      "directory": "安装与接入Skill",
+      "version": "0.1.0-beta.2",
+      "description": "核对固定来源并安装、复用指定 Skills，分别核验文件与依赖。",
+      "defaultInstall": true,
+      "skillPath": ".agents/skills/chengfeng-videocut-install",
+      "files": 17,
+      "contentSha256": "d53f5c55974c91bd7f8685a2226aac620d9eb94915ad3513cbc6743b006fc0db",
+      "packageManifestSha256": "a51a0ecf4c3049d8c9dcfb1b1ff0c4dee89adb85ae26c3388883e783a4007c11",
+      "publication": {
+        "status": "local-candidate",
+        "repository": "Agentchengfeng/chengfeng-videocut-install",
+        "remoteCommit": null,
+        "licenseReview": "project-license-retained",
+        "upload": {
+          "decision": "independent-candidate",
+          "blockers": []
+        }
+      },
+      "runtime": {
+        "command": "chengfeng-videocut",
+        "minimumVersion": "0.5.9",
+        "requireCapabilityProbe": true,
+        "bundled": false,
+        "requiredFor": "project-integration-only",
+        "validatedPlatforms": [],
+        "notes": "Check actual workbench commands and endpoint capabilities; version alone is not sufficient."
+      }
+    },
+    {
+      "id": "chengfeng-videocut-cut",
+      "directory": "剪口播Skill",
+      "version": "0.1.0-beta.2",
+      "description": "识别口误、重复与多次 take，生成可审核的删词方案。",
+      "defaultInstall": true,
+      "skillPath": ".agents/skills/chengfeng-videocut-cut",
+      "files": 17,
+      "contentSha256": "f16c1d443dfefa3f39d4474c278cd9e04163c2bab5a1e440d6b80c827a8605f6",
+      "packageManifestSha256": "b607b0354a70b2357ac0ed9364baa284db36a0fb53f2bfe6acdf9028353666cb",
+      "publication": {
+        "status": "local-candidate",
+        "repository": "Agentchengfeng/chengfeng-videocut-cut",
+        "remoteCommit": null,
+        "licenseReview": "project-license-retained",
+        "upload": {
+          "decision": "independent-candidate",
+          "blockers": []
+        }
+      },
+      "runtime": {
+        "command": "chengfeng-videocut",
+        "minimumVersion": "0.5.9",
+        "requireCapabilityProbe": true,
+        "bundled": false,
+        "requiredFor": "project-operations",
+        "validatedPlatforms": [],
+        "notes": "Check actual workbench commands and endpoint capabilities; version alone is not sufficient."
+      }
+    },
+    {
+      "id": "chengfeng-videocut-subtitle",
+      "directory": "字幕Skill",
+      "version": "0.1.0-beta.2",
+      "description": "用已有逐词稿与账本生成、校对和排版字幕。",
+      "defaultInstall": true,
+      "skillPath": ".agents/skills/chengfeng-videocut-subtitle",
+      "files": 28,
+      "contentSha256": "c849a83a079449a9d6606e6d6462106fb681387f219d78def43618b9b96fba0f",
+      "packageManifestSha256": "eae47a139153907f2f2a919c83a1bb829653333c3e4acca2f19bd7e822816d0c",
+      "publication": {
+        "status": "local-candidate",
+        "repository": "Agentchengfeng/chengfeng-videocut-subtitle",
+        "remoteCommit": null,
+        "licenseReview": "project-license-retained",
+        "upload": {
+          "decision": "independent-candidate",
+          "blockers": []
+        }
+      },
+      "runtime": {
+        "command": "chengfeng-videocut",
+        "minimumVersion": "0.5.9",
+        "requireCapabilityProbe": true,
+        "bundled": false,
+        "requiredFor": "project-operations",
+        "validatedPlatforms": [],
+        "notes": "Check actual workbench commands and endpoint capabilities; version alone is not sufficient."
+      }
+    },
+    {
+      "id": "chengfeng-videocut-shot-design",
+      "directory": "镜头设计Skill",
+      "version": "0.1.0-beta.2",
+      "description": "规划表达、构图、节拍与前后镜头交接。",
+      "defaultInstall": true,
+      "skillPath": ".agents/skills/chengfeng-videocut-shot-design",
+      "files": 20,
+      "contentSha256": "0742f1e6e7800aa3ef5669940692c07a3d128456f56d7dc3c1e1708a0797977e",
+      "packageManifestSha256": "05d9fd05526bfc90b0fbf4dfedca04ed1cb42a094dfa4c366fdfe4816653d6c2",
+      "publication": {
+        "status": "local-candidate",
+        "repository": "Agentchengfeng/chengfeng-videocut-shot-design",
+        "remoteCommit": null,
+        "licenseReview": "project-license-retained",
+        "upload": {
+          "decision": "independent-candidate",
+          "blockers": []
+        }
+      },
+      "runtime": {
+        "command": "chengfeng-videocut",
+        "minimumVersion": "0.5.9",
+        "requireCapabilityProbe": true,
+        "bundled": false,
+        "requiredFor": "project-integration-only",
+        "validatedPlatforms": [],
+        "notes": "Check actual workbench commands and endpoint capabilities; version alone is not sufficient."
+      }
+    },
+    {
+      "id": "chengfeng-videocut-xiaohei",
+      "directory": "小黑动画Skill",
+      "version": "0.1.0-local.1",
+      "description": "制作可编辑的 Ian 小黑风格 HTML/SVG 动画。",
+      "defaultInstall": true,
+      "skillPath": ".agents/skills/chengfeng-videocut-xiaohei",
+      "files": 61,
+      "contentSha256": "20b1323b75a02383ffbd5503af76a3bfdf05799347961dbd31bd02583ae517db",
+      "packageManifestSha256": "93d5a813a01f55ede5c46df6dee16988745232852288db070f5fa944126b2b73",
+      "publication": {
+        "status": "local-candidate",
+        "repository": "Agentchengfeng/chengfeng-videocut-xiaohei",
+        "remoteCommit": null,
+        "licenseReview": "required-before-publishing",
+        "upload": {
+          "decision": "license-review-required",
+          "blockers": [
+            "third-party-asset-license-review"
+          ]
+        }
+      },
+      "runtime": {
+        "command": "chengfeng-videocut",
+        "minimumVersion": "0.5.9",
+        "requireCapabilityProbe": true,
+        "bundled": false,
+        "requiredFor": "project-integration-only",
+        "validatedPlatforms": [],
+        "notes": "Check actual workbench commands and endpoint capabilities; version alone is not sufficient."
+      }
+    },
+    {
+      "id": "chengfeng-videocut-visual",
+      "directory": "画面接入Skill",
+      "version": "0.1.0-local.1",
+      "description": "旧入口已退出默认产品；接入方法由共享 Runtime 合同提供。",
+      "defaultInstall": false,
+      "compatibility": {
+        "status": "retired-entry",
+        "documentation": "references/shared/visual-integration.md"
+      },
+      "skillPath": ".agents/skills/chengfeng-videocut-visual",
+      "files": 19,
+      "contentSha256": "ea5f91cd52c1a0535eac7c636da5758e140474bb3c78eb5f43ef222b27e45f01",
+      "packageManifestSha256": "b6269ff25e4659d9af9c2879bbb664eed2a9b92eda3dd27ff45b272329880de0",
+      "publication": {
+        "status": "local-candidate",
+        "repository": "Agentchengfeng/chengfeng-videocut",
+        "remoteCommit": null,
+        "licenseReview": "project-license-retained",
+        "upload": {
+          "decision": "compatibility-only",
+          "blockers": [
+            "not-an-independent-public-product"
+          ]
+        }
+      },
+      "runtime": {
+        "command": "chengfeng-videocut",
+        "minimumVersion": "0.5.9",
+        "requireCapabilityProbe": true,
+        "bundled": false,
+        "requiredFor": "project-operations",
+        "validatedPlatforms": [],
+        "notes": "Check actual workbench commands and endpoint capabilities; version alone is not sufficient."
+      }
+    },
+    {
+      "id": "chengfeng-videocut-export",
+      "directory": "导出Skill",
+      "version": "0.1.0-beta.2",
+      "description": "调用统一 Runtime 导出并按真实交付终点验收。",
+      "defaultInstall": true,
+      "skillPath": ".agents/skills/chengfeng-videocut-export",
+      "files": 17,
+      "contentSha256": "117dbd415a96783bde665c1d50af292763c5dd35c58b2c2a14f4e292beeeccdc",
+      "packageManifestSha256": "c8ccd69c71212edd3183c935c8b7b88770d10ffc6e7b3a6f905c33ec69add226",
+      "publication": {
+        "status": "local-candidate",
+        "repository": "Agentchengfeng/chengfeng-videocut-export",
+        "remoteCommit": null,
+        "licenseReview": "project-license-retained",
+        "upload": {
+          "decision": "independent-candidate",
+          "blockers": []
+        }
+      },
+      "runtime": {
+        "command": "chengfeng-videocut",
+        "minimumVersion": "0.5.9",
+        "requireCapabilityProbe": true,
+        "bundled": false,
+        "requiredFor": "project-operations",
+        "validatedPlatforms": [],
+        "notes": "Check actual workbench commands and endpoint capabilities; version alone is not sufficient."
+      }
+    },
+    {
+      "id": "chengfeng-videocut-maintain",
+      "directory": "维护与排障Skill",
+      "version": "0.1.0-beta.2",
+      "description": "按请求选择故障排查、指定组件更新或脱敏 Bug 反馈。",
+      "defaultInstall": true,
+      "skillPath": ".agents/skills/chengfeng-videocut-maintain",
+      "files": 18,
+      "contentSha256": "bc7ee0b9fb7e8510519b8747df3c30bad2d692153a6f8fb425b96855b7dd211b",
+      "packageManifestSha256": "e0e484a3820122ef281145557013e6580befb25f96c872b129c4f067b319170b",
+      "publication": {
+        "status": "local-candidate",
+        "repository": "Agentchengfeng/chengfeng-videocut-maintain",
+        "remoteCommit": null,
+        "licenseReview": "project-license-retained",
+        "upload": {
+          "decision": "independent-candidate",
+          "blockers": []
+        }
+      },
+      "runtime": {
+        "command": "chengfeng-videocut",
+        "minimumVersion": "0.5.9",
+        "requireCapabilityProbe": true,
+        "bundled": false,
+        "requiredFor": "project-integration-only",
+        "validatedPlatforms": [],
+        "notes": "Check actual workbench commands and endpoint capabilities; version alone is not sufficient."
+      }
+    },
+    {
+      "id": "chengfeng-videocut-diagnose",
+      "directory": "环境排查Skill",
+      "version": "0.1.0-local.1",
+      "description": "兼容旧 diagnose 调用，新任务使用维护与排障。",
+      "defaultInstall": false,
+      "compatibility": {
+        "status": "legacy-alias",
+        "replacementId": "chengfeng-videocut-maintain",
+        "mode": "diagnose"
+      },
+      "skillPath": ".agents/skills/chengfeng-videocut-diagnose",
+      "files": 19,
+      "contentSha256": "62e50933e07d9020ed5de2bf82dec2ba05423b9d5bfb5b6dd14ae171f4bac8cd",
+      "packageManifestSha256": "175400ae363aaa68b4a92b97c05aa8d6fd87c60df915de798aeb3d4a67c7c515",
+      "publication": {
+        "status": "local-candidate",
+        "repository": "Agentchengfeng/chengfeng-videocut-maintain",
+        "remoteCommit": null,
+        "licenseReview": "project-license-retained",
+        "upload": {
+          "decision": "compatibility-only",
+          "blockers": [
+            "not-an-independent-public-product"
+          ]
+        }
+      },
+      "runtime": {
+        "command": "chengfeng-videocut",
+        "minimumVersion": "0.5.9",
+        "requireCapabilityProbe": true,
+        "bundled": false,
+        "requiredFor": "project-integration-only",
+        "validatedPlatforms": [],
+        "notes": "Check actual workbench commands and endpoint capabilities; version alone is not sufficient."
+      }
+    },
+    {
+      "id": "chengfeng-videocut-check-updates",
+      "directory": "检查更新Skill",
+      "version": "0.1.0-local.1",
+      "description": "兼容旧 check-updates 调用，新任务使用维护与排障。",
+      "defaultInstall": false,
+      "compatibility": {
+        "status": "legacy-alias",
+        "replacementId": "chengfeng-videocut-maintain",
+        "mode": "updates"
+      },
+      "skillPath": ".agents/skills/chengfeng-videocut-check-updates",
+      "files": 19,
+      "contentSha256": "5bbdd5ccb47c0f1b09b212432488ce0a86bc8d14f80cba52c586941911c789b5",
+      "packageManifestSha256": "bfdd42867fd5b7f2accc59b811802dfdc4e18719648ad3dbb6f0a6debf90f2f9",
+      "publication": {
+        "status": "local-candidate",
+        "repository": "Agentchengfeng/chengfeng-videocut-maintain",
+        "remoteCommit": null,
+        "licenseReview": "project-license-retained",
+        "upload": {
+          "decision": "compatibility-only",
+          "blockers": [
+            "not-an-independent-public-product"
+          ]
+        }
+      },
+      "runtime": {
+        "command": "chengfeng-videocut",
+        "minimumVersion": "0.5.9",
+        "requireCapabilityProbe": true,
+        "bundled": false,
+        "requiredFor": "project-integration-only",
+        "validatedPlatforms": [],
+        "notes": "Check actual workbench commands and endpoint capabilities; version alone is not sufficient."
+      }
+    },
+    {
+      "id": "chengfeng-videocut-report-bug",
+      "directory": "上报BugSkill",
+      "version": "0.1.0-local.1",
+      "description": "兼容旧 report-bug 调用，新任务使用维护与排障。",
+      "defaultInstall": false,
+      "compatibility": {
+        "status": "legacy-alias",
+        "replacementId": "chengfeng-videocut-maintain",
+        "mode": "report-bug"
+      },
+      "skillPath": ".agents/skills/chengfeng-videocut-report-bug",
+      "files": 20,
+      "contentSha256": "91682d5e1d681567f5bbded8c8f6739e27607a8f5ea5789cd17c22e124d0ae9a",
+      "packageManifestSha256": "d4c51122670678e55b5bb06db89efb8b3f029a81c6adb9366261a4818d281653",
+      "publication": {
+        "status": "local-candidate",
+        "repository": "Agentchengfeng/chengfeng-videocut-maintain",
+        "remoteCommit": null,
+        "licenseReview": "project-license-retained",
+        "upload": {
+          "decision": "compatibility-only",
+          "blockers": [
+            "not-an-independent-public-product"
+          ]
+        }
+      },
+      "runtime": {
+        "command": "chengfeng-videocut",
+        "minimumVersion": "0.5.9",
+        "requireCapabilityProbe": true,
+        "bundled": false,
+        "requiredFor": "project-integration-only",
+        "validatedPlatforms": [],
+        "notes": "Check actual workbench commands and endpoint capabilities; version alone is not sufficient."
+      }
+    }
+  ]
+}

@@ -3,6 +3,7 @@ import type { SubtitleCue, SubtitleCueTiming } from "@video-workbench/core";
 import type { SubtitleStaleCue } from "../../components/subtitlesApi";
 import type { ProjectSubtitles } from "../../components/useProjectSubtitles";
 import type { TranscriptCue } from "../../components/kouboTranscript";
+import { SubtitleResultPanel } from "./SubtitleResultPanel";
 
 export interface SubtitlePaneProps {
   subtitles: ProjectSubtitles;
@@ -245,10 +246,19 @@ export const SubtitlePane = memo(function SubtitlePane({
         )}
         <span className="cf-subtitle-pane__save" data-state={subtitles.saveState}>
           {subtitles.saveState === "saving" && "保存中"}
-          {subtitles.saveState === "conflict" && "别处改过了，已重新载入"}
-          {subtitles.saveState === "error" && "保存失败"}
+          {subtitles.saveState === "conflict" && "保存冲突，自动保存已暂停，本地草稿已保留"}
+          {subtitles.saveState === "error" && "保存失败，自动保存已暂停，本地草稿已保留"}
+          {subtitles.saveState === "saved" && "已保存"}
         </span>
       </header>
+
+      <SubtitleResultPanel subtitles={subtitles} />
+      {(subtitles.saveState === "conflict" || subtitles.saveState === "error") && <div className="cf-subtitle-result__failure" role="alert">
+        <p>{subtitles.error || "未保存。请先复制保留你的修改，再重新载入。"}</p>
+        <button type="button" onClick={() => {
+          if (window.confirm("重新载入会放弃此处尚未保存的字幕草稿和审核意见，继续吗？")) void subtitles.reload();
+        }}>放弃本地草稿，载入已保存版本</button>
+      </div>}
 
       <ol className="cf-subtitle-pane__list" ref={listRef}>
         {document.cues.map((cue, index) => (

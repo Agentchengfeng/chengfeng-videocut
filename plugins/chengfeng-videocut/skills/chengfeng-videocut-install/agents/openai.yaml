@@ -1,0 +1,4 @@
+interface:
+  display_name: "chengfeng-videocut 安装与接入"
+  short_description: "按固定清单安装或复用工作台相关 Skills，分别核验文件、宿主与运行依赖"
+  default_prompt: "用 $chengfeng-videocut-install 检查现有环境并安装我指定的剪辑工具。"

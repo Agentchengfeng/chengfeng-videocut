@@ -1,4 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
+import { inspectRuntimeEntry, type RuntimeEntryStatus } from "./runtimeEntry";
+import { assertProjectReadable } from "./projectTransaction";
+export { assertProjectReadable } from "./projectTransaction";
 import {
   access,
   appendFile,
@@ -22,6 +25,8 @@ import {
   RUNTIME_DOCTOR_CAPABILITIES,
   isKnownNaturalPausePolicyVersion,
   type RuntimeDoctorCapabilities,
+  type SkillResultMetadata,
+  type SkillResultState,
 } from "@video-workbench/contracts";
 import {
   buildCutSelectionDocument,
@@ -32,6 +37,8 @@ import {
   parseTranscriptWords,
   totalCutDuration,
   type CutSelectionDocument,
+  type CutTimeRange,
+  type TimedWord,
   type JsonObject,
 } from "./cuts";
 import {
@@ -61,11 +68,20 @@ import {
   normalizeSubtitleStyle,
   respellSubtitles,
   subtitleStaleness,
+  subtitleCueTimings,
+  orderedSegments,
+  wordPlays,
   type SubtitleDocument,
   type SubtitleRespellResult,
 } from "./subtitles";
-import { assertVisualDocument, type VisualDocument } from "./visuals";
+import { assertVisualDocument, visualLayerTimings, type VisualDocument } from "./visuals";
+import { validateVisualMedia } from "./mediaAssets";
+export * from "./mediaAssets";
 import { serializeProjectOperation } from "./projectLock";
+import {
+  assertCandidateReceipt, assertPreservesSubtitleReview, invalidResult,
+  reviewedSubtitleDocument, trustedResultMetadata,
+} from "./skillResults";
 export {
   OPERATION_ADMISSION_VERSION,
   OPERATION_AUDIT_SCHEMA_VERSION,
@@ -280,9 +296,11 @@ function assertSafeProjectId(projectId: string): void {
 }
 
 async function readJsonAt<T = unknown>(path: string): Promise<JsonDocument<T>> {
+  if ((PROJECT_DOCUMENT_NAMES as readonly string[]).includes(basename(path))) await assertProjectReadable(dirname(path));
   let raw: string;
   try {
     raw = await readFile(path, "utf8");
+    if ((PROJECT_DOCUMENT_NAMES as readonly string[]).includes(basename(path))) await assertProjectReadable(dirname(path));
   } catch (error) {
     if (errorCode(error) === "ENOENT") {
       throw new VideocutError("project_not_found", `Missing file: ${path}`, { path });
@@ -461,11 +479,57 @@ export async function inspectProject(project: ResolvedProject): Promise<JsonObje
   if (unknownCutWordIds.length > 0) {
     warnings.push(`${unknownCutWordIds.length} cut word id(s) are missing from transcript.json`);
   }
-  const derivedRanges = words.length
+  let derivedRanges = words.length
     ? buildCutTimeRanges(words, new Set(cutWordIds))
     : [];
+  const currentEditList = editList ? parseEditListDocument(editList.value) : null;
+  // Product seam policies may derive more precise boundaries than the generic
+  // word-only fallback. Trust saved ranges only with a current, complementary
+  // derived ledger, never merely because a document calls itself derived.
+  let committedRangesVerified = false;
+  if (cuts && transcript && currentEditList?.mode === "cuts-derived"
+    && currentEditList.baseCutsRevision === cuts.revision
+    && currentEditList.baseTranscriptRevision === transcript.revision
+    && unknownCutWordIds.length === 0 && Array.isArray(storedRanges)) {
+    let end = 0;
+    const selected = new Set(cutWordIds);
+    const valid = storedRanges.every((range) => {
+      if (!isObject(range) || typeof range.start !== "number" || typeof range.end !== "number"
+        || !Number.isFinite(range.start) || !Number.isFinite(range.end)
+        || range.start < end || range.end <= range.start || range.end > currentEditList.sourceDuration) return false;
+      end = range.end;
+      const start = range.start;
+      return !words.some((word) => !word.isGap && !selected.has(word.id)
+        && word.start < end && word.end > start);
+    });
+    if (valid) {
+      const ranges = storedRanges as CutTimeRange[];
+      const selectedSpeechCovered = words.every((word) => {
+        if (word.isGap || !selected.has(word.id)) return true;
+        let covered = word.start;
+        for (const range of ranges) {
+          if (range.start > covered) break;
+          covered = Math.max(covered, range.end);
+        }
+        return covered >= word.end;
+      });
+      try {
+        const expected = buildEditListFromCuts({ projectId: project.projectId,
+          source: currentEditList.segments[0]?.source ?? "", sourceDuration: currentEditList.sourceDuration,
+          cutsRevision: cuts.revision, transcriptRevision: transcript.revision, cutRanges: ranges });
+        const geometry = (document: EditListDocument) => document.segments.map(({ source, sourceStart,
+          sourceEnd, timelineStart, playbackRate, trackId }) =>
+          ({ source, sourceStart, sourceEnd, timelineStart, playbackRate, trackId }));
+        committedRangesVerified = selectedSpeechCovered && expected.duration === currentEditList.duration
+          && JSON.stringify(geometry(expected)) === JSON.stringify(geometry(currentEditList));
+        if (committedRangesVerified) derivedRanges = ranges;
+      } catch {
+        // Invalid/all-deleted complements cannot certify stored ranges.
+      }
+    }
+  }
   const rangesMatchTranscript = cuts
-    ? JSON.stringify(storedRanges) === JSON.stringify(derivedRanges)
+    ? committedRangesVerified || JSON.stringify(storedRanges) === JSON.stringify(derivedRanges)
     : null;
   if (rangesMatchTranscript === false) {
     warnings.push("cutRanges does not match transcript.json + cutWordIds");
@@ -512,9 +576,9 @@ export async function inspectProject(project: ResolvedProject): Promise<JsonObje
       editList: editList
         ? {
             ...documentSummary(editList),
-            duration: parseEditListDocument(editList.value).duration,
-            segmentCount: parseEditListDocument(editList.value).segments.length,
-            mode: parseEditListDocument(editList.value).mode,
+            duration: currentEditList!.duration,
+            segmentCount: currentEditList!.segments.length,
+            mode: currentEditList!.mode,
           }
         : documentSummary(null),
       visualPlan: documentSummary(visualPlan),
@@ -721,6 +785,16 @@ function editListEventPayload(result: WriteEditListResult): JsonObject {
   };
 }
 
+export interface DeriveCutRangesInput {
+  words: TimedWord[];
+  candidate: CutSelectionDocument;
+  previous: CutSelectionDocument | null;
+  sourceDuration: number;
+  previousEditList: EditListDocument;
+}
+
+export type DeriveCutRanges = (input: DeriveCutRangesInput) => CutTimeRange[] | Promise<CutTimeRange[]>;
+
 export interface WriteCutSelectionOptions {
   expectedRevision?: string;
   dryRun?: boolean;
@@ -737,6 +811,10 @@ export interface WriteCutSelectionOptions {
    * is held, so a Skill never has to copy or union that baseline itself.
    */
   mode?: CutSelectionWriteMode;
+  /** Product-owned seam policy, evaluated under the project lock before writing.
+   * Both selection modes use it on derived timelines. Full selections keep the
+   * Studio's exact ids; they must not restore deleted tails by skipping policy. */
+  deriveCutRanges?: false | DeriveCutRanges;
 }
 
 export type CutSelectionWriteMode = "full-selection" | "semantic-overlay";
@@ -864,6 +942,8 @@ async function writeCutSelectionSnapshot(
   proposal: unknown,
   options: WriteCutSelectionOptions,
 ): Promise<WriteCutSelectionResult> {
+  const edl = await readEditList(project);
+  if (edl?.value.schemaVersion === 2) throw new VideocutError("invalid_cut_selection", "Multisource semantic cut writes require instance-aware selection; edit timeline segments instead");
   const transcript = await readProjectDocument(project, "transcript.json");
   const words = parseTranscriptWords(transcript.value);
   const targetPath = documentPath(project, "cut-selection.json");
@@ -963,6 +1043,9 @@ export async function writeCutSelectionWithEditList(
       readOptionalJsonAt(documentPath(project, "edit-list.json")),
     ]);
     const currentCutsRevision = previousCuts?.revision ?? null;
+    if (previousEditList && parseEditListDocument(previousEditList.value).schemaVersion === 2) {
+      throw new VideocutError("invalid_cut_selection", "Multisource semantic cut writes require instance-aware selection; edit timeline segments instead");
+    }
     if (options.expectedRevision !== undefined) {
       const expectedCurrent = currentCutsRevision ?? "none";
       if (options.expectedRevision !== expectedCurrent) {
@@ -981,7 +1064,6 @@ export async function writeCutSelectionWithEditList(
       options.now ?? new Date().toISOString(),
       options.mode ?? "full-selection",
     );
-    const cutsChange = !previousCuts || !hasSameCutSelectionMeaning(previousCuts.value, candidate);
     const currentEditList = previousEditList
       ? parseEditListDocument(previousEditList.value)
       : null;
@@ -995,6 +1077,48 @@ export async function writeCutSelectionWithEditList(
         },
       );
     }
+
+    if (currentEditList.mode === "cuts-derived" && options.deriveCutRanges) {
+      // Never let an extension mutate the accepted selection, transcript or prior
+      // snapshots. Only its validated range output is allowed into the transaction.
+      const ranges = await options.deriveCutRanges(structuredClone({
+        words, candidate,
+        previous: (previousCuts?.value as CutSelectionDocument | undefined) ?? null,
+        sourceDuration: currentEditList.sourceDuration,
+        previousEditList: currentEditList,
+      }));
+      const selected = new Set(candidate.cutWordIds);
+      if (!Array.isArray(ranges)) {
+        throw new VideocutError("invalid_cut_selection", "Derived cut ranges must be an array");
+      }
+      let previousEnd = 0;
+      const validated: CutTimeRange[] = [];
+      for (const range of ranges) {
+        if (!range || !Number.isFinite(range.start) || !Number.isFinite(range.end)
+          || range.start < previousEnd || range.start < 0 || range.end <= range.start
+          || range.end > currentEditList.sourceDuration
+          || words.some((word) => !word.isGap && !selected.has(word.id)
+            && word.start < range.end && word.end > range.start)) {
+          throw new VideocutError("invalid_cut_selection", "Derived cut ranges are invalid or overlap retained speech");
+        }
+        validated.push({ start: range.start, end: range.end });
+        previousEnd = range.end;
+      }
+      for (const word of words) {
+        if (word.isGap || !selected.has(word.id) || word.end === word.start) continue;
+        let coveredUntil = word.start;
+        for (const range of validated) {
+          if (range.start > coveredUntil) break;
+          if (range.end > coveredUntil) coveredUntil = range.end;
+          if (coveredUntil >= word.end) break;
+        }
+        if (coveredUntil < word.end) {
+          throw new VideocutError("invalid_cut_selection", "Derived cut ranges restore selected speech", { wordId: word.id });
+        }
+      }
+      candidate.cutRanges = validated;
+    }
+    const cutsChange = !previousCuts || !hasSameCutSelectionMeaning(previousCuts.value, candidate);
 
     const cutsPath = documentPath(project, "cut-selection.json");
     const cutsContent = cutsChange ? serializeJson(candidate) : previousCuts?.raw ?? "";
@@ -1234,6 +1358,8 @@ export interface WriteSubtitlesOptions {
   dryRun?: boolean;
   /** Declared by the caller and recorded verbatim; nothing here can verify it. */
   actor?: ProjectEventActor;
+  /** Review guidance is version-bound data, not an instruction automatically executed by Runtime. */
+  reviewNote?: string;
 }
 
 export interface WriteSubtitlesResult {
@@ -1262,6 +1388,152 @@ export async function readSubtitles(
   return { ...snapshot, value: { ...snapshot.value, style } };
 }
 
+/** Exact historical bytes are recoverable by digest; archive failures stop publication. */
+async function archiveSubtitleResult(project: ResolvedProject, previous: JsonDocument): Promise<void> {
+  const directory = join(project.directory, ".workbench", "result-history", "subtitles");
+  await mkdir(directory, { recursive: true });
+  const path = join(directory, `${previous.revision}.json`);
+  let handle: Awaited<ReturnType<typeof openFile>> | null = null;
+  try {
+    handle = await openFile(path, "wx", 0o600);
+    await handle.writeFile(previous.raw, "utf8");
+    await handle.sync();
+  } catch (error) {
+    if (errorCode(error) !== "EEXIST") throw error;
+    if (sha256(await readFile(path)) !== previous.revision) {
+      throw new VideocutError("readback_mismatch", "Existing subtitle recovery archive does not match its revision", { revision: previous.revision });
+    }
+  } finally {
+    if (handle) await handle.close();
+  }
+}
+
+async function commitSubtitleResultBytes(project: ResolvedProject, path: string, content: string, previous: JsonDocument | null): Promise<void> {
+  if (previous) await archiveSubtitleResult(project, previous);
+  await atomicWriteText(path, content);
+  if (sha256(await readFile(path)) !== sha256(content)) {
+    throw new VideocutError("readback_mismatch", "Committed subtitles did not match the accepted bytes");
+  }
+}
+
+export async function getSubtitleResultState(
+  project: ResolvedProject,
+  snapshot: JsonDocument<SubtitleDocument> | null,
+): Promise<SkillResultState> {
+  const metadata = snapshot ? trustedResultMetadata(snapshot.value) : undefined;
+  const sources = metadata?.sources ?? null;
+  const changedSources: SkillResultState["changedSources"] = [];
+  if (sources) {
+    const [transcript, editList] = await Promise.all([
+      readOptionalProjectDocument(project, "transcript.json"),
+      readOptionalProjectDocument(project, "edit-list.json"),
+    ]);
+    if (transcript?.revision !== sources.transcriptSha256) changedSources.push("transcript");
+    if (editList?.revision !== sources.editListSha256) changedSources.push("edit-list");
+  }
+  return {
+    schemaVersion: 1, kind: "subtitles", revision: snapshot?.revision ?? "none",
+    status: !snapshot ? "missing" : !sources ? "legacy" : changedSources.length ? "stale" : "current",
+    sourceStale: sources ? changedSources.length > 0 : null,
+    changedSources, sources, provenance: metadata?.provenance ?? null, acceptedAt: metadata?.acceptedAt ?? null,
+    review: { editCount: metadata?.review?.editCount ?? 0, noteCount: metadata?.review?.notes.length ?? 0,
+      lastReviewedAt: metadata?.review?.updatedAt ?? null },
+  };
+}
+
+export interface AcceptSubtitleCandidateInput {
+  documentContent: string;
+  receipt: unknown;
+  /** Mandatory CAS, including the literal 'none' when no active result exists. */
+  expectedRevision: string;
+}
+
+/** Registered subtitle adapter. Generation remains in the Skill; Runtime only validates and publishes. */
+export async function acceptSubtitleCandidate(
+  project: ResolvedProject,
+  input: AcceptSubtitleCandidateInput,
+  options: { actor?: ProjectEventActor } = {},
+): Promise<WriteSubtitlesResult> {
+  if (typeof input.expectedRevision !== "string" || !/^(none|[a-f0-9]{64})$/.test(input.expectedRevision)) {
+    throw new VideocutError("revision_required", "Candidate acceptance requires expectedRevision");
+  }
+  assertCandidateReceipt(input.receipt);
+  const receipt = structuredClone(input.receipt);
+  if (typeof input.documentContent !== "string" || Buffer.byteLength(input.documentContent) > 8 * 1024 * 1024
+    || sha256(input.documentContent) !== receipt.outputSha256) invalidResult("Candidate output bytes do not match receipt outputSha256");
+  let parsed: unknown;
+  try { parsed = JSON.parse(input.documentContent); } catch { invalidResult("Candidate document is not valid JSON"); }
+  assertSubtitleDocument(parsed);
+  if (parsed.skillResult !== undefined) invalidResult("Candidate must not supply Runtime-owned skillResult metadata");
+  if (parsed.projectId !== project.projectId || receipt.inputs.projectId !== project.projectId) invalidResult("Candidate projectId mismatch");
+  return serializeProjectOperation(project.directory, async () => {
+    const targetPath = documentPath(project, "subtitles.json");
+    const [previous, transcript, editList] = await Promise.all([
+      readOptionalJsonAt<SubtitleDocument>(targetPath),
+      readProjectDocument(project, "transcript.json"),
+      readProjectDocument(project, "edit-list.json"),
+    ]);
+    const currentRevision = previous?.revision ?? "none";
+    if (input.expectedRevision !== currentRevision || receipt.inputs.resultRevision !== currentRevision) {
+      throw new VideocutError("revision_conflict", "Active subtitle result changed or candidate did not bind its reviewed result", {
+        scope: "result", currentRevision, expectedRevision: input.expectedRevision, resultRevision: receipt.inputs.resultRevision,
+      });
+    }
+    if (receipt.inputs.transcriptSha256 !== transcript.revision || receipt.inputs.editListSha256 !== editList.revision) {
+      throw new VideocutError("revision_conflict", "Candidate sources changed after generation", {
+        scope: "source", transcriptRevision: transcript.revision, editListRevision: editList.revision,
+      });
+    }
+    if (previous) assertSubtitleDocument(previous.value);
+    const timeline = parseEditListDocument(editList.value);
+    if (timeline.baseTranscriptRevision !== transcript.revision || parsed.baseTranscriptRevision !== transcript.revision) {
+      invalidResult("Candidate and edit list must bind the current transcript revision");
+    }
+    const words = parseTranscriptWords(transcript.value);
+    if (receipt.validation.cueCount !== parsed.cues.length || receipt.validation.wordCount !== words.length) {
+      invalidResult("Candidate validation summary does not match the independently read inputs/output");
+    }
+    const segments = orderedSegments(timeline);
+    const retainedWords = words.filter((word) => !word.isGap && (word.text ?? "").trim() && wordPlays(segments, word));
+    const orderedWordIds = retainedWords.map((word) => ({ id: word.id, start: Math.min(...segments
+      .filter((segment) => wordPlays([segment], word))
+      .map((segment) => segment.timelineStart + (Math.max(word.start, segment.sourceStart) - segment.sourceStart) / segment.playbackRate)) }))
+      .sort((left, right) => left.start - right.start).map((word) => word.id);
+    const retained = new Set(orderedWordIds);
+    const claimed = parsed.cues.flatMap((cue) => cue.wordIds);
+    const timings = subtitleCueTimings(parsed, words, timeline);
+    if (parsed.cues.some((cue) => !cue.wordIds.length) || subtitleStaleness(parsed, words, timeline).length
+      || timings.some((cue, index) => !Number.isFinite(cue.duration) || cue.duration <= 0 || (index > 0 && cue.start! < timings[index - 1]!.start!))
+      || JSON.stringify(orderedWordIds) !== JSON.stringify(claimed)) invalidResult("Candidate contains invalid anchors, timing, or incomplete/out-of-order retained-word coverage");
+    const normalizedStyle = normalizeSubtitleStyle(parsed.style) as unknown as Record<string, unknown>;
+    for (const [field, normalized] of Object.entries(normalizedStyle)) {
+      const value = (parsed.style as unknown as Record<string, unknown>)[field];
+      if (typeof value !== typeof normalized || (typeof value === "number" && !Number.isFinite(value))) {
+        invalidResult("Candidate style requires every known field with a valid value", { field });
+      }
+    }
+    if (Object.keys(parsed.style).some((field) => !(field in normalizedStyle))) invalidResult("Candidate style has unknown fields");
+    if (!["bottom", "middle", "top"].includes(parsed.style.anchor)) invalidResult("Candidate style anchor is invalid");
+    assertPreservesSubtitleReview(parsed, previous?.value ?? null, retained);
+    const previousMetadata = previous ? trustedResultMetadata(previous.value) : undefined;
+    const metadata: SkillResultMetadata = {
+      schemaVersion: 1, kind: "subtitles",
+      sources: { transcriptSha256: transcript.revision, editListSha256: editList.revision },
+      provenance: structuredClone(receipt.provenance), outputSha256: receipt.outputSha256,
+      acceptedAt: new Date().toISOString(), previousResultRevision: previous?.revision ?? null,
+      ...(previousMetadata?.review ? { review: previousMetadata.review } : {}),
+    };
+    const document = { ...parsed, skillResult: metadata };
+    const content = serializeJson(document);
+    await commitSubtitleResultBytes(project, targetPath, content, previous);
+    const result: WriteSubtitlesResult = { projectId: project.projectId, path: targetPath,
+      previousRevision: previous?.revision ?? null, revision: sha256(content), changed: true, dryRun: false, document };
+    await appendProjectEvent(project, { type: "subtitles_written", actor: options.actor,
+      payload: { previousRevision: result.previousRevision, revision: result.revision, cueCount: document.cues.length, kind: "skill_candidate" } });
+    return result;
+  });
+}
+
 /**
  * Write `subtitles.json`.
  *
@@ -1278,7 +1550,7 @@ export async function writeSubtitles(
 ): Promise<WriteSubtitlesResult> {
   const commit = async (): Promise<WriteSubtitlesResult> => {
     const targetPath = documentPath(project, "subtitles.json");
-    const previous = await readOptionalJsonAt(targetPath);
+    const previous = await readOptionalJsonAt<SubtitleDocument>(targetPath);
     const currentRevision = previous?.revision ?? null;
     if (options.expectedRevision !== undefined) {
       const expectedCurrent = currentRevision ?? "none";
@@ -1291,7 +1563,8 @@ export async function writeSubtitles(
       }
     }
     assertSubtitleDocument(proposal);
-    const document = proposal;
+    if (previous) assertSubtitleDocument(previous.value);
+    const document = reviewedSubtitleDocument(proposal, previous?.value ?? null, currentRevision ?? "none", options.reviewNote);
     if (document.projectId !== project.projectId) {
       throw new VideocutError(
         "invalid_subtitles",
@@ -1312,7 +1585,7 @@ export async function writeSubtitles(
         document,
       };
     }
-    if (!options.dryRun) await atomicWriteText(targetPath, content);
+    if (!options.dryRun) await commitSubtitleResultBytes(project, targetPath, content, previous);
     const result: WriteSubtitlesResult = {
       projectId: project.projectId,
       path: targetPath,
@@ -1402,12 +1675,26 @@ export async function writeVisuals(
         { documentProjectId: document.projectId, projectId: project.projectId },
       );
     }
+    if (document.layers.some(l => l.media)) {
+      const transcript = await readOptionalProjectDocument(project, "transcript.json");
+      if (!transcript || transcript.revision !== document.baseTranscriptRevision)
+        throw new VideocutError("revision_conflict", "Video anchors require the current transcript revision");
+      const words = parseTranscriptWords(transcript.value);
+      const ids = new Set(words.map(w => w.id));
+      if (document.layers.some(l => l.wordIds.some(id => !ids.has(id))))
+        throw new VideocutError("invalid_visuals", "Visual anchors contain unknown words");
+      const edl = await readEditList(project);
+      const timings = visualLayerTimings(document, words, edl?.value ?? null).filter(t => !t.orphaned).sort((a,b) => a.start-b.start);
+      if (timings.some((t,i) => i > 0 && t.start < timings[i-1]!.end - 0.000001))
+        throw new VideocutError("invalid_visuals", "Visual layers overlap in playback time");
+    }
     // A layer names an HTML file that the preview will load. Accepting a path to
     // something that is not there defers a plain "you have not written that
     // module yet" into a blank rectangle at playback, which reads as the
     // product being broken.
     for (const layer of document.layers) {
-      const modulePath = resolve(project.directory, layer.module);
+      if (layer.media) { await validateVisualMedia(project.directory, layer.media); continue; }
+      const modulePath = resolve(project.directory, layer.module!);
       const relativeToProject = relativePath(project.directory, modulePath);
       if (relativeToProject.startsWith("..") || isAbsolute(relativeToProject)) {
         throw new VideocutError(
@@ -1585,7 +1872,7 @@ export async function patchEditList(
     //
     // The adjustment needs the audio, which core cannot read; the caller supplies
     // it. Without one the boundaries stand exactly as given — never guessed at.
-    const next = options.placeBoundaries ? await options.placeBoundaries(applied) : applied;
+    const next = options.placeBoundaries && current.schemaVersion === 1 ? await options.placeBoundaries(applied) : applied;
     const result = await commitEditListSnapshot(project, previous, next, options);
     if (result.changed) {
       await appendProjectEvent(project, {
@@ -1663,7 +1950,10 @@ export async function findExecutable(name: string): Promise<string | null> {
  * One entry of what the audience actually hears, in the order they hear it.
  */
 export type PlaybackTranscriptEntry =
-  | { id: string; text: string; isGap: boolean; seconds: number }
+  | { id: string; text: string; isGap: boolean; seconds: number;
+      source?: string; instanceId?: string; sourceWordId?: string;
+      sourceStart?: number; sourceEnd?: number; timelineStart?: number; timelineEnd?: number;
+      segmentIds?: string[] }
   | { removedSpeech: string; seconds: number };
 
 export interface PlaybackTranscript {
@@ -1672,6 +1962,8 @@ export interface PlaybackTranscript {
   note: string;
   totalPlayedSeconds: number;
   stream: PlaybackTranscriptEntry[];
+  /** v2 only: count of words with some unplayed speech, not playback entries. */
+  removedSpeechCount?: number;
 }
 
 /**
@@ -1704,6 +1996,66 @@ export function buildPlaybackTranscript(
   words: readonly ReturnType<typeof parseTranscriptWords>[number][],
   editList: EditListDocument | null,
 ): PlaybackTranscript {
+  if (editList?.schemaVersion === 2) {
+    const document = parseEditListDocument(editList);
+    const precise = (value: number) => Math.round(value * 1_000_000) / 1_000_000;
+    const byInstance = new Map<string, typeof words[number][]>();
+    const key = (source: string, instanceId: string) => JSON.stringify([source, instanceId]);
+    const instanceSources = new Map(document.segments.map(s => [s.instanceId!, s.source]));
+    for (const word of words) {
+      if (!word.source?.trim() || !word.instanceId?.trim() || !word.sourceWordId?.trim()
+        || !document.sources!.some(s => s.path === word.source)
+        || (instanceSources.has(word.instanceId) && instanceSources.get(word.instanceId) !== word.source)) {
+        throw new VideocutError("invalid_transcript", "Multisource playback requires valid source, instanceId and sourceWordId on every word", { wordId: word.id });
+      }
+      const identity = key(word.source, word.instanceId);
+      const group = byInstance.get(identity) ?? [];
+      group.push(word); byInstance.set(identity, group);
+    }
+    for (const group of byInstance.values()) group.sort((a, b) => a.start - b.start || a.end - b.end);
+    type Played = Extract<PlaybackTranscriptEntry, { id: string }>;
+    const stream: Played[] = [];
+    const retained = new Map<typeof words[number], Array<{ start: number; end: number }>>();
+    for (const segment of document.segments) {
+      for (const word of byInstance.get(key(segment.source, segment.instanceId!)) ?? []) {
+        const start = Math.max(word.start, segment.sourceStart), end = Math.min(word.end, segment.sourceEnd);
+        if (end <= start) continue;
+        const timelineStart = precise(segment.timelineStart + start - segment.sourceStart);
+        const timelineEnd = precise(segment.timelineStart + end - segment.sourceStart);
+        const intervals = retained.get(word) ?? [];
+        intervals.push({ start, end }); retained.set(word, intervals);
+        const previous = stream.at(-1);
+        // Only reconnect a split of the same occurrence. A replay after another
+        // segment, or a jump within the source word, remains a separate entry.
+        if (previous?.id === word.id && previous.source === word.source && previous.instanceId === word.instanceId
+          && previous.sourceWordId === word.sourceWordId
+          && Math.abs(previous.sourceEnd! - start) < 0.000001
+          && Math.abs(previous.timelineEnd! - timelineStart) < 0.000001) {
+          previous.sourceEnd = precise(end); previous.timelineEnd = timelineEnd;
+          previous.seconds = precise(previous.seconds + end - start);
+          if (!previous.segmentIds!.includes(segment.id)) previous.segmentIds!.push(segment.id);
+        } else stream.push({ id: word.id, text: word.text ?? "", isGap: word.isGap === true,
+          seconds: precise(end - start), source: word.source, instanceId: word.instanceId,
+          sourceWordId: word.sourceWordId, sourceStart: precise(start), sourceEnd: precise(end),
+          timelineStart, timelineEnd, segmentIds: [segment.id] });
+      }
+    }
+    let removedSpeechCount = 0;
+    for (const word of words) {
+      if (word.isGap) continue;
+      let cursor = word.start;
+      let hasRemoved = false;
+      for (const interval of [...(retained.get(word) ?? [])].sort((a, b) => a.start - b.start)) {
+        if (interval.start > cursor) hasRemoved = true;
+        cursor = Math.max(cursor, interval.end);
+      }
+      if (word.end > cursor) hasRemoved = true;
+      if (hasRemoved) removedSpeechCount++;
+    }
+    return { projectId,
+      note: "v2 stream 按 EDL 播放顺序列出保留的词区间，seconds 仅计实际保留部分；部分词的 text 仍是原词，不代表完整发音。source/instanceId/sourceWordId 与源区间、timelineStart/timelineEnd 可回查定位。连续 split 的同一次词使用合并，非连续使用与不同实例不合并。v2 不混排 legacy removedSpeech，也不猜测已删语音的接缝位置；removedSpeechCount 仅汇总存在未播放部分的语音词数，已删上下文需查原始 transcript 与 EDL。legacy v1 仍使用原 stream 内 removedSpeech 标记。",
+      totalPlayedSeconds: precise(document.duration), stream, removedSpeechCount };
+  }
   const segments = [...(editList?.segments ?? [])].sort(
     (left, right) => left.timelineStart - right.timelineStart,
   );
@@ -2495,6 +2847,7 @@ export async function doctor(
   licenseStatus: string;
   readinessMode: "release-ready" | "public-beta" | "local-development" | "source-development" | "unready";
   capabilities: DoctorCapabilities;
+  runtimeEntry: RuntimeEntryStatus;
   checks: DoctorCheck[];
 }> {
   const projectsDir = resolve(options.projectsDir ?? defaultProjectsDir());
@@ -2502,6 +2855,11 @@ export async function doctor(
   const packagedStudioIndex = fileURLToPath(new URL("./studio/index.html", import.meta.url));
   const sourceStudioPackage = join(productRoot, "apps/studio/package.json");
   const installedMode = Boolean(process.env.CHENGFENG_VIDEOCUT_EXECUTABLE);
+  const runtimeEntry = await inspectRuntimeEntry({
+    dataDir: productHomeDir(),
+    launcher: process.env.CHENGFENG_VIDEOCUT_EXECUTABLE,
+    configuredHome: process.env.CHENGFENG_VIDEOCUT_HOME,
+  });
   const managedTools: ManagedToolsDoctorResult = installedMode
     ? await inspectInstalledManagedTools(productHomeDir(), {
       localDevelopment: options.localDevelopment === true,
@@ -2547,6 +2905,12 @@ export async function doctor(
     globalThis as typeof globalThis & { Bun?: { version?: string } }
   ).Bun?.version ?? null;
   const checks: DoctorCheck[] = [
+    {
+      name: "runtimeEntry",
+      ok: runtimeEntry.ok,
+      required: true,
+      detail: runtimeEntry.detail,
+    },
     {
       name: "dependencyMode",
       ok: managedTools.ok,
@@ -2646,6 +3010,9 @@ export async function doctor(
     licenseStatus: managedTools.licenseStatus,
     readinessMode,
     capabilities: RUNTIME_DOCTOR_CAPABILITIES,
+    runtimeEntry,
     checks,
   };
 }
+export {readModuleFile} from './moduleFiles';
+export * from './soundEffectsNode';

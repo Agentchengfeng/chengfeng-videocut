@@ -2,9 +2,9 @@
  * Forked from HyperFrames Studio 0.7.60
  * `apps/studio/src/player/components/timelineLayout.ts`.
  *
- * Product reduction: only the Store-owned `ZoomMode` type and time formatter
- * are replaced. Geometry, ticks, fit headroom, extent and playhead math remain
- * source-derived.
+ * Product reduction: the Store-owned `ZoomMode` type and time formatter are
+ * replaced, and the shared top pad is compacted to 8px. Row rendering and hit
+ * testing still share source-derived geometry; horizontal time math is unchanged.
  */
 export type ZoomMode = "fit" | "manual";
 
@@ -39,11 +39,11 @@ export const INSERT_BOUNDARY_BAND = CLIP_Y / TRACK_H;
  * offset; a track row's top is always `RULER_H + TRACKS_TOP_PAD + row*TRACK_H`.
  *
  * - TRACKS_TOP_PAD: empty space between the (sticky) ruler and the first track
- *   (~half a track height) so the first clip isn't jammed under the ruler.
+ *   (8px in this Product fork) so short panes expose the first track immediately.
  * - TRACKS_BOTTOM_PAD: empty space below the last track (~1.5 track heights),
  *   enough to comfortably drag a clip into the void to create a new bottom lane.
  */
-export const TRACKS_TOP_PAD = 50;
+export const TRACKS_TOP_PAD = 8;
 export const TRACKS_BOTTOM_PAD = Math.round(TRACK_H * 1.5);
 /**
  * Breathing room LEFT of t=0 (CapCut-style), inside the scroll content — the

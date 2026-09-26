@@ -24,6 +24,8 @@
  */
 
 import { readFile, stat } from "node:fs/promises";
+import {readModuleFile} from '@video-workbench/core/node';
+import {createHash} from 'node:crypto';
 import { resolve, sep } from "node:path";
 import {
   VideocutError,
@@ -231,6 +233,7 @@ async function moduleStamps(
 ): Promise<Record<string, string>> {
   const stamps: Record<string, string> = {};
   for (const layer of document?.value.layers ?? []) {
+    if (!layer.module) continue;
     if (stamps[layer.module]) continue;
     try {
       const info = await stat(resolve(projectDirectory, layer.module));
@@ -261,6 +264,7 @@ async function moduleStamps(
 const MODULE_CONTENT_TYPES: Record<string, string> = {
   html: "text/html; charset=utf-8",
   js: "text/javascript; charset=utf-8",
+  mjs: "text/javascript; charset=utf-8",
   css: "text/css; charset=utf-8",
   json: "application/json; charset=utf-8",
   svg: "image/svg+xml",
@@ -278,7 +282,7 @@ const MODULE_CONTENT_TYPES: Record<string, string> = {
  * outside the project prefix and is refused — checking the raw string would
  * miss `a/../../etc/passwd`.
  */
-async function moduleResponse(projectDirectory: string, modulePath: string): Promise<Response> {
+async function moduleResponse(projectDirectory: string, modulePath: string, requestUrl: URL, projectId: string): Promise<Response> {
   const extension = modulePath.split(".").pop()?.toLowerCase() ?? "";
   const contentType = MODULE_CONTENT_TYPES[extension];
   if (!contentType) {
@@ -294,7 +298,13 @@ async function moduleResponse(projectDirectory: string, modulePath: string): Pro
   }
   let body: Buffer;
   try {
-    body = await readFile(absolute);
+    body = await readModuleFile(projectDirectory, modulePath);
+    if(modulePath.startsWith('modules/published/')){
+      const parts=modulePath.split('/');if(parts.length<5)throw Error('Invalid package path');
+      const manifest=JSON.parse((await readModuleFile(projectDirectory,`${parts.slice(0,4).join('/')}/module-manifest.json`,65536)).toString());
+      const file=manifest.files?.find((f:{path:string})=>f.path===parts.slice(4).join('/'));
+      if(!file||manifest.moduleId!==parts[2]||manifest.version!==parts[3]||file.bytes!==body.length||file.sha256!==createHash('sha256').update(body).digest('hex'))throw Error('Package resource not declared or changed');
+    }
   } catch {
     throw new VideocutError("project_not_found", "That visual module file is not in the project", {
       module: modulePath,
@@ -307,6 +317,11 @@ async function moduleResponse(projectDirectory: string, modulePath: string): Pro
       // The frame is driven by the player, and a stale module would animate
       // against the wrong timeline without ever looking broken.
       "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff",
+      ...(modulePath.startsWith('modules/published/') ? {'Access-Control-Allow-Origin':'*','Content-Security-Policy': (()=>{
+        const scope=`${requestUrl.origin}/api/v1/projects/${encodeURIComponent(projectId)}/visuals/module/${modulePath.split('/').slice(0,4).join('/')}/`;
+        return `default-src 'none'; script-src 'unsafe-inline' ${scope}; style-src 'unsafe-inline' ${scope}; img-src ${scope}; font-src ${scope}; connect-src ${scope}; base-uri 'none'; form-action 'none'; frame-src 'none'; object-src 'none'; worker-src 'none'; sandbox allow-scripts`;
+      })()} : {}),
     },
   });
 }
@@ -333,7 +348,7 @@ export function createVideocutVisualsHandler(
         if (request.method !== "GET") {
           return errorResponse(405, "method_not_allowed", "Only GET is supported for modules");
         }
-        return await moduleResponse(project.directory, route.modulePath);
+        return await moduleResponse(project.directory, route.modulePath, url, route.projectId);
       }
 
       if (request.method !== "GET" && request.method !== "PUT") {

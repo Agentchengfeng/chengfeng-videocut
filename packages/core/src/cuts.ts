@@ -4,6 +4,9 @@ export interface TimedWord {
   id: string;
   start: number;
   end: number;
+  source?: string;
+  instanceId?: string;
+  sourceWordId?: string;
   isGap?: boolean;
   /** Present when the transcript carried one. Timing consumers ignore it. */
   text?: string;
@@ -133,6 +136,9 @@ export function parseTranscriptWords(payload: unknown): TimedWord[] {
         id,
         start,
         end,
+        ...(typeof word.source === "string" ? { source: word.source } : {}),
+        ...(typeof word.instanceId === "string" ? { instanceId: word.instanceId } : {}),
+        ...(typeof word.sourceWordId === "string" ? { sourceWordId: word.sourceWordId } : {}),
         isGap: word.isGap === true,
         ...(typeof word.text === "string" ? { text: word.text } : {}),
         ...(typeof word.punctuation === "string" && word.punctuation

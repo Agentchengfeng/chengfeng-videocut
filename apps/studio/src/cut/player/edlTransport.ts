@@ -9,6 +9,8 @@ import {
 const TIME_EPSILON = 0.001;
 
 export interface EdlTransportPosition {
+  source?: string;
+  instanceId?: string;
   timelineTime: number;
   sourceTime: number;
   segmentIndex: number;
@@ -102,6 +104,8 @@ export function resolveEdlTimelinePosition(
   return {
     timelineTime: normalizedTime,
     sourceTime,
+    ...(document.schemaVersion === 2 ? { source: segment.source } : {}),
+    ...(segment.instanceId ? { instanceId: segment.instanceId } : {}),
     segmentIndex,
     segmentId: segment.id,
     atTimelineEnd: normalizedTime >= document.duration - TIME_EPSILON,
@@ -112,12 +116,13 @@ export function resolveEdlTimelinePosition(
 export function resolveEdlSourcePosition(
   input: EditListDocument,
   sourceTime: number,
+  identity?: { source?: string; instanceId?: string },
 ): EdlTransportPosition | null {
   if (!Number.isFinite(sourceTime)) {
     throw new TypeError("sourceTime must be a finite number");
   }
   const document = parseEditListDocument(input);
-  const timelineTime = sourceTimeToTimelineTime(document, sourceTime);
+  const timelineTime = sourceTimeToTimelineTime(document, sourceTime, identity);
   return timelineTime === null
     ? null
     : resolveEdlTimelinePosition(document, timelineTime);
@@ -126,9 +131,11 @@ export function resolveEdlSourcePosition(
 function nextRetainedSegment(
   document: EditListDocument,
   sourceTime: number,
+  identity?: { source?: string; instanceId?: string },
 ): EditListSegment | null {
   let next: EditListSegment | null = null;
   for (const segment of document.segments) {
+    if (document.schemaVersion === 2 && (segment.source !== identity?.source || segment.instanceId !== identity?.instanceId)) continue;
     if (segment.sourceStart < sourceTime - TIME_EPSILON) continue;
     if (
       !next ||
@@ -166,7 +173,7 @@ export function resolveEdlRevisionTransition(input: {
     input.currentTimelineTime,
   );
   const newDocument = parseEditListDocument(input.newDocument);
-  const retained = resolveEdlSourcePosition(newDocument, oldPosition.sourceTime);
+  const retained = resolveEdlSourcePosition(newDocument, oldPosition.sourceTime, oldPosition);
 
   if (retained) {
     const atTimelineEnd = retained.timelineTime >= newDocument.duration - TIME_EPSILON;
@@ -182,7 +189,7 @@ export function resolveEdlRevisionTransition(input: {
     };
   }
 
-  const next = nextRetainedSegment(newDocument, oldPosition.sourceTime);
+  const next = nextRetainedSegment(newDocument, oldPosition.sourceTime, oldPosition);
   if (next) {
     return {
       fromRevision: oldRevision,

@@ -52,6 +52,7 @@ interface LeftSidebarProps {
   codeChildren?: ReactNode;
   onRenderComposition?: (comp: string) => void;
   isRendering?: boolean;
+  renderDisabledReason?: string;
   onLint?: () => void;
   linting?: boolean;
   lintFindingCount?: number;
@@ -85,6 +86,7 @@ export const LeftSidebar = memo(
       codeChildren,
       onRenderComposition,
       isRendering,
+      renderDisabledReason,
       onLint,
       linting,
       lintFindingCount,
@@ -222,6 +224,7 @@ export const LeftSidebar = memo(
                 onSelect={onSelectComposition}
                 onRenderComposition={onRenderComposition}
                 isRendering={isRendering}
+                renderDisabledReason={renderDisabledReason}
                 lintFindingsByFile={lintFindingsByFile}
               />
             )}

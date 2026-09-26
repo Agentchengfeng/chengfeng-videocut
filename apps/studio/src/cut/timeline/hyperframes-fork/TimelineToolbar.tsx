@@ -15,6 +15,7 @@ import {
   Trash,
 } from "@phosphor-icons/react";
 import { Tooltip } from "../../../components/ui/Tooltip";
+import "./TimelineToolbar.css";
 import type { ZoomMode } from "./timelineLayout";
 import {
   getNextTimelineZoomPercent,
@@ -24,6 +25,7 @@ import {
 } from "./timelineZoom";
 
 export interface TimelineToolbarProps {
+  editingNotice?: string;
   selectionActive?: boolean;
   canUndo: boolean;
   onUndo: () => void;
@@ -47,6 +49,7 @@ const FLAT_ACTIVE = `${FLAT_BUTTON} bg-white/[0.08] text-neutral-100 active:scal
 const FLAT_DISABLED = `${FLAT_BUTTON} cursor-not-allowed text-neutral-700`;
 
 export function TimelineToolbar({
+  editingNotice,
   selectionActive = true,
   canUndo,
   onUndo,
@@ -74,11 +77,11 @@ export function TimelineToolbar({
 
   return (
     <div
-      className="border-b border-neutral-800/60"
+      className="cf-hf-timeline-toolbar border-b border-neutral-800/60"
       data-hyperframes-timeline-fork="toolbar"
     >
-      <div className="flex items-center justify-between px-2 py-0.5">
-        <div className="flex items-center gap-0.5">
+      <div className="cf-hf-timeline-toolbar__row flex items-center justify-between px-2 py-0.5">
+        <div className="cf-hf-timeline-toolbar__edit flex items-center gap-0.5">
           <Tooltip label={canUndo ? "撤销上一次编辑（⌘Z / Ctrl+Z）" : "没有可撤销的编辑"}>
             <button
               type="button"
@@ -163,9 +166,15 @@ export function TimelineToolbar({
               <Trash size={16} aria-hidden="true" />
             </button>
           </Tooltip>
+          {editingNotice && (
+            <details className="cf-hf-timeline-toolbar__notice">
+              <summary aria-label="多源编辑限制：分割、删除不可撤销">不可撤销</summary>
+              <div className="cf-hf-timeline-toolbar__notice-body">{editingNotice}</div>
+            </details>
+          )}
         </div>
 
-        <div className="flex items-center gap-0.5">
+        <div className="cf-hf-timeline-toolbar__zoom flex items-center gap-0.5">
           <Tooltip label="适应时间线宽度">
             <button
               type="button"

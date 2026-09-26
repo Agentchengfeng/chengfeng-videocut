@@ -62,6 +62,7 @@ export function StudioLeftSidebar({
 
   const handleRenderComposition = useCallback(
     async (comp: string) => {
+      if (renderQueue.renderCapability?.enabled !== true) return;
       await waitForPendingDomEditSaves();
       const { format, quality, fps } = getPersistedRenderSettings();
       await renderQueue.startRender({ composition: comp, format, quality, fps });
@@ -142,6 +143,7 @@ export function StudioLeftSidebar({
         }
         onRenderComposition={handleRenderComposition}
         isRendering={renderQueue.isRendering}
+        renderDisabledReason={renderQueue.renderCapability?.enabled === true ? undefined : renderQueue.renderCapability?.reason ?? "尚未确认此工作台的通用 HTML 导出能力。"}
         onLint={onLint}
         linting={linting}
         lintFindingCount={lintFindingCount}

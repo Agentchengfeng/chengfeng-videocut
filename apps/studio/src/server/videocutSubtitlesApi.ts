@@ -23,6 +23,7 @@
  */
 
 import { resolve } from "node:path";
+import type { SkillResultState } from "@video-workbench/contracts";
 import {
   VideocutError,
   asVideocutError,
@@ -37,6 +38,8 @@ import {
   readSubtitles,
   resolveProject,
   writeSubtitles,
+  acceptSubtitleCandidate,
+  getSubtitleResultState,
 } from "@video-workbench/core/node";
 
 const API_SCHEMA_VERSION = 1 as const;
@@ -113,7 +116,7 @@ function pathSegments(pathname: string): string[] {
 }
 
 function matchesRoute(segments: readonly string[]): boolean {
-  return segments.length === 5
+  return (segments.length === 5 || (segments.length === 6 && segments[5] === "candidate"))
     && segments[0] === "api"
     && segments[1] === "v1"
     && segments[2] === "projects"
@@ -161,13 +164,14 @@ async function readJsonRequest(request: Request): Promise<unknown> {
 interface SubtitlesPutBody {
   expectedRevision: string;
   document: unknown;
+  reviewNote?: string;
 }
 
 function parsePutBody(value: unknown): SubtitlesPutBody {
   if (!isObject(value)) {
     throw new VideocutError("invalid_argument", "Subtitles request body must be a JSON object");
   }
-  const allowed = new Set(["expectedRevision", "document"]);
+  const allowed = new Set(["expectedRevision", "document", "reviewNote"]);
   const unexpected = Object.keys(value).filter((key) => !allowed.has(key));
   if (unexpected.length > 0) {
     throw new VideocutError(
@@ -185,7 +189,19 @@ function parsePutBody(value: unknown): SubtitlesPutBody {
   if (!isObject(value.document)) {
     throw new VideocutError("invalid_argument", "document must be a subtitle document object");
   }
-  return { expectedRevision: value.expectedRevision, document: value.document };
+  if (value.reviewNote !== undefined && (typeof value.reviewNote !== "string" || !value.reviewNote.trim() || value.reviewNote.length > 2000)) {
+    throw new VideocutError("invalid_argument", "reviewNote must contain 1–2000 characters");
+  }
+  return { expectedRevision: value.expectedRevision, document: value.document, ...(typeof value.reviewNote === "string" ? { reviewNote: value.reviewNote } : {}) };
+}
+
+function parseCandidateBody(value: unknown) {
+  if (!isObject(value) || Object.keys(value).some(key => !["expectedRevision", "documentContent", "receipt"].includes(key))
+    || typeof value.expectedRevision !== "string" || !REVISION_PATTERN.test(value.expectedRevision)
+    || typeof value.documentContent !== "string" || !isObject(value.receipt)) {
+    throw new VideocutError("invalid_argument", "Candidate requires expectedRevision, documentContent and receipt");
+  }
+  return { expectedRevision: value.expectedRevision, documentContent: value.documentContent, receipt: value.receipt };
 }
 
 /** Everything derived, in one shape, so the two methods cannot answer differently. */
@@ -196,19 +212,22 @@ async function derivedState(
   timings: SubtitleCueTiming[];
   stale: ReturnType<typeof subtitleStaleness>;
   transcriptRevision: string | null;
+  resultState: SkillResultState;
 }> {
-  const [transcript, editList] = await Promise.all([
+  const [transcript, editList, resultState] = await Promise.all([
     readOptionalProjectDocument(project, "transcript.json"),
     readEditList(project),
+    getSubtitleResultState(project, document),
   ]);
   if (!document) {
-    return { timings: [], stale: [], transcriptRevision: transcript?.revision ?? null };
+    return { timings: [], stale: [], transcriptRevision: transcript?.revision ?? null, resultState };
   }
   const words = transcript ? parseTranscriptWords(transcript.value) : [];
   return {
     timings: subtitleCueTimings(document.value, words, editList?.value ?? null),
     stale: subtitleStaleness(document.value, words, editList?.value ?? null),
     transcriptRevision: transcript?.revision ?? null,
+    resultState,
   };
 }
 
@@ -233,8 +252,9 @@ export function createVideocutSubtitlesHandler(
 
     try {
       assertProjectId(projectId);
-      if (request.method !== "GET" && request.method !== "PUT") {
-        return errorResponse(405, "method_not_allowed", "Only GET and PUT are supported");
+      const candidateRoute = pathSegments(url.pathname).length === 6;
+      if (candidateRoute ? request.method !== "POST" : request.method !== "GET" && request.method !== "PUT") {
+        return errorResponse(405, "method_not_allowed", candidateRoute ? "Only POST is supported" : "Only GET and PUT are supported");
       }
       // The route carries a registry id, not a cwd-relative path.
       const project = await resolveProject(resolve(options.projectsDir, projectId));
@@ -257,11 +277,15 @@ export function createVideocutSubtitlesHandler(
         );
       }
 
-      const body = parsePutBody(await readJsonRequest(request));
-      const result = await writeSubtitles(project, body.document, {
-        expectedRevision: body.expectedRevision,
-        actor: "studio-transcript",
-      });
+      const body = await readJsonRequest(request);
+      const putBody = candidateRoute ? null : parsePutBody(body);
+      const result = candidateRoute
+        ? await acceptSubtitleCandidate(project, parseCandidateBody(body), { actor: "skill" })
+        : await writeSubtitles(project, putBody!.document, {
+          expectedRevision: putBody!.expectedRevision,
+          actor: "studio-transcript",
+          ...(putBody!.reviewNote ? { reviewNote: putBody!.reviewNote } : {}),
+        });
       if (result.changed && options.onDocumentChanged) {
         try {
           await options.onDocumentChanged({
@@ -274,11 +298,25 @@ export function createVideocutSubtitlesHandler(
           // a committed write into an apparent request failure and invite retry.
         }
       }
-      const derived = await derivedState(project, {
-        value: result.document,
-        revision: result.revision,
-        raw: "",
-      });
+      let derived: Awaited<ReturnType<typeof derivedState>>;
+      try {
+        derived = await derivedState(project, {
+          value: result.document,
+          revision: result.revision,
+          raw: "",
+        });
+      } catch (error) {
+        // The content/revision already landed. Never report a plain failed
+        // write (or invent current timings) when only derived readback failed.
+        const normalized = asVideocutError(error);
+        return errorResponse(503, "write_committed_readback_failed",
+          "Subtitles were saved, but derived readback failed. Do not retry the write; inspect the saved result with GET first.", {
+            committed: true,
+            revision: result.revision,
+            previousRevision: result.previousRevision ?? "none",
+            causeCode: normalized.code,
+          });
+      }
       return jsonResponse(
         {
           schemaVersion: API_SCHEMA_VERSION,

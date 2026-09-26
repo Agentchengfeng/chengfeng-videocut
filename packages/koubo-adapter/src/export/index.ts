@@ -16,27 +16,35 @@
  * choice is written down.
  */
 
-import { rm } from "node:fs/promises";
+import { rm, rename } from "node:fs/promises";
 import { join } from "node:path";
 import type { ExportProfile } from "@video-workbench/contracts";
 import type { ExportPlan } from "@video-workbench/core";
+import { validateVisualMedia } from "@video-workbench/core/node";
 import { assembleCut, composeFilm, intermediatePath, verifyFilm } from "./compose";
 import { renderOverlayFrames } from "./overlayRenderer";
 import type { MediaProbe } from "../mediaCut";
+import { mixSoundEffects } from "./soundEffects";
+export * from "./soundEffects";
+import { resolveMainSources } from "./sources";
 
 export * from "./chrome";
 export * from "./compose";
 export * from "./overlayPage";
 export * from "./overlayRenderer";
 export * from "./profile";
+export * from "./sources";
 
 export type ExportStage = "assemble" | "overlay" | "compose" | "verify";
 
 export interface ExportFilmInput {
   /** The project directory — modules are served from here, and only from here. */
   projectDirectory: string;
+  soundEffectsAssetDirectory?: string;
   /** The immutable source. Never written to. */
   sourcePath: string;
+  /** Render a white canvas at the planned size for an audio-only source. */
+  audioOnly?: boolean;
   plan: ExportPlan;
   outputPath: string;
   workDirectory: string;
@@ -58,12 +66,28 @@ export interface ExportFilmResult {
 
 export async function exportFilm(input: ExportFilmInput): Promise<ExportFilmResult> {
   const { plan } = input;
+  for (const layer of plan.layers) if (layer.media) await validateVisualMedia(input.projectDirectory, layer.media);
   const assembled = intermediatePath(input.workDirectory);
   const framesDirectory = join(input.workDirectory, "overlay");
 
   input.onProgress?.("assemble", 0, 1);
   input.signal?.throwIfAborted();
-  await assembleCut({ source: input.sourcePath, output: assembled, plan, signal: input.signal });
+  await assembleCut({
+    source: input.sourcePath,
+    projectDirectory: input.projectDirectory,
+    output: assembled,
+    plan,
+    audioOnly: input.audioOnly,
+    signal: input.signal,
+  });
+  if (plan.soundEffects?.some(c => !c.mute)) {
+    const mixed = `${assembled}.sfx.mkv`;
+    try {
+      await mixSoundEffects({ source: assembled, output: mixed, projectDirectory: input.soundEffectsAssetDirectory ?? input.projectDirectory,
+        cues: plan.soundEffects, duration: plan.duration, lossless: true, signal: input.signal });
+      await rename(mixed, assembled);
+    } finally { await rm(mixed, {force:true}); }
+  }
   input.onProgress?.("assemble", 1, 1);
 
   // The overlay is rendered after the cut rather than beside it on purpose:
@@ -73,7 +97,7 @@ export async function exportFilm(input: ExportFilmInput): Promise<ExportFilmResu
   // A project with nothing written and nothing drawn skips the browser
   // entirely rather than rendering thousands of transparent sheets to lay over
   // the footage and change nothing.
-  const hasOverlay = plan.subtitleCues.length > 0 || plan.layers.length > 0;
+  const hasOverlay = plan.subtitleCues.length > 0 || plan.layers.some(layer => !layer.media);
   const frames = hasOverlay
     ? await renderOverlayFrames({
       plan,
@@ -86,6 +110,7 @@ export async function exportFilm(input: ExportFilmInput): Promise<ExportFilmResu
 
   input.onProgress?.("compose", 0, plan.zoomSpans.length);
   await composeFilm({
+    projectDirectory: input.projectDirectory,
     assembled,
     framePattern: frames?.pattern ?? null,
     output: input.outputPath,
@@ -99,6 +124,8 @@ export async function exportFilm(input: ExportFilmInput): Promise<ExportFilmResu
   input.onProgress?.("verify", 0, 1);
   input.signal?.throwIfAborted();
   const { probe, frames: filmFrames, problems } = await verifyFilm(input.outputPath, plan, input.signal);
+  if (plan.sources) await resolveMainSources(input.projectDirectory, plan.sources);
+  for (const layer of plan.layers) if (layer.media) await validateVisualMedia(input.projectDirectory, layer.media);
   input.onProgress?.("verify", 1, 1);
 
   if (!input.keepWork) {

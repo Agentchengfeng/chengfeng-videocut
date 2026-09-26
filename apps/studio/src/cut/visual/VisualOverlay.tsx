@@ -1,5 +1,7 @@
-import { useEffect, useRef, type CSSProperties } from "react";
-import type { VisualZoom } from "@video-workbench/core";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { isVisualTimeActive } from "@video-workbench/core";
+import type { VisualZoom, VisualMedia, ResolvedVisualAnimation } from "@video-workbench/core";
+import { VideoVisual } from "./VideoVisual";
 import { useContainedPicture } from "../useContainedPicture";
 
 /** One subtitle screen this layer covers, timed against the layer's own zero. */
@@ -10,6 +12,8 @@ export interface VisualCue {
 }
 
 export interface ActiveVisual {
+  animation?: ResolvedVisualAnimation;
+  media?: VisualMedia;
   layerId: string;
   /** Where the preview fetches the module's HTML. */
   src: string;
@@ -39,10 +43,28 @@ export interface VisualOverlayProps {
   activeLayerId: string | null;
   /** Current position on the cut timeline, in seconds. */
   timelineTime: number;
+  fallbackAspect?: number | null;
 }
 
 /** What the player sends into a module. Namespaced so a page can ignore it. */
 export const VISUAL_SEEK_MESSAGE = "videocut:seek" as const;
+
+/** Same later-layer-wins rule as the timeline; read the narration clock. */
+export function visualWinner(layers: readonly ActiveVisual[], time: number) {
+  for (let index = layers.length - 1; index >= 0; index--) {
+    const layer = layers[index]!;
+    if (isVisualTimeActive(time, layer.start, layer.start + layer.duration)) return layer;
+  }
+  return null;
+}
+
+export function mediaWindow(layers: readonly ActiveVisual[], time: number): string[] {
+  const winner = visualWinner(layers, time);
+  const next = layers.filter(layer => layer.media && layer.start > time)
+    .sort((a, b) => a.start - b.start)[0];
+  return [winner?.media ? winner.layerId : null, next?.layerId]
+    .filter((id): id is string => !!id);
+}
 
 /**
  * A visual layer, on the video.
@@ -74,14 +96,33 @@ export const VISUAL_SEEK_MESSAGE = "videocut:seek" as const;
  *
  * It never intercepts a click: the video underneath is the play/pause target.
  */
-export function VisualOverlay({ layers, activeLayerId, timelineTime }: VisualOverlayProps) {
+export function VisualOverlay({ layers, activeLayerId, timelineTime, fallbackAspect = null }: VisualOverlayProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const frameRefs = useRef(new Map<string, HTMLIFrameElement>());
   const readyIds = useRef(new Set<string>());
-  const picture = useContainedPicture(hostRef);
+  const seekSequence = useRef(0);
+  const [seekErrors, setSeekErrors] = useState<Record<string, string>>({});
+  const picture = useContainedPicture(hostRef, fallbackAspect);
+  const canvas = useContainedPicture(hostRef, fallbackAspect, true);
   const active = layers.find((layer) => layer.layerId === activeLayerId) ?? null;
+  const [mediaIds, setMediaIds] = useState(() => mediaWindow(layers, timelineTime));
+  useEffect(() => {
+    const master = hostRef.current?.closest(".cf-cut-player-stage")?.querySelector('video[data-koubo-media-owner="video"]');
+    if (!(master instanceof HTMLVideoElement)) return;
+    let raf = 0;
+    const update = () => {
+      const next = mediaWindow(layers, master.currentTime);
+      setMediaIds(previous => previous.join("\0") === next.join("\0") ? previous : next);
+    };
+    const tick = () => { update(); raf = requestAnimationFrame(tick); };
+    master.addEventListener("seeking", update);
+    master.addEventListener("seeked", update);
+    update(); raf = requestAnimationFrame(tick);
+    return () => { cancelAnimationFrame(raf); master.removeEventListener("seeking", update); master.removeEventListener("seeked", update); };
+  }, [layers]);
 
-  // Every layer's frame is mounted up front and only visibility changes.
+  // HTML frames stay mounted; MP4 decoders belong only to the selected winner.
+  // At most the current winner and nearest upcoming MP4 retain resources.
   // A frame mounted at the moment its layer begins spends ~a tenth of a second
   // fetching and parsing before it first paints — with hard cuts that gap
   // showed as a flash of raw footage at every boundary into an animation.
@@ -93,7 +134,7 @@ export function VisualOverlay({ layers, activeLayerId, timelineTime }: VisualOve
   // stays untransformed on purpose — captions sit on the output frame, not on
   // the footage.
   useEffect(() => {
-    const video = hostRef.current?.closest(".cf-cut-player-stage")?.querySelector("video");
+    const video = hostRef.current?.closest(".cf-cut-player-stage")?.querySelector('video[data-koubo-media-owner="video"]');
     if (!(video instanceof HTMLVideoElement)) return;
     const zoom = active?.zoom;
     if (!zoom || !picture) {
@@ -125,50 +166,86 @@ export function VisualOverlay({ layers, activeLayerId, timelineTime }: VisualOve
     };
   }, [active?.zoom, picture]);
 
-  // Driven every frame from the video element's own clock — the transport's
-  // React tick is a few updates a second, enough to pick a layer, far too
-  // coarse to animate with.
+  // Visibility and messages share the MP4 winner from the narration clock.
+  // The transport's React props can lag across a boundary; they must never
+  // keep an old HTML frame above the current MP4 or animate a losing layer.
   useEffect(() => {
-    if (!active) return;
-    const video = hostRef.current?.closest(".cf-cut-player-stage")?.querySelector("video");
+    const video = hostRef.current?.closest(".cf-cut-player-stage")?.querySelector('video[data-koubo-media-owner="video"]');
     if (!(video instanceof HTMLVideoElement)) return;
     let raf = 0;
-    const tick = () => {
-      const target = frameRefs.current.get(active.layerId)?.contentWindow;
-      if (target && readyIds.current.has(active.layerId)) {
+    const pending = new Map<string, { token: number; sentAt: number }>();
+    const failures = new Map<string, string>();
+    setSeekErrors({});
+    const fail = (id: string, message: string) => {
+      failures.set(id, message); pending.delete(id);
+      const frame = frameRefs.current.get(id); if (frame) frame.style.visibility = "hidden";
+      setSeekErrors(Object.fromEntries(failures));
+    };
+    const acknowledged = (event: MessageEvent) => {
+      const data = event.data;
+      if (!data || (data.type !== "videocut:seek-applied" && data.type !== "videocut:seek-error")) return;
+      for (const [id, request] of pending) {
+        if (event.source !== frameRefs.current.get(id)?.contentWindow || data.token !== request.token) continue;
+        if (data.type === "videocut:seek-error") fail(id, typeof data.message === "string" ? data.message.slice(0, 240) : "模块定位失败");
+        else pending.delete(id);
+        break;
+      }
+    };
+    window.addEventListener("message", acknowledged);
+    const sync = () => {
+      for (const [id, request] of pending) if (performance.now() - request.sentAt > 5000) fail(id, "模块定位超时，未收到完成确认");
+      const winner = visualWinner(layers, video.currentTime);
+      for (const [id, frame] of frameRefs.current) {
+        frame.style.visibility = id === winner?.layerId && !winner?.animation?.issues.length && !failures.has(id) ? "visible" : "hidden";
+      }
+      if (!winner || winner.media || winner.animation?.issues.length || failures.has(winner.layerId) || pending.has(winner.layerId)) return;
+      const target = frameRefs.current.get(winner.layerId)?.contentWindow;
+      if (target && readyIds.current.has(winner.layerId)) {
+        const token = winner.animation ? ++seekSequence.current : undefined;
+        if (token !== undefined) pending.set(winner.layerId, { token, sentAt: performance.now() });
         target.postMessage(
           {
             type: VISUAL_SEEK_MESSAGE,
-            time: Math.max(0, video.currentTime - active.start),
-            duration: active.duration,
-            cues: active.cues,
-            zoom: active.zoom ?? null,
+            time: Math.max(0, video.currentTime - winner.start),
+            duration: winner.duration,
+            cues: winner.cues,
+            zoom: winner.zoom ?? null,
+            ...(winner.animation ? { animation: winner.animation, wordCues: winner.animation.wordCues } : {}),
+            ...(token !== undefined ? { token } : {}),
           },
           "*",
         );
       }
-      raf = requestAnimationFrame(tick);
     };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [active]);
+    const tick = () => { sync(); raf = requestAnimationFrame(tick); };
+    video.addEventListener("seeking", sync);
+    video.addEventListener("seeked", sync);
+    sync(); raf = requestAnimationFrame(tick);
+    return () => {
+      cancelAnimationFrame(raf);
+      video.removeEventListener("seeking", sync);
+      video.removeEventListener("seeked", sync);
+      window.removeEventListener("message", acknowledged);
+    };
+  }, [layers]);
 
   return (
     <div
       ref={hostRef}
       className="cf-cut-visual-overlay"
-      style={picture ? { width: `${picture.width}px`, height: `${picture.height}px` } : undefined}
-      aria-hidden="true"
+      style={canvas ? { width: `${canvas.width}px`, height: `${canvas.height}px` } : undefined}
     >
       {layers.map((layer) => (
-        <iframe
+        layer.media ? (mediaIds.includes(layer.layerId) ? <VideoVisual key={layer.layerId} layer={layer} layers={layers} /> : null) : <iframe
           key={layer.layerId}
           ref={(node) => {
             if (node) frameRefs.current.set(layer.layerId, node);
             else frameRefs.current.delete(layer.layerId);
           }}
           className="cf-cut-visual-overlay__frame"
-          style={layer.layerId === activeLayerId ? undefined : { visibility: "hidden" }}
+          style={{ visibility: "hidden", ...(layer.animation?.canvas !== "project" && picture ? {
+            width: `${picture.width}px`, height: `${picture.height}px`, left: "50%", top: "50%", transform: "translate(-50%, -50%)",
+          } : {}) }}
           src={layer.src}
           onLoad={() => readyIds.current.add(layer.layerId)}
           title="画面"
@@ -177,6 +254,16 @@ export function VisualOverlay({ layers, activeLayerId, timelineTime }: VisualOve
           sandbox="allow-scripts"
           scrolling="no"
         />
+      ))}
+      {layers.filter(layer => layer.animation?.issues.length).map(layer => (
+        <div key={`warning-${layer.layerId}`} role="status" style={{ position: "relative", zIndex: 10, background: "#30220a", color: "#ffe1a3", padding: "4px 8px" }}>
+          动画 {layer.layerId} 待复核：{layer.animation!.issues.join(", ")}（未自动重排或变速）
+        </div>
+      ))}
+      {Object.entries(seekErrors).map(([id, message]) => (
+        <div key={`seek-error-${id}`} role="alert" style={{ position: "relative", zIndex: 10, background: "#30220a", color: "#ffe1a3", padding: "4px 8px" }}>
+          动画 {id} 定位失败：{message}
+        </div>
       ))}
     </div>
   );

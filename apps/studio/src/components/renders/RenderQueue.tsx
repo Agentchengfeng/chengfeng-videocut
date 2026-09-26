@@ -25,6 +25,7 @@ interface RenderQueueProps {
   onClearCompleted: () => void;
   onStartRender: StartRenderHandler;
   isRendering: boolean;
+  renderDisabledReason?: string;
   /** History fetch failure (null when the last load succeeded). */
   loadError?: string | null;
   /** Retry a failed history load. */
@@ -243,11 +244,13 @@ function formatEta(ms: number): string {
 function FormatExportButton({
   onStartRender,
   isRendering,
+  renderDisabledReason,
   compositionDimensions,
   lastRenderDurationMs,
 }: {
   onStartRender: StartRenderHandler;
   isRendering: boolean;
+  renderDisabledReason?: string;
   compositionDimensions?: CompositionDimensions | null;
   lastRenderDurationMs?: number;
 }) {
@@ -348,10 +351,12 @@ function FormatExportButton({
         variant="primary"
         size="md"
         loading={isRendering}
+        disabled={Boolean(renderDisabledReason)}
+        title={renderDisabledReason}
         onClick={() => {
           // loading already disables the button; this guard also stops a
           // double-click in the same frame from enqueueing two renders.
-          if (isRendering) return;
+          if (isRendering || renderDisabledReason) return;
           trackStudioEvent("render_start", { format, quality, resolution, fps });
           void onStartRender(format, quality, resolution, fps);
         }}
@@ -359,6 +364,7 @@ function FormatExportButton({
       >
         {isRendering ? "Rendering…" : "Export"}
       </Button>
+      {renderDisabledReason && <p role="status" className="mt-2 text-xs text-studio-text-muted">{renderDisabledReason}</p>}
       {lastRenderDurationMs !== undefined && !isRendering && (
         <p className="text-[9px] text-panel-text-5 text-center -mt-1.5">
           Last render took {formatEta(lastRenderDurationMs)}
@@ -376,6 +382,7 @@ export const RenderQueue = memo(function RenderQueue({
   onClearCompleted,
   onStartRender,
   isRendering,
+  renderDisabledReason,
   loadError,
   onRetryLoad,
   actionError,
@@ -403,6 +410,7 @@ export const RenderQueue = memo(function RenderQueue({
         <FormatExportButton
           onStartRender={onStartRender}
           isRendering={isRendering}
+          renderDisabledReason={renderDisabledReason}
           compositionDimensions={compositionDimensions}
           lastRenderDurationMs={lastRenderDurationMs}
         />

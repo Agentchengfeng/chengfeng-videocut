@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { trackStudioRenderStart } from "../../telemetry/events";
 import { getAnonymousId } from "../../telemetry/config";
 import { generateId } from "../../utils/generateId";
+import { useRenderCapability } from "./useRenderCapability";
 
 export interface RenderJob {
   id: string;
@@ -69,6 +70,7 @@ function writeHiddenIds(projectId: string, ids: Set<string>): void {
 }
 
 export function useRenderQueue(projectId: string | null) {
+  const { capability: renderCapability, refresh: refreshRenderCapability } = useRenderCapability(projectId);
   const [jobs, setJobs] = useState<RenderJob[]>([]);
   // History fetch failure — distinguished from "no renders yet" so the panel
   // never shows a false empty state.
@@ -138,6 +140,10 @@ export function useRenderQueue(projectId: string | null) {
     async (opts: StartRenderOptions = {}) => {
       if (!projectId) return;
 
+      // Re-read at submission: a restarted/replaced host must not inherit stale enablement.
+      const capability = await refreshRenderCapability();
+      if (!capability.enabled) { setActionError(capability.reason); return; }
+
       const fps = opts.fps ?? 30;
       const quality = opts.quality ?? "standard";
       const format = opts.format ?? "mp4";
@@ -190,7 +196,7 @@ export function useRenderQueue(projectId: string | null) {
           id: generateId(),
           status: "failed",
           progress: 0,
-          error: "Could not reach render server. Use `hyperframes render` from the CLI instead.",
+          error: "无法连接导出服务。请检查工作台连接；产品导出应使用既有确认门控流程。",
           filename: "Export failed",
           createdAt: startTime,
         };
@@ -272,7 +278,7 @@ export function useRenderQueue(projectId: string | null) {
 
       return jobId;
     },
-    [projectId, closeActiveEventSource],
+    [projectId, closeActiveEventSource, refreshRenderCapability],
   );
 
   // Cancel an in-flight render. The job row stays (as "cancelled") so the
@@ -358,6 +364,7 @@ export function useRenderQueue(projectId: string | null) {
     () => ({
       jobs,
       isRendering,
+      renderCapability,
       loadError,
       actionError,
       dismissActionError,
@@ -370,6 +377,7 @@ export function useRenderQueue(projectId: string | null) {
     [
       jobs,
       isRendering,
+      renderCapability,
       loadError,
       actionError,
       dismissActionError,

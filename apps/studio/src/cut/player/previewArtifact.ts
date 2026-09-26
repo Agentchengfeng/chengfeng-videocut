@@ -25,6 +25,8 @@ export interface PreviewArtifactStream {
 }
 
 export interface PreviewArtifactState {
+  hasVideo?: boolean | null;
+  hasAudio?: boolean | null;
   phase: PreviewArtifactPhase;
   editRevision: string;
   artifactRevision: string | null;

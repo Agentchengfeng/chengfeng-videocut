@@ -1,3 +1,4 @@
+import { CaptionSourceError, readTranscriptLiteral } from "./transcriptLiteral";
 // Caption Parser — Extract Transcript & Build Caption Model
 // Parses a caption composition's JavaScript source to extract the transcript word array,
 // and builds a CaptionModel from a TranscriptWord array.
@@ -96,220 +97,128 @@ export function buildCaptionModel(
   };
 }
 
-/**
- * Extracts a transcript word array from caption composition source code.
- *
- * Looks for `const TRANSCRIPT = [...]` or `const script = [...]` (also let/var)
- * and parses each `{ text, start, end }` object into TranscriptWord objects.
- *
- * Returns an empty array if no transcript is found or if parsing fails.
- */
-export function extractTranscript(source: string): TranscriptWord[] {
-  // Match: (const|let|var) (TRANSCRIPT|script) = [...]
-  // The array may span multiple lines and contain trailing commas.
-  // The lazy [\s\S]*? anchors on the first `];` — assumes transcript word
-  // text never contains a literal `];` string (safe for speech transcripts).
-  const varPattern = /(?:const|let|var)\s+(?:TRANSCRIPT|script)\s*=\s*(\[[\s\S]*?\]);/;
-  const match = source.match(varPattern);
 
-  if (!match) {
-    return [];
-  }
-
-  const arrayLiteral = match[1];
-
+/** Read only a unique, data-only declaration. Unsupported JavaScript is rejected. */
+export function extractTranscript(source: string, onReject?: (reason: string) => void): TranscriptWord[] {
+  const reject = (reason: string): TranscriptWord[] => { onReject?.(reason); return []; };
   try {
-    return parseTranscriptArray(arrayLiteral);
-  } catch {
-    return [];
-  }
+    const parsed = readTranscriptLiteral(source);
+    if (!Array.isArray(parsed)) return reject("SOURCE_NOT_ARRAY");
+    const ids = new Set<string>();
+    for (const entry of parsed) {
+      if (!entry || typeof entry.text !== "string" || !Number.isFinite(entry.start) || !Number.isFinite(entry.end)
+        || entry.start < 0 || entry.end <= entry.start) return reject("SOURCE_WORD_TEXT_OR_TIME_INVALID");
+      if (entry.id !== undefined) {
+        if (typeof entry.id !== "string" || !entry.id || ids.has(entry.id)) return reject("SOURCE_WORD_ID_INVALID_OR_DUPLICATE");
+        ids.add(entry.id);
+      }
+    }
+    return parsed.map(({ id, text, start, end }) => ({ ...(id !== undefined ? { id } : {}), text, start, end }));
+  } catch (error) { return reject(error instanceof CaptionSourceError ? error.message : "SOURCE_PARSE_FAILED"); }
 }
 
-/**
- * Parses a caption composition from a live iframe DOM, extracting the transcript
- * from the source and reading computed styles from rendered elements.
- *
- * Runs in the Studio (outside the iframe). Reads computed styles from iframe DOM
- * elements to build a fully-styled CaptionModel.
- *
- * Returns null if no transcript is found in the source.
- */
+const GROUP_SELECTOR = ".caption-group, .caption-line, .caption-block";
+const WORD_SELECTOR = ".word, .caption-word";
+
+/** The caller must provide the uniquely resolved composition DOM scope. */
 export function parseCaptionComposition(
-  iframeDoc: Document,
+  iframeDoc: Document | Element,
   iframeWin: Window,
   source: string,
   compositionWidth: number,
   compositionHeight: number,
   compositionDuration: number,
+  onReject?: (reason: string) => void,
 ): CaptionModel | null {
-  // Step 1: Extract transcript words from source
-  const transcript = extractTranscript(source);
-  if (transcript.length === 0) {
-    return null;
+  const reject = (reason: string): null => { onReject?.(reason); return null; };
+  let sourceReason: string | undefined;
+  const transcript = extractTranscript(source, reason => { sourceReason = reason; });
+  if (!transcript.length) return reject(sourceReason ?? "SOURCE_EMPTY_TRANSCRIPT");
+  if (![compositionWidth, compositionHeight, compositionDuration].every(value => Number.isFinite(value) && value > 0)) return reject(`DOM_METADATA_INVALID(width=${compositionWidth},height=${compositionHeight},duration=${compositionDuration})`);
+  const groups = [...iframeDoc.querySelectorAll<HTMLElement>(GROUP_SELECTOR)];
+  const words = [...iframeDoc.querySelectorAll<HTMLElement>(WORD_SELECTOR)];
+  if (!groups.length || words.length !== transcript.length) return reject(`DOM_COUNT_MISMATCH(groups=${groups.length},words=${words.length},source=${transcript.length})`);
+  if (groups.some(group => group.parentElement?.closest(GROUP_SELECTOR))) return reject("DOM_NESTED_GROUP");
+  if (words.some(word => !groups.includes(word.closest(GROUP_SELECTOR) as HTMLElement))) return reject("DOM_ORPHAN_WORD");
+
+  const domIds = words.map(word => word.getAttribute("data-word-id") ?? word.id);
+  if (words.some(word => word.hasAttribute("data-word-id") && word.id && word.dataset.wordId !== word.id)) return reject("DOM_ID_ATTRIBUTES_CONFLICT");
+  const hasIds = domIds.some(Boolean);
+  const sourceHasIds = transcript.some(word => word.id !== undefined);
+  if (sourceHasIds && transcript.some(word => !word.id)) return reject("SOURCE_PARTIAL_WORD_IDS");
+  let mapped: TranscriptWord[];
+  if (hasIds) {
+    if (domIds.some(id => !id) || new Set(domIds).size !== words.length
+      || !sourceHasIds || transcript.some(word => !word.id)) return reject("DOM_OR_SOURCE_IDS_MISSING_OR_DUPLICATE");
+    const byId = new Map(transcript.map(word => [word.id, word]));
+    if (domIds.some(id => !byId.has(id))) return reject("DOM_WORD_ID_NOT_IN_SOURCE");
+    mapped = domIds.map(id => byId.get(id)!);
+    // Existing index-based overlay controls require source order to agree with DOM.
+    if (mapped.some((word, index) => word !== transcript[index])) return reject("DOM_WORD_ORDER_MISMATCH");
+  } else {
+    // Legacy DOM is accepted only with exact text + timing correspondence, not count alone.
+    if (words.some((word, index) => word.textContent !== transcript[index].text
+      || !word.hasAttribute("data-start") || !word.hasAttribute("data-end")
+      || Number(word.dataset.start) !== transcript[index].start
+      || Number(word.dataset.end) !== transcript[index].end)) return reject("DOM_LEGACY_TEXT_OR_TIME_MISMATCH");
+    mapped = transcript;
   }
-
-  // Step 2: Look for grouping and word elements in the iframe DOM
-  const groupEls = iframeDoc.querySelectorAll(".caption-group, .caption-line, .caption-block");
-  const wordEls = iframeDoc.querySelectorAll(".word, .caption-word");
-
-  // Step 3: Infer wordsPerGroup from element counts
-  let wordsPerGroup = 5; // default
-  if (groupEls.length > 0 && wordEls.length > 0) {
-    wordsPerGroup = Math.round(wordEls.length / groupEls.length);
-    if (wordsPerGroup < 1) {
-      wordsPerGroup = 1;
+  if (words.some((word, index) => word.textContent !== mapped[index].text)) return reject("DOM_WORD_TEXT_MISMATCH");
+  // HyperFrames runtime rebind stamps un-timed [id] elements with a full-root
+  // placeholder range. This is not authored transcript timing. Only exempt the
+  // exact marker/range shape after stable-ID mapping; legacy index mapping above
+  // still requires genuine, matching start/end attributes.
+  const isRuntimeAutoStamp = (word: HTMLElement) => hasIds && word.dataset.hfAutostamped === "1"
+    && word.getAttribute("data-start") === "0" && Number(word.dataset.duration) === compositionDuration
+    && !word.hasAttribute("data-end");
+  if (words.some((word, index) => (word.hasAttribute("data-start") && !isRuntimeAutoStamp(word) && Number(word.dataset.start) !== mapped[index].start)
+    || (word.hasAttribute("data-end") && Number(word.dataset.end) !== mapped[index].end))) return reject("DOM_WORD_TIME_MISMATCH");
+  const model = buildCaptionModel(mapped, { width: compositionWidth, height: compositionHeight, duration: compositionDuration });
+  model.groups.clear(); model.groupOrder = [];
+  let offset = 0;
+  for (const [groupIndex, element] of groups.entries()) {
+    const groupWords = [...element.querySelectorAll<HTMLElement>(WORD_SELECTOR)];
+    if (!groupWords.length || groupWords.some((word, i) => word !== words[offset + i])) return reject("DOM_GROUP_WORD_ORDER_MISMATCH");
+    const id = `group-${groupIndex}`;
+    const segmentIds = groupWords.map((word, index) => {
+      const segmentId = `segment-${offset + index}`;
+      const segment = model.segments.get(segmentId)!;
+      segment.groupIndex = index;
+      segment.style = readStyle(iframeWin.getComputedStyle(word));
+      return segmentId;
+    });
+    const computed = iframeWin.getComputedStyle(element);
+    const container = { ...DEFAULT_CONTAINER };
+    for (const key of ["paddingTop", "paddingRight", "paddingBottom", "paddingLeft", "borderRadius"] as const) {
+      const value = parseFloat(computed[key]); if (Number.isFinite(value)) container[key] = value;
     }
+    if (computed.backgroundColor && computed.backgroundColor !== "transparent" && computed.backgroundColor !== "rgba(0, 0, 0, 0)") {
+      container.backgroundColor = computed.backgroundColor; container.backgroundOpacity = 1;
+    }
+    model.groups.set(id, {
+      id, segmentIds, style: { ...DEFAULT_STYLE, ...readStyle(computed) }, containerStyle: container,
+      animation: { ...DEFAULT_ANIMATION_SET },
+    });
+    model.groupOrder.push(id); offset += groupWords.length;
   }
-
-  // Step 4: Build the caption model with inferred grouping
-  const model = buildCaptionModel(transcript, {
-    width: compositionWidth,
-    height: compositionHeight,
-    duration: compositionDuration,
-    wordsPerGroup,
-  });
-
-  // Step 5: Read computed styles from the first word or group element
-  const firstWordEl = wordEls.item(0) as Element | null;
-  const firstGroupEl = groupEls.item(0) as Element | null;
-  const styleSourceEl = firstWordEl ?? firstGroupEl;
-
-  if (styleSourceEl) {
-    const computed = iframeWin.getComputedStyle(styleSourceEl);
-
-    // Build partial style overrides from computed values
-    const styleOverrides: Partial<CaptionStyle> = {};
-
-    const fontSize = parseFloat(computed.fontSize);
-    if (!isNaN(fontSize) && fontSize > 0) {
-      styleOverrides.fontSize = fontSize;
-    }
-
-    const fontWeight = computed.fontWeight;
-    if (fontWeight) {
-      const numericWeight = parseInt(fontWeight, 10);
-      styleOverrides.fontWeight = isNaN(numericWeight) ? fontWeight : numericWeight;
-    }
-
-    const fontFamily = computed.fontFamily;
-    if (fontFamily) {
-      styleOverrides.fontFamily = fontFamily;
-    }
-
-    const color = computed.color;
-    if (color) {
-      styleOverrides.color = color;
-    }
-
-    const textTransform = computed.textTransform as CaptionStyle["textTransform"];
-    if (
-      textTransform === "none" ||
-      textTransform === "uppercase" ||
-      textTransform === "lowercase" ||
-      textTransform === "capitalize"
-    ) {
-      styleOverrides.textTransform = textTransform;
-    }
-
-    const letterSpacing = computed.letterSpacing;
-    if (letterSpacing && letterSpacing !== "normal") {
-      const lsPx = parseFloat(letterSpacing);
-      const fsPx = styleOverrides.fontSize ?? DEFAULT_STYLE.fontSize;
-      if (!isNaN(lsPx) && fsPx > 0) {
-        // Convert px to em
-        styleOverrides.letterSpacing = lsPx / fsPx;
-      }
-    }
-
-    // Step 6: Read container styles from group element (if visible background)
-    const containerOverrides: Partial<CaptionContainerStyle> = {};
-
-    if (firstGroupEl) {
-      const groupComputed = iframeWin.getComputedStyle(firstGroupEl);
-      const bgColor = groupComputed.backgroundColor;
-      // Only apply if it's not transparent/none
-      if (bgColor && bgColor !== "rgba(0, 0, 0, 0)" && bgColor !== "transparent") {
-        containerOverrides.backgroundColor = bgColor;
-        containerOverrides.backgroundOpacity = 1;
-      }
-
-      const borderRadius = parseFloat(groupComputed.borderRadius);
-      if (!isNaN(borderRadius) && borderRadius > 0) {
-        containerOverrides.borderRadius = borderRadius;
-      }
-
-      // Parse padding shorthand or individual values
-      const paddingTop = parseFloat(groupComputed.paddingTop);
-      const paddingRight = parseFloat(groupComputed.paddingRight);
-      const paddingBottom = parseFloat(groupComputed.paddingBottom);
-      const paddingLeft = parseFloat(groupComputed.paddingLeft);
-      if (!isNaN(paddingTop)) containerOverrides.paddingTop = paddingTop;
-      if (!isNaN(paddingRight)) containerOverrides.paddingRight = paddingRight;
-      if (!isNaN(paddingBottom)) containerOverrides.paddingBottom = paddingBottom;
-      if (!isNaN(paddingLeft)) containerOverrides.paddingLeft = paddingLeft;
-    }
-
-    // Step 7: Apply extracted styles to all groups in the model
-    for (const groupId of model.groupOrder) {
-      const group = model.groups.get(groupId);
-      if (!group) continue;
-
-      group.style = { ...group.style, ...styleOverrides };
-      group.containerStyle = { ...group.containerStyle, ...containerOverrides };
-    }
-  }
-
-  return model;
+  return offset === words.length ? model : reject("DOM_GROUP_COVERAGE_MISMATCH");
 }
 
-/**
- * Parses a JS array literal containing `{ text, start, end }` objects.
- *
- * Handles:
- * - Double-quoted and single-quoted string values
- * - Trailing commas after the last element or property
- * - Unquoted property keys (standard JS object literal syntax)
- * - Numeric values for start/end
- */
-function parseTranscriptArray(arrayLiteral: string): TranscriptWord[] {
-  // Try parsing as-is first (handles already-valid JSON)
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(arrayLiteral);
-  } catch {
-    // Not valid JSON — normalize single quotes, unquoted keys, trailing commas
-    let normalized = arrayLiteral;
-    normalized = normalized.replace(/'((?:[^'\\]|\\.)*)'/g, (_match, inner) => {
-      const escaped = inner.replace(/\\'/g, "'").replace(/"/g, '\\"');
-      return `"${escaped}"`;
-    });
-    normalized = normalized.replace(/([{,]\s*)([a-zA-Z_$][a-zA-Z0-9_$]*)\s*:/g, '$1"$2":');
-    normalized = normalized.replace(/,(\s*[}\]])/g, "$1");
-    parsed = JSON.parse(normalized);
+function readStyle(computed: CSSStyleDeclaration): Partial<CaptionStyle> {
+  const style: Partial<CaptionStyle> = {};
+  const fontSize = parseFloat(computed.fontSize);
+  if (Number.isFinite(fontSize) && fontSize > 0) style.fontSize = fontSize;
+  if (computed.fontWeight) {
+    const weight = Number(computed.fontWeight);
+    if (Number.isFinite(weight)) style.fontWeight = weight;
+    else if (computed.fontWeight === "normal") style.fontWeight = 400;
+    else if (computed.fontWeight === "bold") style.fontWeight = 700;
   }
-
-  if (!Array.isArray(parsed)) {
-    return [];
-  }
-
-  const words: TranscriptWord[] = [];
-  for (const item of parsed) {
-    if (
-      item !== null &&
-      typeof item === "object" &&
-      typeof (item as Record<string, unknown>).text === "string" &&
-      typeof (item as Record<string, unknown>).start === "number" &&
-      typeof (item as Record<string, unknown>).end === "number"
-    ) {
-      const entry = item as Record<string, unknown>;
-      words.push({
-        ...(typeof entry.id === "string" ? { id: entry.id } : {}),
-        text: entry.text as string,
-        start: entry.start as number,
-        end: entry.end as number,
-      });
-    }
-  }
-
-  return words;
+  if (computed.fontFamily) style.fontFamily = computed.fontFamily;
+  if (computed.color) style.color = computed.color;
+  const textTransform = computed.textTransform as CaptionStyle["textTransform"];
+  if (["none", "uppercase", "lowercase", "capitalize"].includes(textTransform)) style.textTransform = textTransform;
+  const spacing = parseFloat(computed.letterSpacing);
+  if (Number.isFinite(spacing) && fontSize > 0) style.letterSpacing = spacing / fontSize;
+  return style;
 }

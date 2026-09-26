@@ -15,11 +15,9 @@
  * recomputed from the transcript through the edit list every time it is needed,
  * which is what stops it from drifting when the cut changes underneath it.
  *
- * There is exactly one kind of thing here: an HTML module laid over the
- * picture. The three things a person can want — footage as-is, footage with a
- * region called out, an animated explanation — are "no layer", "a transparent
- * layer that draws on the footage", and "a layer that draws its own picture".
- * One mechanism, three uses; no enum, and nothing to keep in sync.
+ * A layer contains either an HTML module or a verified local video asset.
+ * Both use the same word anchors and derived composition clock. Media source
+ * in/out points trim the asset; they never establish another timeline.
  *
  * Nothing renders. The layer is composited live in the preview and burned in
  * once, at export.
@@ -28,7 +26,7 @@
 import { VideocutError } from "./errors";
 import type { EditListDocument } from "./editList";
 import type { TimedWord } from "./cuts";
-import { orderedSegments, timelineTimeForSourceTime, wordPlays } from "./subtitles";
+import { orderedSegments, timelineTimeForSourceTime, wordPlays, segmentMatchesWord } from "./subtitles";
 
 export const VISUAL_SCHEMA_VERSION = 1 as const;
 
@@ -49,7 +47,20 @@ export interface VisualZoom {
   height: number;
 }
 
+export interface VisualMedia {
+  assetId: string;
+  /** Source-local seconds, never composition positions. */
+  sourceIn: number;
+  sourceOut: number;
+  fit: "contain" | "cover";
+  muted: true;
+  /** Include only the leading gap when the layer covers the first kept word. */
+  includeLeadingGap?: boolean;
+}
+
 export interface VisualLayer {
+  /** Opt-in authoring basis; never a second placement timeline. */
+  animation?: VisualAnimationBinding;
   id: string;
   /**
    * The transcript words this layer covers, in spoken order. These are what
@@ -61,7 +72,8 @@ export interface VisualLayer {
    * directory moves between machines, and an absolute path baked into a
    * document is a path that is wrong on the next one.
    */
-  module: string;
+  module?: string;
+  media?: VisualMedia;
   /**
    * Push the footage in on this region while the layer is up. The overlay is
    * transformed with the picture, so a module keeps drawing in original frame
@@ -93,6 +105,7 @@ export interface VisualDocument {
 }
 
 export interface VisualLayerTiming {
+  animation?: ResolvedVisualAnimation;
   layerId: string;
   /** Seconds on the cut timeline. */
   start: number;
@@ -100,6 +113,66 @@ export interface VisualLayerTiming {
   duration: number;
   /** Every word this layer covers is gone from the edit; it cannot be placed. */
   orphaned: boolean;
+}
+
+export interface VisualAnimationBinding {
+  schemaVersion: 1;
+  clock: "local0";
+  authoredDuration: number;
+  anchorWordIds: string[];
+  canvas?: "project" | "source";
+}
+export type VisualAnimationIssue = "duration_changed" | "missing_anchor" | "discontinuous" | "orphaned";
+export interface ResolvedVisualAnimation {
+  clock: "local0";
+  authoredDuration: number;
+  canvas: "project" | "source";
+  issues: VisualAnimationIssue[];
+  wordCues: Array<{ id: string; text: string; start: number; end: number }>;
+}
+
+/** Shared by the API/preview and export. No mutation, retiming or text rebinding. */
+export function resolveVisualAnimation(
+  layer: VisualLayer, words: readonly TimedWord[], editList: EditListDocument | null,
+  timing: Pick<VisualLayerTiming, "start" | "duration" | "orphaned">,
+): ResolvedVisualAnimation | undefined {
+  if (!layer.animation) return undefined;
+  const segments = orderedSegments(editList);
+  const selected = words.filter(word => layer.wordIds.includes(word.id));
+  const wordCues = selected.flatMap(word => segments.flatMap(segment => {
+    if (!segmentMatchesWord(segment, word)) return [];
+    const a = Math.max(segment.sourceStart, word.start), b = Math.min(segment.sourceEnd, word.end);
+    return b > a ? [{ id: word.id, text: word.text ?? "",
+      start: segment.timelineStart + (a - segment.sourceStart) / segment.playbackRate - timing.start,
+      end: segment.timelineStart + (b - segment.sourceStart) / segment.playbackRate - timing.start }] : [];
+  })).sort((a, b) => a.start - b.start);
+  const issues: VisualAnimationIssue[] = [];
+  if (timing.orphaned) issues.push("orphaned");
+  else {
+    if (Math.abs(timing.duration - layer.animation.authoredDuration) > 0.001) issues.push("duration_changed");
+    if (layer.animation.anchorWordIds.some(id => !wordCues.some(cue => cue.id === id))) issues.push("missing_anchor");
+    // Include pauses within the source sentence, but not unrelated material
+    // inserted between its pieces. Repetition/reordering is also ambiguous.
+    const spans = segments.flatMap(segment => {
+      const matching = selected.filter(word => segmentMatchesWord(segment, word));
+      if (!matching.length) return [];
+      const a = Math.max(segment.sourceStart, Math.min(...matching.map(w => w.start)));
+      const b = Math.min(segment.sourceEnd, Math.max(...matching.map(w => w.end)));
+      return b > a ? [{ start: segment.timelineStart + (a - segment.sourceStart) / segment.playbackRate,
+        end: segment.timelineStart + (b - segment.sourceStart) / segment.playbackRate }] : [];
+    }).sort((a, b) => a.start - b.start);
+    const ids = wordCues.map(cue => layer.wordIds.indexOf(cue.id));
+    const repeatedWord = selected.some(word => {
+      const pieces = segments.filter(segment => segmentMatchesWord(segment, word))
+        .map(segment => ({ a: Math.max(segment.sourceStart, word.start), b: Math.min(segment.sourceEnd, word.end), t: segment.timelineStart }))
+        .filter(piece => piece.b > piece.a).sort((a, b) => a.t - b.t);
+      return pieces.some((piece, i) => i > 0 && piece.a < pieces[i - 1]!.b - 0.001);
+    });
+    if (spans.some((span, i) => i > 0 && span.start > spans[i - 1]!.end + 0.001)
+      || repeatedWord || ids.some((id, i) => i > 0 && id < ids[i - 1]!)) issues.push("discontinuous");
+  }
+  return { clock: "local0", authoredDuration: layer.animation.authoredDuration,
+    canvas: layer.animation.canvas ?? "project", issues, wordCues };
 }
 
 /** The only style in the registry today. */
@@ -148,20 +221,30 @@ export function visualLayerTimings(
 ): VisualLayerTiming[] {
   const segments = orderedSegments(editList);
   const byId = new Map(words.map((word) => [word.id, word]));
-  const timings = document.layers.map((layer) => {
+  const timings: VisualLayerTiming[] = document.layers.map((layer) => {
     const times: number[] = [];
     for (const wordId of layer.wordIds) {
       const word = byId.get(wordId);
       if (!word || !wordPlays(segments, word)) continue;
-      const start = timelineTimeForSourceTime(segments, word.start);
-      const end = timelineTimeForSourceTime(segments, word.end);
-      if (start !== null) times.push(start);
-      if (end !== null) times.push(end);
+      for (const segment of segments) {
+        if (!segmentMatchesWord(segment, word)) continue;
+        const a = Math.max(segment.sourceStart, word.start), b = Math.min(segment.sourceEnd, word.end);
+        if (b > a) times.push(segment.timelineStart + (a - segment.sourceStart) / segment.playbackRate,
+          segment.timelineStart + (b - segment.sourceStart) / segment.playbackRate);
+      }
     }
     if (times.length === 0) {
       return { layerId: layer.id, start: 0, end: 0, duration: 0, orphaned: true };
     }
-    const start = Math.min(...times);
+    let start = Math.min(...times);
+    if (layer.media?.includeLeadingGap) {
+      const anchor = layer.wordIds.map(id => byId.get(id)).find(w => w && wordPlays(segments, w));
+      const instanceSegments = anchor?.instanceId ? segments.filter(s => segmentMatchesWord(s, anchor)) : segments;
+      const first = words.filter(w => !w.isGap && wordPlays(instanceSegments, w))
+        .map(w => ({id:w.id, time:timelineTimeForSourceTime(segments,w.start,w)}))
+        .filter(w => w.time !== null).sort((a,b) => a.time! - b.time!)[0];
+      if (first && layer.wordIds.includes(first.id)) start = instanceSegments[0]?.timelineStart ?? 0;
+    }
     const end = Math.max(...times);
     return { layerId: layer.id, start, end, duration: Math.max(0, end - start), orphaned: false };
   });
@@ -172,6 +255,11 @@ export function visualLayerTimings(
   for (let index = 0; index < ordered.length - 1; index += 1) {
     const current = ordered[index]!;
     const next = ordered[index + 1]!;
+    // Finite video clips cannot absorb gaps or shift their source clock.
+    if (document.layers.find(l => l.id === current.layerId)?.media ||
+        document.layers.find(l => l.id === next.layerId)?.media ||
+        document.layers.find(l => l.id === current.layerId)?.animation ||
+        document.layers.find(l => l.id === next.layerId)?.animation) continue;
     const gap = next.start - current.end;
     if (gap > 0 && gap <= LAYER_GAP_ABSORB_SECONDS) {
       // When the gap contains an edit cut, the cut decides who owns which
@@ -193,6 +281,19 @@ export function visualLayerTimings(
         next.start = split;
         next.duration = Math.max(0, next.end - next.start);
       }
+    }
+  }
+  for (const timing of timings) {
+    const layer = document.layers.find(l => l.id === timing.layerId)!;
+    if (layer.animation) timing.animation = resolveVisualAnimation(layer, words, editList, timing);
+    const media = document.layers.find(l => l.id === timing.layerId)?.media;
+    if (media && !timing.orphaned) {
+      timing.end = Math.min(timing.end, timing.start + media.sourceOut - media.sourceIn);
+      // EDL accumulation can produce 27.439999999999998. Chromium truncates
+      // currentTime assignment to 27.439999, so normalize seek targets too.
+      timing.start = Math.round(timing.start * 1_000_000) / 1_000_000;
+      timing.end = Math.round(timing.end * 1_000_000) / 1_000_000;
+      timing.duration = Math.max(0, timing.end - timing.start);
     }
   }
   return timings;
@@ -220,6 +321,13 @@ export function sourceTimeForCutTime(
 }
 
 /** Which layer is on screen at a moment, or null. Later layers win a tie. */
+export function isVisualTimeActive(time: number, start: number, end: number): boolean {
+  // Browsers round media seeks to microseconds; remove floating-point EDL noise,
+  // not a frame-sized grace period. End remains exclusive, including adjacent layers.
+  const micros = (value: number) => Math.round(value * 1_000_000);
+  return micros(time) >= micros(start) && micros(time) < micros(end);
+}
+
 export function activeVisualLayer(
   timings: readonly VisualLayerTiming[],
   timelineTime: number,
@@ -227,7 +335,7 @@ export function activeVisualLayer(
   let active: VisualLayerTiming | null = null;
   for (const timing of timings) {
     if (timing.orphaned) continue;
-    if (timelineTime >= timing.start && timelineTime < timing.end) active = timing;
+    if (isVisualTimeActive(timelineTime, timing.start, timing.end)) active = timing;
   }
   return active;
 }
@@ -302,7 +410,17 @@ export function assertVisualDocument(value: unknown): asserts value is VisualDoc
     if (!id) invalid(`layers[${index}].id is required`);
     if (seenIds.has(id)) invalid(`Visual layer id is not unique: ${id}`);
     seenIds.add(id);
-    assertModulePath(layer.module, index);
+    if (layer.media !== undefined) {
+      if (layer.module !== undefined || layer.zoom !== undefined || !isObject(layer.media))
+        invalid(`layers[${index}] must choose media or HTML, without video zoom`);
+      const { assetId, sourceIn, sourceOut, fit, muted, includeLeadingGap } = layer.media;
+      if (typeof assetId !== "string" || !/^[a-f0-9]{64}$/.test(assetId) ||
+          typeof sourceIn !== "number" || !Number.isFinite(sourceIn) || sourceIn < 0 ||
+          typeof sourceOut !== "number" || !Number.isFinite(sourceOut) || sourceOut <= sourceIn ||
+          sourceOut > 3600 || (fit !== "contain" && fit !== "cover") || muted !== true ||
+          (includeLeadingGap !== undefined && typeof includeLeadingGap !== "boolean"))
+        invalid(`layers[${index}].media requires a verified asset, bounded source range, fit and muted=true`);
+    } else assertModulePath(layer.module, index);
     if (layer.zoom !== undefined) {
       if (!isObject(layer.zoom)) invalid(`layers[${index}].zoom must be an object`);
       const { x, y, width, height } = layer.zoom as Record<string, unknown>;
@@ -323,6 +441,20 @@ export function assertVisualDocument(value: unknown): asserts value is VisualDoc
     }
     if (!Array.isArray(layer.wordIds) || layer.wordIds.length === 0) {
       invalid(`layers[${index}].wordIds must name the words this layer covers`);
+    }
+    if (layer.animation !== undefined) {
+      const a = layer.animation;
+      if (!isObject(a) || layer.media !== undefined || a.schemaVersion !== 1 || a.clock !== "local0"
+        || Object.keys(a).some(key => !["schemaVersion", "clock", "authoredDuration", "anchorWordIds", "canvas"].includes(key))
+        || typeof a.authoredDuration !== "number" || !Number.isFinite(a.authoredDuration)
+        || a.authoredDuration <= 0 || a.authoredDuration > 3600
+        || !Array.isArray(a.anchorWordIds) || a.anchorWordIds.length === 0
+        || new Set(a.anchorWordIds).size !== a.anchorWordIds.length
+        || a.anchorWordIds.some(id => typeof id !== "string" || !(layer.wordIds as unknown[]).includes(id))
+        || (a.canvas !== undefined && a.canvas !== "project" && a.canvas !== "source")
+        || ((a.canvas ?? "project") === "project" && layer.zoom !== undefined)) {
+        invalid(`layers[${index}].animation requires a bounded local0 basis and stable layer word anchors`);
+      }
     }
     for (const wordId of layer.wordIds) {
       if (typeof wordId !== "string" || !wordId.trim()) {

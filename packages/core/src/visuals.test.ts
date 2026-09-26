@@ -3,6 +3,7 @@ import type { EditListDocument } from "@video-workbench/contracts";
 import type { TimedWord } from "./cuts";
 import {
   activeVisualLayer,
+  isVisualTimeActive,
   assertVisualDocument,
   createVisualDocument,
   visualLayerTimings,
@@ -41,6 +42,56 @@ function documentWith(wordIds: string[]): VisualDocument {
     layers: [{ id: "vis-0001", wordIds, module: "modules/demo/index.html" }],
   };
 }
+
+describe("local0 animation binding", () => {
+  const bound = () => {
+    const document = documentWith(["w-1", "w-2"]);
+    document.layers[0]!.animation = { schemaVersion: 1, clock: "local0", authoredDuration: 2, anchorWordIds: ["w-2"] };
+    return document;
+  };
+  it("moves placement without changing local cues or the source document", () => {
+    const document = bound(), before = JSON.stringify(document);
+    const first = visualLayerTimings(document, words, editList([[0, 4, 0]]))[0]!;
+    const moved = visualLayerTimings(document, words, editList([[0, 4, 8]]))[0]!;
+    expect(moved.start - first.start).toBe(8);
+    expect(moved.animation).toEqual(first.animation);
+    expect(first.animation?.issues).toEqual([]);
+    expect(first.animation?.wordCues[1]).toEqual({ id: "w-2", text: "天", start: 1, end: 2 });
+    expect(JSON.stringify(document)).toBe(before);
+  });
+  it("does not absorb the legacy seam", () => {
+    const document = bound();
+    document.layers.push({ id: "next", module: "next.html", wordIds: ["w-3"] });
+    const spaced = words.map(w => w.id === "w-3" ? { ...w, start: 2.4, end: 3 } : w);
+    expect(visualLayerTimings(document, spaced, editList([[0, 4, 0]]))[0]!.duration).toBe(2);
+    delete document.layers[0]!.animation;
+    expect(visualLayerTimings(document, spaced, editList([[0, 4, 0]]))[0]!.duration).toBe(2.4);
+  });
+  it("flags duration changes and missing keywords without guessing another word", () => {
+    const timing = visualLayerTimings(bound(), words, editList([[0, 1, 0], [2, 4, 1]]))[0]!;
+    expect(timing.animation?.issues).toEqual(["duration_changed", "missing_anchor"]);
+  });
+  it("disables an entirely deleted sentence and retains its source reference", () => {
+    const document = bound();
+    const timing = visualLayerTimings(document, words, editList([[2, 4, 0]]))[0]!;
+    expect(timing.orphaned).toBe(true);
+    expect(timing.animation?.issues).toEqual(["orphaned"]);
+    expect(document.layers[0]!.module).toBe("modules/demo/index.html");
+  });
+  it("flags separated and reordered sentence pieces", () => {
+    expect(visualLayerTimings(bound(), words, editList([[0, 1, 0], [3, 4, 1], [1, 2, 2]]))[0]!.animation?.issues).toContain("discontinuous");
+    expect(visualLayerTimings(bound(), words, editList([[1, 2, 0], [0, 1, 1]]))[0]!.animation?.issues).toContain("discontinuous");
+    expect(visualLayerTimings(bound(), words, editList([[0, 1, 0], [0, 1, 1]]))[0]!.animation?.issues).toContain("discontinuous");
+    expect(visualLayerTimings(bound(), words, editList([[0, 0.5, 0], [0.5, 2, 0.5]]))[0]!.animation?.issues).toEqual([]);
+  });
+  it("strictly validates opt-in bindings without migrating legacy layers", () => {
+    expect(() => assertVisualDocument(documentWith(["w-1"]))).not.toThrow();
+    for (const patch of [{ authoredDuration: NaN }, { clock: "wall" }, { anchorWordIds: ["unknown"] }, { anchorWordIds: [] }, { unknown: true }, { canvas: "window" }]) {
+      const document = bound(); Object.assign(document.layers[0]!.animation!, patch);
+      expect(() => assertVisualDocument(document)).toThrow();
+    }
+  });
+});
 
 describe("visual layers", () => {
   it("takes its moment from the words, not from a stored number", () => {
@@ -170,4 +221,13 @@ describe("gap absorption at an edit cut", () => {
     expect(timings[0]!.end).toBeCloseTo(1.5, 5);
     expect(timings[1]!.start).toBeCloseTo(1.5, 5);
   });
+});
+it("visual boundaries match browser microsecond seek precision and retain exclusive ends", () => {
+  expect(isVisualTimeActive(221.98, 221.98000000000002, 231.18000000000004)).toBe(true);
+  expect(isVisualTimeActive(221.979, 221.98000000000002, 231.18000000000004)).toBe(false);
+  expect(isVisualTimeActive(231.18, 221.98000000000002, 231.18000000000004)).toBe(false);
+  const doc = documentWith(["w-1"]);
+  doc.layers = [{ id: "media", wordIds: ["w-1"], media: { assetId: "a".repeat(64), sourceIn: 0, sourceOut: 1, fit: "contain", muted: true } }];
+  const timing = visualLayerTimings(doc, [{ id: "w-1", text: "词", start: 27.439999999999998, end: 28.440000000000001 }], editList([[0, 40, 0]]))[0]!;
+  expect(timing.start).toBe(27.44);expect(timing.end).toBe(28.44);
 });

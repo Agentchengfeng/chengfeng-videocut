@@ -11,6 +11,9 @@
     "legacyWorkbenchPanel": false,
     "managedTimelineEditing": true,
     "projectIngestVersion": 1,
+    "ingestApiVersion": 1,
+    "transcriptCorrectionApiVersion": 1,
+    "audioOnlyPreviewVersion": 1,
     "transcriptPlaybackPagingVersion": 1,
     "durableJobsApiVersion": 1,
     "durableJobKinds": [

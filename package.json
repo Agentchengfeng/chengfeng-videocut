@@ -14,6 +14,7 @@
     "packages/*"
   ],
   "scripts": {
+    "skills:directory:export": "bun scripts/export-skill-directory.ts",
     "dev": "bun run --cwd apps/studio dev",
     "build": "bun run --cwd apps/studio build",
     "typecheck": "bun run --filter '@video-workbench/*' typecheck && bun run --cwd apps/cli typecheck",

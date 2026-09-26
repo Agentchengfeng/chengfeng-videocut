@@ -4,6 +4,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { DEFAULT_SUBTITLE_STYLE } from "@video-workbench/core";
 import {
   createVideocutSubtitlesHandler,
   isVideocutSubtitlesRequest,
@@ -115,6 +117,8 @@ describe("isVideocutSubtitlesRequest", () => {
     expect(isVideocutSubtitlesRequest("GET", "/api/v1/projects/demo/subtitles")).toBe(true);
     expect(isVideocutSubtitlesRequest("GET", "/api/v1/projects/demo/cuts")).toBe(false);
     expect(isVideocutSubtitlesRequest("GET", "/api/v1/projects/demo")).toBe(false);
+    expect(isVideocutSubtitlesRequest("POST", "/api/v1/projects/demo/subtitles/candidate")).toBe(true);
+    expect(isVideocutSubtitlesRequest("POST", "/api/v1/projects/demo/subtitles/other")).toBe(false);
   });
 });
 
@@ -206,5 +210,107 @@ describe("createVideocutSubtitlesHandler", () => {
       method: "DELETE",
     }));
     expect(response!.status).toBe(405);
+  });
+
+  it("accepts a version-bound candidate and keeps edits and notes available on readback", async () => {
+    const { projectsDir, projectDir } = await createFixture();
+    const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+    const transcript = await readFile(join(projectDir, "transcript.json"), "utf8");
+    const edl = JSON.parse(await readFile(join(projectDir, "edit-list.json"), "utf8"));
+    edl.baseTranscriptRevision = sha(transcript);
+    const edlContent = JSON.stringify(edl);
+    await writeFile(join(projectDir, "edit-list.json"), edlContent);
+    const documentContent = JSON.stringify({
+      ...documentOf([{ id: "s1", wordIds: ["w-1", "w-2"], text: "今天" }, { id: "s2", wordIds: ["w-4"], text: "留" }]),
+      style: DEFAULT_SUBTITLE_STYLE, baseTranscriptRevision: sha(transcript),
+    }) + "\n";
+    const receipt = {
+      schemaVersion: 1, kind: "isolated-subtitle-candidate", productionCommitted: false,
+      inputs: { projectId: "demo", transcriptSha256: sha(transcript), editListSha256: sha(edlContent), resultRevision: "none" },
+      provenance: { generator: "test-skill", version: "1" }, outputSha256: sha(documentContent),
+      validation: { valid: true, cueCount: 2, wordCount: 4 },
+    };
+    const handler = createVideocutSubtitlesHandler({ projectsDir });
+    const post = (expectedRevision: string, candidateReceipt = receipt) => handler(new Request("http://x/api/v1/projects/demo/subtitles/candidate", {
+      method: "POST", body: JSON.stringify({ documentContent, receipt: candidateReceipt, expectedRevision }),
+    }));
+    const accepted = await post("none");
+    expect(accepted!.status).toBe(200);
+    const first = await accepted!.json();
+    expect(first.resultState.status).toBe("current");
+    const edited = structuredClone(first.document); edited.cues[0].text = "审核后的今天";
+    const save = await handler(new Request("http://x/api/v1/projects/demo/subtitles", {
+      method: "PUT", body: JSON.stringify({ document: edited, expectedRevision: first.revision, reviewNote: "下次保留专名修正" }),
+    }));
+    expect(save!.status).toBe(200);
+    const second = await save!.json();
+    expect(second.document.cues[0].text).toBe("审核后的今天");
+    expect(second.resultState.review.editCount).toBeGreaterThan(0);
+    expect(second.resultState.review.noteCount).toBe(1);
+    const beforeConflict = await readFile(join(projectDir, "subtitles.json"), "utf8");
+    expect((await post("none"))!.status).toBe(409);
+    expect(await readFile(join(projectDir, "subtitles.json"), "utf8")).toBe(beforeConflict);
+    // A timing-only edit keeps the same word set but changes the source revision.
+    edl.segments[0].sourceStart = 0.1; edl.segments[1].timelineStart = 1.9; edl.duration = 2.9;
+    await writeFile(join(projectDir, "edit-list.json"), JSON.stringify(edl));
+    const stale = await handler(new Request("http://x/api/v1/projects/demo/subtitles"));
+    const staleBody = await stale!.json();
+    expect(staleBody.resultState.status).toBe("stale");
+    expect(staleBody.resultState.changedSources).toEqual(["edit-list"]);
+    expect(staleBody.stale).toHaveLength(0);
+    const staleReceipt = { ...receipt, inputs: { ...receipt.inputs, resultRevision: second.revision } };
+    expect((await post(second.revision, staleReceipt))!.status).toBe(409);
+    expect(await readFile(join(projectDir, "subtitles.json"), "utf8")).toBe(beforeConflict);
+  });
+
+  it.each(["POST", "PUT"])("reports a committed %s with its revision when derived readback fails", async (method) => {
+    const { projectsDir, projectDir } = await createFixture();
+    const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+    const transcript = await readFile(join(projectDir, "transcript.json"), "utf8");
+    const edl = JSON.parse(await readFile(join(projectDir, "edit-list.json"), "utf8"));
+    edl.baseTranscriptRevision = sha(transcript);
+    const edlContent = JSON.stringify(edl);
+    await writeFile(join(projectDir, "edit-list.json"), edlContent);
+    const document = {
+      ...documentOf([{ id: "s1", wordIds: ["w-1", "w-2"], text: "审核后的今天" }, { id: "s2", wordIds: ["w-4"], text: "留" }]),
+      style: DEFAULT_SUBTITLE_STYLE, baseTranscriptRevision: sha(transcript),
+    };
+    const previousContent = JSON.stringify({ ...document, cues: [{ ...document.cues[0], text: "今天" }, document.cues[1]] });
+    await writeFile(join(projectDir, "subtitles.json"), previousContent);
+    const previousRevision = sha(previousContent);
+    const documentContent = JSON.stringify(document) + "\n";
+    const receipt = {
+      schemaVersion: 1, kind: "isolated-subtitle-candidate", productionCommitted: false,
+      inputs: { projectId: "demo", transcriptSha256: sha(transcript), editListSha256: sha(edlContent), resultRevision: previousRevision },
+      provenance: { generator: "test-skill", version: "1" }, outputSha256: sha(documentContent),
+      validation: { valid: true, cueCount: 2, wordCount: 4 },
+    };
+    const handler = createVideocutSubtitlesHandler({
+      projectsDir,
+      // Deterministically inject an input-read failure after persistence, not
+      // before candidate validation or the project-lock CAS checks.
+      onDocumentChanged: async () => { await writeFile(join(projectDir, "edit-list.json"), "{"); },
+    });
+    const response = await handler(new Request(`http://x/api/v1/projects/demo/subtitles${method === "POST" ? "/candidate" : ""}`, {
+      method,
+      body: JSON.stringify(method === "POST"
+        ? { expectedRevision: previousRevision, documentContent, receipt }
+        : { expectedRevision: previousRevision, document }),
+    }));
+    expect(response!.status).toBe(503);
+    const body = await response!.json();
+    const active = await readFile(join(projectDir, "subtitles.json"), "utf8");
+    expect(body.error.code).toBe("write_committed_readback_failed");
+    expect(body.error.details).toEqual({ committed: true, revision: sha(active), previousRevision, causeCode: "invalid_json" });
+    expect(body.error.message).toContain("Do not retry");
+    expect(body.timings).toBeUndefined();
+    expect(body.resultState).toBeUndefined();
+    expect(JSON.parse(active).cues[0].text).toBe("审核后的今天");
+    expect(await readFile(join(projectDir, ".workbench/result-history/subtitles", `${previousRevision}.json`), "utf8")).toBe(previousContent);
+    // The caller can recover the response through GET without resubmitting.
+    await writeFile(join(projectDir, "edit-list.json"), edlContent);
+    const reopened = await handler(new Request("http://x/api/v1/projects/demo/subtitles"));
+    expect(reopened!.status).toBe(200);
+    expect((await reopened!.json()).revision).toBe(sha(active));
   });
 });

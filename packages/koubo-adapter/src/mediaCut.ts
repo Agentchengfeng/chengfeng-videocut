@@ -15,6 +15,8 @@ export interface MediaCutRange {
 }
 
 export interface MediaProbe {
+  videoCodec?: string;
+  videoDuration?: number;
   duration: number;
   hasVideo: boolean;
   hasAudio: boolean;
@@ -48,12 +50,17 @@ interface CommandResult {
 async function runCommand(
   command: string,
   args: string[],
-  options: { inheritStderr?: boolean } = {},
+  options: { inheritStderr?: boolean; timeoutMs?: number } = {},
 ): Promise<CommandResult> {
   return await new Promise((resolvePromise, reject) => {
     const child = spawn(command, args, {
       stdio: ["ignore", "pipe", options.inheritStderr ? "inherit" : "pipe"],
     });
+    const timer = options.timeoutMs ? setTimeout(() => {
+      child.kill("SIGKILL"); reject(new Error(`${command} timed out`));
+    }, options.timeoutMs) : undefined;
+    child.once("close", () => clearTimeout(timer));
+    child.once("error", () => clearTimeout(timer));
     let stdout = "";
     let stderr = "";
     if (!child.stdout) {
@@ -109,11 +116,11 @@ export async function probeMedia(path: string): Promise<MediaProbe> {
   const { stdout } = await runCommand("ffprobe", [
     "-v", "error",
     "-show_entries",
-    "format=duration:stream=codec_type,bit_rate,profile,pix_fmt,width,height,r_frame_rate,avg_frame_rate"
+    "format=duration:stream=codec_type,codec_name,duration,bit_rate,profile,pix_fmt,width,height,r_frame_rate,avg_frame_rate"
       + ":stream_side_data=rotation:stream_tags=rotate",
     "-of", "json",
     ffmpegFileArg(path),
-  ]);
+  ], { timeoutMs: 20000 });
   const payload = JSON.parse(stdout) as {
     format?: { duration?: string | number };
     streams?: Array<Record<string, unknown>>;
@@ -129,6 +136,8 @@ export async function probeMedia(path: string): Promise<MediaProbe> {
   const storedHeight = Math.max(0, finite(video?.height));
   const quarterTurned = Math.abs(displayRotation(video)) % 180 === 90;
   return {
+    videoCodec: String(video?.codec_name ?? ""),
+    videoDuration: Math.max(0, finite(video?.duration)),
     duration: Math.max(0, finite(payload.format?.duration)),
     hasVideo: Boolean(video),
     hasAudio: Boolean(audio),
@@ -435,4 +444,14 @@ export async function readCutRanges(path: string): Promise<MediaCutRange[]> {
       end: finite((range as Record<string, unknown>).end, -1),
     };
   });
+}
+
+/** Uses the same Runtime-provided tool PATH, argument escaping and timeout as probeMedia. */
+export async function probePcmWav(path: string): Promise<{duration:number;codec:string;sampleRate:number;channels:number}> {
+  const {stdout} = await runCommand("ffprobe", ["-v","error","-show_entries",
+    "format=duration,format_name:stream=codec_type,codec_name,sample_rate,channels", "-of","json",ffmpegFileArg(path)], {timeoutMs:20000});
+  const p=JSON.parse(stdout), a=p.streams?.[0];
+  if(p.format?.format_name!=="wav" || p.streams?.length!==1 || a?.codec_type!=="audio" || !/^pcm_/.test(a.codec_name))
+    throw new Error("Only PCM WAV audio is supported");
+  return {duration:Number(p.format.duration),codec:a.codec_name,sampleRate:Number(a.sample_rate),channels:Number(a.channels)};
 }

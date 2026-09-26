@@ -4,6 +4,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type ReactNode,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
@@ -46,6 +47,10 @@ export function CutPlayer({
   subtitle = null,
   visualLayers = [],
   activeVisualLayerId = null,
+  audioOnly = false,
+  canvasAspectRatio,
+  canvasControls,
+  notices,
 }: {
   sourceUrl: string | null;
   transport: EdlVideoTransport;
@@ -59,7 +64,14 @@ export function CutPlayer({
   subtitle?: ActiveSubtitle | null;
   visualLayers?: readonly ActiveVisual[];
   activeVisualLayerId?: string | null;
+  audioOnly?: boolean;
+  /** Explicit project canvas; absent legacy video keeps its native picture. */
+  canvasAspectRatio?: number;
+  canvasControls?: ReactNode;
+  /** Status belongs inside the player, never as implicit workspace grid rows. */
+  notices?: ReactNode;
 }) {
+  const canvasAspect = canvasAspectRatio ?? (audioOnly ? 16 / 9 : null);
   const activity = transport.error
     ? transport.error
     : transport.isSeeking
@@ -197,6 +209,16 @@ export function CutPlayer({
       data-studio-fullscreen-target=""
     >
       <div className="cf-cut-player-stage">
+        <div className="cf-cut-player-canvas" data-project-canvas="" style={canvasAspect ? {
+          "--cf-canvas-aspect": canvasAspect,
+          width: `min(100cqw, calc(100cqh * ${canvasAspect}))`,
+          height: `min(100cqh, calc(100cqw / ${canvasAspect}))`,
+        } as CSSProperties : undefined}>
+        {audioOnly && sourceUrl && !visualLayers.some((layer) => layer.layerId === activeVisualLayerId) ? (
+          <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", pointerEvents: "none", zIndex: 1, color: "#ddd" }}>
+            <span>♫ 纯音频口播 · {formatTime(transport.timelineTime)} / {formatTime(transport.duration)}</span>
+          </div>
+        ) : null}
         {sourceUrl ? (
           <video
             ref={transport.videoRef}
@@ -228,11 +250,13 @@ export function CutPlayer({
             layers={visualLayers}
             activeLayerId={activeVisualLayerId}
             timelineTime={transport.timelineTime}
+            fallbackAspect={canvasAspect}
           />
         )}
         {/* After the visual: a caption is read over whatever is on screen,
             including a module that covers the footage. */}
-        {sourceUrl && <SubtitleOverlay subtitle={subtitle} />}
+        {sourceUrl && <SubtitleOverlay subtitle={subtitle} fallbackAspect={canvasAspect} />}
+        </div>
         {activity && (
           <span className={`cf-cut-player-state ${transport.error ? "is-error" : ""}`}>
             {activity}
@@ -257,9 +281,11 @@ export function CutPlayer({
         {artifactPhase === "current" && artifactProfile === "fast-proxy-v1" && (
           <span className="cf-cut-player-state" role="status">低资源预览（960p）</span>
         )}
+        {notices && <div className="cf-cut-player-notices">{notices}</div>}
       </div>
 
       <div className="cf-cut-player-controls" data-player-transport="hyperframes-compatible">
+        {canvasControls}
         <button
           type="button"
           className="cf-cut-play-button"

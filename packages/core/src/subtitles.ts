@@ -27,6 +27,7 @@
  */
 
 import { VideocutError } from "./errors";
+import type { SkillResultMetadata } from "@video-workbench/contracts";
 import type { EditListDocument, EditListSegment } from "./editList";
 import type { TimedWord } from "./cuts";
 
@@ -375,6 +376,8 @@ export interface SubtitleCue {
 }
 
 export interface SubtitleDocument {
+  /** Runtime-owned handoff identity and version-bound review, absent on legacy documents. */
+  skillResult?: SkillResultMetadata;
   schemaVersion: typeof SUBTITLE_SCHEMA_VERSION;
   projectId: string;
   /**
@@ -405,8 +408,10 @@ export function orderedSegments(editList: EditListDocument | null): EditListSegm
 export function timelineTimeForSourceTime(
   segments: readonly EditListSegment[],
   sourceTime: number,
+  identity?: { source?: string; instanceId?: string },
 ): number | null {
   for (const segment of segments) {
+    if (!segmentMatchesWord(segment, identity ?? {})) continue;
     if (sourceTime >= segment.sourceStart - EPSILON && sourceTime <= segment.sourceEnd + EPSILON) {
       const clamped = Math.min(Math.max(sourceTime, segment.sourceStart), segment.sourceEnd);
       return segment.timelineStart + (clamped - segment.sourceStart) / segment.playbackRate;
@@ -415,13 +420,19 @@ export function timelineTimeForSourceTime(
   return null;
 }
 
+/** v2 cannot fall back to numeric seconds: two sources can start at zero. */
+export function segmentMatchesWord(segment: EditListSegment, word: { source?: string; instanceId?: string }): boolean {
+  if (segment.instanceId) return word.source === segment.source && word.instanceId === segment.instanceId;
+  return !word.instanceId && (!word.source || word.source === segment.source);
+}
+
 /** True when any part of the word survives into the edit. */
 export function wordPlays(
   segments: readonly EditListSegment[],
-  word: { start: number; end: number },
+  word: { start: number; end: number; source?: string; instanceId?: string },
 ): boolean {
   return segments.some(
-    (segment) => segment.sourceStart < word.end - EPSILON
+    (segment) => segmentMatchesWord(segment, word) && segment.sourceStart < word.end - EPSILON
       && segment.sourceEnd > word.start + EPSILON,
   );
 }
@@ -501,10 +512,19 @@ export function subtitleCueTimings(
     for (const wordId of cue.wordIds) {
       const word = byId.get(wordId);
       if (!word || !wordPlays(segments, word)) continue;
-      const start = timelineTimeForSourceTime(segments, word.start);
-      const end = timelineTimeForSourceTime(segments, word.end);
-      if (start !== null) times.push(start);
-      if (end !== null) times.push(end);
+      // A cut can remove either endpoint while retaining the middle of a word.
+      // Map each surviving interval in its own segment, including repeated or
+      // reordered source intervals, rather than looking up the original endpoints.
+      for (const segment of segments) {
+        if (!segmentMatchesWord(segment, word)) continue;
+        const sourceStart = Math.max(word.start, segment.sourceStart);
+        const sourceEnd = Math.min(word.end, segment.sourceEnd);
+        if (sourceEnd <= sourceStart) continue;
+        times.push(
+          segment.timelineStart + (sourceStart - segment.sourceStart) / segment.playbackRate,
+          segment.timelineStart + (sourceEnd - segment.sourceStart) / segment.playbackRate,
+        );
+      }
     }
     const columns = displayColumns(cue.text);
     if (times.length === 0) {
@@ -928,8 +948,8 @@ export function buildSubtitleCues(
       if (word.isGap !== true && (word.text ?? "").trim()) speechDeletedSinceLastKept = true;
       continue;
     }
-    const startOnTimeline = timelineTimeForSourceTime(segments, word.start);
-    const endOnTimeline = timelineTimeForSourceTime(segments, word.end);
+    const startOnTimeline = timelineTimeForSourceTime(segments, word.start, word);
+    const endOnTimeline = timelineTimeForSourceTime(segments, word.end, word);
 
     if (word.isGap === true || !(word.text ?? "").trim()) {
       // A retained gap is silence the audience sits through. Long enough and it

@@ -1,8 +1,9 @@
-import { spawn, spawnSync } from "node:child_process";
-import { openSync } from "node:fs";
+import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from "node:child_process";
+import { closeSync, openSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { PRODUCT_NAME } from "../output";
+import { probeRuntimeLockProcess } from "../jobs/runtime-lock";
 import {
   STUDIO_SERVICE_LABEL,
   STUDIO_SERVICE_URL,
@@ -10,13 +11,14 @@ import {
   StudioServiceError,
   acquireServiceLock,
   assertNoPortConflict,
+  assertProductionStudioServiceTarget,
   atomicWrite,
   compatibleIdentity,
   ensureServiceDirectories,
   isProductProcessOwnedByManagedJob,
   pathExists,
   probeHealth,
-  readTail,
+  readServiceLogs,
   requireLauncher,
   xmlEscape,
   type ManagedJobStatus,
@@ -29,9 +31,8 @@ import {
   type WindowsSidLookupResult,
 } from "./index";
 
-// Windows 托管形态：计划任务只负责「登录自启 + 脱离父进程」，崩溃重启由产品
-// 自带的 supervisor（service supervise）完成——Task Scheduler 原生重启最小间隔
-// 一分钟，远弱于 launchd 的 5 秒节流，所以看门狗必须自持。
+// The task detaches the server from the invoking client. The supervisor owns
+// one child run; failures are preserved for diagnosis and explicit retry.
 export const WINDOWS_TASK_NAME = "chengfeng-videocut-studio";
 
 // 任务的 UserId：工作组机器上 DOMAIN\user 形式会被拒（"No mapping between account
@@ -96,7 +97,6 @@ export function resolveWindowsTaskUserId(lookup?: WindowsSidLookup): string {
     },
   );
 }
-const RESPAWN_THROTTLE_MS = 5_000;
 
 const MAX_LOG_LINES = 1_000;
 
@@ -159,10 +159,6 @@ ${userId ? `      <UserId>${xmlEscape(userId)}</UserId>` : ""}
     <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
     <StartWhenAvailable>true</StartWhenAvailable>
     <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
-    <RestartOnFailure>
-      <Interval>PT1M</Interval>
-      <Count>999</Count>
-    </RestartOnFailure>
   </Settings>
   <Actions Context="Author">
     <Exec>
@@ -522,12 +518,11 @@ export async function runWindowsStudioServiceCommand(
   }
   if (action === "logs") {
     const lines = Math.min(MAX_LOG_LINES, Math.max(1, options.lines ?? 200));
-    const [status, stdout, stderr] = await Promise.all([
+    const [status, logs] = await Promise.all([
       inspectWindowsStatus(deps, paths),
-      readTail(paths.stdoutLogPath, lines),
-      readTail(paths.stderrLogPath, lines),
+      readServiceLogs(paths, lines),
     ]);
-    return { action, changed: false, ...status, logs: { lines, stdout, stderr } };
+    return { action, changed: false, ...status, logs };
   }
 
   const release = await acquireServiceLock(deps, paths);
@@ -568,30 +563,49 @@ export async function runWindowsStudioServiceCommand(
 }
 
 // 看门狗：直接以 bun 起 server 子进程（child.pid 即 health 报告的 PID），
-// 崩溃 5 秒节流后重拉，日志追加到与 launchd 相同的文件，状态发布到
+// 单次运行并保留退出码；日志追加到与 launchd 相同的文件，状态发布到
 // supervisor.json 供 status/stop 交叉验证。任务结束（schtasks /End、注销）
 // 或收到终止信号时退出。
-export async function runStudioSupervisor(paths: StudioServicePaths): Promise<number> {
-  if (process.platform !== "win32") {
+export async function runStudioSupervisor(
+  paths: StudioServicePaths,
+  dependencies: {
+    platform?: string;
+    spawn?: (executable: string, args: string[], options: SpawnOptions) => ChildProcess;
+    publishState?: (serverPid: number | null) => Promise<void>;
+    cleanupTimeoutMs?: number;
+    probeProcess?: typeof probeRuntimeLockProcess;
+  } = {},
+): Promise<number> {
+  await assertProductionStudioServiceTarget(paths, "win32");
+  if ((dependencies.platform ?? process.platform) !== "win32") {
     process.stderr.write("service supervise 仅用于 Windows 计划任务托管。\n");
     return 2;
   }
   const statePath = windowsSupervisorStatePath(paths);
+  let previousRaw: string | undefined;
   try {
-    const previous = JSON.parse(await readFile(statePath, "utf8")) as { supervisorPid?: number };
-    if (
-      typeof previous.supervisorPid === "number" &&
-      previous.supervisorPid !== process.pid
-    ) {
-      try {
-        process.kill(previous.supervisorPid, 0);
-        return 0; // 另一个看门狗还活着（IgnoreNew 的双保险），安静退出。
-      } catch {
-        // 前任已死，接管。
-      }
+    previousRaw = await readFile(statePath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw new StudioServiceError("service_supervisor_state_unreadable", "Cannot safely inspect the previous Studio supervisor state", { statePath });
     }
-  } catch {
-    // 没有状态文件即首启。
+  }
+  if (previousRaw !== undefined) {
+    let previous: { supervisorPid?: unknown } | null;
+    try { previous = JSON.parse(previousRaw); } catch {
+      throw new StudioServiceError("service_supervisor_state_corrupt", "Previous Studio supervisor state is not valid JSON", { statePath });
+    }
+    if (!previous || !Number.isInteger(previous.supervisorPid) || Number(previous.supervisorPid) <= 0) {
+      throw new StudioServiceError("service_supervisor_state_corrupt", "Previous Studio supervisor state has no valid owner PID", { statePath });
+    }
+    const previousPid = Number(previous.supervisorPid);
+    const ownerState = (dependencies.probeProcess ?? probeRuntimeLockProcess)(previousPid);
+    if (ownerState === "alive") return 0;
+    if (ownerState !== "dead") {
+      throw new StudioServiceError("service_supervisor_owner_unknown", "Previous Studio supervisor process state is unknown; refusing takeover", {
+        statePath, supervisorPid: previousPid,
+      });
+    }
   }
 
   await mkdir(join(paths.dataDir, "logs"), { recursive: true });
@@ -604,7 +618,39 @@ export async function runStudioSupervisor(paths: StudioServicePaths): Promise<nu
 
   let stopping = false;
   let child: ReturnType<typeof spawn> | null = null;
+  let childClosed = false;
+  let closed: Promise<void> | undefined;
+  let requestStop!: () => void;
+  const stopRequested = new Promise<void>((resolveStop) => { requestStop = resolveStop; });
+  const performChildCleanup = async () => {
+    if (!child || childClosed || !closed) return;
+    const ownedChild = child;
+    const waitForClose = async (): Promise<boolean> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          closed!.then(() => true),
+          new Promise<boolean>((resolveTimeout) => {
+            timer = setTimeout(() => resolveTimeout(false), dependencies.cleanupTimeoutMs ?? 2_000);
+          }),
+        ]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    };
+    for (const signal of ["SIGTERM", "SIGKILL"] as const) {
+      if (childClosed) return;
+      try { ownedChild.kill(signal); } catch { /* Verify actual closure below. */ }
+      if (await waitForClose()) return;
+    }
+    throw new StudioServiceError("service_child_cleanup_failed", "Owned Studio child did not close within the bounded cleanup deadline", {
+      pid: ownedChild.pid,
+    });
+  };
+  let cleanupInFlight: Promise<void> | undefined;
+  const cleanupChild = () => cleanupInFlight ??= performChildCleanup();
   const publish = async (serverPid: number | null) => {
+    if (dependencies.publishState) return dependencies.publishState(serverPid);
     await atomicWrite(
       statePath,
       `${JSON.stringify({ supervisorPid: process.pid, serverPid, updatedAt: Date.now() })}\n`,
@@ -613,52 +659,67 @@ export async function runStudioSupervisor(paths: StudioServicePaths): Promise<nu
   };
   const shutdown = () => {
     stopping = true;
-    if (child?.pid) {
-      try {
-        process.kill(child.pid);
-      } catch {
-        // Child already gone.
-      }
-    }
+    requestStop();
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
   process.on("SIGBREAK", shutdown);
 
-  for (;;) {
-    const startedAt = Date.now();
+  try {
     const stdoutFd = openSync(paths.stdoutLogPath, "a");
-    const stderrFd = openSync(paths.stderrLogPath, "a");
-    child = spawn(bun, [
-      cliEntry,
-      "start",
-      "--host",
-      "127.0.0.1",
-      "--port",
-      "5190",
-      "--data-dir",
-      paths.dataDir,
-    ], {
-      env: {
-        ...process.env,
-        CHENGFENG_VIDEOCUT_SERVICE: "windows-task",
-        CHENGFENG_VIDEOCUT_HOME: paths.dataDir,
-      },
-      stdio: ["ignore", stdoutFd, stderrFd],
-    });
-    await publish(child.pid ?? null);
-    const exitCode: number = await new Promise((resolveExit) => {
+    let stderrFd: number | undefined;
+    try {
+      stderrFd = openSync(paths.stderrLogPath, "a");
+      child = (dependencies.spawn ?? spawn)(bun, [
+        cliEntry,
+        "start",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "5190",
+        "--data-dir",
+        paths.dataDir,
+      ], {
+        env: {
+          ...process.env,
+          CHENGFENG_VIDEOCUT_SERVICE: "windows-task",
+          CHENGFENG_VIDEOCUT_HOME: paths.dataDir,
+          CHENGFENG_VIDEOCUT_DATA_DIR: paths.dataDir,
+        },
+        stdio: ["ignore", stdoutFd, stderrFd],
+      });
+      closed = new Promise<void>((resolveClose) => {
+        child!.once("close", () => { childClosed = true; resolveClose(); });
+      });
+    } finally {
+      closeSync(stdoutFd);
+      if (stderrFd !== undefined) closeSync(stderrFd);
+    }
+    const exited = new Promise<number>((resolveExit) => {
       child?.once("close", (code) => resolveExit(code ?? 1));
       child?.once("error", () => resolveExit(1));
     });
+    await publish(child.pid ?? null);
+    const exitCode = await Promise.race([
+      exited,
+      stopRequested.then(async () => { await cleanupChild(); return 0; }),
+    ]);
     await publish(null);
     if (stopping) return 0;
     process.stderr.write(
-      `Studio server exited with code ${exitCode}; restarting in ${RESPAWN_THROTTLE_MS}ms\n`,
+      `Studio server exited with code ${exitCode}; explicit service start is required to retry\n`,
     );
-    const elapsed = Date.now() - startedAt;
-    if (elapsed < RESPAWN_THROTTLE_MS) {
-      await new Promise((resolveDelay) => setTimeout(resolveDelay, RESPAWN_THROTTLE_MS - elapsed));
+    return exitCode;
+  } catch (error) {
+    try {
+      await cleanupChild();
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], "Studio supervisor failed and owned-child cleanup could not be confirmed");
     }
+    throw error;
+  } finally {
+    process.off("SIGINT", shutdown);
+    process.off("SIGTERM", shutdown);
+    process.off("SIGBREAK", shutdown);
   }
 }

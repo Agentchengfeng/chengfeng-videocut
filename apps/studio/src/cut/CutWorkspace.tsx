@@ -1,7 +1,9 @@
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { isUnsavedState, useRuntimeProtection } from "../runtime/useRuntimeProtection";
 import {
   activeVisualLayer,
   applyEditListOperation,
+  timelineTimeToSourcePosition,
   type EditListDocument,
   type EditListOperation,
 } from "@video-workbench/core";
@@ -9,6 +11,9 @@ import type { EditListActor } from "../components/editListApi";
 import { useProjectCutSelection } from "../components/useProjectCutSelection";
 import { useProjectEditList } from "../components/useProjectEditList";
 import { useProjectSubtitles } from "../components/useProjectSubtitles";
+import { useProjectWorkflow } from "../components/useProjectWorkflow";
+import { projectCanvasAspect } from "./useContainedPicture";
+import { CanvasSettings } from "./CanvasSettings";
 import { useKouboTranscript } from "../extensions/koubo/useKouboTranscript";
 import { CutFeaturePanel, type CutFeatureTab } from "./features/CutFeaturePanel";
 import { SubtitlePane } from "./subtitle/SubtitlePane";
@@ -21,11 +26,14 @@ import { TranscriptPaneResizer, TRANSCRIPT_WIDTH_DEFAULT } from "./layout/Transc
 import { CutPlayer } from "./player/CutPlayer";
 import { useAssembledVideoTransport } from "./player/useAssembledVideoTransport";
 import { previewArtifactUrl, usePreviewArtifact } from "./player/previewArtifact";
+import { SoundEffectTrack } from "./sound-effects/SoundEffectTrack";
 import { CutTimeline } from "./timeline/CutTimeline";
 import { KouboTranscriptPlaybackMarker } from "./transcript/KouboTranscriptPlaybackMarker";
 
 interface PlaybackAnchor {
   editRevision: string;
+  source?: string;
+  instanceId?: string;
   sourceTime: number;
   timelineTime: number;
 }
@@ -67,9 +75,12 @@ function sourceTimeForTimeline(document: EditListDocument | null, timelineTime: 
 export function resolveTimelineAnchorForSourceTime(
   document: EditListDocument | null,
   sourceTime: number,
+  identity?: { source?: string; instanceId?: string },
 ): SourceTimelineAnchor {
   if (!document) return { timelineTime: 0, sourceTime: 0, segmentId: null, reason: "end" };
-  const segment = document.segments.find((item) =>
+  const matchingSegments = document.segments.filter(item => document.schemaVersion !== 2
+    || Boolean(identity?.source && identity.instanceId) && item.source === identity?.source && item.instanceId === identity?.instanceId);
+  const segment = matchingSegments.find((item) =>
     sourceTime >= item.sourceStart && sourceTime < item.sourceEnd
   );
   if (segment) {
@@ -84,7 +95,7 @@ export function resolveTimelineAnchorForSourceTime(
     };
   }
   const last = document.segments.at(-1);
-  if (last && sourceTime >= last.sourceEnd && sourceTime <= last.sourceEnd + ANCHOR_EPSILON) {
+  if (last && matchingSegments.includes(last) && sourceTime >= last.sourceEnd && sourceTime <= last.sourceEnd + ANCHOR_EPSILON) {
     return {
       timelineTime: document.duration,
       sourceTime: last.sourceEnd,
@@ -96,7 +107,7 @@ export function resolveTimelineAnchorForSourceTime(
   // the next retained source range. Its timeline position may be earlier
   // after a manual reorder, but that is still the deterministic S -> T'
   // mapping for a source-based transcript selection.
-  const next = document.segments
+  const next = matchingSegments
     .filter((item) => item.sourceStart > sourceTime)
     .sort((left, right) => left.sourceStart - right.sourceStart || left.timelineStart - right.timelineStart)[0];
   if (next) {
@@ -118,8 +129,9 @@ export function resolveTimelineAnchorForSourceTime(
 export function timelineTimeForSourceAnchor(
   document: EditListDocument | null,
   sourceTime: number,
+  identity?: { source?: string; instanceId?: string },
 ): number {
-  return resolveTimelineAnchorForSourceTime(document, sourceTime).timelineTime;
+  return resolveTimelineAnchorForSourceTime(document, sourceTime, identity).timelineTime;
 }
 
 function sameEditListDocument(left: EditListDocument, right: EditListDocument): boolean {
@@ -131,6 +143,9 @@ function invertTimelineOperation(
   operation: EditListOperation,
 ): EditListOperation[] | null {
   if (!document) return null;
+  // Legacy restore has no source instance; split undo's trim-before-delete also
+  // cannot be replayed safely. Do not advertise these as reversible in v2.
+  if (document.schemaVersion === 2 && operation.type !== "move" && operation.type !== "trim") return null;
   try {
     const next = applyEditListOperation(document, operation);
     if (sameEditListDocument(document, next)) return null;
@@ -163,18 +178,16 @@ function invertTimelineOperation(
       }];
     }
     if (operation.type === "split") {
-      const beforeIds = new Set(document.segments.map((candidate) => candidate.id));
-      const right = next.segments.find((candidate) => !beforeIds.has(candidate.id));
-      if (!right) return null;
-      return [
-        {
-          type: "trim",
-          clipId: segment.id,
-          sourceStart: segment.sourceStart,
-          sourceEnd: segment.sourceEnd,
-        },
-        { type: "delete", clipId: right.id },
-      ];
+      // Expanding the left half while the right half exists violates overlap
+      // safety. Restore both halves in one CAS, retaining the exact prior IDs,
+      // ordering, source boundaries and mode. Unknown later edits must reject.
+      return [{
+        type: "restore-snapshot",
+        expectedSegments: next.segments,
+        beforeSegments: document.segments,
+        beforeMode: document.mode,
+        inverse: operation,
+      }];
     }
     if (operation.type === "delete") {
       const previous = document.segments[indexOfSegment(document, segment) - 1];
@@ -215,6 +228,8 @@ export function CutWorkspace({
   onTimelineTimeCommit: (time: number) => void;
 }) {
   const editList = useProjectEditList(projectId);
+  const projectWorkflow = useProjectWorkflow(projectId);
+  const canvasAspectRatio = projectCanvasAspect(projectWorkflow.workflow?.project.config?.aspectRatio);
   const transcript = useKouboTranscript(projectId);
   const cutSelection = useProjectCutSelection(projectId, transcript.cues);
   const subtitles = useProjectSubtitles(projectId);
@@ -254,6 +269,11 @@ export function CutWorkspace({
   // dependency of transcript seeking. Depending on the wrapper would recreate
   // `onSeek` every frame and defeat memoized cues.
   const transportSeek = transport.seek;
+  useRuntimeProtection(
+    [editList.saveState, cutSelection.saveState, subtitles.saveState].some(isUnsavedState),
+    transport.isPlaying,
+    `cut:${projectId}`,
+  );
   const activeSource = artifactSource;
   const previousRevisionRef = useRef(editList.revision);
   const previousDocumentRef = useRef(editList.document);
@@ -324,9 +344,11 @@ export function CutWorkspace({
           }
         },
       });
+    } else if (editList.document?.schemaVersion === 2) {
+      clearUndoCommands();
     }
     return nextDocument;
-  }, [editList.document, editList.patchOperation, pushUndoCommand]);
+  }, [clearUndoCommands, editList.document, editList.patchOperation, pushUndoCommand]);
 
   const updateCutWordIdsWithHistory = useCallback(async (
     next: ReadonlySet<string>,
@@ -448,9 +470,11 @@ export function CutWorkspace({
           }));
         return {
           layerId: layer.id,
-          src: visuals.moduleUrl(layer.module),
+          src: layer.media ? `/api/v1/projects/${encodeURIComponent(projectId)}/media-assets/${layer.media.assetId}/content` : visuals.moduleUrl(layer.module!),
+          ...(layer.media ? { media: layer.media } : {}),
           start: timing.start,
           duration: timing.duration,
+          ...(timing.animation ? { animation: timing.animation } : {}),
           ...(layer.zoom ? { zoom: layer.zoom } : {}),
           cues,
         };
@@ -475,7 +499,7 @@ export function CutWorkspace({
       .filter((timing) => !timing.orphaned)
       .map((timing) => {
         const layer = visuals.document?.layers.find((candidate) => candidate.id === timing.layerId);
-        const folder = layer?.module.split("/").slice(-2, -1)[0] ?? layer?.module ?? timing.layerId;
+        const folder = layer?.media ? `视频 · ${layer.id}` : layer?.module?.split("/").slice(-2, -1)[0] ?? layer?.module ?? timing.layerId;
         return {
           id: timing.layerId,
           label: folder,
@@ -524,6 +548,7 @@ export function CutWorkspace({
       if (previousDocumentRef.current) {
         const sourceTime = sourceTimeForTimeline(previousDocumentRef.current, transport.timelineTime);
         pendingAnchorRef.current = {
+          ...timelineTimeToSourcePosition(previousDocumentRef.current, transport.timelineTime),
           editRevision: editList.revision,
           sourceTime: sourceTime ?? transport.timelineTime,
           timelineTime: transport.timelineTime,
@@ -540,6 +565,7 @@ export function CutWorkspace({
     const nextTimelineTime = timelineTimeForSourceAnchor(
       editList.document,
       anchor.sourceTime,
+      anchor,
     );
     pendingAnchorRef.current = null;
     void transport.restoreIntent(nextTimelineTime, desiredPlayingRef.current);
@@ -619,6 +645,17 @@ export function CutWorkspace({
       />
 
       <CutPlayer
+        notices={visuals.error || visuals.timings.some(timing => timing.animation?.issues.includes("orphaned")) ? <>
+          {visuals.error && <div role="alert">画面更新失败，保留上次画面：{visuals.error}（正在自动重试）</div>}
+          {visuals.timings.filter(timing => timing.animation?.issues.includes("orphaned")).map(timing => (
+            <div key={`orphaned-animation-${timing.layerId}`} role="status">
+              动画 {timing.layerId} 的整句已删除，已停止显示；源码与用户修改保留，未自动删除或重新绑定。
+            </div>
+          ))}
+        </> : null}
+        canvasAspectRatio={canvasAspectRatio}
+        canvasControls={<CanvasSettings projectId={projectId} onSaved={() => { void projectWorkflow.refresh(); }} />}
+        audioOnly={artifact.state.hasVideo === false && artifact.state.hasAudio === true}
         sourceUrl={activeSource}
         transport={transport}
         onTimelineTimeCommit={onTimelineTimeCommit}
@@ -632,6 +669,7 @@ export function CutWorkspace({
       />
 
       <CutTimeline
+        soundEffectsTrack={(pixelsPerSecond, displayContentWidth) => <SoundEffectTrack pixelsPerSecond={pixelsPerSecond} displayContentWidth={displayContentWidth} projectId={projectId} editRevision={editList.revision} time={transport.timelineTime} onSeek={seek} onSaved={artifact.retry} />}
         visualLayers={timelineVisualLayers}
         activeVisualLayerId={activeVisual?.layerId ?? null}
         onVisualLayerClick={(layerId) => {

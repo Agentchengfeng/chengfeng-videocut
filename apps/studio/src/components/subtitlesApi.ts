@@ -2,6 +2,7 @@ import type {
   SubtitleCueTiming,
   SubtitleDocument,
 } from "@video-workbench/core";
+import type { SkillResultState } from "@video-workbench/contracts";
 
 /** One screen the cut broke, and what it lost. Always specific, never a blanket warning. */
 export interface SubtitleStaleCue {
@@ -25,6 +26,7 @@ export interface SubtitleResource {
   transcriptRevision: string | null;
   changed?: boolean;
   previousRevision?: string | null;
+  resultState?: SkillResultState;
 }
 
 export class SubtitlesApiError extends Error {
@@ -123,10 +125,11 @@ export function putProjectSubtitles(
   projectId: string,
   expectedRevision: string,
   document: SubtitleDocument,
+  reviewNote?: string,
 ): Promise<SubtitleResource> {
   return request(resourceUrl(projectId), {
     method: "PUT",
     headers: { Accept: "application/json", "Content-Type": "application/json" },
-    body: JSON.stringify({ expectedRevision, document }),
+    body: JSON.stringify({ expectedRevision, document, ...(reviewNote ? { reviewNote } : {}) }),
   });
 }

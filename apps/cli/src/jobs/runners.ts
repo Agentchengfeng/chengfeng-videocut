@@ -1,15 +1,21 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
-import { resolveProject, serializeProjectOperation } from "@video-workbench/core/node";
+import { readSoundEffects, readSoundEffectAsset, resolveProject, serializeProjectOperation } from "@video-workbench/core/node";
 import { isExportProfile, type DurableJob, type JobKind } from "@video-workbench/contracts";
 import { executeExport } from "../export-command";
 import { JobStore, JobStoreError } from "./store";
 
 const EXPORT_DOCUMENTS = [
-  "project.json", "edit-list.json", "transcript.json", "subtitles.json", "visuals.json",
+  "project.json", "edit-list.json", "transcript.json", "subtitles.json", "visuals.json", "sound-effects.json",
 ] as const;
+async function snapshotSoundEffects(directory: string) {
+  try { await lstat(join(directory, "sound-effects.json")); }
+  catch (e: any) { if(e.code === "ENOENT") return {document:{cues:[]}}; throw e; }
+  return readSoundEffects(directory, true);
+}
+
 const PROJECT_LOCK_DIRECTORY = ".chengfeng-videocut.write.lock";
 const GENERATED_EXPORT_DIRECTORY = ".chengfeng-videocut/export";
 const LEGACY_SOURCE_CUT_ALIAS = "source_cut.mp4";
@@ -32,6 +38,11 @@ export async function exportInputFingerprint(projectDirectory: string): Promise<
   }
   const digest = createHash("sha256");
   for (const name of EXPORT_DOCUMENTS) {
+    // Preserve frozen fingerprints of queued pre-SFX exports byte-for-byte.
+    if (name === "sound-effects.json") {
+      try { await lstat(join(projectDirectory,name)); }
+      catch(e:any) { if(e.code === "ENOENT") continue; throw e; }
+    }
     digest.update(`${name}\0`);
     const path = join(projectDirectory, name);
     try {
@@ -58,6 +69,11 @@ export async function exportInputFingerprint(projectDirectory: string): Promise<
       digest.update("<missing>");
     }
     digest.update("\0");
+  }
+  const sfx = await snapshotSoundEffects(projectDirectory);
+  for (const id of [...new Set(sfx.document.cues.map(c=>c.assetId))].sort()) {
+    const {manifest} = await readSoundEffectAsset(projectDirectory,id);
+    digest.update(JSON.stringify(manifest));
   }
   return digest.digest("hex");
 }
@@ -171,6 +187,15 @@ export async function createExportSnapshot(
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT" || name === "project.json") throw error;
     }
+  }
+  const sfx = await snapshotSoundEffects(projectDirectory);
+  for (const id of new Set(sfx.document.cues.map(c=>c.assetId))) {
+    const {path} = await readSoundEffectAsset(projectDirectory,id);
+    const folder = join(snapshotDirectory, ".chengfeng-videocut", "sound-effects", id);
+    await mkdir(folder, {recursive:true});
+    await copyFile(path, join(folder,"source.wav"));
+    await copyFile(join(dirname(path),"manifest.json"),join(folder,"manifest.json"));
+    await readSoundEffectAsset(snapshotDirectory,id);
   }
   const snapshotProject = await resolveProject(snapshotDirectory, { cwd: "/" });
   return {

@@ -82,7 +82,18 @@ function indexedWordRange(indexedWord: IndexedKouboWord): TranscriptDisplayWord 
 export function resolveKouboActiveTranscriptPosition(
   cues: readonly IndexedKouboCue[],
   sourceTime: number,
+  identity?: { source?: string; instanceId?: string },
 ): KouboActiveTranscriptPosition {
+  if (identity) {
+    if (!identity.source || !identity.instanceId) return { cueId: null, wordId: null };
+    // A source-local clock is not globally sorted across recordings or uses.
+    for (const cue of cues) {
+      const active = cue.words.find(({ word }) => word.source === identity.source
+        && word.instanceId === identity.instanceId && sourceTime >= word.start && sourceTime < word.end);
+      if (active) return { cueId: cue.id, wordId: active.word.id };
+    }
+    return { cueId: null, wordId: null };
+  }
   const cueIndex = findActiveTimedItemIndex(cues, sourceTime, indexedCueRange);
   const cue = cueIndex >= 0 ? cues[cueIndex] : undefined;
   if (!cue) return { cueId: null, wordId: null };

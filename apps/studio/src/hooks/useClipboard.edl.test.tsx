@@ -4,6 +4,8 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { usePlayerStore, type TimelineElement } from "../player";
 import { isEditListManagedClipboardHtml, useClipboard } from "./useClipboard";
+import { useKouboTimelineEditingAdapter } from "../extensions/koubo/useKouboTimelineEditingAdapter";
+vi.mock("../components/useProjectEditList", () => ({ useProjectEditList: () => ({ patchOperation: vi.fn() }) }));
 
 Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 
@@ -47,6 +49,7 @@ describe("useClipboard managed A-roll guard", () => {
         handleTimelineElementDelete,
         handleDomEditElementDelete,
         previewIframeRef: { current: iframe },
+        timelineEditingAdapter: useKouboTimelineEditingAdapter("demo"),
       });
       return null;
     }
@@ -61,7 +64,7 @@ describe("useClipboard managed A-roll guard", () => {
       });
       expect(handleTimelineElementDelete).not.toHaveBeenCalled();
       expect(handleDomEditElementDelete).not.toHaveBeenCalled();
-      expect(showToast).toHaveBeenCalledWith(expect.stringContaining("剪口播时间线管理"), "info");
+      expect(showToast).toHaveBeenCalledWith(expect.stringContaining("managed A-roll"), "info");
     } finally {
       act(() => root.unmount());
     }

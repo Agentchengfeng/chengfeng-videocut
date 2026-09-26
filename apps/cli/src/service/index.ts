@@ -2,9 +2,11 @@ import { spawn } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
 import {
   access,
+  lstat,
   mkdir,
   open,
   readFile,
+  realpath,
   rename,
   rm,
   stat,
@@ -19,9 +21,11 @@ import { PRODUCT_NAME, PRODUCT_VERSION } from "../output";
 import {
   RuntimeJobLock,
   parseRuntimeLockOwner,
+  probeRuntimeLockProcess,
   type RuntimeLockOwner,
 } from "../jobs/runtime-lock";
 import { JobStoreError } from "../jobs/store";
+import { diagnosticDirectory, readDiagnosticLogs } from "./diagnostics";
 
 export const STUDIO_SERVICE_LABEL = "com.chengfeng.videocut.studio";
 export const STUDIO_SERVICE_URL = "http://127.0.0.1:5190";
@@ -63,6 +67,7 @@ export interface WindowsSidLookupResult {
 export type WindowsSidLookup = () => WindowsSidLookupResult;
 
 export interface StudioServiceDependencies {
+  environment?: NodeJS.ProcessEnv;
   platform?: string;
   homeDir?: string;
   dataDir?: string;
@@ -89,12 +94,14 @@ export interface StudioServiceDependencies {
 }
 
 export interface StudioServicePaths {
+  selectionConflicts?: string[];
   homeDir: string;
   dataDir: string;
   launcherPath: string;
   plistPath: string;
   stdoutLogPath: string;
   stderrLogPath: string;
+  diagnosticsDir: string;
   operationLockPath: string;
 }
 
@@ -132,6 +139,8 @@ export interface StudioServiceCommandResult extends StudioServiceStatus {
     lines: number;
     stdout: string;
     stderr: string;
+    diagnostics: string;
+    errors?: Partial<Record<"stdout" | "stderr" | "diagnostics", string>>;
   };
 }
 
@@ -154,6 +163,7 @@ interface HealthProbe {
 }
 
 export interface ResolvedServiceDependencies {
+  selectionConflicts: string[];
   platform: string;
   homeDir: string;
   dataDir: string;
@@ -279,24 +289,33 @@ function managedRootFromExecutable(executable: string | undefined): string | nul
 function resolveDependencies(input: StudioServiceDependencies): ResolvedServiceDependencies {
   const homeDir = input.homeDir ?? homedir();
   const injectedHome = input.homeDir !== undefined;
-  const environmentExecutable = injectedHome
-    ? undefined
-    : process.env.CHENGFENG_VIDEOCUT_EXECUTABLE;
+  const environment = input.environment ?? (injectedHome ? {} : process.env);
+  const environmentExecutable = environment.CHENGFENG_VIDEOCUT_EXECUTABLE;
   const executableRoot = managedRootFromExecutable(environmentExecutable);
   const dataDir = resolve(
     input.dataDir ??
-    (!injectedHome ? process.env.CHENGFENG_VIDEOCUT_HOME : undefined) ??
+    environment.CHENGFENG_VIDEOCUT_DATA_DIR ??
+    environment.CHENGFENG_VIDEOCUT_HOME ??
     executableRoot ??
     join(homeDir, ".chengfeng-videocut"),
   );
   const runCommand = input.runCommand ?? defaultCommandRunner;
+  const compare = (path: string) => (input.platform ?? process.platform) === "win32"
+    ? resolve(path).toLowerCase() : resolve(path);
+  const selectionConflicts = [
+    ["CHENGFENG_VIDEOCUT_DATA_DIR", environment.CHENGFENG_VIDEOCUT_DATA_DIR],
+    ["CHENGFENG_VIDEOCUT_HOME", environment.CHENGFENG_VIDEOCUT_HOME],
+    ["CHENGFENG_VIDEOCUT_EXECUTABLE", executableRoot],
+  ].filter(([, root]) => root && compare(root) !== compare(dataDir))
+    .map(([name, root]) => `${name} selects ${root}, but dataDir selects ${dataDir}`);
   return {
+    selectionConflicts,
     platform: input.platform ?? process.platform,
     homeDir,
     dataDir,
     launcherPath: resolve(
       input.launcherPath ??
-      (executableRoot && environmentExecutable
+      (environmentExecutable
         ? environmentExecutable
         : join(
             dataDir,
@@ -318,14 +337,7 @@ function resolveDependencies(input: StudioServiceDependencies): ResolvedServiceD
         ? () => defaultWindowsPortOwnerPid(runCommand)
         : () => defaultPortOwnerPid(runCommand)
     ),
-    isProcessAlive: input.isProcessAlive ?? ((pid) => {
-      try {
-        process.kill(pid, 0);
-        return true;
-      } catch {
-        return false;
-      }
-    }),
+    isProcessAlive: input.isProcessAlive ?? ((pid) => probeRuntimeLockProcess(pid) !== "dead"),
     killProcess: input.killProcess ?? ((pid) => {
       process.kill(pid);
     }),
@@ -356,6 +368,7 @@ export function studioServicePaths(
       : join(homeDir, "Library", "LaunchAgents", `${STUDIO_SERVICE_LABEL}.plist`),
     stdoutLogPath: join(dataDir, "logs", "studio.stdout.log"),
     stderrLogPath: join(dataDir, "logs", "studio.stderr.log"),
+    diagnosticsDir: diagnosticDirectory(dataDir),
     operationLockPath: join(dataDir, "service-operation.lock"),
   };
 }
@@ -423,7 +436,7 @@ ${args.map((argument) => `    <string>${xmlEscape(argument)}</string>`).join("\n
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
-  <true/>
+  <false/>
   <key>ThrottleInterval</key>
   <integer>5</integer>
   <key>ProcessType</key>
@@ -1084,8 +1097,16 @@ export async function readTail(path: string, requestedLines: number): Promise<st
   const lines = Math.min(MAX_LOG_LINES, Math.max(1, requestedLines));
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
-    handle = await open(path, "r");
+    const directory = await lstat(dirname(path));
+    const target = await lstat(path);
+    if (!directory.isDirectory() || directory.isSymbolicLink() || !target.isFile() || target.isSymbolicLink() || target.nlink !== 1) {
+      throw new StudioServiceError("log_source_unsafe", "Log source is not a private regular file");
+    }
+    handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
     const fileStat = await handle.stat();
+    if (!fileStat.isFile() || fileStat.nlink !== 1 || fileStat.ino !== target.ino || fileStat.dev !== target.dev) {
+      throw new StudioServiceError("log_source_unsafe", "Log source changed during inspection");
+    }
     let position = fileStat.size;
     let accumulated = Buffer.alloc(0);
     while (position > 0 && accumulated.length < MAX_LOG_BYTES) {
@@ -1110,6 +1131,26 @@ export async function readTail(path: string, requestedLines: number): Promise<st
   }
 }
 
+/** Each source fails independently; no repair, directory creation or startup. */
+export async function readServiceLogs(paths: StudioServicePaths, lines: number): Promise<NonNullable<StudioServiceCommandResult["logs"]>> {
+  const logs: NonNullable<StudioServiceCommandResult["logs"]> = { lines, stdout: "", stderr: "", diagnostics: "" };
+  const allowed = new Set(["EACCES", "EPERM", "EISDIR", "EIO", "ELOOP", "ESTALE", "ENOTDIR", "log_source_unsafe"]);
+  const read = async (source: "stdout" | "stderr" | "diagnostics", operation: () => string | Promise<string>) => {
+    try { logs[source] = await operation(); }
+    catch (error) {
+      const code = (error as { code?: unknown } | null)?.code;
+      logs.errors ??= {};
+      logs.errors[source] = typeof code === "string" && allowed.has(code) ? code : "log_read_failed";
+    }
+  };
+  await Promise.all([
+    read("stdout", () => readTail(paths.stdoutLogPath, lines)),
+    read("stderr", () => readTail(paths.stderrLogPath, lines)),
+    read("diagnostics", () => readDiagnosticLogs(paths.dataDir, lines)),
+  ]);
+  return logs;
+}
+
 export async function runStudioServiceCommand(
   action: StudioServiceAction,
   options: { lines?: number } = {},
@@ -1118,6 +1159,10 @@ export async function runStudioServiceCommand(
   const deps = resolveDependencies(dependencies);
   requireManagedPlatform(deps);
   const paths = studioServicePaths(deps.homeDir, deps.dataDir, deps.launcherPath, deps.platform);
+  if (deps.selectionConflicts.length) paths.selectionConflicts = deps.selectionConflicts;
+  if (action !== "status" && action !== "logs") {
+    await assertProductionStudioServiceTarget(paths, deps.platform);
+  }
   if (deps.platform === "win32") {
     // 动态引入避免 index/windows 循环依赖在模块初始化期互咬。
     const { runWindowsStudioServiceCommand } = await import("./windows");
@@ -1128,12 +1173,11 @@ export async function runStudioServiceCommand(
   }
   if (action === "logs") {
     const lines = Math.min(MAX_LOG_LINES, Math.max(1, options.lines ?? 200));
-    const [status, stdout, stderr] = await Promise.all([
+    const [status, logs] = await Promise.all([
       inspectStatus(deps, paths),
-      readTail(paths.stdoutLogPath, lines),
-      readTail(paths.stderrLogPath, lines),
+      readServiceLogs(paths, lines),
     ]);
-    return { action, changed: false, ...status, logs: { lines, stdout, stderr } };
+    return { action, changed: false, ...status, logs };
   }
 
   const release = await acquireServiceLock(deps, paths);
@@ -1169,6 +1213,58 @@ export async function runStudioServiceCommand(
   }
 }
 
+/** The OS label and port are user-wide, not scoped to a selected data directory. */
+export async function assertProductionStudioServiceTarget(
+  paths: StudioServicePaths,
+  platform: string = process.platform,
+): Promise<void> {
+  const comparable = (path: string) => platform === "win32"
+    ? resolve(path).toLowerCase()
+    : resolve(path);
+  const expectedRoot = resolve(paths.homeDir, ".chengfeng-videocut");
+  const expectedLauncher = join(expectedRoot, "bin", platform === "win32"
+    ? "chengfeng-videocut.cmd" : "chengfeng-videocut");
+  const reject = (reason: string): never => {
+    throw new StudioServiceError(
+      "service_target_conflict",
+      `Refusing to change the user-wide Studio service: ${reason}. Use the default Product root and its managed bin launcher; status/logs remain read-only.`,
+      { dataDir: paths.dataDir, launcherPath: paths.launcherPath, expectedRoot, expectedLauncher },
+    );
+  };
+  if (paths.selectionConflicts?.length) reject(paths.selectionConflicts.join("; "));
+  if (comparable(paths.dataDir) !== comparable(expectedRoot)) reject("selected data root is not the default root");
+  if (comparable(paths.launcherPath) !== comparable(expectedLauncher)) reject("selected launcher is not the default root's managed launcher");
+
+  // Inspect without creating anything. Anchor canonical comparisons at HOME so
+  // legitimate OS aliases (e.g. macOS /var -> /private/var) do not break tests or
+  // user homes; a root/bin/launcher link must not redirect service ownership.
+  let parentCanonical: string;
+  try {
+    parentCanonical = await realpath(paths.homeDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    reject("user home cannot be inspected safely");
+  }
+  for (const path of [expectedRoot, dirname(expectedLauncher), expectedLauncher]) {
+    try {
+      const metadata = await lstat(path);
+      if (metadata.isSymbolicLink()) reject(`linked service target: ${path}`);
+      if (path === expectedLauncher ? !metadata.isFile() : !metadata.isDirectory()) {
+        reject(`unexpected service target file type: ${path}`);
+      }
+      const canonical = await realpath(path);
+      if (platform !== "win32" && comparable(canonical) !== comparable(join(parentCanonical!, basename(path)))) {
+        reject(`service target canonical identity differs: ${path}`);
+      }
+      parentCanonical = canonical;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      if (error instanceof StudioServiceError) throw error;
+      reject(`service target cannot be inspected safely: ${path}`);
+    }
+  }
+}
+
 // `service supervise` is launched by the installed stable launcher rather than
 // through `runStudioServiceCommand`. Keep its data-root resolution identical to
 // every other service verb: in particular a Windows scheduled task must retain
@@ -1178,5 +1274,7 @@ export function resolveStudioServicePaths(
   dependencies: StudioServiceDependencies = {},
 ): StudioServicePaths {
   const deps = resolveDependencies(dependencies);
-  return studioServicePaths(deps.homeDir, deps.dataDir, deps.launcherPath, deps.platform);
+  const paths = studioServicePaths(deps.homeDir, deps.dataDir, deps.launcherPath, deps.platform);
+  if (deps.selectionConflicts.length) paths.selectionConflicts = deps.selectionConflicts;
+  return paths;
 }

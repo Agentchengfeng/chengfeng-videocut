@@ -38,14 +38,18 @@ describe("persistTimelineMoveEditsAtomically", () => {
     expect(handleTimelineGroupMove).toHaveBeenCalledTimes(1);
     expect(handleTimelineGroupMove).toHaveBeenCalledWith(movedPair(edits), {
       coalesceKey: "clip-lane-move:7",
+      coalesceMs: undefined,
+      operation: "track-insert",
     });
   });
 
   it("omits track attrs for plain timing moves (keeps the SDK fast path eligible)", async () => {
     const edit = { element: element("a", 0), updates: { start: 1, track: 0 } };
     const handleTimelineGroupMove = await runMove([edit], undefined, "timing");
-    expect(handleTimelineGroupMove).toHaveBeenCalledWith([{ element: edit.element, start: 1 }], {
+    expect(handleTimelineGroupMove).toHaveBeenCalledWith([{ element: edit.element, start: 1, track: undefined }], {
       coalesceKey: undefined,
+      coalesceMs: undefined,
+      operation: "timing",
     });
   });
 
@@ -56,7 +60,7 @@ describe("persistTimelineMoveEditsAtomically", () => {
     const handleTimelineGroupMove = await runMove([edit], "clip-lane-move:7", "lane-reorder");
     expect(handleTimelineGroupMove).toHaveBeenCalledWith(
       [{ element: edit.element, start: 1, track: 1 }],
-      { coalesceKey: "clip-lane-move:7" },
+      { coalesceKey: "clip-lane-move:7", coalesceMs: undefined, operation: "lane-reorder" },
     );
   });
 
@@ -65,6 +69,8 @@ describe("persistTimelineMoveEditsAtomically", () => {
     const handleTimelineGroupMove = await runMove(edits, "clip-lane-move:7", "lane-reorder");
     expect(handleTimelineGroupMove).toHaveBeenCalledWith(movedPair(edits), {
       coalesceKey: "clip-lane-move:7",
+      coalesceMs: undefined,
+      operation: "lane-reorder",
     });
   });
 

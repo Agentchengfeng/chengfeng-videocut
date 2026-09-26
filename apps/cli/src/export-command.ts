@@ -3,12 +3,14 @@ import type { ExportProfile } from "@video-workbench/contracts";
 import { VideocutError, buildExportPlan, parseTranscriptWords } from "@video-workbench/core";
 import {
   readEditList,
+  readSoundEffects,
   readOptionalProjectDocument,
   readSubtitles,
   readVisuals,
   type ResolvedProject,
 } from "@video-workbench/core/node";
-import { exportFilm, probeMedia, resolveExportProfile } from "@video-workbench/koubo-adapter";
+import { exportFilm, probeMedia, resolveExportProfile, resolveMainSources } from "@video-workbench/koubo-adapter";
+import { exportSource } from "./export-source";
 
 export interface ExecuteExportOptions {
   project: ResolvedProject;
@@ -35,19 +37,19 @@ export async function executeExport(options: ExecuteExportOptions): Promise<Reco
     readVisuals(project),
   ]);
   const inputVideo = (project.project as Record<string, unknown>).inputVideo;
-  if (typeof inputVideo !== "string" || !inputVideo.trim()) {
+  const mainSources = editList?.value.schemaVersion === 2 ? editList.value.sources : undefined;
+  if (!mainSources && (typeof inputVideo !== "string" || !inputVideo.trim())) {
     throw new VideocutError("invalid_project", "This project has no inputVideo to export");
   }
-  const sourcePath = options.sourcePathOverride ?? resolve(project.directory, inputVideo);
+  const sourcePaths = mainSources ? await resolveMainSources(options.assetProjectDirectory ?? project.directory, mainSources) : undefined;
+  const sourcePath = sourcePaths ? Object.values(sourcePaths)[0]! : options.sourcePathOverride ?? resolve(project.directory, inputVideo as string);
   const probe = await probeMedia(sourcePath);
-  if (!probe.hasVideo) {
-    throw new VideocutError("invalid_project", "The source is not a readable video", { sourcePath });
-  }
+  const media = exportSource(probe, (project.project.config as { aspectRatio?: unknown } | undefined)?.aspectRatio);
   const resolvedProfile = resolveExportProfile({
     profile: options.profile,
-    sourceWidth: probe.width,
-    sourceHeight: probe.height,
-    sourceFrameRate: probe.frameRate ?? 30,
+    sourceWidth: media.canvas.width,
+    sourceHeight: media.canvas.height,
+    sourceFrameRate: media.source.frameRate,
     scale: options.scale,
     fps: options.fps,
   });
@@ -56,15 +58,13 @@ export async function executeExport(options: ExecuteExportOptions): Promise<Reco
     words: transcript ? parseTranscriptWords(transcript.value) : [],
     subtitles: subtitles?.value ?? null,
     visuals: visuals?.value ?? null,
-    source: {
-      width: probe.width,
-      height: probe.height,
-      duration: probe.duration,
-      frameRate: probe.frameRate ?? 30,
-    },
-    scale: resolvedProfile.scale,
+    source: media.source,
+    canvas: media.canvas,
+    scale: resolvedProfile.scale ?? media.defaultScale,
     fps: resolvedProfile.fps,
   });
+  const soundEffects = await readSoundEffects(project.directory, true);
+  if (soundEffects.document.cues.length) plan.soundEffects = soundEffects.document.cues;
   const summary = {
     projectId: project.projectId,
     profile: resolvedProfile.profile,
@@ -73,16 +73,20 @@ export async function executeExport(options: ExecuteExportOptions): Promise<Reco
     fps: plan.fps,
     frameCount: plan.frameCount,
     source: plan.source,
+    audioOnly: media.audioOnly,
     outputSize: plan.output,
     cutSegments: plan.spans.length,
     subtitleScreens: plan.subtitleCues.length,
     visualLayers: plan.layers.length,
+    soundEffectCues: plan.soundEffects?.length ?? 0,
     zoomSpans: plan.zoomSpans.filter((span) => span.box).length,
     warnings: plan.warnings,
   };
   const result = await exportFilm({
+    soundEffectsAssetDirectory: project.directory,
     projectDirectory: options.assetProjectDirectory ?? project.directory,
     sourcePath,
+    audioOnly: media.audioOnly,
     plan,
     outputPath: options.outputPath,
     workDirectory: options.workDirectory,

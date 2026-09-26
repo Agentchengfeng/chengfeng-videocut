@@ -19,6 +19,7 @@ export interface StudioShellValue {
   renderQueue: {
     jobs: unknown[];
     isRendering: boolean;
+    renderCapability?: { enabled: boolean; reason: string; source: string };
     loadError: string | null;
     actionError: string | null;
     dismissActionError: () => void;

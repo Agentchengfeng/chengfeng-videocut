@@ -413,6 +413,7 @@ export function StudioRightPanel({
       onDismissActionError={renderQueue.dismissActionError}
       onClearCompleted={renderQueue.clearCompleted}
       onStartRender={async (format, quality, resolution, fps) => {
+        if (renderQueue.renderCapability?.enabled !== true) return;
         await waitForPendingDomEditSaves();
         const composition =
           activeCompPath && activeCompPath !== "index.html" ? activeCompPath : undefined;
@@ -429,6 +430,7 @@ export function StudioRightPanel({
       }}
       compositionDimensions={compositionDimensions}
       isRendering={renderQueue.isRendering}
+      renderDisabledReason={renderQueue.renderCapability?.enabled === true ? undefined : renderQueue.renderCapability?.reason ?? "尚未确认此工作台的通用 HTML 导出能力。"}
     />
   );
 
