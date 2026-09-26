@@ -423,7 +423,9 @@ export function CutWorkspace({
     updateCutWordIds: updateCutWordIdsWithHistory,
     canUndo: false,
     undoLastCutChange: () => undefined,
+    saveNotice: cutSelection.saveNotice ?? null,
   }), [
+    cutSelection.saveNotice,
     cutSelection.cutWordIds,
     cutSelection.saveState,
     cutSelection.selectionLoading,

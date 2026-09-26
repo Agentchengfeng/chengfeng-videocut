@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { EditListDocument } from "@video-workbench/contracts";
 import { parseEditListDocument } from "./editList";
-import { applyInserts, assertInsertDocument, insertAssetPath, insertMediaLayers, stripInserts, type InsertDocument } from "./inserts";
+import { applyInserts, assertInsertDocument, followCutAnchors, insertAssetPath, insertMediaLayers, stripInserts, type InsertDocument } from "./inserts";
 import { subtitleCueTimings } from "./subtitles";
 
 const REV = "a".repeat(64);
@@ -94,5 +94,26 @@ describe("insert document and layers", () => {
       { layerId: "insert:i1", media: { assetId: ASSET, sourceIn: 0, sourceOut: 5, fit: "cover", muted: true }, start: 1.3, end: 6.3, duration: 5 },
     ]);
     expect(insertMediaLayers(edl())).toEqual([]);
+  });
+});
+
+describe("followCutAnchors", () => {
+  const narration = (ranges: Array<[number, number]>) => ranges.map(([a, b], i) => ({ id: `n${i}`, source: VOICE, sourceStart: a, sourceEnd: b,
+    timelineStart: 0, trackId: "a-roll", playbackRate: 1, instanceId: "original" }));
+  test("keeps anchors that still play", () => {
+    const out = followCutAnchors(doc([clip("i1", "w2")]), words, narration([[0, 4]]));
+    expect(out.moved).toEqual([]);
+    expect(out.document.inserts[0]!.afterWordId).toBe("w2");
+  });
+  test("moves a cut anchor back to the nearest playing word", () => {
+    const out = followCutAnchors(doc([clip("i1", "w2")]), words, narration([[0, 1.3], [3, 4]]));
+    expect(out.moved).toEqual([{ insertId: "i1", fromWordId: "w2", toWordId: "w1", toWordText: "w1" }]);
+  });
+  test("skips words another insert already follows, then looks forward", () => {
+    const out = followCutAnchors(doc([clip("i1", "w1"), clip("i2", "w2")]), words, narration([[0, 1.3], [3, 4]]));
+    expect(out.document.inserts.map(i => i.afterWordId)).toEqual(["w1", "w3"]);
+  });
+  test("refuses in plain words when nothing is left to follow", () => {
+    expect(() => followCutAnchors(doc([clip("i1", "w1"), clip("i2", "w2")]), words, narration([[0, 1.3]]))).toThrow(/已经没有可以跟随的口播/);
   });
 });

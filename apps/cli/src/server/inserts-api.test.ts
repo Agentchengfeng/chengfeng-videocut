@@ -152,6 +152,12 @@ test("after inserts, word cuts and restores still work from the transcript and k
   expect(restored.duration).toBeCloseTo(5.5, 3);
   expect(restored.segments.map(s => s.instanceId)).toEqual(["original", "insert:i1", "original"]);
 
-  await expect(writeCutSelectionWithEditList(project, { cutWordIds: ["w1"] }, { expectedRevision: await revision(), mode: "full-selection" }))
-    .rejects.toThrow(/inserted clip i1/);
+  // Cutting the anchor word moves the clip to the nearest word that still plays.
+  const moved = await writeCutSelectionWithEditList(project, { cutWordIds: ["w1"] }, { expectedRevision: await revision(), mode: "full-selection" });
+  expect(moved.movedInserts).toEqual([{ insertId: "i1", fromWordId: "w1", toWordId: "w2", toWordText: "w2" }]);
+  expect(JSON.parse(await readFile(join(f.directory, "inserts.json"), "utf8")).inserts[0].afterWordId).toBe("w2");
+  const followed = await read();
+  expect(followed.segments.filter(s => s.instanceId === "insert:i1")).toHaveLength(1);
+  const events = (await readFile(join(f.directory, "events.jsonl"), "utf8")).trim().split("\n").map(l => JSON.parse(l));
+  expect(events.at(-1)).toMatchObject({ type: "cuts_written", payload: { movedInserts: [{ insertId: "i1", toWordId: "w2" }] } });
 }, 30000);

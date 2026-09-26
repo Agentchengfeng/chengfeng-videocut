@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { VideocutError, asVideocutError, type VideocutErrorCode } from "@video-workbench/core";
 import {
   OperationAuditStore,
+  appendProjectEvent,
   readOptionalProjectDocument,
   operationInputHash,
   resolveProject,
@@ -392,11 +393,13 @@ export function createVideocutCutsHandler(
       return errorResponse(405, "method_not_allowed", "Only GET and PUT are supported");
     }
 
+    let rejectedProject: Awaited<ReturnType<typeof resolveProject>> | null = null;
     try {
       // The route carries a registry id, not a cwd-relative path. Resolve the
       // exact registry entry so an unrelated `./<projectId>` directory can
       // never shadow the product project.
       const project = await resolveProject(resolve(options.projectsDir, projectId));
+      if (request.method === "PUT") rejectedProject = project;
 
       if (request.method === "GET") {
         const current = await readOptionalProjectDocument(project, CUT_SELECTION_FILE);
@@ -604,7 +607,9 @@ export function createVideocutCutsHandler(
           revision: result.revision,
           editListRevision: transaction.editList?.revision ?? null,
           document: result.document,
+          ...(transaction.movedInserts?.length ? { movedInserts: transaction.movedInserts } : {}),
         };
+        rejectedProject = null;
         if (admission) {
           await options.operationAuditStore!.finishSucceeded(admission.operationId, {
             result: {
@@ -623,6 +628,16 @@ export function createVideocutCutsHandler(
       }
     } catch (error) {
       const normalized = asVideocutError(error);
+      // A refused edit used to leave no trace anywhere: the person saw nothing
+      // happen and nobody could tell why afterwards. Record it on the project.
+      if (rejectedProject && normalized.code !== "revision_conflict") {
+        await appendProjectEvent(rejectedProject, {
+          type: "cuts_rejected",
+          actor: "studio-transcript",
+          payload: { code: normalized.code, message: normalized.message,
+            ...(normalized.details ? { details: JSON.parse(JSON.stringify(normalized.details)) } : {}) },
+        }).catch(() => undefined);
+      }
       return errorResponse(
         errorStatus(normalized),
         normalized.code,

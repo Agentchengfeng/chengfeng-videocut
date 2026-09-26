@@ -218,6 +218,7 @@ export const KouboTranscriptPane = memo(function KouboTranscriptPane({
     selectionReady,
     updateCutWordIds,
   } = cutSelection;
+  const saveNotice = cutSelection.saveNotice ?? null;
 
   const sourceWords = useMemo(() => cues.flatMap((cue) => cue.words), [cues]);
   const displayedCutWordIds = useMemo(
@@ -630,7 +631,10 @@ export const KouboTranscriptPane = memo(function KouboTranscriptPane({
       {transcriptError && (
         <div className="cut-transcript-notice is-error" role="alert">{transcriptError}</div>
       )}
-      {(saveState === "error" || saveState === "conflict") && (
+      {saveNotice ? (
+        <div className={`cut-transcript-notice${saveNotice.tone === "error" ? " is-error" : ""}`}
+          role={saveNotice.tone === "error" ? "alert" : "status"}>{saveNotice.text}</div>
+      ) : (saveState === "error" || saveState === "conflict") && (
         <div className="cut-transcript-notice is-error" role="alert">{saveStatus}</div>
       )}
       {/*

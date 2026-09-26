@@ -76,7 +76,7 @@ import {
 } from "./subtitles";
 import { assertVisualDocument, visualLayerTimings, type VisualDocument } from "./visuals";
 import { readMediaAsset, validateVisualMedia } from "./mediaAssets";
-import { applyInserts, assertInsertDocument, insertOnlyNarration, narrationEditList, narrationToMultisource, type InsertAsset } from "./inserts";
+import { applyInserts, assertInsertDocument, followCutAnchors, insertOnlyNarration, narrationEditList, narrationToMultisource, type InsertAsset, type InsertDocument, type MovedInsert } from "./inserts";
 export * from "./mediaAssets";
 import { serializeProjectOperation } from "./projectLock";
 import {
@@ -1028,6 +1028,8 @@ export async function writeCutSelection(
 export interface WriteCutsAndDerivedEditListResult {
   cuts: WriteCutSelectionResult;
   editList: WriteEditListResult | null;
+  /** Inserted clips that followed the cut to a new anchor word. */
+  movedInserts?: MovedInsert[];
 }
 
 /**
@@ -1188,11 +1190,20 @@ export async function writeCutSelectionWithEditList(
       }
     }
 
+    let movedInserts: MovedInsert[] = [];
+    let insertsContent: string | null = null;
+    let insertsFile: Awaited<ReturnType<typeof readOptionalJsonAt>> = null;
     if (narration && nextEditList) {
-      const insertsFile = await readOptionalJsonAt(documentPath(project, "inserts.json"));
-      const inserts = insertsFile ? assertInsertDocument(insertsFile.value) : null;
+      insertsFile = await readOptionalJsonAt(documentPath(project, "inserts.json"));
+      let inserts: InsertDocument | null = insertsFile ? assertInsertDocument(insertsFile.value) : null;
       let lifted = narrationToMultisource(nextEditList, narration);
       if (inserts?.inserts.length) {
+        const followed = followCutAnchors(inserts, words, lifted.segments);
+        if (followed.moved.length) {
+          inserts = followed.document;
+          movedInserts = followed.moved;
+          insertsContent = serializeJson(inserts);
+        }
         const assets = new Map<string, InsertAsset>();
         for (const id of new Set(inserts.inserts.map(item => item.assetId))) {
           const { manifest } = await readMediaAsset(project.directory, id);
@@ -1203,7 +1214,7 @@ export async function writeCutSelectionWithEditList(
         } catch (error) {
           const insertId = error instanceof VideocutError ? error.details?.insertId : undefined;
           throw new VideocutError("invalid_cut_selection",
-            insertId ? `This would delete the word that inserted clip ${insertId} follows; move or remove that insert first` : "Inserted clips cannot follow this cut selection",
+            insertId ? `插入视频 ${insertId} 无法放在删减后的位置，请先调整这段插入视频` : "删减后插入视频无法重新排布",
             { ...(insertId ? { insertId } : {}), cause: error instanceof Error ? error.message : String(error) });
         }
       }
@@ -1222,8 +1233,14 @@ export async function writeCutSelectionWithEditList(
           document: nextEditList,
         }
       : null;
-    if (options.dryRun || !cutsChange) return { cuts, editList };
+    const moved = movedInserts.length ? { movedInserts } : {};
+    if (options.dryRun || !cutsChange) return { cuts, editList, ...moved };
 
+    // Moved inserts land first and are restored if any later write fails, so
+    // the clips never point at a word the saved cuts have removed.
+    const insertsPath = documentPath(project, "inserts.json");
+    if (insertsContent) await atomicWriteText(insertsPath, insertsContent);
+    try {
     await atomicWriteText(cutsPath, cutsContent);
     if (editList?.changed && editListContent) {
       try {
@@ -1247,6 +1264,10 @@ export async function writeCutSelectionWithEditList(
         throw error;
       }
     }
+    } catch (error) {
+      if (insertsContent && insertsFile) await atomicWriteText(insertsPath, insertsFile.raw).catch(() => undefined);
+      throw error;
+    }
     // One line for the whole transaction, not one per file: Cuts and the derived
     // edit list land together or not at all, so two lines would imply two events.
     await appendProjectEvent(project, {
@@ -1257,9 +1278,10 @@ export async function writeCutSelectionWithEditList(
         ...(editList?.changed
           ? { editList: editListEventPayload(editList) }
           : { editList: null }),
+        ...(movedInserts.length ? { movedInserts: movedInserts as unknown as JsonObject[] } : {}),
       },
     });
-    return { cuts, editList };
+    return { cuts, editList, ...moved };
   };
   if (options.dryRun) return operation();
   return serializeProjectOperation(project.directory, operation);

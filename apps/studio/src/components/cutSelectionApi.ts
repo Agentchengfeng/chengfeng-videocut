@@ -6,6 +6,8 @@ export interface CutSelectionResource {
   document: unknown | null;
   changed?: boolean;
   previousRevision?: string | null;
+  /** Inserted clips that followed this cut to a new anchor word. */
+  movedInserts?: Array<{ insertId: string; label?: string; toWordText: string }>;
 }
 
 interface CutSelectionErrorEnvelope {

@@ -69,6 +69,11 @@ export function shouldSyncCutSelectionAfterFileChange(
   return isCutSelectionFileChange(payload, projectId) && pendingSaves <= 0;
 }
 
+export interface CutSaveNotice {
+  tone: "info" | "error";
+  text: string;
+}
+
 export function useProjectCutSelection(
   projectId: string,
   cues: TranscriptCue[],
@@ -83,9 +88,12 @@ export function useProjectCutSelection(
 	  ) => Promise<boolean>;
 	  canUndo: boolean;
 	  undoLastCutChange: () => void;
+  /** What the last save changed besides the words, or why it was refused. */
+  saveNotice: CutSaveNotice | null;
 } {
   const [cutWordIds, setCutWordIds] = useState<Set<string>>(() => new Set());
   const [saveState, setSaveState] = useState<CutSaveState>("idle");
+  const [saveNotice, setSaveNotice] = useState<CutSaveNotice | null>(null);
   const [selectionLoading, setSelectionLoading] = useState(true);
   const [selectionReady, setSelectionReady] = useState(false);
   const loadRevisionRef = useRef(0);
@@ -218,6 +226,7 @@ export function useProjectCutSelection(
     cutWordIdsStateRef.current = nextCut;
     setCutWordIds(nextCut);
     setSaveState("saving");
+    setSaveNotice(null);
     pendingSavesRef.current += 1;
 
     const saveOperation = saveQueueRef.current
@@ -239,6 +248,10 @@ export function useProjectCutSelection(
           ) return false;
           serverRevisionRef.current = resource.revision;
           selectionDocumentRef.current = resource.document;
+          if (resource.movedInserts?.length) {
+            setSaveNotice({ tone: "info", text: resource.movedInserts
+              .map((moved) => `插入视频「${moved.label ?? moved.insertId}」已跟到“${moved.toWordText}”之后`).join("；") });
+          }
           return true;
         } catch (error) {
           if (
@@ -259,6 +272,9 @@ export function useProjectCutSelection(
               cutWordIdsStateRef.current = fallbackWordIds;
               setCutWordIds(fallbackWordIds);
               setSaveState("error");
+              const message = error instanceof Error ? error.message : "";
+              setSaveNotice({ tone: "error", text: /[\u4e00-\u9fff]/.test(message)
+                ? message : "这次删改没有保存，已恢复原样；原因已记录在项目日志里" });
             }
           }
           throw error;
@@ -302,5 +318,6 @@ export function useProjectCutSelection(
     updateCutWordIds,
     canUndo: false,
     undoLastCutChange,
+    saveNotice,
   };
 }

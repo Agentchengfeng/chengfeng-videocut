@@ -195,6 +195,50 @@ export function applyInserts(input: {
   return { ...editList, sources: used, sourceDuration: Math.max(...used.map(s => s.duration)), segments: timed, duration: cursor };
 }
 
+export interface MovedInsert {
+  insertId: string;
+  label?: string;
+  fromWordId: string;
+  toWordId: string;
+  toWordText: string;
+}
+
+/**
+ * Magnetic anchors: when a cut removes the word an insert follows, the insert
+ * moves to the nearest earlier word that still plays (later if nothing earlier
+ * is left), like a clip riding the main track in an NLE. Pure; the caller
+ * persists the moved document together with the cut.
+ */
+export function followCutAnchors(document: InsertDocument, words: readonly TimedWord[],
+  narrationSegments: readonly EditListSegment[]): { document: InsertDocument; moved: MovedInsert[] } {
+  const speech = words.filter(w => !w.isGap).slice().sort((a, b) => a.start - b.start);
+  const index = new Map(speech.map((w, i) => [w.id, i]));
+  const taken = new Set(document.inserts.map(i => i.afterWordId));
+  const moved: MovedInsert[] = [];
+  const inserts = document.inserts.map(item => {
+    const at = index.get(item.afterWordId);
+    if (at === undefined) return item;
+    const word = speech[at]!;
+    if (wordPlays(narrationSegments, word)) return item;
+    const sameTrack = (w: TimedWord) => w.source === word.source && w.instanceId === word.instanceId;
+    const free = (w: TimedWord) => sameTrack(w) && !taken.has(w.id) && wordPlays(narrationSegments, w);
+    let target: TimedWord | undefined;
+    for (let i = at - 1; i >= 0 && !target; i--) if (free(speech[i]!)) target = speech[i];
+    for (let i = at + 1; i < speech.length && !target; i++) if (free(speech[i]!)) target = speech[i];
+    if (!target) {
+      throw new VideocutError("invalid_cut_selection",
+        `删掉这段后，插入视频「${item.label ?? item.id}」已经没有可以跟随的口播，请先移除这段插入视频`,
+        { insertId: item.id, reason: "insert_anchor_unavailable" });
+    }
+    taken.delete(item.afterWordId);
+    taken.add(target.id);
+    moved.push({ insertId: item.id, ...(item.label ? { label: item.label } : {}), fromWordId: item.afterWordId,
+      toWordId: target.id, toWordText: target.text ?? "" });
+    return { ...item, afterWordId: target.id };
+  });
+  return { document: { ...document, inserts }, moved };
+}
+
 export interface InsertMediaLayer {
   layerId: string;
   media: VisualMedia;
