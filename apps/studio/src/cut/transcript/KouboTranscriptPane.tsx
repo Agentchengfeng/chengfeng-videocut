@@ -9,6 +9,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import { insertOnlyNarration } from "@video-workbench/core";
 import {
   deriveActualCutWordIds,
   resolveTranscriptSeekTime,
@@ -230,7 +231,7 @@ export const KouboTranscriptPane = memo(function KouboTranscriptPane({
   const visibleTranscriptCues = useMemo(() => indexedTranscript.cues.filter((cue) => cue.words.some(({ word }) =>
     shouldShowTranscriptWord(word, displayedCutWordIds),
   )), [displayedCutWordIds, indexedTranscript.cues]);
-  const editingLockReason = editList.document?.schemaVersion === 2
+  const editingLockReason = editList.document?.schemaVersion === 2 && !insertOnlyNarration(editList.document)
     ? "多源文稿暂仅支持定位；删词与恢复尚未支持来源实例，请使用时间线片段编辑"
     : resolveKouboEditingLockReason({
     transcriptLoading,

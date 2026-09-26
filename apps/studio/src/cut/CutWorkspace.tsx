@@ -455,7 +455,7 @@ export function CutWorkspace({
     visuals.timings
       .filter((timing) => !timing.orphaned)
       .map((timing) => {
-        const inserted = visuals.insertLayers.find((candidate) => candidate.layerId === timing.layerId);
+        const inserted = (visuals.insertLayers ?? []).find((candidate) => candidate.layerId === timing.layerId);
         const layer = visuals.document?.layers.find((candidate) => candidate.id === timing.layerId)
           ?? (inserted ? { id: inserted.layerId, wordIds: [], media: inserted.media } : undefined);
         if (!layer) return null;
@@ -498,10 +498,11 @@ export function CutWorkspace({
   // waveforms — re-rendered with it. Which layer is live travels as one id.
   const timelineVisualLayers = useMemo(() => (
     visuals.timings
-      .filter((timing) => !timing.orphaned)
+      // Inserted clips have their own rows on the timeline, above the narration.
+      .filter((timing) => !timing.orphaned && !(visuals.insertLayers ?? []).some((candidate) => candidate.layerId === timing.layerId))
       .map((timing) => {
         const layer = visuals.document?.layers.find((candidate) => candidate.id === timing.layerId);
-        const inserted = visuals.insertLayers.some((candidate) => candidate.layerId === timing.layerId);
+        const inserted = (visuals.insertLayers ?? []).some((candidate) => candidate.layerId === timing.layerId);
         const folder = inserted ? `插入 · ${timing.layerId.slice("insert:".length)}` : layer?.media ? `视频 · ${layer.id}` : layer?.module?.split("/").slice(-2, -1)[0] ?? layer?.module ?? timing.layerId;
         return {
           id: timing.layerId,
@@ -511,6 +512,10 @@ export function CutWorkspace({
         };
       })
   ), [visuals.document, visuals.timings, visuals.insertLayers]);
+
+  const insertLabels = useMemo(() => Object.fromEntries(
+    (visuals.insertLayers ?? []).filter((layer) => layer.label).map((layer) => [layer.layerId, layer.label!]),
+  ), [visuals.insertLayers]);
 
   const canUndo = undoDepth > 0 && editList.saveState !== "saving" && cutSelection.saveState !== "saving";
   const undoLastChange = useCallback(async () => {
@@ -674,6 +679,7 @@ export function CutWorkspace({
       <CutTimeline
         soundEffectsTrack={(pixelsPerSecond, displayContentWidth) => <SoundEffectTrack pixelsPerSecond={pixelsPerSecond} displayContentWidth={displayContentWidth} projectId={projectId} editRevision={editList.revision} time={transport.timelineTime} onSeek={seek} onSaved={artifact.retry} />}
         visualLayers={timelineVisualLayers}
+        insertLabels={insertLabels}
         activeVisualLayerId={activeVisual?.layerId ?? null}
         onVisualLayerClick={(layerId) => {
           const timing = visuals.timings.find((candidate) => candidate.layerId === layerId);

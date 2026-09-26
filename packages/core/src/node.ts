@@ -75,7 +75,8 @@ import {
   type SubtitleRespellResult,
 } from "./subtitles";
 import { assertVisualDocument, visualLayerTimings, type VisualDocument } from "./visuals";
-import { validateVisualMedia } from "./mediaAssets";
+import { readMediaAsset, validateVisualMedia } from "./mediaAssets";
+import { applyInserts, assertInsertDocument, insertOnlyNarration, narrationEditList, narrationToMultisource, type InsertAsset } from "./inserts";
 export * from "./mediaAssets";
 import { serializeProjectOperation } from "./projectLock";
 import {
@@ -1045,7 +1046,11 @@ export async function writeCutSelectionWithEditList(
       readOptionalJsonAt(documentPath(project, "edit-list.json")),
     ]);
     const currentCutsRevision = previousCuts?.revision ?? null;
-    if (previousEditList && parseEditListDocument(previousEditList.value).schemaVersion === 2) {
+    // A single narration with inserted clips keeps word-level cut editing: the
+    // cut rules run on the narration alone, then the inserts are re-applied.
+    const storedEditList = previousEditList ? parseEditListDocument(previousEditList.value) : null;
+    const narration = insertOnlyNarration(storedEditList);
+    if (storedEditList?.schemaVersion === 2 && !narration) {
       throw new VideocutError("invalid_cut_selection", "Multisource semantic cut writes require instance-aware selection; edit timeline segments instead");
     }
     if (options.expectedRevision !== undefined) {
@@ -1066,9 +1071,7 @@ export async function writeCutSelectionWithEditList(
       options.now ?? new Date().toISOString(),
       options.mode ?? "full-selection",
     );
-    const currentEditList = previousEditList
-      ? parseEditListDocument(previousEditList.value)
-      : null;
+    const currentEditList = storedEditList && narration ? narrationEditList(storedEditList) : storedEditList;
     if (!currentEditList) {
       throw new VideocutError(
         "invalid_edit_list",
@@ -1119,6 +1122,9 @@ export async function writeCutSelectionWithEditList(
         }
       }
       candidate.cutRanges = validated;
+    }
+    if (narration && candidate.cutRanges) {
+      candidate.cutRanges = candidate.cutRanges.map(range => ({ ...range, source: narration.path, instanceId: "original" }));
     }
     const cutsChange = !previousCuts || !hasSameCutSelectionMeaning(previousCuts.value, candidate);
 
@@ -1182,6 +1188,29 @@ export async function writeCutSelectionWithEditList(
       }
     }
 
+    if (narration && nextEditList) {
+      const insertsFile = await readOptionalJsonAt(documentPath(project, "inserts.json"));
+      const inserts = insertsFile ? assertInsertDocument(insertsFile.value) : null;
+      let lifted = narrationToMultisource(nextEditList, narration);
+      if (inserts?.inserts.length) {
+        const assets = new Map<string, InsertAsset>();
+        for (const id of new Set(inserts.inserts.map(item => item.assetId))) {
+          const { manifest } = await readMediaAsset(project.directory, id);
+          assets.set(id, { duration: manifest.duration, hasAudio: manifest.hasAudio });
+        }
+        try {
+          lifted = applyInserts({ editList: lifted, words, document: inserts, assets });
+        } catch (error) {
+          const insertId = error instanceof VideocutError ? error.details?.insertId : undefined;
+          throw new VideocutError("invalid_cut_selection",
+            insertId ? `This would delete the word that inserted clip ${insertId} follows; move or remove that insert first` : "Inserted clips cannot follow this cut selection",
+            { ...(insertId ? { insertId } : {}), cause: error instanceof Error ? error.message : String(error) });
+        }
+      }
+      nextEditList = parseEditListDocument(lifted);
+      editListContent = serializeJson(nextEditList);
+      editListRevision = sha256(editListContent);
+    }
     const editList: WriteEditListResult | null = nextEditList && editListContent && editListRevision
       ? {
           projectId: project.projectId,

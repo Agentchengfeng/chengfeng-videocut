@@ -44,10 +44,12 @@ export const TimelineCanvas = memo(function TimelineCanvas({
   visualLayers,
   activeVisualLayerId,
   onVisualLayerClick,
+  insertClips,
+  onInsertClipClick,
 }: TimelineCanvasProps) {
   // Three rows once a project can carry visual layers. The height function has
   // always taken a track count; only the number passed here changed.
-  const totalHeight = getTimelineCanvasHeight(3) + (soundEffectsTrack ? 76 : 0);
+  const totalHeight = getTimelineCanvasHeight(3 + (insertClips?.length ? 2 : 0)) + (soundEffectsTrack ? 76 : 0);
 
   return (
     <div
@@ -85,6 +87,8 @@ export const TimelineCanvas = memo(function TimelineCanvas({
         visualLayers={visualLayers}
         activeVisualLayerId={activeVisualLayerId ?? null}
         {...(onVisualLayerClick ? { onVisualLayerClick } : {})}
+        {...(insertClips ? { insertClips } : {})}
+        {...(onInsertClipClick ? { onInsertClipClick } : {})}
         pixelsPerSecond={pixelsPerSecond}
         displayContentWidth={displayContentWidth}
         trackRef={trackRef}

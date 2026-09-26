@@ -271,9 +271,75 @@ function VisualLane({
   );
 }
 
+/**
+ * Inserted clips on their own pair of rows (picture, then its own sound), so
+ * the narration rows below show only the narration. Product-owned.
+ */
+function InsertLane({
+  kind,
+  insertClips,
+  pixelsPerSecond,
+  displayContentWidth,
+  theme,
+  onInsertClipClick,
+}: TimelineLaneBaseProps & { kind: "video" | "audio" }) {
+  const isVideo = kind === "video";
+  const name = isVideo ? "插入视频轨" : "插入原声轨";
+  return (
+    <div className="relative flex" style={{ height: TRACK_H }} data-hyperframes-timeline-lane={`insert-${kind}`}>
+      <div
+        className="sticky left-0 z-[12] flex flex-shrink-0 flex-col items-center justify-center gap-0.5"
+        style={{
+          width: GUTTER,
+          background: theme.gutterBackground,
+          borderRight: `1px solid ${theme.gutterBorder}`,
+          borderBottom: `1px solid ${theme.rowBorder}`,
+          color: "rgba(255,255,255,0.35)",
+        }}
+        aria-label={name}
+        title={name}
+      >
+        <TrackIcon kind={kind} />
+      </div>
+      <div
+        aria-hidden="true"
+        className="flex-shrink-0"
+        style={{ width: TRACKS_LEFT_PAD, background: theme.rowBackground, borderBottom: `1px solid ${theme.rowBorder}` }}
+      />
+      <div
+        className={`cf-cut-track relative flex-shrink-0 is-insert is-insert-${kind}`}
+        style={{ width: displayContentWidth, height: TRACK_H, background: theme.rowBackground, borderBottom: `1px solid ${theme.rowBorder}` }}
+      >
+        {(insertClips ?? []).map((clip) => (
+          <button
+            key={clip.id}
+            type="button"
+            className={`cf-cut-insert-clip is-${kind}${clip.active ? " is-active" : ""}`}
+            data-insert-clip-id={clip.id}
+            style={{
+              left: clip.start * pixelsPerSecond,
+              width: Math.max(2, clip.duration * pixelsPerSecond),
+              top: CLIP_Y,
+              height: TRACK_H - CLIP_Y * 2,
+            }}
+            title={`${clip.label} · ${clip.start.toFixed(2)}–${(clip.start + clip.duration).toFixed(2)}s`}
+            aria-hidden={isVideo ? undefined : true}
+            tabIndex={isVideo ? 0 : -1}
+            onClick={() => onInsertClipClick?.(clip.id)}
+          >
+            <span>{isVideo ? clip.label : `${clip.label} · 原声`}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function TimelineLanes(props: TimelineLaneBaseProps) {
   return (
     <>
+      {props.insertClips?.length ? <InsertLane kind="video" {...props} /> : null}
+      {props.insertClips?.length ? <InsertLane kind="audio" {...props} /> : null}
       <TimelineLane kind="video" {...props} />
       <TimelineLane kind="audio" {...props} />
       <VisualLane {...props} />

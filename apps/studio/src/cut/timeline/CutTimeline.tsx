@@ -12,6 +12,8 @@ import {
   EDIT_LIST_MIN_SEGMENT_SECONDS,
   applyEditListOperation,
   editListSegmentDuration,
+  insertOnlyNarration,
+  isInsertInstance,
   sourceTimeToTimelineTime,
   timelineTimeToSourcePosition,
   type EditListOperation,
@@ -34,6 +36,7 @@ import {
   Timeline,
   TimelineToolbar,
   type ProductTimelineSegmentView,
+  type TimelineInsertClipView,
   type TimelineVisualLayerView,
 } from "./hyperframes-fork";
 import {
@@ -127,6 +130,7 @@ export function CutTimeline({
   visualLayers,
   activeVisualLayerId,
   onVisualLayerClick,
+  insertLabels,
 }: {
   soundEffectsTrack?: (pixelsPerSecond: number, displayContentWidth: number) => ReactNode;
   projectId: string;
@@ -138,6 +142,8 @@ export function CutTimeline({
   visualLayers?: readonly TimelineVisualLayerView[];
   activeVisualLayerId?: string | null;
   onVisualLayerClick?: (layerId: string) => void;
+  /** Display names of inserted clips, keyed by their instance id. */
+  insertLabels?: Readonly<Record<string, string>>;
 }) {
   const document = editList.document;
   const trackRef = useRef<HTMLDivElement | null>(null);
@@ -168,7 +174,10 @@ export function CutTimeline({
   const skipCenterZoomAnchorRef = useRef(false);
 
   const segments = document?.segments ?? [];
-  const sourceDuration = document?.sourceDuration ?? 0;
+  // A single narration with inserted clips reads like a single-source project:
+  // the narration keeps its own rows and waveform, the clips get rows of their own.
+  const narration = useMemo(() => insertOnlyNarration(document), [document]);
+  const sourceDuration = narration?.duration ?? document?.sourceDuration ?? 0;
   const committedSegmentsById = useMemo(
     () => new Map(segments.map((segment) => [segment.id, segment] as const)),
     [segments],
@@ -735,8 +744,22 @@ export function CutTimeline({
     ? (ticks.major[1] ?? rulerDuration) - (ticks.major[0] ?? 0)
     : rulerDuration;
 
+  const insertClips = useMemo<TimelineInsertClipView[]>(() => narration
+    ? renderedSegments.filter((segment) => isInsertInstance(segment.instanceId)).map((segment) => {
+      const segmentDuration = editListSegmentDuration(segment);
+      const id = segment.instanceId!.slice("insert:".length);
+      return {
+        id: segment.id,
+        label: insertLabels?.[segment.instanceId!] ? `${id} · ${insertLabels[segment.instanceId!]}` : `插入 ${id}`,
+        start: segment.timelineStart,
+        duration: segmentDuration,
+        active: renderedTimelineTime >= segment.timelineStart && renderedTimelineTime < segment.timelineStart + segmentDuration,
+      };
+    })
+    : [], [insertLabels, narration, renderedSegments, renderedTimelineTime]);
+
   const timelineSegments = useMemo<ProductTimelineSegmentView[]>(() =>
-    renderedSegments.map((segment, index) => {
+    renderedSegments.filter((segment) => !narration || !isInsertInstance(segment.instanceId)).map((segment, index) => {
       const segmentDuration = editListSegmentDuration(segment);
       const mediaSegment = committedSegmentsById.get(segment.id) ?? segment;
       const mediaSegmentWidth = editListSegmentDuration(mediaSegment) * pixelsPerSecond;
@@ -750,7 +773,7 @@ export function CutTimeline({
         segment.timelineStart,
         segment.timelineStart + segmentDuration,
       );
-      const isMultiSource = document?.schemaVersion === 2;
+      const isMultiSource = document?.schemaVersion === 2 && !narration;
       const sourceIndex = document?.sources?.findIndex(source => source.path === segment.source) ?? -1;
       const sourceLabel = `素材${sourceIndex >= 0 ? sourceIndex + 1 : "?"} · ${segment.source.split("/").at(-1) ?? segment.source}`;
       const title = isMultiSource
@@ -784,7 +807,7 @@ export function CutTimeline({
           </>
         ),
         audioContent: (
-          document?.schemaVersion === 2 ? null : <CutAudioWaveform
+          isMultiSource ? null : <CutAudioWaveform
             projectId={projectId}
             segment={mediaSegment}
             segmentWidth={mediaSegmentWidth}
@@ -794,6 +817,7 @@ export function CutTimeline({
       };
     }), [
       document,
+      narration,
       committedSegmentsById,
       draggingClipId,
       hoveredClipId,
@@ -864,6 +888,11 @@ export function CutTimeline({
         segments={timelineSegments}
         visualLayers={visualLayers}
         activeVisualLayerId={activeVisualLayerId ?? null}
+        insertClips={insertClips}
+        onInsertClipClick={(clipId) => {
+          const clip = insertClips.find((candidate) => candidate.id === clipId);
+          if (clip) onSeek(clip.start);
+        }}
         {...(onVisualLayerClick ? { onVisualLayerClick } : {})}
         pixelsPerSecond={pixelsPerSecond}
         displayContentWidth={displayContentWidth}

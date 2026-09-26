@@ -128,3 +128,30 @@ test("inserts reject stale revisions, unimported media, cut anchors and anchors 
   expect((await plan(f.document, merged)).body.error.message).toMatch(/inside subtitle cue c12/);
   expect(await readProjectTransaction(f.directory, "bad")).toBeNull();
 }, 30000);
+
+test("after inserts, word cuts and restores still work from the transcript and keep every clip", async () => {
+  const { resolveProject, writeCutSelectionWithEditList } = await import("@video-workbench/core/node");
+  const f = await fixture();
+  const plan = await f.call({ operationId: "insert-then-cut", expectedRevision: projectFilesRevision(f.before), document: f.document, confirmed: false });
+  await f.call({ operationId: "insert-then-cut", expectedRevision: projectFilesRevision(f.before), document: f.document, confirmed: true, planRevision: plan.body.planRevision });
+  const read = async () => parseEditListDocument(JSON.parse(await readFile(join(f.directory, "edit-list.json"), "utf8")));
+  expect((await read()).mode).toBe("cuts-derived");
+  const project = await resolveProject(f.directory);
+  const revision = async () => sha(await readFile(join(f.directory, "cut-selection.json"), "utf8"));
+
+  await writeCutSelectionWithEditList(project, { cutWordIds: ["w2"] }, { expectedRevision: await revision(), mode: "full-selection" });
+  const cut = await read();
+  expect(cut.schemaVersion).toBe(2);
+  expect(cut.segments.filter(s => s.instanceId === "insert:i1")).toHaveLength(1);
+  expect(cut.duration).toBeCloseTo(5.5 - 0.8, 3);
+  const cuts = JSON.parse(await readFile(join(f.directory, "cut-selection.json"), "utf8"));
+  expect(cuts.cutRanges.every((r: any) => r.source === "input/source.wav" && r.instanceId === "original")).toBe(true);
+
+  await writeCutSelectionWithEditList(project, { cutWordIds: [] }, { expectedRevision: await revision(), mode: "full-selection" });
+  const restored = await read();
+  expect(restored.duration).toBeCloseTo(5.5, 3);
+  expect(restored.segments.map(s => s.instanceId)).toEqual(["original", "insert:i1", "original"]);
+
+  await expect(writeCutSelectionWithEditList(project, { cutWordIds: ["w1"] }, { expectedRevision: await revision(), mode: "full-selection" }))
+    .rejects.toThrow(/inserted clip i1/);
+}, 30000);

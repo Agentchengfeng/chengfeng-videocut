@@ -96,6 +96,42 @@ export function stripInserts(editList: EditListDocument): EditListSegment[] {
 }
 
 /**
+ * The one narration source of a project whose only multisource content is
+ * inserted clips. Such a project keeps word-level cut editing: cuts are applied
+ * to the narration alone and the inserts are re-applied afterwards.
+ */
+export function insertOnlyNarration(editList: EditListDocument | null | undefined): EditListSource | null {
+  if (!editList || editList.schemaVersion !== 2 || !editList.sources) return null;
+  const narration = editList.segments.filter(s => !isInsertInstance(s.instanceId));
+  const source = narration[0]?.source;
+  if (!source || narration.some(s => s.source !== source || s.instanceId !== "original")) return null;
+  const entry = editList.sources.find(s => s.path === source);
+  if (!entry || entry.mediaKind !== "audio") return null;
+  if (editList.sources.some(s => s.path !== source && s.mediaKind !== "video")) return null;
+  return entry;
+}
+
+/** The narration-only, single-source (v1) view of an insert-only project. */
+export function narrationEditList(editList: EditListDocument): EditListDocument {
+  const narration = insertOnlyNarration(editList) ?? invalid("Edit list is not a single narration with inserts");
+  let cursor = 0;
+  const segments = stripInserts(editList).map(({ instanceId: _instance, ...segment }) => {
+    const next = { ...segment, timelineStart: round(cursor) };
+    cursor = round(cursor + (segment.sourceEnd - segment.sourceStart) / segment.playbackRate);
+    return next;
+  });
+  const { sources: _sources, ...rest } = editList;
+  return { ...rest, schemaVersion: 1, sourceDuration: narration.duration, segments, duration: cursor } as EditListDocument;
+}
+
+/** Lift a single-source edit list back to v2 with its narration identity. */
+export function narrationToMultisource(editList: EditListDocument, narration: EditListSource): EditListDocument {
+  if (editList.schemaVersion === 2) return editList;
+  return { ...editList, schemaVersion: 2, sources: [narration], sourceDuration: narration.duration,
+    segments: editList.segments.map(s => ({ ...s, instanceId: "original" })) } as EditListDocument;
+}
+
+/**
  * Rebuild the magnetic A-roll with the given inserts. Pure and idempotent: the
  * previous inserts are removed first, so resubmitting a document never
  * duplicates a clip. Subtitles and visual layers follow automatically because
@@ -156,7 +192,7 @@ export function applyInserts(input: {
     return next;
   });
   const used = sources.filter(s => timed.some(seg => seg.source === s.path));
-  return { ...editList, mode: "manual", sources: used, sourceDuration: Math.max(...used.map(s => s.duration)), segments: timed, duration: cursor };
+  return { ...editList, sources: used, sourceDuration: Math.max(...used.map(s => s.duration)), segments: timed, duration: cursor };
 }
 
 export interface InsertMediaLayer {
@@ -165,6 +201,7 @@ export interface InsertMediaLayer {
   start: number;
   end: number;
   duration: number;
+  label?: string;
 }
 
 /**
@@ -174,6 +211,7 @@ export interface InsertMediaLayer {
 export function insertMediaLayers(editList: EditListDocument | null, document?: InsertDocument | null): InsertMediaLayer[] {
   if (!editList || editList.schemaVersion !== 2) return [];
   const fits = new Map((document?.inserts ?? []).map(i => [`${INSERT_INSTANCE_PREFIX}${i.id}`, i.fit]));
+  const labels = new Map((document?.inserts ?? []).map(i => [`${INSERT_INSTANCE_PREFIX}${i.id}`, i.label]));
   return orderedSegments(editList)
     .filter(s => isInsertInstance(s.instanceId) && editList.sources?.find(src => src.path === s.source)?.mediaKind === "video")
     .map(s => {
@@ -185,6 +223,7 @@ export function insertMediaLayers(editList: EditListDocument | null, document?: 
         start: round(s.timelineStart),
         end: round(s.timelineStart + duration),
         duration,
+        ...(labels.get(s.instanceId!) ? { label: labels.get(s.instanceId!) } : {}),
       };
     });
 }

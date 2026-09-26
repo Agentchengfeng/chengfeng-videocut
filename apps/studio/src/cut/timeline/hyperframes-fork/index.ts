@@ -15,6 +15,7 @@ export type {
   TimelineLaneBaseProps,
   TimelineSegmentView,
   TimelineVisualLayerView,
+  TimelineInsertClipView,
   TimelineSegmentView as ProductTimelineSegmentView,
 } from "./TimelineTypes";
 export { TimelineClip, type TimelineClipProps } from "./TimelineClip";

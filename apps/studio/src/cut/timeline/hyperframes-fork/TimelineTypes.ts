@@ -45,6 +45,19 @@ export interface TimelineVisualLayerView {
   duration: number;
 }
 
+/**
+ * A clip inserted into the magnetic main track, shown on its own video and
+ * audio rows above the narration. Read-only here: it is placed by the word it
+ * follows, so clicking only moves the playhead to it.
+ */
+export interface TimelineInsertClipView {
+  id: string;
+  label: string;
+  start: number;
+  duration: number;
+  active: boolean;
+}
+
 export interface TimelineLaneBaseProps {
   segments: readonly TimelineSegmentView[];
   /** Absent until a project has any. An empty lane still renders, so the row
@@ -53,6 +66,8 @@ export interface TimelineLaneBaseProps {
   /** Travels separately from the list so the list survives a playhead tick. */
   activeVisualLayerId?: string | null;
   onVisualLayerClick?: (layerId: string) => void;
+  insertClips?: readonly TimelineInsertClipView[];
+  onInsertClipClick?: (clipId: string) => void;
   pixelsPerSecond: number;
   displayContentWidth: number;
   trackRef: RefObject<HTMLDivElement | null>;

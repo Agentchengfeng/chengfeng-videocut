@@ -3,7 +3,7 @@ import { constants } from "node:fs";
 import { copyFile, lstat, mkdir, realpath } from "node:fs/promises";
 import { join, resolve, extname } from "node:path";
 import { parseEditListDocument, parseTranscriptWords, assertSubtitleDocument, assertVisualDocument, subtitleCueTimings, visualLayerTimings, VideocutError, asVideocutError,
-  applyInserts, assertInsertDocument, createInsertDocument, insertMediaLayers, type InsertAsset, type InsertDocument } from "@video-workbench/core";
+  applyInserts, assertInsertDocument, createInsertDocument, insertMediaLayers, insertOnlyNarration, narrationEditList, buildEditListFromCuts, type InsertAsset, type InsertDocument } from "@video-workbench/core";
 import { assertProjectReadable, serializeProjectOperation, readModuleFile } from "@video-workbench/core/node";
 import { readMediaAsset } from "../../../../packages/core/src/mediaAssets";
 import { snapshotProjectFiles, projectFilesRevision, commitProjectTransaction, recoverProjectTransaction, readProjectTransaction, getProjectTransactionStatus, type ProjectFiles } from "../../../../packages/core/src/projectTransaction";
@@ -192,6 +192,26 @@ function migrateToMultisource(files: ProjectFiles, edl: EditListDocument): { fil
 }
 
 /**
+ * Inserts must not take word-level cut editing away. A narration timeline that
+ * still equals what its cuts derive is (again) cuts-derived; any hand
+ * arrangement stays manual.
+ */
+function cutsDerivedMode(files: ProjectFiles, edl: EditListDocument): EditListDocument["mode"] {
+  if (edl.mode === "cuts-derived") return edl.mode;
+  const narration = insertOnlyNarration(edl);
+  const cuts = parse(files, "cut-selection.json");
+  if (!narration || !Array.isArray(cuts?.cutRanges)) return edl.mode;
+  try {
+    const base = narrationEditList(edl);
+    const derived = buildEditListFromCuts({ projectId: edl.projectId, source: narration.path, sourceDuration: narration.duration,
+      cutsRevision: edl.baseCutsRevision, transcriptRevision: edl.baseTranscriptRevision, cutRanges: cuts.cutRanges });
+    const same = derived.segments.length === base.segments.length && derived.segments.every((s, i) =>
+      Math.abs(s.sourceStart - base.segments[i]!.sourceStart) <= 0.0005 && Math.abs(s.sourceEnd - base.segments[i]!.sourceEnd) <= 0.0005);
+    return same ? "cuts-derived" : edl.mode;
+  } catch { return edl.mode; }
+}
+
+/**
  * Pure: rebuild the magnetic A-roll with exactly these inserts. Subtitles and
  * visual layers keep their own length; one that would be stretched across a
  * clip is refused rather than silently re-timed.
@@ -204,6 +224,7 @@ export function buildInsertDocuments(before: ProjectFiles, document: InsertDocum
   const migrated = migrateToMultisource(before, edl);
   const words = parseTranscriptWords(parse(migrated.files, "transcript.json"));
   const placed = parseEditListDocument({ ...applyInserts({ editList: migrated.edl, words, document, assets }),
+    mode: cutsDerivedMode(migrated.files, migrated.edl),
     baseTranscriptRevision: migrated.edl.baseTranscriptRevision, baseCutsRevision: migrated.edl.baseCutsRevision });
   const insertsRaw = json(document);
   const after: ProjectFiles = { ...migrated.files, "edit-list.json": json(placed), "inserts.json": insertsRaw };

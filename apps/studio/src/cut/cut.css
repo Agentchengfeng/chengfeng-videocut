@@ -2280,6 +2280,45 @@ select:focus-visible,
   color: var(--text-0);
 }
 
+/* Inserted clips: their own picture row and sound row above the narration. */
+.cf-cut-insert-clip {
+  position: absolute;
+  display: flex;
+  overflow: hidden;
+  align-items: center;
+  padding: 0 8px;
+  border: 1px solid rgb(96 165 250 / 45%);
+  border-radius: 5px;
+  background: rgb(96 165 250 / 12%);
+  color: var(--text-1);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.cf-cut-insert-clip.is-audio {
+  border-color: rgb(167 139 250 / 45%);
+  background: rgb(167 139 250 / 12%);
+}
+
+.cf-cut-insert-clip:hover {
+  background: rgb(96 165 250 / 18%);
+}
+
+.cf-cut-insert-clip.is-audio:hover {
+  background: rgb(167 139 250 / 18%);
+}
+
+.cf-cut-insert-clip.is-active {
+  border-color: rgb(96 165 250 / 85%);
+  color: var(--text-0);
+}
+
+.cf-cut-insert-clip.is-audio.is-active {
+  border-color: rgb(167 139 250 / 85%);
+}
+
 /* The push-in cuts, deliberately. An eased transform was tried and removed:
    the clip is instant, so for 280ms the picture shrank to a floating patch
    before filling the frame — read as "the frame changed size" — and an element
