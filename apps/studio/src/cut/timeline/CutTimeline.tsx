@@ -131,6 +131,7 @@ export function CutTimeline({
   activeVisualLayerId,
   onVisualLayerClick,
   insertLabels,
+  seamMarkers,
 }: {
   soundEffectsTrack?: (pixelsPerSecond: number, displayContentWidth: number) => ReactNode;
   projectId: string;
@@ -144,6 +145,8 @@ export function CutTimeline({
   onVisualLayerClick?: (layerId: string) => void;
   /** Display names of inserted clips, keyed by their instance id. */
   insertLabels?: Readonly<Record<string, string>>;
+  /** Seams still audible after refinement, in timeline seconds. */
+  seamMarkers?: readonly { time: number; level: number }[];
 }) {
   const document = editList.document;
   const trackRef = useRef<HTMLDivElement | null>(null);
@@ -889,6 +892,8 @@ export function CutTimeline({
         visualLayers={visualLayers}
         activeVisualLayerId={activeVisualLayerId ?? null}
         insertClips={insertClips}
+        seamMarkers={seamMarkers}
+        onSeamMarkerClick={(time) => onSeek(time)}
         onInsertClipClick={(clipId) => {
           const clip = insertClips.find((candidate) => candidate.id === clipId);
           if (clip) onSeek(clip.start);

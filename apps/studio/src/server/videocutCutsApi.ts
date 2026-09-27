@@ -12,6 +12,7 @@ import {
   type CutSelectionWriteMode,
   type DeriveCutRangesInput,
   type DeriveCutRanges,
+  type RefineSeams,
 } from "@video-workbench/core/node";
 
 const API_SCHEMA_VERSION = 1 as const;
@@ -31,6 +32,8 @@ export interface VideocutCutsHandlerOptions {
   materializeIndex?: (change: VideocutCutsChange) => void | Promise<void>;
   onDocumentChanged?: (change: VideocutCutsChange) => void | Promise<void>;
   deriveCutRanges?: (projectDir: string, input: DeriveCutRangesInput) => ReturnType<DeriveCutRanges>;
+  /** Move seams a cut creates to the quietest nearby instant (Runtime measures the audio). */
+  refineSeams?: (projectDir: string, input: Parameters<RefineSeams>[0]) => ReturnType<RefineSeams>;
 }
 
 type VideocutCutsHandler = (request: Request) => Promise<Response | null>;
@@ -546,6 +549,7 @@ export function createVideocutCutsHandler(
               deriveCutRanges: options.deriveCutRanges
                 ? (input) => options.deriveCutRanges!(project.directory, input)
                 : undefined,
+              ...(options.refineSeams ? { refineSeams: (input: Parameters<RefineSeams>[0]) => options.refineSeams!(project.directory, input) } : {}),
             },
           ),
         );

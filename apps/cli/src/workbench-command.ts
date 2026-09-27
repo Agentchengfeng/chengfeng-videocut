@@ -173,7 +173,7 @@ export async function runWorkbenchCommand(args: ParsedArgs, cwd: string): Promis
       if (result.schemaVersion !== 1 || result.editListSchemaVersion !== 2 || typeof result.revision !== "string" || !SHA.test(result.revision) || !Array.isArray(result.matches) || result.matches.length > 100) fail("workbench_response_invalid", "Invalid target snapshot");
       if (body.expectedRevision !== undefined) equal(result.revision, body.expectedRevision, "Target snapshot revision");
     }
-    if (["workflow-get", "edit-list-get", "cuts-get", "subtitles-get", "visuals-get", "config-get", "config-set", "media-get", "media-import", "sources-get", "subtitle-inputs", "inserts-get"].includes(name)) equal(result.projectId, project, "Project ID");
+    if (["workflow-get", "edit-list-get", "cuts-get", "subtitles-get", "visuals-get", "config-get", "config-set", "media-get", "media-import", "sources-get", "subtitle-inputs", "inserts-get", "seams-get"].includes(name)) equal(result.projectId, project, "Project ID");
     if (["edit-list-get", "cuts-get", "subtitles-get", "visuals-get"].includes(name) && (typeof result.revision !== "string" || !REV.test(result.revision))) fail("workbench_response_invalid", "Document response lacks a valid revision");
     if (name.startsWith("ingest-")) {
       equal(result.operationId, body.operationId, "Ingest operation ID");

@@ -666,12 +666,93 @@ function snapshotDocument(
   return next;
 }
 
+const INSERTED_CLIP_PREFIX = "insert:";
+
+/**
+ * Source-range delete/restore on a single narration with inserted clips.
+ * The range edit runs on the narration alone (as a single-source list); each
+ * inserted clip then goes back after the narration source time it followed.
+ * When that time was deleted, the clip follows the nearest earlier narration,
+ * the same rule cut writes use. Returns null for any other multisource list.
+ */
+function narrationRangeOperation(document: EditListDocument, operation: EditListOperation): EditListDocument | null {
+  const inserted = (segment: EditListSegment) => Boolean(segment.instanceId?.startsWith(INSERTED_CLIP_PREFIX));
+  const ordered = [...document.segments].sort((a, b) => a.timelineStart - b.timelineStart);
+  const narration = ordered.filter((segment) => !inserted(segment));
+  const path = narration[0]?.source;
+  const narrationSource = document.sources?.find((source) => source.path === path);
+  if (!path || !narrationSource || narrationSource.mediaKind !== "audio"
+    || narration.some((segment) => segment.source !== path || segment.instanceId !== "original")) return null;
+  const anchors: Array<{ clip: EditListSegment; at: number | null }> = [];
+  let lastEnd: number | null = null;
+  for (const segment of ordered) {
+    if (inserted(segment)) anchors.push({ clip: segment, at: lastEnd });
+    else lastEnd = segment.sourceEnd;
+  }
+  // Heal only the splits an inserted clip made (the right piece is "<left>~<insert>").
+  const healed: EditListSegment[] = [];
+  for (const segment of narration) {
+    const last = healed[healed.length - 1];
+    if (last && Math.abs(last.sourceEnd - segment.sourceStart) <= TIME_EPSILON && segment.id.startsWith(`${last.id}~`)) {
+      healed[healed.length - 1] = { ...last, sourceEnd: segment.sourceEnd };
+    } else healed.push({ ...segment });
+  }
+  const { sources: _sources, ...rest } = document;
+  const single = documentWithSegments({ ...rest, schemaVersion: EDIT_LIST_SCHEMA_VERSION, sourceDuration: narrationSource.duration } as EditListDocument,
+    healed.map(({ instanceId: _instance, ...segment }) => segment));
+  // Restore anchors may name the right piece of a split; that piece is healed into its left id here.
+  const healedId = (id: string | undefined) => {
+    if (id === undefined) return undefined;
+    const direct = healed.find((segment) => segment.id === id);
+    if (direct) return direct.id;
+    const owner = healed.find((segment) => id.startsWith(`${segment.id}~`));
+    return owner ? owner.id : invalid("Restore anchor must be a narration segment", { segmentId: id });
+  };
+  const mapped = operation.type === "restore"
+    ? { ...operation, source: path, ...(operation.previousSegmentId ? { previousSegmentId: healedId(operation.previousSegmentId) } : {}),
+      ...(operation.nextSegmentId ? { nextSegmentId: healedId(operation.nextSegmentId) } : {}) }
+    : { ...operation, ...("source" in operation ? { source: path } : {}) };
+  const edited = applyEditListOperation(single, mapped as EditListOperation);
+  let out: EditListSegment[] = edited.segments.map((segment) => ({ ...segment, instanceId: "original" }));
+  const afterFollowing = (index: number) => {
+    let k = index + 1;
+    while (k < out.length && inserted(out[k]!)) k += 1;
+    return k;
+  };
+  for (const { clip, at } of anchors) {
+    if (at === null) { out = [{ ...clip }, ...out]; continue; }
+    const holder = out.findIndex((segment) => !inserted(segment)
+      && at > segment.sourceStart + TIME_EPSILON && at <= segment.sourceEnd + TIME_EPSILON);
+    if (holder < 0) {
+      let best = -1;
+      out.forEach((segment, k) => {
+        if (!inserted(segment) && segment.sourceEnd <= at + TIME_EPSILON && (best < 0 || segment.sourceEnd > out[best]!.sourceEnd)) best = k;
+      });
+      if (best < 0) out = [{ ...clip }, ...out];
+      else out.splice(afterFollowing(best), 0, { ...clip });
+      continue;
+    }
+    const host = out[holder]!;
+    if (at >= host.sourceEnd - TIME_EPSILON) out.splice(afterFollowing(holder), 0, { ...clip });
+    else if (at - host.sourceStart >= EDIT_LIST_MIN_SEGMENT_SECONDS && host.sourceEnd - at >= EDIT_LIST_MIN_SEGMENT_SECONDS) {
+      let id = `${host.id}~${clip.instanceId!.slice(INSERTED_CLIP_PREFIX.length)}`;
+      while (out.some((segment) => segment.id === id)) id += "'";
+      out.splice(holder, 1, { ...host, sourceEnd: at }, { ...clip }, { ...host, id, sourceStart: at });
+    } else out.splice(holder + 1, 0, { ...clip });
+  }
+  return manualDocumentWithSegments(document, out);
+}
+
 export function applyEditListOperation(
   input: EditListDocument,
   rawOperation: EditListOperation | unknown,
 ): EditListDocument {
   const document = parseEditListDocument(input);
   const operation = parseEditListOperation(rawOperation);
+  if (document.schemaVersion === 2 && ["restore", "delete-range"].includes(operation.type)) {
+    const narrated = narrationRangeOperation(document, operation);
+    if (narrated) return narrated;
+  }
   if (document.schemaVersion === 2 && ["restore", "restore-snapshot", "delete-range"].includes(operation.type)) {
     return invalid("Multisource source-range edits require instance-aware operations; use segment edits");
   }

@@ -46,6 +46,8 @@ export const TimelineCanvas = memo(function TimelineCanvas({
   onVisualLayerClick,
   insertClips,
   onInsertClipClick,
+  seamMarkers,
+  onSeamMarkerClick,
 }: TimelineCanvasProps) {
   // Three rows once a project can carry visual layers. The height function has
   // always taken a track count; only the number passed here changed.
@@ -80,6 +82,20 @@ export const TimelineCanvas = memo(function TimelineCanvas({
       />
 
       <div aria-hidden="true" style={{ height: TRACKS_TOP_PAD }} />
+
+      {(seamMarkers ?? []).map((marker) => (
+        <button
+          key={`seam-${marker.time.toFixed(3)}`}
+          type="button"
+          className="cf-cut-seam-marker"
+          data-seam-marker="true"
+          title={`接缝仍有声音（${marker.level} dB），建议听一下`}
+          aria-label={`接缝 ${marker.time.toFixed(2)} 秒，建议听一下`}
+          style={{ left: GUTTER + TRACKS_LEFT_PAD + marker.time * pixelsPerSecond - 5, top: RULER_H - 9 }}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={() => onSeamMarkerClick?.(marker.time)}
+        />
+      ))}
 
       {soundEffectsTrack}
       <TimelineLanes

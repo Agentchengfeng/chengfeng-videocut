@@ -2324,3 +2324,20 @@ select:focus-visible,
    before filling the frame — read as "the frame changed size" — and an element
    mid-ease is what poisoned the geometry measurement. The export is a hard cut
    too, and the preview's one job is to match it. */
+
+/* A seam still audible after automatic refinement: a small marker under the ruler. */
+.cf-cut-seam-marker {
+  position: absolute;
+  z-index: 65;
+  width: 0;
+  height: 0;
+  padding: 0;
+  border: 5px solid transparent;
+  border-top: 7px solid rgb(245 158 11 / 90%);
+  background: none;
+  cursor: pointer;
+}
+
+.cf-cut-seam-marker:hover {
+  border-top-color: rgb(251 191 36);
+}

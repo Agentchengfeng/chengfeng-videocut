@@ -27,6 +27,7 @@
 |---|---|
 | workflow-get / edit-list-get / cuts-get / subtitles-get / visuals-get | 无体，各自revision不混用 |
 | playback | {limit:64,cursor?:原样cursor}，串行到page.nextCursor=null；版本变整轮重读 |
+| targets | {clipIds? 或 paragraphs?:{start,end} 或 timeline?:{start,end} 或 text?,expectedRevision?}；四选一、EDL v2、editTargetsApiVersion=1，只读定位，不授权删除 |
 | cuts-put | {expectedRevision,operationId,cutWordIds,reasons?,mode?:"semantic-overlay"}；完整语义集合，不混停顿基线 |
 | edit-list-patch | {expectedRevision,operation,actor?}，只使用已支持编辑，不猜刀口 |
 | workflow-action | {action,expectedRevision,expectedEditListRevision?,config?}；apply-cut额外绑定EDL revision |
@@ -43,11 +44,19 @@
 | transcript-correct | {operationId,expectedRevision,corrections:[{wordId,text}]}，先修字表，只改字不改id/时间 |
 | sources-get / operation-get | sources无体；operation:{operationId}查询原多源事务 |
 | prepend-plan / prepend-commit | {operationId,sourceProjectId,expectedTargetRevision,expectedSourceRevision,confirmed,planRevision?} |
-| word-cuts-plan / word-cuts-commit | {operationId,expectedTargetRevision,wordIds,confirmed,planRevision?} |
-| segment-cuts-plan / segment-cuts-commit | {operationId,expectedTargetRevision,clipIds,removeVisualLayerIds?,confirmed,planRevision?} |
+| word-cuts-plan / word-cuts-commit | {operationId,expectedTargetRevision,wordIds,reviewedVisualReplacements?,confirmed,planRevision?} |
+| segment-cuts-plan / segment-cuts-commit | {operationId,expectedTargetRevision,clipIds,removeVisualLayerIds?,reviewedVisualReplacements?,confirmed,planRevision?} |
+| inserts-get / inserts-plan / inserts-commit | get无体，返回整工程revision、document、派生layers；plan/commit:{operationId,expectedRevision,document,confirmed,planRevision?}；document整份替换inserts.json，需insertMediaApiVersion=1 |
+| seams-get | 无体；返回仍听得见的接缝 {timelineTime,edge,segmentId,level}，需 seamRefinementApiVersion=1。删词/恢复写入时 Product 已自动把新接缝挪到最安静处（手动裁剪/拆分不动），列表是交给人耳确认的连续语音切点 |
 | operation-recover | {operationId,action:"finish"或"rollback"}，先查询原事务，显式确认，不是任意undo/redo |
 
-三组plan先confirmed:false；commit必须同operationId/原revision/返回planRevision和confirmed:true，再加--confirmed。多源不能冒用单源cuts-put；服务legacyCutsSet=false时按word/segment事务走。模块沿用module publish/get，见[模块包交付](module-publish.md)，不自动启用层。
+四组plan先confirmed:false；commit必须同operationId/原revision/返回planRevision和confirmed:true，再加--confirmed。多源不能冒用单源cuts-put；服务legacyCutsSet=false时按word/segment事务走。模块沿用module publish/get，见[模块包交付](module-publish.md)，不自动启用层。
+
+targets 最多100片段/段落/命中、文本200字、请求32KiB/响应512KiB。段落号为当前Studio文稿可见行（含划去语音）；文本匹配完整段落，重复命中 requiresSelection，不自动选择。timeline 为剪后半开区间相交查询，不是精确按秒删除；跨边界词和片段需复核。返回真实词/片段及关联层摘要，revision 是与 sources-get 相同的整工程快照，可作后续 expectedTargetRevision；不能用于单文档写入。全文读取保留 playback。
+
+reviewedVisualReplacements 额外要求 multisourceAudio.reviewedVisualReplacementsApiVersion=1，不能仅凭产品版本推断。形状为 [{layerId,module,expectedModuleDigest,wordIds,animation:{schemaVersion:1,clock:"local0",authoredDuration,anchorWordIds,canvas?}}]，最多32项，删除请求整体最多256KiB。只用于已审阅/已发布模块替换本次部分受剪HTML层；module 是发布入口、digest 是整包摘要，存续词保持原序。plan/commit 输入原样，提交及恢复finish复验模块，动画错位继续拒绝。不能先去掉animation绑定、拉伸或换其他删除API绕过拒绝；任意批量编辑不在该合同中。
+
+主轨插入：document为{schemaVersion:1,projectId,inserts:[{id,afterWordId,assetId,sourceIn,sourceOut,fit:"contain"|"cover",label?}]}，最多64项、每词一项。afterWordId须是仍在播放的说出词，且不能落在字幕屏或画面层中间；素材须先media-import且带音轨，播放其原声，口播暂停后顺延。gainDb暂只接受0。首次插入把v1工程升级为EDL v2；单一口播加插入时cuts-put与Studio删词照常可用（删插入锚词时插入段自动跟到最近仍播放的词，结果含movedInserts；被拒删改记cuts_rejected事件），多口播来源仍用word/segment事务。插入段不能经edit-list-patch或segment-cuts单独修改；改或删都重新提交document。音效是绝对秒，plan返回warnings时须复核。
 
 ## 失败和未支持能力
 

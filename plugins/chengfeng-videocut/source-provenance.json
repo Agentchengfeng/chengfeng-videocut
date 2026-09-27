@@ -15,7 +15,7 @@
     "references/shared/module-publish.md": "86bc57dc5faafd1581aff3c80c4994dce16522fb542fb1bbe8345478fe2fb8da",
     "references/shared/plugin-access.md": "fc7c42d6d9b56f2a83b898c992f5eef27b965481efe997b3690eb1ad499cc22a",
     "references/shared/provenance.json": "beacbb9e4eb1392f994da254b1f543957a522cb5333fec5ff40474b5e2daaa55",
-    "references/shared/runtime-cli.md": "d6e40ea6dcb938e2a6d2875b4ce3ae374b814a02c844d197ac61cf9adcb23c28",
+    "references/shared/runtime-cli.md": "cd57c258226c6fac4345131df8cb0acbb71ac1ac966bc784a401506a299129ce",
     "references/shared/visual-integration.md": "dc47c21bfcf99422cd08302be91237faebaab11897951a7bb3834f61388b72d1",
     "references/shared/visual-module-contract.md": "a63d4e688599ea44207cd734b1afea518931127f199b4629093dad56af5d665b",
     "scripts/skill-package-installer.cjs": "5252bb3894346f8589edc1eb0516569646baffea95e8ad17f973f18de5bb8f9f",

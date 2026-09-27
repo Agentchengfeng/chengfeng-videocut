@@ -818,6 +818,8 @@ export interface WriteCutSelectionOptions {
    * Both selection modes use it on derived timelines. Full selections keep the
    * Studio's exact ids; they must not restore deleted tails by skipping policy. */
   deriveCutRanges?: false | DeriveCutRanges;
+  /** See WriteEditListOptions.refineSeams; applied to the narration before inserts are re-placed. */
+  refineSeams?: RefineSeams;
 }
 
 export type CutSelectionWriteMode = "full-selection" | "semantic-overlay";
@@ -1190,6 +1192,14 @@ export async function writeCutSelectionWithEditList(
       }
     }
 
+    if (nextEditList && options.refineSeams) {
+      const refined = parseEditListDocument(await options.refineSeams({ before: currentEditList, after: nextEditList, words }));
+      if (JSON.stringify(refined.segments) !== JSON.stringify(nextEditList.segments)) {
+        nextEditList = refined;
+        editListContent = serializeJson(nextEditList);
+        editListRevision = sha256(editListContent);
+      }
+    }
     let movedInserts: MovedInsert[] = [];
     let insertsContent: string | null = null;
     let insertsFile: Awaited<ReturnType<typeof readOptionalJsonAt>> = null;
@@ -1302,7 +1312,15 @@ export interface WriteEditListOptions {
    * export all obey it, and none of them may adjust it again.
    */
   placeBoundaries?: (document: EditListDocument) => Promise<EditListDocument>;
+  /**
+   * Seams this edit created are moved to the quietest nearby instant (the caller
+   * measures the narration audio). Works for single-source and inserted-clip
+   * lists alike; seams the edit did not touch stay as they are.
+   */
+  refineSeams?: RefineSeams;
 }
+
+export type RefineSeams = (input: { before: EditListDocument | null; after: EditListDocument; words: readonly TimedWord[] }) => Promise<EditListDocument>;
 
 export interface WriteEditListResult {
   projectId: string;
@@ -1925,7 +1943,11 @@ export async function patchEditList(
     //
     // The adjustment needs the audio, which core cannot read; the caller supplies
     // it. Without one the boundaries stand exactly as given — never guessed at.
-    const next = options.placeBoundaries && current.schemaVersion === 1 ? await options.placeBoundaries(applied) : applied;
+    const placed = options.placeBoundaries && current.schemaVersion === 1 ? await options.placeBoundaries(applied) : applied;
+    const next = options.refineSeams
+      ? parseEditListDocument(await options.refineSeams({ before: current, after: placed,
+        words: parseTranscriptWords((await readProjectDocument(project, "transcript.json")).value) }))
+      : placed;
     const result = await commitEditListSnapshot(project, previous, next, options);
     if (result.changed) {
       await appendProjectEvent(project, {

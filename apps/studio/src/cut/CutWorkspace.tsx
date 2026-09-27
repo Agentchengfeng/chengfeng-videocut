@@ -520,6 +520,22 @@ export function CutWorkspace({
     (visuals.insertLayers ?? []).filter((layer) => layer.label).map((layer) => [layer.layerId, layer.label!]),
   ), [visuals.insertLayers]);
 
+  // Seams still audible after automatic refinement: marked so a person listens to
+  // those few instead of combing the whole cut. Refetched whenever the cut changes.
+  const [seamMarkers, setSeamMarkers] = useState<{ time: number; level: number }[]>([]);
+  useEffect(() => {
+    if (!projectId || !editList.revision) return;
+    let cancelled = false;
+    fetch(`/api/v1/projects/${encodeURIComponent(projectId)}/seams`, { cache: "no-store" })
+      .then((response) => response.ok ? response.json() : null)
+      .then((body) => {
+        if (cancelled || !body || !Array.isArray(body.seams)) return;
+        setSeamMarkers(body.seams.map((seam: { timelineTime: number; level: number }) => ({ time: seam.timelineTime, level: seam.level })));
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [projectId, editList.revision]);
+
   const canUndo = undoDepth > 0 && editList.saveState !== "saving" && cutSelection.saveState !== "saving";
   const undoLastChange = useCallback(async () => {
     if (editList.saveState === "saving" || cutSelection.saveState === "saving") return;
@@ -684,6 +700,7 @@ export function CutWorkspace({
         soundEffectsTrack={(pixelsPerSecond, displayContentWidth) => <SoundEffectTrack pixelsPerSecond={pixelsPerSecond} displayContentWidth={displayContentWidth} projectId={projectId} editRevision={editList.revision} time={transport.timelineTime} onSeek={seek} onSaved={artifact.retry} />}
         visualLayers={timelineVisualLayers}
         insertLabels={insertLabels}
+        seamMarkers={seamMarkers}
         activeVisualLayerId={activeVisual?.layerId ?? null}
         onVisualLayerClick={(layerId) => {
           const timing = visuals.timings.find((candidate) => candidate.layerId === layerId);

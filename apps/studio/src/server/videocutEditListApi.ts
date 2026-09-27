@@ -11,6 +11,7 @@ import {
   patchEditList,
   readEditList,
   resolveProject,
+  type RefineSeams,
 } from "@video-workbench/core/node";
 
 const API_SCHEMA_VERSION = 1 as const;
@@ -41,6 +42,8 @@ export interface VideocutEditListHandlerOptions {
     projectDir: string,
     ranges: readonly { start: number; end: number }[],
   ) => Promise<{ start: number; end: number }[]>;
+  /** Move seams a range edit creates to the quietest nearby instant (not for trims/splits). */
+  refineSeams?: (projectDir: string, input: Parameters<RefineSeams>[0]) => ReturnType<RefineSeams>;
 }
 
 type VideocutEditListHandler = (request: Request) => Promise<Response | null>;
@@ -249,6 +252,7 @@ export function createVideocutEditListHandler(
         ? undefined : options.placeBoundaries;
       const result = await patchEditList(project, body.operation, {
         expectedRevision: body.expectedRevision,
+        ...(!["trim", "split", "restore-snapshot"].includes(body.operation.type) && options.refineSeams ? { refineSeams: (input: Parameters<RefineSeams>[0]) => options.refineSeams!(project.directory, input) } : {}),
         ...(place ? { placeBoundaries: async (document) => {
           const placed = await place(
             project.directory,

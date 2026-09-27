@@ -289,7 +289,8 @@ export const KouboTranscriptPane = memo(function KouboTranscriptPane({
     const selected = wordsRef.current.slice(range.start, range.end + 1);
     const sourceStart = Math.min(...selected.map((word) => word.start));
     const sourceEnd = Math.max(...selected.map((word) => word.end));
-    const segments = editList.document?.segments ?? [];
+    // Inserted clips live on their own media clock; only narration can anchor a restore.
+    const segments = (editList.document?.segments ?? []).filter((segment) => !segment.instanceId?.startsWith("insert:"));
     const previous = segments
       .filter((segment) => segment.sourceEnd <= sourceStart + 0.001)
       .sort((left, right) => right.sourceEnd - left.sourceEnd)[0];

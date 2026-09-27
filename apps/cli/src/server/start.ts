@@ -38,6 +38,8 @@ import {
 } from "./edit-preview-artifact";
 import { placeCutBoundaries } from "./preview-stream";
 import { deriveSemanticCutRanges } from "./semantic-cut-boundaries";
+import { refineSeams, audibleSeams } from "./seam-refine";
+import { parseEditListDocument } from "@video-workbench/core";
 import { fetchGuardedStudioApi } from "./studio-mutation-guard";
 import { createVideocutWorkflowHandler } from "./workflow-api";
 import { skillDirectoryResponse } from "./skill-directory";
@@ -405,6 +407,8 @@ function healthResponse(
     projectConfig: { fields: ["aspectRatio", "canvasBackground"] },
     multisourceAudioApiVersion: 1,
     insertMediaApiVersion: 1,
+    seamRefinementApiVersion: 1,
+    seamRefinement: { automatic: ["cut-writes", "range-delete", "range-restore"], skips: ["trim", "split"], report: "seams-get" },
     insertMedia: { schemaVersion: 1, anchor: "after-word", audio: "clip-own-audio", gainDb: false, maxInserts: 64, operations: ["inserts-get", "inserts-plan", "inserts-commit"] },
     multisourceAudio: { operations: ["prepend-project", "delete-words", "delete-segments", "recover-transaction"], segmentCutsApiVersion: 1, editListSchemaVersion: 2, mixing: false, videoSources: "insert-only",
       semanticCuts: true, wordCutsApiVersion: 1, reviewedVisualReplacementsApiVersion: 1, legacyCutsSet: false, studioWordCuts: false, restoreMode: "unchanged-transaction-only",
@@ -552,12 +556,14 @@ async function startStudioServerInternal(options: StartStudioServerOptions, life
         })
         : undefined);
     },
+    refineSeams: (projectDir, input) => refineSeams({ projectDir, ...input }),
     onDocumentChanged(change) {
       events.publish("file-change", change);
       editPreviewArtifacts.schedule(change.projectId);
     },
   });
   const editListApi = createVideocutEditListHandler({
+    refineSeams: (projectDir, input) => refineSeams({ projectDir, ...input }),
     projectsDir,
     materializeIndex: materializeEditListIndex,
     // The ledger decides where every cut sits, once, using the audio — and nothing
@@ -719,6 +725,19 @@ async function startStudioServerInternal(options: StartStudioServerOptions, life
         if (url.pathname.startsWith("/api/")) {
           const response = await editListApi(request);
           if (response) return response;
+        }
+        const seamsMatch = /^\/api\/v1\/projects\/([^/]+)\/seams$/.exec(url.pathname);
+        if (seamsMatch && request.method === "GET") {
+          // Seams still audible after automatic refinement: continuous speech a
+          // person should listen to. Read-only; never moves a boundary.
+          const id = decodeURIComponent(seamsMatch[1]!);
+          if (!id || /[\\/\0]/.test(id) || id === "." || id === "..") return Response.json({ error: { code: "invalid_argument" } }, { status: 400 });
+          const { resolveProject: resolveProjectDir, readOptionalProjectDocument } = await import("@video-workbench/core/node");
+          const project = await resolveProjectDir(resolve(projectsDir, id));
+          const edl = await readOptionalProjectDocument(project, "edit-list.json");
+          if (!edl) return Response.json({ projectId: id, editListRevision: null, seams: [] });
+          const seams = await audibleSeams(project.directory, parseEditListDocument(edl.value));
+          return Response.json({ projectId: id, editListRevision: edl.revision, seams }, { headers: { "Cache-Control": "no-store" } });
         }
         if (url.pathname.startsWith("/api/")) {
           const response = await cutsApi(request);

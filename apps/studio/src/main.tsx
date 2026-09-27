@@ -3,12 +3,14 @@ import { createRoot } from "react-dom/client";
 import { StudioErrorBoundary } from "./components/StudioErrorBoundary";
 import { StudioEntrypoint } from "./StudioEntrypoint";
 import { startRuntimeActivity } from "./runtime/activity";
+import { startAutoRefresh } from "./runtime/autoRefresh";
 import { trackStudioEvent } from "./utils/studioTelemetry";
 import "./styles/studio.css";
 
 trackStudioEvent("session_start");
 const stopRuntimeActivity = startRuntimeActivity();
-if (import.meta.hot) import.meta.hot.dispose(stopRuntimeActivity);
+const stopAutoRefresh = startAutoRefresh();
+if (import.meta.hot) import.meta.hot.dispose(() => { stopRuntimeActivity(); stopAutoRefresh(); });
 
 function errorProps(value: unknown): {
   error_message: string;

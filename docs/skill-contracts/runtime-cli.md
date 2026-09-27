@@ -47,6 +47,7 @@
 | word-cuts-plan / word-cuts-commit | {operationId,expectedTargetRevision,wordIds,reviewedVisualReplacements?,confirmed,planRevision?} |
 | segment-cuts-plan / segment-cuts-commit | {operationId,expectedTargetRevision,clipIds,removeVisualLayerIds?,reviewedVisualReplacements?,confirmed,planRevision?} |
 | inserts-get / inserts-plan / inserts-commit | get无体，返回整工程revision、document、派生layers；plan/commit:{operationId,expectedRevision,document,confirmed,planRevision?}；document整份替换inserts.json，需insertMediaApiVersion=1 |
+| seams-get | 无体；返回仍听得见的接缝 {timelineTime,edge,segmentId,level}，需 seamRefinementApiVersion=1。删词/恢复写入时 Product 已自动把新接缝挪到最安静处（手动裁剪/拆分不动），列表是交给人耳确认的连续语音切点 |
 | operation-recover | {operationId,action:"finish"或"rollback"}，先查询原事务，显式确认，不是任意undo/redo |
 
 四组plan先confirmed:false；commit必须同operationId/原revision/返回planRevision和confirmed:true，再加--confirmed。多源不能冒用单源cuts-put；服务legacyCutsSet=false时按word/segment事务走。模块沿用module publish/get，见[模块包交付](module-publish.md)，不自动启用层。

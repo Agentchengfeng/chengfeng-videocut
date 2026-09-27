@@ -117,3 +117,28 @@ describe("followCutAnchors", () => {
     expect(() => followCutAnchors(doc([clip("i1", "w1"), clip("i2", "w2")]), words, narration([[0, 1.3]]))).toThrow(/已经没有可以跟随的口播/);
   });
 });
+
+describe("range edits on a narration with inserts", () => {
+  const { applyEditListOperation } = require("./editList") as typeof import("./editList");
+  const placed = () => applyInserts({ editList: { ...edl(), mode: "manual" }, words, document: doc([clip("i1", "w1")]), assets });
+  const view = (d: EditListDocument) => d.segments.map(s => [s.instanceId, s.sourceStart, s.sourceEnd]);
+
+  test("deleting narration keeps the clip after the narration it followed", () => {
+    const out = applyEditListOperation(placed(), { type: "delete-range", source: VOICE, sourceStart: 1.6, sourceEnd: 2.4 });
+    expect(view(out)).toEqual([["original", 0, 1.3], ["insert:i1", 0, 5], ["original", 1.3, 1.6], ["original", 3, 4]]);
+    expect(out.schemaVersion).toBe(2);
+  });
+
+  test("deleting the narration a clip follows moves the clip to the nearest earlier narration", () => {
+    const out = applyEditListOperation(placed(), { type: "delete-range", source: VOICE, sourceStart: 0.9, sourceEnd: 1.6 });
+    expect(view(out)).toEqual([["original", 0, 0.9], ["insert:i1", 0, 5], ["original", 1.6, 2.4], ["original", 3, 4]]);
+  });
+
+  test("restoring a range keeps the clip in place", () => {
+    const out = applyEditListOperation(placed(), { type: "restore", source: VOICE, sourceStart: 2.4, sourceEnd: 3, previousSegmentId: "a-roll-0001~i1", nextSegmentId: "a-roll-0002" } as any);
+    const ids = out.segments.map(s => s.instanceId);
+    expect(ids.filter(i => i === "insert:i1")).toHaveLength(1);
+    expect(out.segments.find(s => s.instanceId === "insert:i1")!.timelineStart).toBeCloseTo(1.3, 6);
+    expect(out.duration).toBeCloseTo(8.4 + 0.6, 6);
+  });
+});

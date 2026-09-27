@@ -87,7 +87,15 @@ export interface TimelineLaneBaseProps {
   ) => void;
 }
 
+/** A seam that is still audible after automatic refinement: worth a listen. */
+export interface TimelineSeamMarker {
+  time: number;
+  level: number;
+}
+
 export interface TimelineCanvasProps extends Omit<TimelineLaneBaseProps, "theme"> {
+  seamMarkers?: readonly TimelineSeamMarker[];
+  onSeamMarkerClick?: (time: number) => void;
   soundEffectsTrack?: ReactNode;
   /** Canonical EDL duration shown by ruler labels and assistive text. */
   rulerDuration: number;
