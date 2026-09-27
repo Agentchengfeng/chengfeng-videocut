@@ -142,3 +142,14 @@ describe("range edits on a narration with inserts", () => {
     expect(out.duration).toBeCloseTo(8.4 + 0.6, 6);
   });
 });
+
+test("a split that would leave only a sliver of pause places the clip at the piece end instead", () => {
+  const short = parseEditListDocument({ ...edl(), segments: [
+    { id: "a-roll-0001", source: VOICE, sourceStart: 0, sourceEnd: 1.2, timelineStart: 0, trackId: "a-roll", playbackRate: 1, instanceId: "original" },
+    { id: "a-roll-0002", source: VOICE, sourceStart: 3, sourceEnd: 4, timelineStart: 1.2, trackId: "a-roll", playbackRate: 1, instanceId: "original" },
+  ], duration: 2.2 });
+  const out = applyInserts({ editList: short, words, document: doc([clip("i1", "w1")]), assets });
+  expect(out.segments.map(s => [s.id, s.sourceStart, s.sourceEnd])).toEqual([
+    ["a-roll-0001", 0, 1.2], ["insert-i1", 0, 5], ["a-roll-0002", 3, 4],
+  ]);
+});

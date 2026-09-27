@@ -10,6 +10,12 @@ export const INSERT_INSTANCE_PREFIX = "insert:";
 /** How far past the anchor word the cut may move to land inside the following pause. */
 const MAX_PAUSE_SHIFT = 0.3;
 const EPSILON = 0.0005;
+/**
+ * A split leaving less than this after the clip would put a sliver of pause on
+ * the timeline as its own clip (silent at best, a crackle at worst). Place the
+ * clip at the end of the narration piece instead; the pause plays before it.
+ */
+export const INSERT_MIN_REMAINDER_SECONDS = 0.25;
 
 export interface InsertItem {
   id: string;
@@ -177,7 +183,7 @@ export function applyInserts(input: {
     const path = insertAssetPath(item.assetId);
     const clip: EditListSegment = { id: `insert-${item.id}`, source: path, sourceStart: item.sourceIn, sourceEnd: item.sourceOut,
       timelineStart: 0, trackId: "a-roll", playbackRate: 1, instanceId: `${INSERT_INSTANCE_PREFIX}${item.id}` };
-    const replacement = segment.sourceEnd - cut >= EDIT_LIST_MIN_SEGMENT_SECONDS
+    const replacement = segment.sourceEnd - cut >= INSERT_MIN_REMAINDER_SECONDS
       ? [{ ...segment, sourceEnd: cut }, clip, { ...segment, id: `${segment.id}~${item.id}`, sourceStart: cut }]
       : [segment, clip];
     segments = [...segments.slice(0, index), ...replacement, ...segments.slice(index + 1)];

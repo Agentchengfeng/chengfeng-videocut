@@ -734,7 +734,8 @@ function narrationRangeOperation(document: EditListDocument, operation: EditList
     }
     const host = out[holder]!;
     if (at >= host.sourceEnd - TIME_EPSILON) out.splice(afterFollowing(holder), 0, { ...clip });
-    else if (at - host.sourceStart >= EDIT_LIST_MIN_SEGMENT_SECONDS && host.sourceEnd - at >= EDIT_LIST_MIN_SEGMENT_SECONDS) {
+    // Same remainder rule as inserts.ts: never leave a sliver of pause as its own clip.
+    else if (at - host.sourceStart >= EDIT_LIST_MIN_SEGMENT_SECONDS && host.sourceEnd - at >= 0.25) {
       let id = `${host.id}~${clip.instanceId!.slice(INSERTED_CLIP_PREFIX.length)}`;
       while (out.some((segment) => segment.id === id)) id += "'";
       out.splice(holder, 1, { ...host, sourceEnd: at }, { ...clip }, { ...host, id, sourceStart: at });
