@@ -26,7 +26,7 @@ preflight
 | proposal | 子Agent只返回候选行；唯一协调者临时合并全量语义候选，Skill不写正式项目 | 不提交 |
 | Product CAS | 每个稳定版本只调用一次workbench cuts-put CAS；字幕subtitle-submit、画面visuals-put、其他明确操作使用原expectedRevision；写后readback | 不偷换revision，不增量补写 |
 | project-level review binding | 同一origin的既有Studio项目URL中#project/<projectId>须与回读项目一致，绑定stage和各资源revision；核对页面capability。connect不返回项目URL | 身份或版本不一致先重核 |
-| user confirmation | 明确批准本方案；不产生一次性Product receipt，CLI --confirmed只表达已有授权 | 播放/打开不算确认 |
+| user confirmation | 明确批准本方案；不产生一次性Product receipt，CLI --confirmed只表达已有授权。批准编辑方案不等于授权导出 | 播放/打开不算确认 |
 | Product execution | workflow-action使用冻结revision；apply-cut额外expectedEditListRevision。导出export-start使用批准的expectedSnapshot/profile/outputPath | 变化回审核 |
 | outcome verification | 读规范产物/任务最终result，分别报告结构/视觉/听感 | 受理不等于完成 |
 
@@ -42,6 +42,7 @@ preflight
 
 ## 共同停止条件
 
+- **审核在工作台，导出要明确授权。** 剪口播、字幕、画面、工作台操作把改动写入工程并回读后，请用户在同一 Studio 刷新审核，即完成交付；Studio 预览与导出读同一工程数据。只有用户明确要求导出/出成片时才进入导出 Skill；不得把导出当作检查或验证手段，也不得把“导出检查”写进待批准方案。需要画面证据时看 Studio 真实帧或抽取已有素材帧。
 - 业务 Skill 按流程顺序：剪口播 → 字幕 → 画面 → 导出。**一段只产出一样东西，产出即交棒。**
   「导出」曾经排在第二位，因为它当时的含义是物理剪切、下游要拿 `source_cut.mp4` 去重新转写。
   字幕改成从账本算时间之后，那个前置条件消失了，导出也就变成了链条最后一段：成片。
