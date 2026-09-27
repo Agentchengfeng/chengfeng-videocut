@@ -45,7 +45,6 @@ import {
   generateTicks,
   getTimelineDisplayContentWidth,
   getTimelineFitPps,
-  getTimelineScrollLeftForZoomAnchor,
 } from "./hyperframes-fork/timelineLayout";
 import {
   getPinchTimelineZoomPercent,
@@ -255,6 +254,19 @@ export function CutTimeline({
     return () => observer.disconnect();
   }, [document]);
 
+  // Zoom grows and shrinks around the playhead (the vertical line), like an NLE:
+  // it keeps its place on screen, or is brought to the middle when off screen.
+  const playheadTimeRef = useRef(0);
+  playheadTimeRef.current = Math.min(duration, Math.max(0, timelineTime));
+  const playheadAnchoredScrollLeft = useCallback((scroll: HTMLDivElement, currentPps: number, nextPps: number) => {
+    const origin = GUTTER + TRACKS_LEFT_PAD;
+    const time = playheadTimeRef.current;
+    const screenX = origin + time * currentPps - scroll.scrollLeft;
+    const visible = screenX >= origin && screenX <= scroll.clientWidth;
+    const keepAt = visible ? screenX : origin + (scroll.clientWidth - origin) / 2;
+    return origin + time * nextPps - keepAt;
+  }, []);
+
   useLayoutEffect(() => {
     const scroll = scrollRef.current;
     const previousPixelsPerSecond = previousPixelsPerSecondRef.current;
@@ -273,16 +285,8 @@ export function CutTimeline({
       scroll.scrollLeft = 0;
       return;
     }
-    const nextScrollLeft = getTimelineScrollLeftForZoomAnchor({
-      pointerX: scroll.clientWidth / 2,
-      currentScrollLeft: scroll.scrollLeft,
-      gutter: GUTTER + TRACKS_LEFT_PAD,
-      currentPixelsPerSecond: previousPixelsPerSecond,
-      nextPixelsPerSecond: pixelsPerSecond,
-      duration,
-    });
     const maxScrollLeft = Math.max(0, scroll.scrollWidth - scroll.clientWidth);
-    scroll.scrollLeft = Math.max(0, Math.min(maxScrollLeft, nextScrollLeft));
+    scroll.scrollLeft = Math.max(0, Math.min(maxScrollLeft, playheadAnchoredScrollLeft(scroll, previousPixelsPerSecond, pixelsPerSecond)));
   }, [duration, pixelsPerSecond, zoomMode]);
 
   useEffect(() => {
@@ -292,21 +296,13 @@ export function CutTimeline({
       if (!event.ctrlKey || duration <= 0) return;
       event.preventDefault();
       event.stopPropagation();
-      const rect = scroll.getBoundingClientRect();
       const nextZoomPercent = getPinchTimelineZoomPercent(
         event.deltaY,
         zoomMode,
         manualZoomPercent,
       );
       const nextPixelsPerSecond = fitPixelsPerSecond * (nextZoomPercent / 100);
-      const nextScrollLeft = getTimelineScrollLeftForZoomAnchor({
-        pointerX: event.clientX - rect.left,
-        currentScrollLeft: scroll.scrollLeft,
-        gutter: GUTTER + TRACKS_LEFT_PAD,
-        currentPixelsPerSecond: pixelsPerSecond,
-        nextPixelsPerSecond,
-        duration,
-      });
+      const nextScrollLeft = playheadAnchoredScrollLeft(scroll, pixelsPerSecond, nextPixelsPerSecond);
       skipCenterZoomAnchorRef.current = true;
       setZoomMode("manual");
       setManualZoomPercent(nextZoomPercent);

@@ -161,3 +161,17 @@ test("after inserts, word cuts and restores still work from the transcript and k
   const events = (await readFile(join(f.directory, "events.jsonl"), "utf8")).trim().split("\n").map(l => JSON.parse(l));
   expect(events.at(-1)).toMatchObject({ type: "cuts_written", payload: { movedInserts: [{ insertId: "i1", toWordId: "w2" }] } });
 }, 30000);
+
+test("a cut on a hand-arranged timeline rebinds the timeline to the new cuts", async () => {
+  const { resolveProject, writeCutSelectionWithEditList, patchEditList } = await import("@video-workbench/core/node");
+  const f = await fixture();
+  const project = await resolveProject(f.directory);
+  const edlRev = async () => sha(await readFile(join(f.directory, "edit-list.json"), "utf8"));
+  // Make the timeline manual by a hand trim, then cut a word the trim already removed (no carving needed).
+  await patchEditList(project, { type: "trim", clipId: "a-roll-0001", sourceStart: 0, sourceEnd: 3.9 }, { expectedRevision: await edlRev() });
+  const cutsRev = async () => sha(await readFile(join(f.directory, "cut-selection.json"), "utf8"));
+  await writeCutSelectionWithEditList(project, { cutWordIds: ["g2"] }, { expectedRevision: await cutsRev(), mode: "full-selection" });
+  const edl = parseEditListDocument(JSON.parse(await readFile(join(f.directory, "edit-list.json"), "utf8")));
+  expect(edl.mode).toBe("manual");
+  expect(edl.baseCutsRevision).toBe(await cutsRev());
+}, 30000);

@@ -1192,6 +1192,18 @@ export async function writeCutSelectionWithEditList(
       }
     }
 
+    // Changed cuts always rebind the timeline to them, even when a hand-arranged
+    // timeline needed no carving: otherwise the list keeps naming an older cuts
+    // revision and every operation that checks the binding refuses afterwards.
+    if (cutsChange && !nextEditList && currentEditList.baseCutsRevision !== cutsRevision) {
+      nextEditList = parseEditListDocument({ ...currentEditList, baseCutsRevision: cutsRevision });
+      editListContent = serializeJson(nextEditList);
+      editListRevision = sha256(editListContent);
+    } else if (cutsChange && nextEditList && nextEditList.baseCutsRevision !== cutsRevision) {
+      nextEditList = parseEditListDocument({ ...nextEditList, baseCutsRevision: cutsRevision });
+      editListContent = serializeJson(nextEditList);
+      editListRevision = sha256(editListContent);
+    }
     if (nextEditList && options.refineSeams) {
       const refined = parseEditListDocument(await options.refineSeams({ before: currentEditList, after: nextEditList, words }));
       if (JSON.stringify(refined.segments) !== JSON.stringify(nextEditList.segments)) {
