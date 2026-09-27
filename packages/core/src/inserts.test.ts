@@ -165,3 +165,14 @@ test("a sound-only insert plays its audio without a picture layer and keeps its 
   expect(() => assertInsertDocument(doc([{ ...clip("r1", "w1"), caption: "x" }]))).toThrow(/sound-only/);
   expect(() => assertInsertDocument(doc([{ ...clip("r1", "w1"), picture: true as any }]))).toThrow(/picture/);
 });
+
+test("a cold open plays before the first word and survives re-application", () => {
+  const d = assertInsertDocument(doc([{ ...clip("open", "@start", 3.5) }, clip("i1", "w1", 1)]));
+  const out = parseEditListDocument(applyInserts({ editList: edl(), words, document: d, assets }));
+  expect(out.segments.map(s => [s.id, s.timelineStart])).toEqual([
+    ["insert-open", 0], ["a-roll-0001", 3.5], ["insert-i1", 4.8], ["a-roll-0001~i1", 5.8], ["a-roll-0002", 6.9]]);
+  expect(applyInserts({ editList: out, words, document: d, assets }).segments).toEqual(out.segments);
+  expect(stripInserts(out).map(s => s.id)).toEqual(["a-roll-0001", "a-roll-0002"]);
+  expect(() => assertInsertDocument(doc([clip("a", "@start"), clip("b", "@start")]))).toThrow(/shares its anchor/);
+  expect(followCutAnchors(d, words, stripInserts(out)).moved).toEqual([]);
+});

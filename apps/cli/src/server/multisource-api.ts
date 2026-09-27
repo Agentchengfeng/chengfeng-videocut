@@ -3,7 +3,7 @@ import { constants } from "node:fs";
 import { copyFile, lstat, mkdir, realpath } from "node:fs/promises";
 import { join, resolve, extname } from "node:path";
 import { parseEditListDocument, parseTranscriptWords, assertSubtitleDocument, assertVisualDocument, subtitleCueTimings, visualLayerTimings, VideocutError, asVideocutError,
-  applyInserts, assertInsertDocument, createInsertDocument, insertMediaLayers, insertOnlyNarration, narrationEditList, buildEditListFromCuts, type InsertAsset, type InsertDocument } from "@video-workbench/core";
+  applyInserts, INSERT_AT_START, assertInsertDocument, createInsertDocument, insertMediaLayers, insertOnlyNarration, narrationEditList, buildEditListFromCuts, type InsertAsset, type InsertDocument } from "@video-workbench/core";
 import { assertProjectReadable, serializeProjectOperation, readModuleFile } from "@video-workbench/core/node";
 import { readMediaAsset } from "../../../../packages/core/src/mediaAssets";
 import { snapshotProjectFiles, projectFilesRevision, commitProjectTransaction, recoverProjectTransaction, readProjectTransaction, getProjectTransactionStatus, type ProjectFiles } from "../../../../packages/core/src/projectTransaction";
@@ -246,7 +246,7 @@ export function buildInsertDocuments(before: ProjectFiles, document: InsertDocum
     previousDuration: edl.duration, duration: placed.duration, editListRevision: hash(after["edit-list.json"]!),
     // Placement comes from the EDL: a sound-only insert has no picture layer.
     inserts: document.inserts.map(item => { const clip = placed.segments.find(s => s.instanceId === `insert:${item.id}`)!;
-      return { id: item.id, afterWordId: item.afterWordId, afterWordText: text.get(item.afterWordId) ?? "", assetId: item.assetId,
+      return { id: item.id, afterWordId: item.afterWordId, afterWordText: item.afterWordId === INSERT_AT_START ? "（开头，第一个字之前）" : text.get(item.afterWordId) ?? "", assetId: item.assetId,
         timelineStart: clip.timelineStart, duration: Math.round((clip.sourceEnd - clip.sourceStart) / clip.playbackRate * 1e6) / 1e6, fit: item.fit,
         ...(item.label ? { label: item.label } : {}), ...(item.picture === false ? { picture: false, ...(item.caption ? { caption: item.caption } : {}) } : {}) }; }) } };
 }

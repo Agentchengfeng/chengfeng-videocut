@@ -17,9 +17,12 @@ const EPSILON = 0.0005;
  */
 export const INSERT_MIN_REMAINDER_SECONDS = 0.25;
 
+/** Anchor for a clip that plays before the first word (a cold open). */
+export const INSERT_AT_START = "@start";
+
 export interface InsertItem {
   id: string;
-  /** The spoken word after which narration pauses and the clip plays. */
+  /** The spoken word after which narration pauses and the clip plays, or INSERT_AT_START. */
   afterWordId: string;
   /** Verified media asset (SHA-256). The clip's own audio is played on the main track. */
   assetId: string;
@@ -166,7 +169,13 @@ export function applyInserts(input: {
   let segments = stripInserts(editList);
   const byId = new Map(words.map(w => [w.id, w]));
   const speech = words.filter(w => !w.isGap);
-  const placements = document.inserts.map(item => {
+  const atStart = document.inserts.filter(item => item.afterWordId === INSERT_AT_START);
+  for (const item of atStart) {
+    const asset = assets.get(item.assetId) ?? invalid(`Insert ${item.id} references an unimported media asset`, { insertId: item.id });
+    if (!asset.hasAudio) invalid(`Insert ${item.id} media has no audio track`, { insertId: item.id });
+    if (item.sourceOut > asset.duration + 0.000001) invalid(`Insert ${item.id} sourceOut exceeds the media duration`, { insertId: item.id });
+  }
+  const placements = document.inserts.filter(item => item.afterWordId !== INSERT_AT_START).map(item => {
     const asset = assets.get(item.assetId) ?? invalid(`Insert ${item.id} references an unimported media asset`, { insertId: item.id });
     if (!asset.hasAudio) invalid(`Insert ${item.id} media has no audio track`, { insertId: item.id });
     if (item.sourceOut > asset.duration + 0.000001) invalid(`Insert ${item.id} sourceOut exceeds the media duration`, { insertId: item.id });
@@ -202,6 +211,13 @@ export function applyInserts(input: {
       sources.push({ path, sha256: item.assetId, duration: assets.get(item.assetId)!.duration, mediaKind: "video" });
     }
   }
+  // A cold open plays before any narration; no narration segment is split.
+  segments = [...atStart.map(item => {
+    const path = insertAssetPath(item.assetId);
+    if (!sources.some(s => s.path === path)) sources.push({ path, sha256: item.assetId, duration: assets.get(item.assetId)!.duration, mediaKind: "video" });
+    return { id: `insert-${item.id}`, source: path, sourceStart: item.sourceIn, sourceEnd: item.sourceOut,
+      timelineStart: 0, trackId: "a-roll", playbackRate: 1, instanceId: `${INSERT_INSTANCE_PREFIX}${item.id}` } as EditListSegment;
+  }), ...segments];
   let cursor = 0;
   const timed = segments.map(s => {
     const next = { ...s, timelineStart: round(cursor) };
