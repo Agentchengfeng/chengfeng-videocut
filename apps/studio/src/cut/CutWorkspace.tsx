@@ -517,8 +517,19 @@ export function CutWorkspace({
   ), [visuals.document, visuals.timings, visuals.insertLayers]);
 
   const insertLabels = useMemo(() => Object.fromEntries(
-    (visuals.insertLayers ?? []).filter((layer) => layer.label).map((layer) => [layer.layerId, layer.label!]),
-  ), [visuals.insertLayers]);
+    [...(visuals.insertLayers ?? []), ...(visuals.insertSounds ?? [])].filter((layer) => layer.label).map((layer) => [layer.layerId, layer.label!]),
+  ), [visuals.insertLayers, visuals.insertSounds]);
+  const soundOnlyInsertIds = useMemo(() => new Set((visuals.insertSounds ?? []).map((sound) => sound.layerId)), [visuals.insertSounds]);
+
+  // A sound-only insert (a re-recorded line) has no transcript words; its
+  // caption is drawn like any subtitle screen, the same way export burns it.
+  const shownSubtitle = useMemo<ActiveSubtitle | null>(() => {
+    if (activeSubtitle) return activeSubtitle;
+    const style = subtitles.document?.style;
+    const sound = (visuals.insertSounds ?? []).find((candidate) => candidate.caption
+      && transport.timelineTime >= candidate.start && transport.timelineTime < candidate.end);
+    return sound && style ? { cueId: sound.layerId, text: sound.caption!, style } : null;
+  }, [activeSubtitle, subtitles.document, visuals.insertSounds, transport.timelineTime]);
 
   // Seams still audible after automatic refinement: marked so a person listens to
   // those few instead of combing the whole cut. Refetched whenever the cut changes.
@@ -691,7 +702,7 @@ export function CutWorkspace({
         artifactError={artifact.state.error}
         artifactProfile={artifact.state.profile}
         onArtifactRetry={artifact.retry}
-        subtitle={activeSubtitle}
+        subtitle={shownSubtitle}
         visualLayers={overlayLayers}
         activeVisualLayerId={activeVisual?.layerId ?? null}
       />
@@ -700,6 +711,7 @@ export function CutWorkspace({
         soundEffectsTrack={(pixelsPerSecond, displayContentWidth) => <SoundEffectTrack pixelsPerSecond={pixelsPerSecond} displayContentWidth={displayContentWidth} projectId={projectId} editRevision={editList.revision} time={transport.timelineTime} onSeek={seek} onSaved={artifact.retry} />}
         visualLayers={timelineVisualLayers}
         insertLabels={insertLabels}
+        soundOnlyInsertIds={soundOnlyInsertIds}
         seamMarkers={seamMarkers}
         activeVisualLayerId={activeVisual?.layerId ?? null}
         onVisualLayerClick={(layerId) => {

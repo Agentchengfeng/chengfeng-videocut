@@ -130,6 +130,7 @@ export function CutTimeline({
   activeVisualLayerId,
   onVisualLayerClick,
   insertLabels,
+  soundOnlyInsertIds,
   seamMarkers,
 }: {
   soundEffectsTrack?: (pixelsPerSecond: number, displayContentWidth: number) => ReactNode;
@@ -144,6 +145,8 @@ export function CutTimeline({
   onVisualLayerClick?: (layerId: string) => void;
   /** Display names of inserted clips, keyed by their instance id. */
   insertLabels?: Readonly<Record<string, string>>;
+  /** Inserts that only add sound: shown on the audio row, not the video row. */
+  soundOnlyInsertIds?: ReadonlySet<string>;
   /** Seams still audible after refinement, in timeline seconds. */
   seamMarkers?: readonly { time: number; level: number }[];
 }) {
@@ -753,9 +756,10 @@ export function CutTimeline({
         start: segment.timelineStart,
         duration: segmentDuration,
         active: renderedTimelineTime >= segment.timelineStart && renderedTimelineTime < segment.timelineStart + segmentDuration,
+        ...(soundOnlyInsertIds?.has(segment.instanceId!) ? { soundOnly: true } : {}),
       };
     })
-    : [], [insertLabels, narration, renderedSegments, renderedTimelineTime]);
+    : [], [insertLabels, narration, renderedSegments, renderedTimelineTime, soundOnlyInsertIds]);
 
   const timelineSegments = useMemo<ProductTimelineSegmentView[]>(() =>
     renderedSegments.filter((segment) => !narration || !isInsertInstance(segment.instanceId)).map((segment, index) => {

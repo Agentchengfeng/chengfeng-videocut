@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { InsertMediaLayer, VisualDocument, VisualLayerTiming } from "@video-workbench/core";
+import type { InsertMediaLayer, InsertSound, VisualDocument, VisualLayerTiming } from "@video-workbench/core";
 
 export interface ProjectVisuals {
   document: VisualDocument | null;
@@ -7,6 +7,8 @@ export interface ProjectVisuals {
   timings: VisualLayerTiming[];
   /** Inserted clips, derived from the edit list; never part of the document. */
   insertLayers: InsertMediaLayer[];
+  /** Sound-only inserted clips (re-recorded lines): no picture, optional caption. */
+  insertSounds: InsertSound[];
   loading: boolean;
   error: string | null;
   reload: () => Promise<void>;
@@ -18,6 +20,7 @@ interface VisualsResponse {
   document: VisualDocument | null;
   timings: VisualLayerTiming[];
   insertLayers: InsertMediaLayer[];
+  insertSounds: InsertSound[];
   /** Identity of each module's entry file, keyed by module path. */
   moduleStamps: Record<string, string>;
 }
@@ -57,6 +60,7 @@ export function useProjectVisuals(projectId: string): ProjectVisuals {
     document: null,
     timings: [],
     insertLayers: [],
+    insertSounds: [],
     moduleStamps: {},
   });
   const [loading, setLoading] = useState(true);
@@ -75,7 +79,7 @@ export function useProjectVisuals(projectId: string): ProjectVisuals {
         if (response.status === 404) {
           if (fingerprintRef.current !== "none") {
             fingerprintRef.current = "none";
-            setState({ document: null, timings: [], insertLayers: [], moduleStamps: {} });
+            setState({ document: null, timings: [], insertLayers: [], insertSounds: [], moduleStamps: {} });
           }
           setError(null);
           return;
@@ -91,12 +95,13 @@ export function useProjectVisuals(projectId: string): ProjectVisuals {
           layerId: layer.layerId, start: layer.start, end: layer.end, duration: layer.duration, orphaned: false,
         }))],
         insertLayers,
+        insertSounds: payload.insertSounds ?? [],
         moduleStamps: payload.moduleStamps ?? {},
       };
       // Timings and stamps can change while the document revision does not —
       // an edit to the cut moves every layer, an edit to a module file moves
       // nothing but the stamp — so the fingerprint covers all three.
-      const fingerprint = JSON.stringify([payload.revision ?? "", next.timings, next.moduleStamps]);
+      const fingerprint = JSON.stringify([payload.revision ?? "", next.timings, next.insertSounds, next.moduleStamps]);
       if (fingerprint !== fingerprintRef.current) {
         fingerprintRef.current = fingerprint;
         setState(next);
@@ -137,7 +142,7 @@ export function useProjectVisuals(projectId: string): ProjectVisuals {
   );
 
   return useMemo(
-    () => ({ document: state.document, timings: state.timings, insertLayers: state.insertLayers, loading, error, reload, moduleUrl }),
-    [state.document, state.timings, state.insertLayers, loading, error, reload, moduleUrl],
+    () => ({ document: state.document, timings: state.timings, insertLayers: state.insertLayers, insertSounds: state.insertSounds, loading, error, reload, moduleUrl }),
+    [state.document, state.timings, state.insertLayers, state.insertSounds, loading, error, reload, moduleUrl],
   );
 }

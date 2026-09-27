@@ -56,6 +56,8 @@ export interface TimelineInsertClipView {
   start: number;
   duration: number;
   active: boolean;
+  /** Only sound (a re-recorded line): no block on the video row. */
+  soundOnly?: boolean;
 }
 
 export interface TimelineLaneBaseProps {

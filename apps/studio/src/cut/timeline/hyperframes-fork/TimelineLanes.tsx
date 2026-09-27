@@ -310,7 +310,7 @@ function InsertLane({
         className={`cf-cut-track relative flex-shrink-0 is-insert is-insert-${kind}`}
         style={{ width: displayContentWidth, height: TRACK_H, background: theme.rowBackground, borderBottom: `1px solid ${theme.rowBorder}` }}
       >
-        {(insertClips ?? []).map((clip) => (
+        {(insertClips ?? []).filter((clip) => !(isVideo && clip.soundOnly)).map((clip) => (
           <button
             key={clip.id}
             type="button"
@@ -329,7 +329,7 @@ function InsertLane({
             // dragging scrubs). Only a keyboard activation jumps to the clip start.
             onClick={(event) => { if (event.detail === 0) onInsertClipClick?.(clip.id); }}
           >
-            <span>{isVideo ? clip.label : `${clip.label} · 原声`}</span>
+            <span>{isVideo || clip.soundOnly ? clip.label : `${clip.label} · 原声`}</span>
           </button>
         ))}
       </div>

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { EditListDocument, EditListSegment } from "@video-workbench/contracts";
 import { parseEditListDocument } from "./editList";
-import { applyInserts, assertInsertDocument, followCutAnchors, insertAssetPath, insertMediaLayers, stripInserts, type InsertDocument } from "./inserts";
+import { applyInserts, assertInsertDocument, followCutAnchors, insertAssetPath, insertMediaLayers, insertSounds, stripInserts, type InsertDocument } from "./inserts";
 import { subtitleCueTimings } from "./subtitles";
 
 const REV = "a".repeat(64);
@@ -152,4 +152,16 @@ test("a split that would leave only a sliver of pause places the clip at the pie
   expect(out.segments.map(s => [s.id, s.sourceStart, s.sourceEnd])).toEqual([
     ["a-roll-0001", 0, 1.2], ["insert-i1", 0, 5], ["a-roll-0002", 3, 4],
   ]);
+});
+
+test("a sound-only insert plays its audio without a picture layer and keeps its caption", () => {
+  const item = { ...clip("r1", "w1", 2), picture: false as const, caption: "补录这一句", label: "补录" };
+  const d = assertInsertDocument(doc([item, clip("i2", "w2", 1)]));
+  expect(d.inserts[0]).toMatchObject({ picture: false, caption: "补录这一句" });
+  const out = parseEditListDocument(applyInserts({ editList: edl(), words, document: d, assets }));
+  expect(out.segments.some(s => s.instanceId === "insert:r1")).toBe(true);
+  expect(insertMediaLayers(out, d).map(l => l.layerId)).toEqual(["insert:i2"]);
+  expect(insertSounds(out, d)).toEqual([{ layerId: "insert:r1", start: 1.3, end: 3.3, label: "补录", caption: "补录这一句" }]);
+  expect(() => assertInsertDocument(doc([{ ...clip("r1", "w1"), caption: "x" }]))).toThrow(/sound-only/);
+  expect(() => assertInsertDocument(doc([{ ...clip("r1", "w1"), picture: true as any }]))).toThrow(/picture/);
 });

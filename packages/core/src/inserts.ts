@@ -29,6 +29,13 @@ export interface InsertItem {
   /** Reserved; only 0 is accepted until per-span gain is implemented. */
   gainDb?: number;
   label?: string;
+  /**
+   * false = only the clip's sound plays (a re-recorded narration line); the
+   * canvas and captions stay as for narration. Absent means the picture shows.
+   */
+  picture?: false;
+  /** Subtitle text for a sound-only insert, drawn in the project's subtitle style. */
+  caption?: string;
 }
 
 export interface InsertDocument {
@@ -69,7 +76,7 @@ export function assertInsertDocument(payload: unknown): InsertDocument {
   const ids = new Set<string>(), anchors = new Set<string>();
   const inserts = (doc.inserts as unknown[]).map((item, index): InsertItem => {
     if (!isObject(item)) return invalid(`inserts[${index}] must be an object`);
-    const { id, afterWordId, assetId, sourceIn, sourceOut, fit, gainDb, label } = item;
+    const { id, afterWordId, assetId, sourceIn, sourceOut, fit, gainDb, label, picture, caption } = item;
     if (typeof id !== "string" || !/^[A-Za-z0-9._-]{1,64}$/.test(id) || ids.has(id)) invalid(`inserts[${index}].id must be a unique safe id`);
     if (typeof afterWordId !== "string" || !afterWordId) invalid(`inserts[${index}].afterWordId is required`);
     if (anchors.has(afterWordId as string)) invalid(`inserts[${index}] shares its anchor word with another insert`);
@@ -80,9 +87,13 @@ export function assertInsertDocument(payload: unknown): InsertDocument {
     if (fit !== "contain" && fit !== "cover") invalid(`inserts[${index}].fit must be contain or cover`);
     if (gainDb !== undefined && gainDb !== 0) invalid(`inserts[${index}].gainDb is not supported yet; omit it or use 0`);
     if (label !== undefined && (typeof label !== "string" || label.length > 120)) invalid(`inserts[${index}].label must be a short string`);
+    if (picture !== undefined && picture !== false) invalid(`inserts[${index}].picture may only be false (sound only)`);
+    if (caption !== undefined && (typeof caption !== "string" || !caption.trim() || caption.length > 120)) invalid(`inserts[${index}].caption must be a short non-empty string`);
+    if (caption !== undefined && picture !== false) invalid(`inserts[${index}].caption is only for a sound-only insert (picture: false)`);
     ids.add(id as string); anchors.add(afterWordId as string);
     return { id: id as string, afterWordId: afterWordId as string, assetId: assetId as string, sourceIn: sourceIn as number,
-      sourceOut: sourceOut as number, fit: fit as "contain" | "cover", ...(label !== undefined ? { label: label as string } : {}) };
+      sourceOut: sourceOut as number, fit: fit as "contain" | "cover", ...(label !== undefined ? { label: label as string } : {}),
+      ...(picture === false ? { picture: false as const } : {}), ...(caption !== undefined ? { caption: (caption as string).trim() } : {}) };
   });
   return { schemaVersion: INSERT_SCHEMA_VERSION, projectId: doc.projectId as string, inserts };
 }
@@ -261,9 +272,10 @@ export interface InsertMediaLayer {
 export function insertMediaLayers(editList: EditListDocument | null, document?: InsertDocument | null): InsertMediaLayer[] {
   if (!editList || editList.schemaVersion !== 2) return [];
   const fits = new Map((document?.inserts ?? []).map(i => [`${INSERT_INSTANCE_PREFIX}${i.id}`, i.fit]));
+  const soundOnly = new Set((document?.inserts ?? []).filter(i => i.picture === false).map(i => `${INSERT_INSTANCE_PREFIX}${i.id}`));
   const labels = new Map((document?.inserts ?? []).map(i => [`${INSERT_INSTANCE_PREFIX}${i.id}`, i.label]));
   return orderedSegments(editList)
-    .filter(s => isInsertInstance(s.instanceId) && editList.sources?.find(src => src.path === s.source)?.mediaKind === "video")
+    .filter(s => isInsertInstance(s.instanceId) && !soundOnly.has(s.instanceId!) && editList.sources?.find(src => src.path === s.source)?.mediaKind === "video")
     .map(s => {
       const assetId = editList.sources!.find(src => src.path === s.source)!.sha256;
       const duration = round((s.sourceEnd - s.sourceStart) / s.playbackRate);
@@ -275,5 +287,26 @@ export function insertMediaLayers(editList: EditListDocument | null, document?: 
         duration,
         ...(labels.get(s.instanceId!) ? { label: labels.get(s.instanceId!) } : {}),
       };
+    });
+}
+
+export interface InsertSound {
+  layerId: string;
+  start: number;
+  end: number;
+  label?: string;
+  caption?: string;
+}
+
+/** Sound-only inserts with their timeline span; their captions play as subtitles. */
+export function insertSounds(editList: EditListDocument | null, document?: InsertDocument | null): InsertSound[] {
+  if (!editList || editList.schemaVersion !== 2 || !document) return [];
+  const byInstance = new Map(document.inserts.filter(i => i.picture === false).map(i => [`${INSERT_INSTANCE_PREFIX}${i.id}`, i]));
+  return orderedSegments(editList)
+    .filter(s => isInsertInstance(s.instanceId) && byInstance.has(s.instanceId!))
+    .map(s => {
+      const item = byInstance.get(s.instanceId!)!;
+      return { layerId: s.instanceId!, start: round(s.timelineStart), end: round(s.timelineStart + (s.sourceEnd - s.sourceStart) / s.playbackRate),
+        ...(item.label ? { label: item.label } : {}), ...(item.caption ? { caption: item.caption } : {}) };
     });
 }

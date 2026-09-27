@@ -30,7 +30,7 @@ import {
   type SubtitleDocument,
   type SubtitleStyle,
 } from "./subtitles";
-import { insertMediaLayers, type InsertDocument } from "./inserts";
+import { insertMediaLayers, insertSounds, type InsertDocument } from "./inserts";
 import { visualLayerTimings, type VisualDocument, type VisualZoom, type VisualMedia, type ResolvedVisualAnimation } from "./visuals";
 
 /**
@@ -319,8 +319,13 @@ export function buildExportPlan(input: BuildExportPlanInput): ExportPlan {
       start: timing.start,
       end: timing.end,
     }))
-    .filter((cue) => cue.text.trim().length > 0)
-    .sort((left, right) => left.start - right.start);
+    .filter((cue) => cue.text.trim().length > 0);
+  // A sound-only insert (a re-recorded line) has no transcript words; its
+  // caption plays as one more subtitle screen for exactly the clip's span.
+  for (const sound of insertSounds(input.editList, input.inserts)) {
+    if (sound.caption) subtitleCues.push({ cueId: sound.layerId, text: sound.caption, start: sound.start, end: sound.end });
+  }
+  subtitleCues.sort((left, right) => left.start - right.start);
 
   const layerTimings = input.visuals
     ? visualLayerTimings(input.visuals, input.words, input.editList)

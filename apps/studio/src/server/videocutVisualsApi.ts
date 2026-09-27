@@ -34,6 +34,8 @@ import {
   visualLayerTimings,
   assertInsertDocument,
   insertMediaLayers,
+  insertSounds,
+  type InsertSound,
   type InsertMediaLayer,
   type VisualLayerTiming,
 } from "@video-workbench/core";
@@ -207,7 +209,7 @@ function parsePutBody(value: unknown): VisualsPutBody {
 async function derivedTimings(
   project: Awaited<ReturnType<typeof resolveProject>>,
   document: Awaited<ReturnType<typeof readVisuals>>,
-): Promise<{ timings: VisualLayerTiming[]; transcriptRevision: string | null; insertLayers: InsertMediaLayer[] }> {
+): Promise<{ timings: VisualLayerTiming[]; transcriptRevision: string | null; insertLayers: InsertMediaLayer[]; insertSounds: InsertSound[] }> {
   const [transcript, editList, inserts] = await Promise.all([
     readOptionalProjectDocument(project, "transcript.json"),
     readEditList(project),
@@ -215,13 +217,16 @@ async function derivedTimings(
   ]);
   // Inserted clips are derived from the EDL, never stored as visual layers,
   // so a save of the layers document can never write them back.
-  const insertLayers = insertMediaLayers(editList?.value ?? null, inserts ? assertInsertDocument(inserts.value) : null);
-  if (!document) return { timings: [], transcriptRevision: transcript?.revision ?? null, insertLayers };
+  const insertDocument = inserts ? assertInsertDocument(inserts.value) : null;
+  const insertLayers = insertMediaLayers(editList?.value ?? null, insertDocument);
+  const sounds = insertSounds(editList?.value ?? null, insertDocument);
+  if (!document) return { timings: [], transcriptRevision: transcript?.revision ?? null, insertLayers, insertSounds: sounds };
   const words = transcript ? parseTranscriptWords(transcript.value) : [];
   return {
     timings: visualLayerTimings(document.value, words, editList?.value ?? null),
     transcriptRevision: transcript?.revision ?? null,
     insertLayers,
+    insertSounds: sounds,
   };
 }
 
