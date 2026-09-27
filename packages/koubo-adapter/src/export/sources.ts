@@ -90,7 +90,10 @@ export function mainAudioFilter(spans: readonly { source?: string; sourceStart: 
     const duration = (end - start) / 48000;
     if (end <= start) throw new Error(`Empty main-track span #${i}`);
     const fade = duration > 0.02 ? `,afade=t=in:st=0:d=0.005,afade=t=out:st=${(duration - 0.005).toFixed(8)}:d=0.005` : "";
-    parts.push(`[src${i}]atrim=start_sample=${start}:end_sample=${end},asetpts=PTS-STARTPTS${fade}[a${i}]`);
+    // A source whose audio ends a few ms early (encoder priming, a loudness
+    // pass) must not shorten its span: every later span would drift ahead of
+    // the picture and captions. Pad the span to its exact sample count.
+    parts.push(`[src${i}]atrim=start_sample=${start}:end_sample=${end},asetpts=PTS-STARTPTS,apad=whole_len=${end - start},atrim=end_sample=${end - start}${fade}[a${i}]`);
   });
   parts.push(`${spans.map((_, i) => `[a${i}]`).join("")}concat=n=${spans.length}:v=0:a=1,asetpts=N/SR/TB[outa]`);
   return parts.join(";");

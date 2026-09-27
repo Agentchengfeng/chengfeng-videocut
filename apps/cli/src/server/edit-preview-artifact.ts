@@ -489,7 +489,7 @@ export async function generatePreviewArtifactAudio(input: {
           ? `,afade=t=in:st=0:d=0.005,afade=t=out:st=${(seconds - 0.005).toFixed(8)}:d=0.005`
           : "";
         return `[src${index}]atrim=start_sample=${segment.start}:end_sample=${segment.end},`
-          + `asetpts=PTS-STARTPTS${fade}[a${index}]`;
+          + `asetpts=PTS-STARTPTS,apad=whole_len=${segment.end - segment.start},atrim=end_sample=${segment.end - segment.start}${fade}[a${index}]`;
       }),
       segments.map((_, index) => `[a${index}]`).join("")
         + `concat=n=${segments.length}:v=0:a=1,asetpts=N/SR/TB[outa]`,
