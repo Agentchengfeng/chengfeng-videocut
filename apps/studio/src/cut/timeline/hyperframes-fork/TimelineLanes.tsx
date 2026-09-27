@@ -261,7 +261,7 @@ function VisualLane({
               height: TRACK_H - CLIP_Y * 2,
             }}
             title={layer.label}
-            onClick={() => onVisualLayerClick?.(layer.id)}
+            onClick={(event) => { if (event.detail === 0) onVisualLayerClick?.(layer.id); }}
           >
             <span>{layer.label}</span>
           </button>
@@ -325,7 +325,9 @@ function InsertLane({
             title={`${clip.label} · ${clip.start.toFixed(2)}–${(clip.start + clip.duration).toFixed(2)}s`}
             aria-hidden={isVideo ? undefined : true}
             tabIndex={isVideo ? 0 : -1}
-            onClick={() => onInsertClipClick?.(clip.id)}
+            // A pointer press already moved the playhead to the pressed time (and
+            // dragging scrubs). Only a keyboard activation jumps to the clip start.
+            onClick={(event) => { if (event.detail === 0) onInsertClipClick?.(clip.id); }}
           >
             <span>{isVideo ? clip.label : `${clip.label} · 原声`}</span>
           </button>

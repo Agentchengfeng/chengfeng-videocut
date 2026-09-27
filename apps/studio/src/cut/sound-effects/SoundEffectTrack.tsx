@@ -59,7 +59,7 @@ export function SoundEffectTrack({projectId,editRevision,time,onSaved,onSeek,pix
    if(ok&&version===draftVersion.current){dialog.current?.close();if(deleting)setSelected(null);}
   });
  }
- return <div className="cf-sfx" onPointerDown={e=>e.stopPropagation()} data-sfx-revision={state?.revision??''} data-sfx-stale={String(state?.stale??false)}>
+ return <div className="cf-sfx" onPointerDown={e=>{if(e.target!==lane.current)e.stopPropagation();}} data-sfx-revision={state?.revision??''} data-sfx-stale={String(state?.stale??false)}>
   <div className="cf-sfx-toolbar"><strong>音效</strong><button type="button" disabled={!state||busy||state.stale} onClick={()=>file.current?.click()}>添加 WAV</button>
    <input ref={file} type="file" accept=".wav,audio/wav" hidden onChange={e=>{const f=e.target.files?.[0];if(f)void upload(f);e.target.value='';}}/>
    <span>{busy?'保存中…':`${cues.length} 个音效 · 拖动位置，双击调整`}</span>
@@ -67,7 +67,7 @@ export function SoundEffectTrack({projectId,editRevision,time,onSaved,onSeek,pix
    {state?.stale&&<><select aria-label="待审阅音效" value={selected??""} onChange={e=>{const c=cues.find(c=>c.id===e.target.value);if(c)edit(c);}}><option value="" disabled>选择音效调整</option>{cues.map(c=><option key={c.id} value={c.id}>{c.label} · {c.start.toFixed(3)}秒</option>)}</select><span role="alert">口播已变化，音效位置待审阅</span><button type="button" disabled={busy} onClick={()=>void save(cues,true)}>保存并重新绑定</button></>}
   </div>
   {error&&<div role="alert" className="cf-sfx-error">{error}</div>}
-  <div ref={lane} className="cf-sfx-lane" style={{marginLeft:GUTTER+TRACKS_LEFT_PAD,width:displayContentWidth}} aria-label="独立音效轨" onClick={e=>{if(e.target===e.currentTarget&&state)onSeek(Math.max(0,Math.min(state.duration,(e.clientX-e.currentTarget.getBoundingClientRect().left)/pixelsPerSecond)));}}>
+  <div ref={lane} className="cf-sfx-lane" style={{marginLeft:GUTTER+TRACKS_LEFT_PAD,width:displayContentWidth}} aria-label="独立音效轨">
    {cues.map((c,i)=><button key={c.id} type="button" data-sfx-cue={c.id} title={`${c.label} · ${c.start.toFixed(3)}秒 · ${c.gainDb}dB${c.mute?' · 静音':''}`} aria-label={`音效 ${c.label}`} className={`cf-sfx-cue ${selected===c.id?'selected':''}`} style={{left:(move?.id===c.id?move.start:c.start)*pixelsPerSecond,width:(c.sourceOut-c.sourceIn)*pixelsPerSecond,top:`${i%2*20+3}px`,opacity:c.mute?.4:1}}
     onDoubleClick={()=>edit(c)} onClick={()=>setSelected(c.id)} onKeyDown={e=>{if(e.key==='Enter')edit(c);if(e.key==='Delete'&&!state?.stale)void save(cues.filter(x=>x.id!==c.id));}}
     onPointerDown={e=>{
