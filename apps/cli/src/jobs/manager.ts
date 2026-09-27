@@ -286,6 +286,27 @@ export class JobManager {
   get concurrency(): number { return this.#concurrency; }
 
   /**
+   * A job blocked only by an unproven worker can still be cancelled: it becomes
+   * cancelled once the owner group is proven gone, otherwise it stays blocked but
+   * marked so recheckBlocked never requeues it.
+   */
+  async #cancelBlocked(jobId: string): Promise<DurableJob | null> {
+    const current = await this.store.read(jobId);
+    if (!current || current.state !== "recovery_blocked" || current.error?.code !== "job_process_unproven") return null;
+    if (current.phase === "publishing" || current.error.details?.phase === "publishing") return null;
+    const gone = !!current.owner && ownedProcessGroupGone(current.owner.pid);
+    const now = new Date().toISOString();
+    const updated = await this.store.update(jobId, (value) => {
+      this.#assertRecordVersion(value, current);
+      return gone
+        ? { ...value, state: "cancelled", phase: "cancelled", cancelRequestedAt: value.cancelRequestedAt ?? now, finishedAt: now, owner: null }
+        : { ...value, cancelRequestedAt: value.cancelRequestedAt ?? now };
+    }, ["recovery_blocked"]);
+    if (gone) await this.#cleanupArtifacts(current);
+    return updated;
+  }
+
+  /**
    * Requeue jobs blocked only because their worker could not be proven stopped,
    * once the OS proves the owner's process group is gone. Same jobId and frozen
    * snapshot; publishing, cancelled or unproven owners stay blocked.
@@ -413,6 +434,8 @@ export class JobManager {
   }
 
   async cancel(jobId: string): Promise<DurableJob> {
+    const blocked = await this.#cancelBlocked(jobId);
+    if (blocked) return blocked;
     const transitioned = await this.store.update(jobId, (value) => {
       if (terminal(value)) {
         throw new JobStoreError("job_not_cancellable", "Job is already terminal", {

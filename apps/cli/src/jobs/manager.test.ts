@@ -688,6 +688,34 @@ describe("job manager", () => {
     expect((await manager.read("publishing"))?.state).toBe("recovery_blocked");
   });
 
+  it("cancels a blocked job for good instead of letting recheck resurrect it", async () => {
+    const f = await fixture();
+    const manager = new JobManager(f.dataDir, { workerEntrypoint: f.successWorker, blockedRecheckMs: 0 });
+    managers.push(manager);
+    await manager.store.initialize();
+    const now = new Date().toISOString();
+    const leader = spawn("sleep", ["30"], { detached: true, stdio: "ignore" });
+    cleanupPids.push(leader.pid!);
+    const owners = { gone: 2_000_000_000, alive: leader.pid! } as const;
+    for (const [jobId, pid] of Object.entries(owners)) {
+      const target = jobId === "gone" ? f.projects[0]! : f.projects[1]!;
+      const job = await createPersistedExport(manager, { jobId, target, projectId: jobId, outputPath: join(f.root, `${jobId}.mp4`) });
+      await manager.store.update(job.jobId, (value) => ({
+        ...value, state: "recovery_blocked", phase: "recovery_blocked", attempt: 1, finishedAt: now,
+        owner: { pid, token: jobId, startedAt: now, heartbeatAt: now },
+        error: { code: "job_process_unproven", message: "unproven", details: { jobId, kind: "export", phase: "stopping" } },
+      }));
+    }
+    await manager.cancel("gone");
+    await manager.cancel("alive");
+    await manager.initialize();
+    expect(await manager.recheckBlocked()).toEqual([]);
+    if (process.platform !== "win32") expect((await manager.read("gone"))?.state).toBe("cancelled");
+    const alive = await manager.read("alive");
+    expect(alive?.state).toBe("recovery_blocked");
+    expect(alive?.cancelRequestedAt).toBeTruthy();
+  });
+
   it("recovers a persisted running export whose owner is confirmed absent", async () => {
     const f = await fixture();
     const manager = new JobManager(f.dataDir, { workerEntrypoint: f.successWorker });
