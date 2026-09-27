@@ -244,9 +244,11 @@ export function buildInsertDocuments(before: ProjectFiles, document: InsertDocum
   const text = new Map(words.map(w => [w.id, w.text]));
   return { after, sources: placed.sources!, layers, summary: { mode: "inserts", migratedToMultisource: edl.schemaVersion !== 2,
     previousDuration: edl.duration, duration: placed.duration, editListRevision: hash(after["edit-list.json"]!),
-    inserts: document.inserts.map(item => { const layer = layers.find(l => l.layerId === `insert:${item.id}`)!;
+    // Placement comes from the EDL: a sound-only insert has no picture layer.
+    inserts: document.inserts.map(item => { const clip = placed.segments.find(s => s.instanceId === `insert:${item.id}`)!;
       return { id: item.id, afterWordId: item.afterWordId, afterWordText: text.get(item.afterWordId) ?? "", assetId: item.assetId,
-        timelineStart: layer.start, duration: layer.duration, fit: item.fit, ...(item.label ? { label: item.label } : {}) }; }) } };
+        timelineStart: clip.timelineStart, duration: Math.round((clip.sourceEnd - clip.sourceStart) / clip.playbackRate * 1e6) / 1e6, fit: item.fit,
+        ...(item.label ? { label: item.label } : {}), ...(item.picture === false ? { picture: false, ...(item.caption ? { caption: item.caption } : {}) } : {}) }; }) } };
 }
 
 async function insertAssets(directory: string, document: InsertDocument) {

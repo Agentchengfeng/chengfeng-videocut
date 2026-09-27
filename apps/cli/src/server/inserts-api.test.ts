@@ -175,3 +175,13 @@ test("a cut on a hand-arranged timeline rebinds the timeline to the new cuts", a
   expect(edl.mode).toBe("manual");
   expect(edl.baseCutsRevision).toBe(await cutsRev());
 }, 30000);
+
+test("a sound-only insert plans with its EDL placement and no picture layer", async () => {
+  const f = await fixture();
+  const empty = await f.call();
+  const document = { ...f.document, inserts: f.document.inserts.map((i: any) => ({ ...i, picture: false, caption: "补录" })) };
+  const plan = await f.call({ operationId: "sound-only", expectedRevision: empty.body.revision, document, confirmed: false });
+  expect(plan.status).toBe(200);
+  expect(plan.body.layers ?? []).toEqual([]);
+  expect(plan.body.summary.inserts).toEqual([expect.objectContaining({ id: "i1", timelineStart: 1.3, duration: 1.5, picture: false, caption: "补录" })]);
+});
