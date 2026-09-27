@@ -1,6 +1,7 @@
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isUnsavedState, useRuntimeProtection } from "../runtime/useRuntimeProtection";
 import {
+  parseCanvasBackground,
   activeVisualLayer,
   applyEditListOperation,
   timelineTimeToSourcePosition,
@@ -664,6 +665,7 @@ export function CutWorkspace({
           ))}
         </> : null}
         canvasAspectRatio={canvasAspectRatio}
+        canvasBackground={parseCanvasBackground(projectWorkflow.workflow?.project.config?.canvasBackground)}
         canvasControls={<CanvasSettings projectId={projectId} onSaved={() => { void projectWorkflow.refresh(); }} />}
         audioOnly={artifact.state.hasVideo === false && artifact.state.hasAudio === true}
         sourceUrl={activeSource}

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { VideocutError, asVideocutError, parseCanvasAspect } from "@video-workbench/core";
+import { VideocutError, asVideocutError, parseCanvasAspect, parseCanvasBackground } from "@video-workbench/core";
 import { atomicWriteJson, resolveProject, serializeProjectOperation } from "@video-workbench/core/node";
 import { isLoopbackAddress, trustedLoopbackOrigin } from "./jobs-api";
 
@@ -26,9 +26,15 @@ async function readBody(request: Request) {
     const b: unknown = JSON.parse(Buffer.concat(parts).toString("utf8"));
     if (!record(b) || Object.keys(b).some(k => !["confirmed", "expectedRevision", "config"].includes(k)) ||
         b.confirmed !== true || typeof b.expectedRevision !== "string" || !/^[a-f0-9]{64}$/.test(b.expectedRevision) ||
-        !record(b.config) || Object.keys(b.config).length !== 1 || !parseCanvasAspect(b.config.aspectRatio))
-      invalid("Only confirmed aspectRatio with current project expectedRevision is allowed");
-    return { expectedRevision: b.expectedRevision, aspectRatio: String(b.config.aspectRatio).trim().replace("：", ":") };
+        !record(b.config) || Object.keys(b.config).length < 1 ||
+        Object.keys(b.config).some(k => !["aspectRatio", "canvasBackground"].includes(k)) ||
+        (b.config.aspectRatio !== undefined && !parseCanvasAspect(b.config.aspectRatio)) ||
+        (b.config.canvasBackground !== undefined && !parseCanvasBackground(b.config.canvasBackground)))
+      invalid("Only confirmed aspectRatio and/or canvasBackground (#RRGGBB) with current project expectedRevision are allowed");
+    const patch: { aspectRatio?: string; canvasBackground?: string } = {};
+    if (b.config.aspectRatio !== undefined) patch.aspectRatio = String(b.config.aspectRatio).trim().replace("：", ":");
+    if (b.config.canvasBackground !== undefined) patch.canvasBackground = parseCanvasBackground(b.config.canvasBackground)!;
+    return { expectedRevision: b.expectedRevision, patch };
   } finally { clearTimeout(timer); }
 }
 async function snapshot(directory: string, projectId: string) {
@@ -39,7 +45,8 @@ async function snapshot(directory: string, projectId: string) {
   const config = record(document.config) ? document.config : {};
   return { raw, document, file, config, result: { schemaVersion: 1, projectId,
     projectRevision: sha(raw), configRevision: sha(JSON.stringify(config)),
-    config: { aspectRatio: typeof config.aspectRatio === "string" ? config.aspectRatio : null } } };
+    config: { aspectRatio: typeof config.aspectRatio === "string" ? config.aspectRatio : null,
+      canvasBackground: parseCanvasBackground(config.canvasBackground) } } };
 }
 async function backup(directory: string, revision: string, raw: string) {
   let dir = await realpath(directory);
@@ -73,11 +80,11 @@ export function createProjectConfigApi(options: Options) {
         if (body.expectedRevision !== before.result.projectRevision) throw new VideocutError("revision_conflict", "Project changed; read config before proposing a new edit");
         if (await options.isBusy(project.directory) || ["cutting", "rendering", "running", "queued", "transcribing", "processing"].includes(String(before.document.status)))
           throw new VideocutError("project_busy", "Wait for the current project job before changing canvas");
-        if (before.config.aspectRatio === body.aspectRatio) return { ...before.result, changed: false, previousRevision: before.result.projectRevision };
+        if (Object.entries(body.patch).every(([k, v]) => before.config[k] === v)) return { ...before.result, changed: false, previousRevision: before.result.projectRevision };
         await backup(project.directory, before.result.projectRevision, before.raw);
-        const revision = await atomicWriteJson(before.file, { ...before.document, config: { ...before.config, aspectRatio: body.aspectRatio } });
+        const revision = await atomicWriteJson(before.file, { ...before.document, config: { ...before.config, ...body.patch } });
         const after = await snapshot(project.directory, id);
-        if (after.result.projectRevision !== revision || after.result.config.aspectRatio !== body.aspectRatio) throw new VideocutError("readback_mismatch", "Config write needs readback investigation");
+        if (after.result.projectRevision !== revision || Object.entries(body.patch).some(([k, v]) => (after.result.config as Record<string, unknown>)[k] !== v)) throw new VideocutError("readback_mismatch", "Config write needs readback investigation");
         let notificationWarning: string | undefined;
         try { await options.onChanged?.({ projectId: id, path: "project.json", revision }); }
         catch { notificationWarning = "committed_but_refresh_required"; }

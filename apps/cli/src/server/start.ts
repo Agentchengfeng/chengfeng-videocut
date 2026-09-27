@@ -402,6 +402,7 @@ function healthResponse(
     soundEffectsApiVersion: 1,
     soundEffects: { schemaVersion: 1, managedWav: true, preview: true, export: true, maxCues: 64 },
     projectConfigApiVersion: 1,
+    projectConfig: { fields: ["aspectRatio", "canvasBackground"] },
     multisourceAudioApiVersion: 1,
     insertMediaApiVersion: 1,
     insertMedia: { schemaVersion: 1, anchor: "after-word", audio: "clip-own-audio", gainDb: false, maxInserts: 64, operations: ["inserts-get", "inserts-plan", "inserts-commit"] },

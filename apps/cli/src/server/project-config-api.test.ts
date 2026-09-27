@@ -57,3 +57,22 @@ test("config route rejects oversized input and preserves a committed broadcast f
  const result=await(await api(req("PATCH",JSON.stringify({confirmed:true,expectedRevision:before.projectRevision,config:{aspectRatio:"4:3"}})),"127.0.0.1"))!.json();expect(result).toMatchObject({changed:true,config:{aspectRatio:"4:3"},notificationWarning:"committed_but_refresh_required"});
  } finally {await rm(root,{recursive:true,force:true});}
 });
+
+test("canvas background: validated hex, set alone or with aspect, readback, no-op", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "config-bg-"))), dir = join(root, "demo"); await mkdir(dir);
+  await writeFile(join(dir, "project.json"), JSON.stringify({ jobId: "demo", source: { mediaKind: "audio" }, config: { aspectRatio: "4:3" } }));
+  const api = createProjectConfigApi({ projectsDir: root, port: 1234, isBusy: async () => false });
+  const call = (method = "GET", body?: any) => api(new Request("http://127.0.0.1:1234/api/v1/projects/demo/project-config", { method,
+    headers: { host: "127.0.0.1:1234", "content-type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}) }), "127.0.0.1");
+  try {
+    const before = await (await call())!.json();
+    expect(before.config).toEqual({ aspectRatio: "4:3", canvasBackground: null });
+    for (const bad of ["red", "#fff", "#12345g", "", null]) {
+      expect((await call("PATCH", { confirmed: true, expectedRevision: before.projectRevision, config: { canvasBackground: bad } }))!.status).toBe(400);
+    }
+    const set = await (await call("PATCH", { confirmed: true, expectedRevision: before.projectRevision, config: { canvasBackground: "#0F0F11" } }))!.json();
+    expect(set).toMatchObject({ changed: true, config: { aspectRatio: "4:3", canvasBackground: "#0f0f11" } });
+    const both = await (await call("PATCH", { confirmed: true, expectedRevision: set.projectRevision, config: { aspectRatio: "4:3", canvasBackground: "#0f0f11" } }))!.json();
+    expect(both.changed).toBe(false);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

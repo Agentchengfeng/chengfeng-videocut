@@ -49,6 +49,7 @@ export function CutPlayer({
   activeVisualLayerId = null,
   audioOnly = false,
   canvasAspectRatio,
+  canvasBackground,
   canvasControls,
   notices,
 }: {
@@ -67,6 +68,8 @@ export function CutPlayer({
   audioOnly?: boolean;
   /** Explicit project canvas; absent legacy video keeps its native picture. */
   canvasAspectRatio?: number;
+  /** What an audio-only export draws under the narration; preview shows the same. */
+  canvasBackground?: string | null;
   canvasControls?: ReactNode;
   /** Status belongs inside the player, never as implicit workspace grid rows. */
   notices?: ReactNode;
@@ -213,9 +216,10 @@ export function CutPlayer({
           "--cf-canvas-aspect": canvasAspect,
           width: `min(100cqw, calc(100cqh * ${canvasAspect}))`,
           height: `min(100cqh, calc(100cqw / ${canvasAspect}))`,
+          ...(audioOnly ? { background: canvasBackground ?? "#ffffff" } : {}),
         } as CSSProperties : undefined}>
         {audioOnly && sourceUrl && !visualLayers.some((layer) => layer.layerId === activeVisualLayerId) ? (
-          <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", pointerEvents: "none", zIndex: 1, color: "#ddd" }}>
+          <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", pointerEvents: "none", zIndex: 1, color: "rgba(128,128,128,.55)" }}>
             <span>♫ 纯音频口播 · {formatTime(transport.timelineTime)} / {formatTime(transport.duration)}</span>
           </div>
         ) : null}

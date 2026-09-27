@@ -9,6 +9,11 @@ export function parseCanvasAspect(value: unknown): { w: number; h: number } | nu
   if (Math.max(w, h) / Math.min(w, h) > 8192 / 1080) return null;
   return { w, h };
 }
+/** Background under an audio-only main track; white keeps older projects unchanged. */
+export const DEFAULT_CANVAS_BACKGROUND = "#ffffff";
+export function parseCanvasBackground(value: unknown): string | null {
+  return typeof value === "string" && /^#[0-9a-fA-F]{6}$/.test(value.trim()) ? value.trim().toLowerCase() : null;
+}
 export function canvasDimensions(value: unknown): { width: number; height: number } {
   const aspect = parseCanvasAspect(value);
   if (!aspect) throw new Error("Canvas aspect must be a bounded positive W:H ratio");

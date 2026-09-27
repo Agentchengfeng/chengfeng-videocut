@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import type { ExportProfile } from "@video-workbench/contracts";
-import { VideocutError, assertInsertDocument, buildExportPlan, parseTranscriptWords } from "@video-workbench/core";
+import { VideocutError, assertInsertDocument, buildExportPlan, parseCanvasBackground, parseTranscriptWords } from "@video-workbench/core";
 import {
   readEditList,
   readSoundEffects,
@@ -47,6 +47,7 @@ export async function executeExport(options: ExecuteExportOptions): Promise<Reco
   const sourcePath = sourcePaths ? Object.values(sourcePaths)[0]! : options.sourcePathOverride ?? resolve(project.directory, inputVideo as string);
   const probe = await probeMedia(sourcePath);
   const media = exportSource(probe, (project.project.config as { aspectRatio?: unknown } | undefined)?.aspectRatio);
+  const canvasBackground = parseCanvasBackground((project.project.config as { canvasBackground?: unknown } | undefined)?.canvasBackground);
   const resolvedProfile = resolveExportProfile({
     profile: options.profile,
     sourceWidth: media.canvas.width,
@@ -90,6 +91,7 @@ export async function executeExport(options: ExecuteExportOptions): Promise<Reco
     projectDirectory: options.assetProjectDirectory ?? project.directory,
     sourcePath,
     audioOnly: media.audioOnly,
+    ...(canvasBackground ? { background: canvasBackground } : {}),
     plan,
     outputPath: options.outputPath,
     workDirectory: options.workDirectory,

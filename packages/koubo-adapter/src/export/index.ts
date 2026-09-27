@@ -43,8 +43,10 @@ export interface ExportFilmInput {
   soundEffectsAssetDirectory?: string;
   /** The immutable source. Never written to. */
   sourcePath: string;
-  /** Render a white canvas at the planned size for an audio-only source. */
+  /** Render a plain canvas at the planned size for an audio-only source. */
   audioOnly?: boolean;
+  /** #RRGGBB for that canvas; white when absent. */
+  background?: string;
   plan: ExportPlan;
   outputPath: string;
   workDirectory: string;
@@ -78,6 +80,7 @@ export async function exportFilm(input: ExportFilmInput): Promise<ExportFilmResu
     output: assembled,
     plan,
     audioOnly: input.audioOnly,
+    ...(input.background ? { background: input.background } : {}),
     signal: input.signal,
   });
   if (plan.soundEffects?.some(c => !c.mute)) {

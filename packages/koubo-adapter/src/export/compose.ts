@@ -93,6 +93,8 @@ export async function assembleCut(input: {
   plan: ExportPlan;
   /** Generate the plan's canvas when the immutable source has only audio. */
   audioOnly?: boolean;
+  /** #RRGGBB under an audio-only main track; white when absent. */
+  background?: string;
   onLine?: (line: string) => void;
   signal?: AbortSignal;
 }): Promise<void> {
@@ -109,7 +111,7 @@ export async function assembleCut(input: {
   let videoFilter: string;
   if (input.audioOnly) {
     videoInputs = [
-      "-f", "lavfi", "-i", `color=c=white:s=${plan.source.width}x${plan.source.height}:r=${plan.fps}`,
+      "-f", "lavfi", "-i", `color=c=${input.background && /^#[0-9a-f]{6}$/i.test(input.background) ? "0x" + input.background.slice(1) : "white"}:s=${plan.source.width}x${plan.source.height}:r=${plan.fps}`,
     ];
     videoFilter = `[0:v:0]trim=end_frame=${plan.frameCount},setpts=PTS-STARTPTS[outv]`;
   } else {
