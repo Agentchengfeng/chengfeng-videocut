@@ -211,7 +211,9 @@ export async function runWorkbenchCommand(args: ParsedArgs, cwd: string): Promis
         equal(result.previousRevision, body.expectedRevision, "Config previous revision");
         equal(readback.projectRevision, result.projectRevision, "Project revision");
         equal(readback.configRevision, result.configRevision, "Config revision");
-        equal(readback.config?.aspectRatio, body.config.aspectRatio, "Canvas aspect ratio");
+        // Compare every submitted field with what the service itself stored
+        // (it normalizes, e.g. 4：3 → 4:3, #0F0F11 → #0f0f11).
+        for (const key of Object.keys(object(body.config) ? body.config : {})) equal(readback.config?.[key], result.config?.[key], `Canvas ${key}`);
       } else if (name === "sound-effects-import") {
         equal(result.manifest?.assetId,body.expectedSourceSha256,"Imported sound-effect asset ID");
         readback=await read(projectPath(`sound-effects/assets/${body.expectedSourceSha256}`));
