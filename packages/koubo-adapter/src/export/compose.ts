@@ -30,7 +30,7 @@ import { cropRectForBox, ffmpegFileArg, ffmpegOutputArgs } from "@video-workbenc
 import { orderedSegmentManifest, probeMedia, type MediaProbe } from "../mediaCut";
 import { MARKER_STRIP_HEIGHT } from "./overlayPage";
 import { finalEncodingSettings } from "./profile";
-import { resolveMainSources, mainAudioFilter } from "./sources";
+import { resolveMainSources, mainAudioFilter, sourceGainFilter } from "./sources";
 
 /**
  * How hard the final encoder tries.
@@ -95,6 +95,8 @@ export async function assembleCut(input: {
   audioOnly?: boolean;
   /** #RRGGBB under an audio-only main track; white when absent. */
   background?: string;
+  /** dB applied to the narration recording only; inserted clips keep their level. */
+  narrationGainDb?: number;
   onLine?: (line: string) => void;
   signal?: AbortSignal;
 }): Promise<void> {
@@ -143,7 +145,10 @@ export async function assembleCut(input: {
       // Audio is assembled from the original rather than from the concat
       // demuxer: video-frame boundaries round, and rounding a picture is a
       // picture while rounding a sample is a click between every two spans.
-      sourcePaths ? mainAudioFilter(plan.spans, Object.keys(sourcePaths), 1) : audioFilter(plan),
+      sourcePaths
+        ? mainAudioFilter(plan.spans, Object.keys(sourcePaths), 1, Object.fromEntries((plan.sources ?? [])
+          .filter(s => s.mediaKind === "audio").map(s => [s.path, input.narrationGainDb ?? 0])))
+        : audioFilter(plan, input.audioOnly ? input.narrationGainDb : undefined),
     ].join(";"),
     "-map", "[outv]", "-map", "[outa]",
     "-c:v", "libx264", "-preset", "veryfast", "-crf", INTERMEDIATE_CRF,
@@ -158,14 +163,15 @@ export async function assembleCut(input: {
   if (plan.sources) await resolveMainSources(input.projectDirectory!, plan.sources);
 }
 
-function audioFilter(plan: ExportPlan): string {
+function audioFilter(plan: ExportPlan, gainDb?: number): string {
   const spans = plan.spans;
+  const gain = sourceGainFilter(gainDb);
   if (spans.length === 1) {
     const span = spans[0]!;
-    return `[1:a:0]asetpts=PTS-STARTPTS,atrim=start=${seconds(span.sourceStart)}:end=${seconds(span.sourceEnd)},asetpts=PTS-STARTPTS[outa]`;
+    return `[1:a:0]asetpts=PTS-STARTPTS${gain},atrim=start=${seconds(span.sourceStart)}:end=${seconds(span.sourceEnd)},asetpts=PTS-STARTPTS[outa]`;
   }
   const parts = [
-    `[1:a:0]asetpts=PTS-STARTPTS,asplit=${spans.length}${spans.map((_, index) => `[asrc${index}]`).join("")}`,
+    `[1:a:0]asetpts=PTS-STARTPTS${gain},asplit=${spans.length}${spans.map((_, index) => `[asrc${index}]`).join("")}`,
   ];
   spans.forEach((span, index) => {
     parts.push(

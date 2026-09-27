@@ -47,6 +47,8 @@ export interface ExportFilmInput {
   audioOnly?: boolean;
   /** #RRGGBB for that canvas; white when absent. */
   background?: string;
+  /** dB applied to the narration recording (project config narrationGainDb). */
+  narrationGainDb?: number;
   plan: ExportPlan;
   outputPath: string;
   workDirectory: string;
@@ -81,6 +83,7 @@ export async function exportFilm(input: ExportFilmInput): Promise<ExportFilmResu
     plan,
     audioOnly: input.audioOnly,
     ...(input.background ? { background: input.background } : {}),
+    ...(input.narrationGainDb ? { narrationGainDb: input.narrationGainDb } : {}),
     signal: input.signal,
   });
   if (plan.soundEffects?.some(c => !c.mute)) {

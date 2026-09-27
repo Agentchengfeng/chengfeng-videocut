@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { VideocutError, asVideocutError, parseCanvasAspect, parseCanvasBackground } from "@video-workbench/core";
+import { VideocutError, asVideocutError, parseCanvasAspect, parseCanvasBackground, parseNarrationGainDb } from "@video-workbench/core";
 import { atomicWriteJson, resolveProject, serializeProjectOperation } from "@video-workbench/core/node";
 import { isLoopbackAddress, trustedLoopbackOrigin } from "./jobs-api";
 
@@ -27,13 +27,15 @@ async function readBody(request: Request) {
     if (!record(b) || Object.keys(b).some(k => !["confirmed", "expectedRevision", "config"].includes(k)) ||
         b.confirmed !== true || typeof b.expectedRevision !== "string" || !/^[a-f0-9]{64}$/.test(b.expectedRevision) ||
         !record(b.config) || Object.keys(b.config).length < 1 ||
-        Object.keys(b.config).some(k => !["aspectRatio", "canvasBackground"].includes(k)) ||
+        Object.keys(b.config).some(k => !["aspectRatio", "canvasBackground", "narrationGainDb"].includes(k)) ||
         (b.config.aspectRatio !== undefined && !parseCanvasAspect(b.config.aspectRatio)) ||
-        (b.config.canvasBackground !== undefined && !parseCanvasBackground(b.config.canvasBackground)))
-      invalid("Only confirmed aspectRatio and/or canvasBackground (#RRGGBB) with current project expectedRevision are allowed");
-    const patch: { aspectRatio?: string; canvasBackground?: string } = {};
+        (b.config.canvasBackground !== undefined && !parseCanvasBackground(b.config.canvasBackground)) ||
+        (b.config.narrationGainDb !== undefined && parseNarrationGainDb(b.config.narrationGainDb) === null))
+      invalid("Only confirmed aspectRatio, canvasBackground (#RRGGBB) and/or narrationGainDb (-12…24 dB) with current project expectedRevision are allowed");
+    const patch: { aspectRatio?: string; canvasBackground?: string; narrationGainDb?: number } = {};
     if (b.config.aspectRatio !== undefined) patch.aspectRatio = String(b.config.aspectRatio).trim().replace("：", ":");
     if (b.config.canvasBackground !== undefined) patch.canvasBackground = parseCanvasBackground(b.config.canvasBackground)!;
+    if (b.config.narrationGainDb !== undefined) patch.narrationGainDb = parseNarrationGainDb(b.config.narrationGainDb)!;
     return { expectedRevision: b.expectedRevision, patch };
   } finally { clearTimeout(timer); }
 }
@@ -46,7 +48,8 @@ async function snapshot(directory: string, projectId: string) {
   return { raw, document, file, config, result: { schemaVersion: 1, projectId,
     projectRevision: sha(raw), configRevision: sha(JSON.stringify(config)),
     config: { aspectRatio: typeof config.aspectRatio === "string" ? config.aspectRatio : null,
-      canvasBackground: parseCanvasBackground(config.canvasBackground) } } };
+      canvasBackground: parseCanvasBackground(config.canvasBackground),
+      narrationGainDb: parseNarrationGainDb(config.narrationGainDb) ?? 0 } } };
 }
 async function backup(directory: string, revision: string, raw: string) {
   let dir = await realpath(directory);

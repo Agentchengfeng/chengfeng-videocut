@@ -77,12 +77,23 @@ export async function resolveMainSources(projectDirectory: string, sources: read
   return paths;
 }
 
+/**
+ * Level change for one source. A boost is followed by a limiter so the loudest
+ * syllables stop at -1 dBFS instead of clipping; latency compensation keeps
+ * every sample where it was, so spans, captions and picture stay aligned.
+ */
+export function sourceGainFilter(gainDb: number | undefined): string {
+  if (!gainDb || !Number.isFinite(gainDb)) return "";
+  return `,volume=${gainDb.toFixed(1)}dB${gainDb > 0 ? ",alimiter=limit=0.891:level=false:latency=1" : ""}`;
+}
+
 /** Normalize each original source to PCM before trimming; one shared sample clock. */
-export function mainAudioFilter(spans: readonly { source?: string; sourceStart: number; sourceEnd: number }[], keys: readonly string[], firstInput = 0): string {
+export function mainAudioFilter(spans: readonly { source?: string; sourceStart: number; sourceEnd: number }[], keys: readonly string[], firstInput = 0,
+  gainsDb: Readonly<Record<string, number>> = {}): string {
   const parts: string[] = [];
   keys.forEach((key, input) => {
     const uses = spans.map((span, i) => ({ span, i })).filter(({ span }) => (span.source ?? "") === key);
-    if (uses.length) parts.push(`[${input + firstInput}:a:0]aresample=48000,aformat=channel_layouts=stereo,asetpts=PTS-STARTPTS,asplit=${uses.length}${uses.map(({ i }) => `[src${i}]`).join("")}`);
+    if (uses.length) parts.push(`[${input + firstInput}:a:0]aresample=48000,aformat=channel_layouts=stereo${sourceGainFilter(gainsDb[key])},asetpts=PTS-STARTPTS,asplit=${uses.length}${uses.map(({ i }) => `[src${i}]`).join("")}`);
   });
   spans.forEach((span, i) => {
     if (!keys.includes(span.source ?? "") || !Number.isFinite(span.sourceStart) || !Number.isFinite(span.sourceEnd) || span.sourceStart < 0 || span.sourceEnd <= span.sourceStart) throw new Error(`Unresolved main-track span #${i}`);

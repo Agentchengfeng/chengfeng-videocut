@@ -404,7 +404,7 @@ function healthResponse(
     soundEffectsApiVersion: 1,
     soundEffects: { schemaVersion: 1, managedWav: true, preview: true, export: true, maxCues: 64 },
     projectConfigApiVersion: 1,
-    projectConfig: { fields: ["aspectRatio", "canvasBackground"] },
+    projectConfig: { fields: ["aspectRatio", "canvasBackground", "narrationGainDb"] },
     multisourceAudioApiVersion: 1,
     insertMediaApiVersion: 1,
     seamRefinementApiVersion: 1,
@@ -607,7 +607,8 @@ async function startStudioServerInternal(options: StartStudioServerOptions, life
   const mediaAssetsApi = createMediaAssetsApi(projectsDir, listenPort);
   const projectConfigApi = createProjectConfigApi({ projectsDir, port: listenPort,
     isBusy: directory => jobs.isProjectBusy(directory),
-    onChanged(change) { events.publish("file-change", change); },
+    // Narration level is part of the preview mix: rebuild it like a sound-effect change.
+    onChanged(change) { events.publish("file-change", change); editPreviewArtifacts.schedule(change.projectId); },
   });
   const multisourceApi = createMultisourceApi({ projectsDir, port: listenPort,
     isBusy: directory => jobs.isProjectBusy(directory),

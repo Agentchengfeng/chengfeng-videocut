@@ -4,7 +4,7 @@ import { createReadStream } from "node:fs";
 import { lstat, readFile, mkdir, mkdtemp, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { cutVideoBySegments, mixSoundEffects, probeMedia, probePreviewProxyMedia, resolveMainSources, mainAudioFilter, type MainSource } from "@video-workbench/koubo-adapter";
+import { cutVideoBySegments, mixSoundEffects, probeMedia, probePreviewProxyMedia, resolveMainSources, mainAudioFilter, sourceGainFilter, type MainSource } from "@video-workbench/koubo-adapter";
 import {
   parseEditListDocument,
   ffmpegFileArg,
@@ -12,7 +12,7 @@ import {
   runWithFfmpegComplexFilterFile,
 } from "@video-workbench/core";
 import { readSoundEffects } from "@video-workbench/core/node";
-import type { SoundEffectCue } from "@video-workbench/core";
+import { parseNarrationGainDb, type SoundEffectCue } from "@video-workbench/core";
 import { serializeProjectOperation as serializeProjectOperationDefault, assertProjectReadable } from "@video-workbench/core/node";
 import { isSafeProjectId } from "./project-media";
 import { buildPreviewStream, type PreviewStream } from "./preview-stream";
@@ -71,6 +71,8 @@ export interface EditPreviewArtifactState {
 
 interface PreviewArtifactGenerateInput {
   sourcePaths?: Record<string, string>;
+  /** dB per main-track source key (the narration recording). */
+  gainsDb?: Record<string, number>;
   audioOnly?: boolean;
   input: string;
   output: string;
@@ -85,6 +87,7 @@ type ProjectOperationSerializer = typeof serializeProjectOperationDefault;
 export interface ProjectInput {
   soundEffects?: { revision: string | null; cues: SoundEffectCue[] };
   sourcePaths?: Record<string, string>;
+  gainsDb?: Record<string, number>;
   sourceManifest?: MainSource[];
   audioOnly?: boolean;
   projectId: string;
@@ -440,6 +443,7 @@ export async function generatePreviewArtifactVideo(input: {
  * the encoder's one initial delay; per-range AAC fragments cannot do that. */
 export async function generatePreviewArtifactAudio(input: {
   sourcePaths?: Record<string, string>;
+  gainsDb?: Record<string, number>;
   input: string;
   output: string;
   segments: readonly { start: number; end: number; source?: string; playbackRate?: number }[];
@@ -479,7 +483,7 @@ export async function generatePreviewArtifactAudio(input: {
   try {
     const filterPath = join(workDir, "audio-edl-filter.txt");
     const filters = [
-      `[0:a:0]aresample=${sampleRate},asetpts=PTS-STARTPTS,asplit=${segments.length}`
+      `[0:a:0]aresample=${sampleRate}${sourceGainFilter(input.gainsDb?.[input.segments[0]?.source ?? ""])},asetpts=PTS-STARTPTS,asplit=${segments.length}`
         + segments.map((_, index) => `[src${index}]`).join(""),
       ...segments.map((segment, index) => {
         const seconds = (segment.end - segment.start) / sampleRate;
@@ -495,7 +499,7 @@ export async function generatePreviewArtifactAudio(input: {
         + `concat=n=${segments.length}:v=0:a=1,asetpts=N/SR/TB[outa]`,
     ];
     await writeFile(filterPath, input.sourcePaths
-      ? mainAudioFilter(input.segments.map(s => ({ source: s.source, sourceStart: s.start, sourceEnd: s.end })), Object.keys(sourcePaths))
+      ? mainAudioFilter(input.segments.map(s => ({ source: s.source, sourceStart: s.start, sourceEnd: s.end })), Object.keys(sourcePaths), 0, input.gainsDb)
       : `${filters.join(";\n")}\n`, "utf8");
     await runWithFfmpegComplexFilterFile(filterPath, (filterArgs) =>
       runCommand("ffmpeg", [
@@ -551,6 +555,7 @@ export function editPreviewArtifactConfig(input: ProjectInput) {
   return {
     ...EDIT_PREVIEW_CONFIG,
     ...(input.soundEffects?.cues.length ? {soundEffects: input.soundEffects} : {}),
+    ...(input.gainsDb && Object.values(input.gainsDb).some(Boolean) ? { gainsDb: input.gainsDb, gainFilter: "volume-alimiter-1dBFS-v1" } : {}),
     ...(input.audioOnly ? { video: "none", audio: "aac-continuous-edit-list-fade5ms-v2", audioSampleRate: 48_000 } : {}),
     profile,
     sourceKind,
@@ -616,11 +621,15 @@ export async function projectInput(projectsDir: string, projectId: string): Prom
   const edit = parseEditListDocument(JSON.parse(editRaw));
   const soundEffectsState = await readSoundEffects(realProjectDir, true);
   const soundEffects = {revision:soundEffectsState.revision,cues:soundEffectsState.document.cues};
+  const narrationGainDb = parseNarrationGainDb((() => {
+    try { return (JSON.parse(projectRaw) as { config?: { narrationGainDb?: unknown } }).config?.narrationGainDb; } catch { return undefined; }
+  })()) ?? 0;
   if (edit.schemaVersion === 2) {
     const sourcePaths = await resolveMainSources(realProjectDir, edit.sources!);
+    const gainsDb = narrationGainDb ? Object.fromEntries(edit.sources!.filter(s => s.mediaKind === "audio").map(s => [s.path, narrationGainDb])) : undefined;
     await assertProjectReadable(realProjectDir);
     return {
-      soundEffects, projectId, projectDir: realProjectDir, audioOnly: true,
+      soundEffects, projectId, projectDir: realProjectDir, audioOnly: true, ...(gainsDb ? { gainsDb } : {}),
       editRevision: sha256(editRaw), sourceSha256: sha256(JSON.stringify(edit.sources)),
       sourceProxy: Object.values(sourcePaths)[0]!, sourcePaths, sourceManifest: edit.sources,
       sourceKind: "canonical", previewProfile: "sharp-canonical-v1", previewFrameRate: 30,
@@ -692,6 +701,9 @@ export async function projectInput(projectsDir: string, projectId: string): Prom
     previewProxyHeight: finiteNumber(workbench.previewProxy?.height),
     previewProxyFrameRate: finiteFrameRate(workbench.previewProxy?.frameRate),
     duration: edit.duration,
+    // Level only applies where the preview is audio: a video preview has no
+    // audio mix step, and preview and export must sound the same.
+    ...(audioOnly && narrationGainDb ? { gainsDb: { [edit.segments[0]?.source ?? ""]: narrationGainDb } } : {}),
     segments: edit.segments.map((segment) => ({
       source: segment.source,
       start: segment.sourceStart,
@@ -1254,6 +1266,7 @@ export class EditPreviewArtifactManager {
         temporaryOutput = writerTempOutput(output);
         await this.generate({
           sourcePaths: input.sourcePaths,
+          ...(input.gainsDb ? { gainsDb: input.gainsDb } : {}),
           audioOnly: input.audioOnly,
           input: input.sourceProxy,
           output: temporaryOutput,
