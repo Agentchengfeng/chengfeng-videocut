@@ -13,11 +13,19 @@ import {
   exportInputFingerprint,
   fileIdentity,
 } from "./runners";
-import { proveWorkerOwnership, terminateOwnedProcessTree } from "./process";
+import { cpus, totalmem } from "node:os";
+import { KILL_CONFIRM_MS, ownedProcessGroupGone, proveWorkerOwnership, terminateOwnedProcessTree } from "./process";
 import { RuntimeJobLock } from "./runtime-lock";
 import { JobStore, JobStoreError, syncDirectory } from "./store";
 
 const WORKER_CLEANUP_TIMEOUT_MS = 5_000;
+const BLOCKED_RECHECK_MS = 15_000;
+const EXPORT_MEMORY_BYTES = 4 * 1024 ** 3;
+
+/** Exports render in their own worker and headless shell, so several projects can run at once. */
+export function defaultJobConcurrency(cores = cpus().length, memory = totalmem()): number {
+  return Math.max(1, Math.min(Math.floor(cores / 2), Math.floor(memory / EXPORT_MEMORY_BYTES)));
+}
 
 function remainingCleanupMs(deadline: number): number {
   return Math.max(0, deadline - Date.now());
@@ -28,7 +36,8 @@ async function waitForWorkerClose(
   deadline: number,
 ): Promise<boolean> {
   if (worker.isClosed()) return true;
-  const remaining = remainingCleanupMs(deadline);
+  // The process tree is already gone here; its pipes still need a moment to close.
+  const remaining = Math.max(remainingCleanupMs(deadline), KILL_CONFIRM_MS);
   if (remaining <= 0) return false;
   const closed = await Promise.race([
     worker.closed.then(() => true),
@@ -60,6 +69,8 @@ export interface StartManagedJobInput {
 
 export interface JobManagerOptions {
   concurrency?: number;
+  /** How often blocked jobs are re-probed for a proven-dead owner; 0 disables the timer. */
+  blockedRecheckMs?: number;
   workerEntrypoint?: string;
   projectsDir?: string;
   /** Deterministic test seam immediately before the no-replace hard link. */
@@ -98,6 +109,8 @@ function terminal(job: DurableJob): boolean {
 export class JobManager {
   readonly store: JobStore;
   readonly #concurrency: number;
+  readonly #blockedRecheckMs: number;
+  #blockedTimer: ReturnType<typeof setInterval> | null = null;
   readonly #workerEntrypoint: string;
   readonly #projectsDir?: string;
   readonly #runtimeLock: RuntimeJobLock;
@@ -118,7 +131,8 @@ export class JobManager {
   constructor(dataDir: string, options: JobManagerOptions = {}) {
     this.store = new JobStore(dataDir);
     this.#runtimeLock = new RuntimeJobLock(dataDir);
-    this.#concurrency = options.concurrency ?? 1;
+    this.#concurrency = options.concurrency ?? defaultJobConcurrency();
+    this.#blockedRecheckMs = options.blockedRecheckMs ?? BLOCKED_RECHECK_MS;
     this.#workerEntrypoint = workerEntrypoint(options.workerEntrypoint);
     this.#projectsDir = options.projectsDir;
     this.#beforePublishLink = options.beforePublishLink;
@@ -134,6 +148,15 @@ export class JobManager {
       await this.store.initialize();
       for (const job of await this.store.list()) await this.#recover(job);
       this.#initialized = true;
+      await this.recheckBlocked();
+      if (this.#blockedRecheckMs > 0) {
+        this.#blockedTimer = setInterval(() => {
+          void this.recheckBlocked().catch((error) => {
+            console.error("[chengfeng-videocut] blocked job recheck failed", safeError(error));
+          });
+        }, this.#blockedRecheckMs);
+        this.#blockedTimer.unref?.();
+      }
       this.#pump();
     } catch (error) {
       await this.#runtimeLock.release().catch(() => undefined);
@@ -259,6 +282,50 @@ export class JobManager {
   }
 
   read(jobId: string): Promise<DurableJob | null> { return this.store.read(jobId); }
+
+  get concurrency(): number { return this.#concurrency; }
+
+  /**
+   * Requeue jobs blocked only because their worker could not be proven stopped,
+   * once the OS proves the owner's process group is gone. Same jobId and frozen
+   * snapshot; publishing, cancelled or unproven owners stay blocked.
+   */
+  async recheckBlocked(): Promise<string[]> {
+    if (!this.#initialized || this.#stopping) return [];
+    const requeued: string[] = [];
+    for (const job of await this.store.list()) {
+      if (job.state !== "recovery_blocked" || job.error?.code !== "job_process_unproven") continue;
+      if (!job.owner || job.cancelRequestedAt) continue;
+      const blockedPhase = job.error.details?.phase;
+      if (blockedPhase === "publishing" || job.phase === "publishing") continue;
+      if (this.#running.has(job.jobId) || this.#launching.has(job.jobId)) continue;
+      if (!ownedProcessGroupGone(job.owner.pid)) continue;
+      const outputPath = job.params.outputPath;
+      if (typeof outputPath === "string" && await this.#pathExists(outputPath)) continue;
+      try {
+        await this.#cleanupArtifacts(job);
+        await this.store.update(job.jobId, (value) => {
+          this.#assertRecordVersion(value, job);
+          return {
+            ...value,
+            state: "queued",
+            phase: "queued_after_recovery",
+            owner: null,
+            progress: null,
+            finishedAt: null,
+            error: null,
+          };
+        }, ["recovery_blocked"]);
+      } catch (error) {
+        if (error instanceof JobStoreError && ["job_state_conflict", "job_attempt_superseded"].includes(error.code)) continue;
+        throw error;
+      }
+      this.#enqueue(job.jobId);
+      requeued.push(job.jobId);
+    }
+    if (requeued.length) this.#pump();
+    return requeued;
+  }
 
   async validateReplayStart(input: StartManagedJobInput, replayJobId: string): Promise<DurableJob> {
     if (!this.#initialized || this.#stopping) {
@@ -423,6 +490,8 @@ export class JobManager {
 
   async #shutdown(): Promise<void> {
     this.#stopping = true;
+    if (this.#blockedTimer) clearInterval(this.#blockedTimer);
+    this.#blockedTimer = null;
     // A launch that has entered its atomic record write must finish or roll
     // back before the singleton lock is released. Timing out here would let a
     // stale manager publish `running` after a replacement Runtime recovered.

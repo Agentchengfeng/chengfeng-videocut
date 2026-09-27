@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { link, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { spawn } from "node:child_process";
 import { join } from "node:path";
-import { JobManager } from "./manager";
+import { defaultJobConcurrency, JobManager } from "./manager";
 import { serializeProjectOperation } from "@video-workbench/core/node";
 import {
   candidateForOutput,
@@ -14,6 +15,7 @@ import {
 
 const cleanup: string[] = [];
 const managers: JobManager[] = [];
+const cleanupPids: number[] = [];
 
 it("project config busy guard covers snapshot-before-queue start and active jobs",async()=>{
  const f=await fixture();const directory=await realpath(f.projects[0]!);
@@ -44,6 +46,7 @@ it("rejects a stale confirmed export snapshot before queuing work",async()=>{
 afterEach(async () => {
   await Promise.all(managers.splice(0).map((manager) => manager.shutdown().catch(() => undefined)));
   await Promise.all(cleanup.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+  for (const pid of cleanupPids.splice(0)) { try { process.kill(-pid, "SIGKILL"); } catch {} }
 }, { timeout: 15_000 });
 
 async function fixture() {
@@ -599,6 +602,90 @@ describe("job manager", () => {
     if (process.platform !== "win32") {
       expect(() => process.kill(-workerPid, 0)).toThrow();
     }
+  });
+
+  it("sizes default concurrency from cores and memory, never below one", () => {
+    const GB = 1024 ** 3;
+    expect(defaultJobConcurrency(10, 32 * GB)).toBe(5);
+    expect(defaultJobConcurrency(16, 8 * GB)).toBe(2);
+    expect(defaultJobConcurrency(1, 2 * GB)).toBe(1);
+  });
+
+  it("runs exports for different projects at the same time when concurrency allows", async () => {
+    const f = await fixture();
+    const manager = new JobManager(f.dataDir, { workerEntrypoint: f.slowWorker, concurrency: 2 });
+    managers.push(manager);
+    await manager.initialize();
+    const first = await manager.start({ kind: "export", target: f.projects[0]! });
+    const second = await manager.start({ kind: "export", target: f.projects[1]! });
+    await waitState(manager, first.jobId, "running");
+    await waitState(manager, second.jobId, "running");
+    await manager.cancel(first.jobId);
+    await manager.cancel(second.jobId);
+    await waitState(manager, first.jobId, "cancelled");
+    await waitState(manager, second.jobId, "cancelled");
+  });
+
+  it("requeues a job blocked only by an unproven worker once its owner is proven gone", async () => {
+    const f = await fixture();
+    const manager = new JobManager(f.dataDir, { workerEntrypoint: f.successWorker, blockedRecheckMs: 0 });
+    managers.push(manager);
+    await manager.store.initialize();
+    const outputPath = join(f.root, "unblocked.mp4");
+    const job = await createPersistedExport(manager, {
+      jobId: "blocked-dead-owner", target: f.projects[0]!, projectId: "one", outputPath,
+    });
+    await manager.store.update(job.jobId, (value) => ({
+      ...value,
+      state: "recovery_blocked",
+      phase: "recovery_blocked",
+      attempt: 2,
+      finishedAt: new Date().toISOString(),
+      owner: { pid: 2_000_000_000, token: "gone-owner", startedAt: new Date().toISOString(), heartbeatAt: new Date().toISOString() },
+      error: { code: "job_process_unproven", message: "Worker cleanup failed: cleanup_failed", details: { jobId: value.jobId, kind: "export", phase: "stopping" } },
+    }));
+    await manager.initialize();
+    if (process.platform === "win32") {
+      expect((await manager.read(job.jobId))?.state).toBe("recovery_blocked");
+    } else {
+      const succeeded = await waitState(manager, job.jobId, "succeeded");
+      expect(succeeded.attempt).toBe(3);
+      expect(succeeded.error).toBeNull();
+    }
+  });
+
+  it("keeps blocked jobs blocked while the owner is alive, publishing, or cancelled", async () => {
+    const f = await fixture();
+    const manager = new JobManager(f.dataDir, { workerEntrypoint: f.successWorker, blockedRecheckMs: 0 });
+    managers.push(manager);
+    await manager.store.initialize();
+    const block = async (jobId: string, target: string, patch: Record<string, unknown>) => {
+      const job = await createPersistedExport(manager, { jobId, target, projectId: jobId, outputPath: join(f.root, `${jobId}.mp4`) });
+      await manager.store.update(job.jobId, (value) => ({
+        ...value,
+        state: "recovery_blocked",
+        phase: "recovery_blocked",
+        attempt: 1,
+        finishedAt: new Date().toISOString(),
+        owner: { pid: process.pid, token: "alive-owner", startedAt: new Date().toISOString(), heartbeatAt: new Date().toISOString() },
+        error: { code: "job_process_unproven", message: "unproven", details: { jobId: value.jobId, kind: "export", phase: "export" } },
+        ...patch,
+      }));
+    };
+    const dead = { pid: 2_000_000_000, token: "gone", startedAt: new Date().toISOString(), heartbeatAt: new Date().toISOString() };
+    const leader = spawn("sleep", ["30"], { detached: true, stdio: "ignore" });
+    cleanupPids.push(leader.pid!);
+    await block("alive", f.projects[0]!, {
+      owner: { pid: leader.pid!, token: "alive-owner", startedAt: new Date().toISOString(), heartbeatAt: new Date().toISOString() },
+    });
+    await block("publishing", f.projects[1]!, {
+      owner: dead,
+      error: { code: "job_process_unproven", message: "unproven", details: { jobId: "publishing", kind: "export", phase: "publishing" } },
+    });
+    await manager.initialize();
+    expect(await manager.recheckBlocked()).toEqual([]);
+    expect((await manager.read("alive"))?.state).toBe("recovery_blocked");
+    expect((await manager.read("publishing"))?.state).toBe("recovery_blocked");
   });
 
   it("recovers a persisted running export whose owner is confirmed absent", async () => {

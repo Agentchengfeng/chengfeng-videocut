@@ -341,6 +341,7 @@ export async function terminateOwnedProcessTree(
   } else if (!(await processGroupMatchesToken(pid, token, remainingMs(deadline)))) {
     return "identity_mismatch";
   }
+  let confirmDeadline = deadline;
   if (process.platform === "win32") {
     if (await runWindowsTaskkill(pid, executeProcessCommand, remainingMs(deadline)) === "cleanup_failed") {
       return "cleanup_failed";
@@ -358,8 +359,21 @@ export async function terminateOwnedProcessTree(
       } catch {
         if (processGroupExists(pid)) return "cleanup_failed";
       }
+      // SIGKILL is usually sent exactly when the SIGTERM budget is spent; the
+      // kernel still needs a moment to remove the group, so confirm on its own clock.
+      confirmDeadline = Math.max(deadline, Date.now() + KILL_CONFIRM_MS);
     }
   }
-  while (Date.now() < deadline && processGroupExists(pid)) await Bun.sleep(25);
+  while (Date.now() < confirmDeadline && processGroupExists(pid)) await Bun.sleep(25);
   return processGroupExists(pid) ? "cleanup_failed" : "terminated";
+}
+
+/** Time allowed after SIGKILL for the process group to disappear. */
+export const KILL_CONFIRM_MS = 2_000;
+
+/** True only when the local OS proves the owner's process group is gone (ESRCH). */
+export function ownedProcessGroupGone(pid: number): boolean {
+  if (process.platform === "win32") return false;
+  try { process.kill(-pid, 0); return false; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
 }

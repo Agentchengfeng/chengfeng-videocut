@@ -4,13 +4,41 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  KILL_CONFIRM_MS,
+  ownedProcessGroupGone,
   proveWorkerOwnership,
+  terminateOwnedProcessTree,
   runWindowsTaskkill,
   trackedProcessMatches,
   windowsProcessMatchesToken,
 } from "./process";
 
 describe("durable worker process cleanup", () => {
+  it.skipIf(process.platform === "win32")("confirms a SIGTERM-ignoring group after SIGKILL even when the shared budget is spent", async () => {
+    const token = `ignore-term-${Date.now()}`;
+    const child = spawn("sh", ["-c", `trap '' TERM; while :; do sleep 0.05; done # ${token}`], {
+      detached: true, stdio: "ignore",
+    });
+    try {
+      await Bun.sleep(100);
+      const started = Date.now();
+      // A budget that runs out while waiting for SIGTERM reproduces the
+      // restart failure: SIGKILL used to be followed by no wait at all.
+      expect(await terminateOwnedProcessTree(child.pid!, token, 400)).toBe("terminated");
+      expect(Date.now() - started).toBeLessThan(400 + KILL_CONFIRM_MS + 500);
+      expect(ownedProcessGroupGone(child.pid!)).toBe(true);
+    } finally {
+      try { process.kill(-child.pid!, "SIGKILL"); } catch {}
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("proves a group gone only on ESRCH", () => {
+    expect(ownedProcessGroupGone(2_000_000_000)).toBe(true);
+    const leader = spawn("sleep", ["5"], { detached: true, stdio: "ignore" });
+    try { expect(ownedProcessGroupGone(leader.pid!)).toBe(false); }
+    finally { try { process.kill(-leader.pid!, "SIGKILL"); } catch {} }
+  });
+
   it("treats every taskkill error as cleanup_failed without a root-liveness exception", async () => {
     expect(await runWindowsTaskkill(1234, async () => {
       throw Object.assign(new Error("taskkill raced with root exit"), { code: "ESRCH" });

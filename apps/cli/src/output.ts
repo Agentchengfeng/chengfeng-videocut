@@ -128,7 +128,7 @@ Module commands require an explicit HTTP 127.0.0.1 or [::1] origin and a running
 Usage:
   chengfeng-videocut --help [--json]
   chengfeng-videocut --version [--json]
-  chengfeng-videocut start [--host <host>] [--port <port>] [--projects-dir <dir>] [--data-dir <dir>] [--idle-timeout-seconds <0..86400>] [--open] [--json]
+  chengfeng-videocut start [--host <host>] [--port <port>] [--projects-dir <dir>] [--data-dir <dir>] [--idle-timeout-seconds <0..86400>] [--job-concurrency <1..32>] [--open] [--json]
   chengfeng-videocut service install [--json]
   chengfeng-videocut service start [--json]
   chengfeng-videocut service stop [--json]

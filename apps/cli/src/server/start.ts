@@ -55,6 +55,18 @@ const STUDIO_SERVER_IDLE_TIMEOUT_SECONDS = 60;
 
 type StudioRuntimeMode = "launchd" | "windows-task" | "foreground";
 
+
+function resolveJobConcurrency(explicit?: number): number | undefined {
+  if (explicit !== undefined) return explicit;
+  const raw = process.env.CHENGFENG_VIDEOCUT_JOB_CONCURRENCY?.trim();
+  if (!raw) return undefined;
+  const value = Number(raw);
+  if (!/^\d+$/.test(raw) || !Number.isSafeInteger(value) || value < 1 || value > 32) {
+    throw new Error("CHENGFENG_VIDEOCUT_JOB_CONCURRENCY must be an integer from 1 to 32");
+  }
+  return value;
+}
+
 export interface StudioServerApiContext {
   projectsDir: string;
   dataDir: string;
@@ -79,6 +91,8 @@ export interface StartStudioServerOptions {
   installSignalHandlers?: boolean;
   /** Opt in to process idle shutdown. Zero/default leaves it disabled. */
   idleTimeoutSeconds?: number;
+  /** Parallel durable jobs; falls back to CHENGFENG_VIDEOCUT_JOB_CONCURRENCY, then machine size. */
+  jobConcurrency?: number;
   /** In-process test/embedding provider; never supplied through HTTP or CLI. */
   ingest?: Parameters<typeof createIngestApi>[3];
 }
@@ -517,7 +531,7 @@ async function startStudioServerInternal(options: StartStudioServerOptions, life
 
   const events = new StudioEventHub();
   const operationAuditStore = new OperationAuditStore(dataDir);
-  const jobs = new JobManager(dataDir, { projectsDir });
+  const jobs = new JobManager(dataDir, { projectsDir, concurrency: resolveJobConcurrency(options.jobConcurrency) });
   await jobs.initialize();
   const jobsApi = createJobsApi(jobs, listenPort, { operationAuditStore });
   const connectionApi = createConnectionApi(projectsDir, listenPort);

@@ -26,6 +26,8 @@ export interface ParsedArgs {
   port?: number;
   /** Explicit opt-in until the selected launch/reconnect path is verified; 0 disables. */
   idleTimeoutSeconds?: number;
+  /** Parallel durable jobs (exports); omitted means sized from this machine. */
+  jobConcurrency?: number;
   openBrowser: boolean;
   apiBase?: string;
   video?: string;
@@ -96,6 +98,7 @@ const VALUE_OPTIONS = new Set([
   "--host",
   "--port",
   "--idle-timeout-seconds",
+  "--job-concurrency",
   "--api-base",
   "--video",
   "--audio",
@@ -234,6 +237,15 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     }
   }
 
+  const jobConcurrencyValue = values.get("--job-concurrency");
+  let jobConcurrency: number | undefined;
+  if (jobConcurrencyValue !== undefined) {
+    jobConcurrency = Number(jobConcurrencyValue);
+    if (!/^\d+$/.test(jobConcurrencyValue) || !Number.isSafeInteger(jobConcurrency) || jobConcurrency < 1 || jobConcurrency > 32) {
+      usageError("--job-concurrency must be an integer from 1 to 32");
+    }
+  }
+
   const linesValue = values.get("--lines");
   let logLines: number | undefined;
   if (linesValue !== undefined) {
@@ -283,6 +295,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     host: values.get("--host"),
     port,
     idleTimeoutSeconds,
+    jobConcurrency,
     openBrowser,
     apiBase: values.get("--api-base"),
     video: values.get("--video") ?? values.get("--audio"),
@@ -417,7 +430,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     if (positionals.length !== 1) {
       usageError("Usage: chengfeng-videocut start [--host <host>] [--port <port>]");
     }
-    assertOptions(["--host", "--port", "--projects-dir", "--data-dir", "--idle-timeout-seconds"]);
+    assertOptions(["--host", "--port", "--projects-dir", "--data-dir", "--idle-timeout-seconds", "--job-concurrency"]);
     return { command: "start", ...common };
   }
 

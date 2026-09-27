@@ -1220,6 +1220,7 @@ export async function runCli(
         dataDir: parsed.dataDir,
         installSignalHandlers: true,
         idleTimeoutSeconds: parsed.idleTimeoutSeconds ?? 0,
+        ...(parsed.jobConcurrency !== undefined ? { jobConcurrency: parsed.jobConcurrency } : {}),
       });
       if (parsed.openBrowser) {
         try {
