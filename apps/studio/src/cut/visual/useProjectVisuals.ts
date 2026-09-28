@@ -100,8 +100,10 @@ export function useProjectVisuals(projectId: string): ProjectVisuals {
       };
       // Timings and stamps can change while the document revision does not —
       // an edit to the cut moves every layer, an edit to a module file moves
-      // nothing but the stamp — so the fingerprint covers all three.
-      const fingerprint = JSON.stringify([payload.revision ?? "", next.timings, next.insertSounds, next.moduleStamps]);
+      // nothing but the stamp. An inserted clip can also be swapped for another
+      // of the same length, which moves no timing at all, so the inserted
+      // layers themselves (media, fit, label) are part of the fingerprint too.
+      const fingerprint = JSON.stringify([payload.revision ?? "", next.timings, next.insertLayers, next.insertSounds, next.moduleStamps]);
       if (fingerprint !== fingerprintRef.current) {
         fingerprintRef.current = fingerprint;
         setState(next);

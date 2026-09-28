@@ -43,3 +43,23 @@ test("failed update preserves picture and a successful retry clears error", asyn
   act(() => { void h.state.reload(); }); await h.reply(2, "new");
   expect(h.state.error).toBeNull(); expect(h.state.document?.projectId).toBe("new");
 });
+test("a swapped inserted clip of the same length replaces the picture without a reload", async () => {
+  const requests: ((r: Response) => void)[] = [];
+  vi.spyOn(globalThis, "fetch").mockImplementation(() => new Promise(resolve => requests.push(resolve)));
+  vi.spyOn(globalThis, "setInterval").mockReturnValue(1 as never);
+  vi.spyOn(globalThis, "clearInterval").mockImplementation(() => {});
+  const root = createRoot(document.createElement("div"));
+  let state!: ProjectVisuals;
+  function Probe() { state = useProjectVisuals("p"); return null; }
+  act(() => root.render(<Probe />));
+  cleanups.push(() => act(() => root.unmount()));
+  const layer = (assetId: string, label: string) => ({ layerId: "insert:hook", start: 0, end: 16, duration: 16, label,
+    media: { assetId, sourceIn: 0, sourceOut: 16, fit: "contain", muted: true } });
+  const reply = async (i: number, assetId: string, label: string) => act(async () => {
+    requests[i]!(new Response(JSON.stringify({ revision: "same", document: null, timings: [], insertLayers: [layer(assetId, label)] })));
+  });
+  await reply(0, "a".repeat(64), "旧开头");
+  act(() => { void state.reload(); }); await reply(1, "b".repeat(64), "新开头");
+  expect(state.insertLayers[0]!.media.assetId).toBe("b".repeat(64));
+  expect(state.insertLayers[0]!.label).toBe("新开头");
+});
