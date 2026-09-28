@@ -82,7 +82,8 @@ export function assertInsertDocument(payload: unknown): InsertDocument {
     const { id, afterWordId, assetId, sourceIn, sourceOut, fit, gainDb, label, picture, caption } = item;
     if (typeof id !== "string" || !/^[A-Za-z0-9._-]{1,64}$/.test(id) || ids.has(id)) invalid(`inserts[${index}].id must be a unique safe id`);
     if (typeof afterWordId !== "string" || !afterWordId) invalid(`inserts[${index}].afterWordId is required`);
-    if (anchors.has(afterWordId as string)) invalid(`inserts[${index}] shares its anchor word with another insert`);
+    // Several cold-open clips may share the start; they play in document order.
+    if (afterWordId !== INSERT_AT_START && anchors.has(afterWordId as string)) invalid(`inserts[${index}] shares its anchor word with another insert`);
     if (typeof assetId !== "string" || !/^[a-f0-9]{64}$/.test(assetId)) invalid(`inserts[${index}].assetId must be a SHA-256`);
     if (typeof sourceIn !== "number" || !Number.isFinite(sourceIn) || sourceIn < 0 ||
       typeof sourceOut !== "number" || !Number.isFinite(sourceOut) || sourceOut <= sourceIn + 0.04 || sourceOut > 3600)

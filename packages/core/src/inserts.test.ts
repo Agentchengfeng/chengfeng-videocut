@@ -173,6 +173,15 @@ test("a cold open plays before the first word and survives re-application", () =
     ["insert-open", 0], ["a-roll-0001", 3.5], ["insert-i1", 4.8], ["a-roll-0001~i1", 5.8], ["a-roll-0002", 6.9]]);
   expect(applyInserts({ editList: out, words, document: d, assets }).segments).toEqual(out.segments);
   expect(stripInserts(out).map(s => s.id)).toEqual(["a-roll-0001", "a-roll-0002"]);
-  expect(() => assertInsertDocument(doc([clip("a", "@start"), clip("b", "@start")]))).toThrow(/shares its anchor/);
+  const two = assertInsertDocument(doc([clip("a", "@start", 2), clip("b", "@start", 1)]));
+  expect(applyInserts({ editList: edl(), words, document: two, assets }).segments.slice(0, 3).map(s => [s.id, s.timelineStart]))
+    .toEqual([["insert-a", 0], ["insert-b", 2], ["a-roll-0001", 3]]);
   expect(followCutAnchors(d, words, stripInserts(out)).moved).toEqual([]);
+});
+
+test("two cold-open clips keep their order through a range edit", () => {
+  const { applyEditListOperation } = require("./editList") as typeof import("./editList");
+  const placed = applyInserts({ editList: { ...edl(), mode: "manual" }, words, document: doc([clip("a", "@start", 2), clip("b", "@start", 1)]), assets });
+  const out = applyEditListOperation(placed, { type: "delete-range", source: VOICE, sourceStart: 0, sourceEnd: 2.4 });
+  expect(out.segments.map(s => s.instanceId)).toEqual(["insert:a", "insert:b", "original"]);
 });

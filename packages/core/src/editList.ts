@@ -719,8 +719,10 @@ function narrationRangeOperation(document: EditListDocument, operation: EditList
     while (k < out.length && inserted(out[k]!)) k += 1;
     return k;
   };
+  // Clips before any narration keep their order at the front.
+  const leading = anchors.filter(({ at }) => at === null).map(({ clip }) => ({ ...clip }));
   for (const { clip, at } of anchors) {
-    if (at === null) { out = [{ ...clip }, ...out]; continue; }
+    if (at === null) continue;
     const holder = out.findIndex((segment) => !inserted(segment)
       && at > segment.sourceStart + TIME_EPSILON && at <= segment.sourceEnd + TIME_EPSILON);
     if (holder < 0) {
@@ -741,6 +743,7 @@ function narrationRangeOperation(document: EditListDocument, operation: EditList
       out.splice(holder, 1, { ...host, sourceEnd: at }, { ...clip }, { ...host, id, sourceStart: at });
     } else out.splice(holder + 1, 0, { ...clip });
   }
+  out = [...leading, ...out];
   return manualDocumentWithSegments(document, out);
 }
 
