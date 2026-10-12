@@ -2,6 +2,8 @@ import { VideocutError } from './errors';
 export interface SoundEffectCue {
   id: string; assetId: string; label: string; start: number; sourceIn: number; sourceOut: number;
   gainDb: number; fadeIn: number; fadeOut: number; mute: boolean;
+  /** Display row of the audio track (0 = first). Layout only; the mix ignores it. */
+  track?: number;
 }
 export interface SoundEffectsDocument { schemaVersion: 1; editRevision: string; cues: SoundEffectCue[] }
 export function soundEffectsInvalid(message: string): never { throw new VideocutError('invalid_argument', message); }
@@ -19,8 +21,9 @@ export function parseSoundEffects(value: unknown, duration: number): SoundEffect
       || c.start + c.sourceOut - c.sourceIn > duration + 1e-6 || c.gainDb < -60 || c.gainDb > 12
       || c.fadeIn < 0 || c.fadeOut < 0 || c.fadeIn + c.fadeOut > c.sourceOut - c.sourceIn)
       soundEffectsInvalid('Sound-effect cue exceeds timeline, asset, gain or fade bounds');
+    if (c.track !== undefined && (!Number.isInteger(c.track) || c.track < 0 || c.track > 63)) soundEffectsInvalid('Sound-effect cue track must be an integer from 0 to 63');
   }
-  return { schemaVersion: 1, editRevision: d.editRevision, cues: d.cues.map(c => ({id:c.id,assetId:c.assetId,label:c.label,start:c.start,sourceIn:c.sourceIn,sourceOut:c.sourceOut,gainDb:c.gainDb,fadeIn:c.fadeIn,fadeOut:c.fadeOut,mute:c.mute})) };
+  return { schemaVersion: 1, editRevision: d.editRevision, cues: d.cues.map(c => ({id:c.id,assetId:c.assetId,label:c.label,start:c.start,sourceIn:c.sourceIn,sourceOut:c.sourceOut,gainDb:c.gainDb,fadeIn:c.fadeIn,fadeOut:c.fadeOut,mute:c.mute,...(c.track!==undefined?{track:c.track}:{})})) };
 }
 /** One sample-clock mix contract for both preview and export. */
 export function soundEffectsFilter(cues: readonly SoundEffectCue[], duration: number): string {

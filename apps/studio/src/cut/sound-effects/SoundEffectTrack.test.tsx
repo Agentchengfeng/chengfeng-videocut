@@ -133,3 +133,25 @@ it('does not resurrect an explicitly cancelled draft when its pending save finis
   expect(ui.host.querySelector('input[aria-label="音量（dB）"]')).toBeNull();
   unmountClean();
 });
+
+it('renders one row per audio track and writes track numbers only when a cue changes row', async () => {
+  const ui = await setup();
+  expect(ui.host.querySelectorAll('[data-sfx-track]')).toHaveLength(1);
+  const element = ui.host.querySelector<HTMLElement>('[data-sfx-cue]')!;
+  element.setPointerCapture = vi.fn();
+  act(() => element.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, button: 0, clientX: 100, clientY: 10, pointerId: 1 })));
+  act(() => element.dispatchEvent(new PointerEvent('pointermove', { clientX: 100, clientY: 60, pointerId: 1 })));
+  expect(element.style.top).toBe('51px');
+  await act(async () => element.dispatchEvent(new PointerEvent('pointerup', { clientX: 100, clientY: 60, pointerId: 1 })));
+  expect(ui.persisted().document.cues[0]).toMatchObject({ start: 1, track: 1 });
+  expect(ui.host.querySelectorAll('[data-sfx-track]')).toHaveLength(1);
+  expect(element.style.top).toBe('3px'); unmountClean();
+});
+
+it('mutes every cue of a track from its header', async () => {
+  const ui = await setup();
+  const header = ui.host.querySelector<HTMLButtonElement>('button[aria-label="音频轨 1"]')!;
+  await act(async () => header.click());
+  expect(ui.persisted().document.cues[0].mute).toBe(true);
+  expect(ui.host.querySelector('button[aria-label="音频轨 1"]')!.getAttribute('aria-pressed')).toBe('true'); unmountClean();
+});

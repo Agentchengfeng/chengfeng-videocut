@@ -27,6 +27,12 @@ test('SFX contract: finite values, unique IDs, bounded cues, envelope validation
  for(const patch of [{start:NaN},{gainDb:Infinity},{fadeOut:1},{sourceIn:-1},{start:2.9}])expect(()=>parseSoundEffects({...d,cues:[{...d.cues[0],...patch}]},3)).toThrow();
  expect(()=>parseSoundEffects({...d,cues:[d.cues[0],d.cues[0]]},3)).toThrow();expect(soundEffectsFilter(d.cues,3)).toContain('level=0:latency=1');
 });
+test('SFX contract: optional display track is kept, bounded and absent on legacy cues',()=>{
+ const base={schemaVersion:1,editRevision:'a'.repeat(64),cues:[cue('cue','b'.repeat(64))]};
+ expect('track' in parseSoundEffects(base,3).cues[0]!).toBe(false);
+ expect(parseSoundEffects({...base,cues:[{...base.cues[0],track:2}]},3).cues[0]!.track).toBe(2);
+ for(const track of [-1,1.5,64,'1',null])expect(()=>parseSoundEffects({...base,cues:[{...base.cues[0],track}]},3)).toThrow();
+});
 test('SFX real API: upload, CAS, move/fades/mute/delete, stale EDL, missing asset and symlinks fail closed',async()=>{
  const f=await fixture();try{
   const initial=await f.call('GET');expect(initial.status).toBe(200);expect(initial.body.revision).toBeNull();

@@ -1,3 +1,165 @@
-.cf-sfx{flex-shrink:0;padding:0;background:#17151c;color:#e8dff6;font-size:11px;border-bottom:1px solid #39313e}.cf-sfx-toolbar{position:sticky;left:0;width:max-content;height:24px;padding-left:14px;display:flex;align-items:center;gap:10px;margin-bottom:3px}.cf-sfx button{border:1px solid #665276;border-radius:4px;padding:2px 7px}.cf-sfx button:disabled{opacity:.4}.cf-sfx-lane{position:relative;height:47px;background:#24202c;border-radius:4px;overflow:hidden}.cf-sfx-cue{position:absolute;height:19px;min-width:5px;overflow:hidden;white-space:nowrap;background:#654a7d;color:white;text-align:left;touch-action:none;cursor:grab}.cf-sfx-cue.selected{outline:2px solid #d6b1ff}.cf-sfx-playhead{position:absolute;top:0;bottom:0;width:1px;background:#fff;z-index:2;pointer-events:none}.cf-sfx-error{color:#ffc0b7;padding:4px}.cf-sfx-dialog{margin:auto;padding:24px;max-width:440px;width:90%;border:1px solid #777;border-radius:12px;background:#222;color:#eee}.cf-sfx-dialog::backdrop{background:#0009}.cf-sfx-dialog h3{font-size:18px;margin-bottom:12px}.cf-sfx-dialog label{display:flex;justify-content:space-between;gap:20px;margin:10px 0}.cf-sfx-dialog input[type=number]{width:150px;color:#eee;background:#333;border:1px solid #666;padding:5px}.cf-sfx-buttons{display:flex;gap:10px;margin-top:16px}
+.cf-sfx {
+  position: relative;
+  flex-shrink: 0;
+  color: rgb(255 255 255 / 55%);
+  font-size: 11px;
+}
 
-.cf-sfx .cf-sfx-cue{padding:0 2px}
+.cf-sfx-row {
+  position: relative;
+  display: flex;
+}
+
+.cf-sfx-gutter {
+  position: sticky;
+  left: 0;
+  z-index: 12;
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  color: rgb(255 255 255 / 35%);
+}
+
+button.cf-sfx-gutter:hover:not(:disabled),
+button.cf-sfx-gutter[aria-pressed="true"] {
+  color: rgb(255 255 255 / 80%);
+}
+
+.cf-sfx-pad,
+.cf-sfx-lane {
+  flex-shrink: 0;
+}
+
+.cf-sfx-footer.is-drop {
+  background: rgb(167 139 250 / 8%) !important;
+}
+
+.cf-sfx-status {
+  position: sticky;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: max-content;
+  padding-left: 12px;
+}
+
+.cf-sfx-status button,
+.cf-sfx-status select {
+  padding: 2px 8px;
+  border: 1px solid rgb(255 255 255 / 14%);
+  border-radius: 4px;
+  color: var(--text-1);
+}
+
+.cf-sfx button:disabled {
+  opacity: 0.4;
+}
+
+.cf-sfx-error {
+  position: sticky;
+  width: max-content;
+  padding: 4px 12px;
+  color: #ffc0b7;
+}
+
+/* One layer for every cue: a cue keeps its DOM node while it is dragged across tracks. */
+.cf-sfx-cues {
+  position: absolute;
+  top: 0;
+  z-index: 1;
+  height: 0;
+  pointer-events: none;
+}
+
+.cf-sfx-cue {
+  position: absolute;
+  display: flex;
+  overflow: hidden;
+  align-items: center;
+  min-width: 5px;
+  padding: 0 8px;
+  border: 1px solid rgb(167 139 250 / 45%);
+  border-radius: 5px;
+  background: rgb(167 139 250 / 14%);
+  color: var(--text-1);
+  cursor: grab;
+  font-size: 11px;
+  font-weight: 400;
+  pointer-events: auto;
+  text-align: left;
+  touch-action: none;
+  white-space: nowrap;
+}
+
+.cf-sfx-cue:hover {
+  background: rgb(167 139 250 / 20%);
+}
+
+.cf-sfx-cue.selected {
+  border-color: rgb(167 139 250 / 85%);
+  color: var(--text-0);
+}
+
+.cf-sfx-cue.moving {
+  z-index: 3;
+  background: rgb(167 139 250 / 26%);
+  cursor: grabbing;
+}
+
+.cf-sfx-dialog {
+  width: 90%;
+  max-width: 440px;
+  margin: auto;
+  padding: 24px;
+  border: 1px solid rgb(255 255 255 / 14%);
+  border-radius: 8px;
+  background: #17181c;
+  color: #eee;
+}
+
+.cf-sfx-dialog::backdrop {
+  background: #0009;
+}
+
+.cf-sfx-dialog h3 {
+  margin-bottom: 12px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.cf-sfx-dialog label {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  margin: 8px 0;
+}
+
+.cf-sfx-dialog input[type="number"] {
+  width: 150px;
+  padding: 4px 8px;
+  border: 1px solid rgb(255 255 255 / 14%);
+  border-radius: 4px;
+  background: #101014;
+  color: #eee;
+}
+
+.cf-sfx-buttons {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.cf-sfx-buttons button {
+  padding: 4px 12px;
+  border: 1px solid rgb(255 255 255 / 14%);
+  border-radius: 4px;
+}
+
+/* Audio tracks sit below the main lanes; give the pane room to show them together. */
+@media (height >= 480px) {
+  .cf-cut-workspace:has([data-sfx-track]) {
+    --cf-cut-timeline-height: clamp(160px, 40dvh, 400px);
+  }
+}

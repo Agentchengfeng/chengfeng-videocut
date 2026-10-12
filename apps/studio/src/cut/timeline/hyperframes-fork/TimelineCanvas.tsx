@@ -51,13 +51,15 @@ export const TimelineCanvas = memo(function TimelineCanvas({
 }: TimelineCanvasProps) {
   // Three rows once a project can carry visual layers. The height function has
   // always taken a track count; only the number passed here changed.
-  const totalHeight = getTimelineCanvasHeight(3 + (insertClips?.length ? 2 : 0)) + (soundEffectsTrack ? 76 : 0);
+  // The audio tracks below the lanes size themselves, so the canvas only keeps
+  // the lane height as a floor once they are present.
+  const totalHeight = getTimelineCanvasHeight(3 + (insertClips?.length ? 2 : 0));
 
   return (
     <div
       className="relative"
       style={{
-        height: totalHeight,
+        ...(soundEffectsTrack ? { minHeight: totalHeight } : { height: totalHeight }),
         width: GUTTER + TRACKS_LEFT_PAD + displayContentWidth,
       }}
       data-hyperframes-timeline-fork="canvas"
@@ -97,7 +99,6 @@ export const TimelineCanvas = memo(function TimelineCanvas({
         />
       ))}
 
-      {soundEffectsTrack}
       <TimelineLanes
         segments={segments}
         visualLayers={visualLayers}
@@ -116,6 +117,8 @@ export const TimelineCanvas = memo(function TimelineCanvas({
         onSegmentFocus={onSegmentFocus}
         onSegmentResizeStart={onSegmentResizeStart}
       />
+
+      {soundEffectsTrack}
 
       <div aria-hidden="true" style={{ height: TRACKS_BOTTOM_PAD }} />
 
