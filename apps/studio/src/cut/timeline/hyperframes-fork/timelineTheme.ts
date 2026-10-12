@@ -85,7 +85,7 @@ export const defaultTimelineTheme: TimelineTheme = {
   handleColor: "rgba(255,255,255,0.2)",
   panelResizeSeam: "rgba(255,255,255,0.12)",
   panelResizeActive: "rgba(255,255,255,0.24)",
-  clipRadius: "8px",
+  clipRadius: "4px",
 };
 
 export function getTimelineTrackStyle(_tag: string): TimelineTrackStyle {

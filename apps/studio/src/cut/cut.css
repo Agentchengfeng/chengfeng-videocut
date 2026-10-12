@@ -1999,7 +1999,7 @@ select:focus-visible,
    second teal selection color. */
 .cf-cut-linked-clip--audio .cf-cut-audio-waveform {
   background: transparent !important;
-  color: rgb(75 163 210 / 82%) !important;
+  color: var(--cf-clip-audio-wave) !important;
 }
 
 .cf-cut-trim-handle {
@@ -2340,4 +2340,98 @@ select:focus-visible,
 
 .cf-cut-seam-marker:hover {
   border-top-color: rgb(251 191 36);
+}
+
+/* Clip skin modelled on 剪映: solid fill per kind, name at the top-left, a white
+   outline for the selection. Appearance only — geometry and behaviour are untouched. */
+.cf-cut-timeline {
+  --cf-clip-video: #1a5a5e;
+  --cf-clip-video-hover: #1f6a6f;
+  --cf-clip-audio: #17466f;
+  --cf-clip-audio-hover: #1c5285;
+  --cf-clip-audio-wave: #4f9fe0;
+  --cf-clip-visual: #8a5226;
+  --cf-clip-visual-hover: #9c5e2d;
+}
+
+.cf-cut-timeline .cf-cut-linked-clip .timeline-clip,
+.cf-cut-timeline .cf-cut-linked-clip .timeline-clip[data-active] {
+  border-color: transparent;
+  border-radius: 4px;
+}
+
+.cf-cut-timeline .cf-cut-linked-clip--video .timeline-clip {
+  background-color: var(--cf-clip-video);
+}
+
+.cf-cut-timeline .cf-cut-linked-clip--video .timeline-clip.is-hovered,
+.cf-cut-timeline .cf-cut-linked-clip--video .timeline-clip.is-dragging {
+  background-color: var(--cf-clip-video-hover);
+}
+
+.cf-cut-timeline .cf-cut-linked-clip--audio .timeline-clip {
+  background-color: var(--cf-clip-audio);
+}
+
+.cf-cut-timeline .cf-cut-linked-clip--audio .timeline-clip.is-hovered,
+.cf-cut-timeline .cf-cut-linked-clip--audio .timeline-clip.is-dragging {
+  background-color: var(--cf-clip-audio-hover);
+}
+
+.cf-cut-timeline .cf-cut-linked-clip .timeline-clip::before {
+  background: rgb(255 255 255 / 14%);
+}
+
+.cf-cut-timeline .cf-cut-linked-clip .timeline-clip__label {
+  top: 5px;
+  left: 6px;
+  color: rgb(255 255 255 / 88%);
+  font-weight: 400;
+  text-shadow: none;
+}
+
+.cf-cut-timeline .cf-cut-linked-clip .timeline-clip__timecode {
+  left: 6px;
+  color: rgb(255 255 255 / 60%);
+}
+
+.cf-cut-timeline .cf-cut-visual-clip,
+.cf-cut-timeline .cf-cut-insert-clip {
+  align-items: flex-start;
+  padding: 4px 6px;
+  border-color: transparent;
+  border-radius: 4px;
+  color: rgb(255 255 255 / 88%);
+  font-size: 10px;
+  line-height: 1;
+}
+
+.cf-cut-timeline .cf-cut-visual-clip {
+  background: var(--cf-clip-visual);
+}
+
+.cf-cut-timeline .cf-cut-visual-clip:hover {
+  background: var(--cf-clip-visual-hover);
+}
+
+.cf-cut-timeline .cf-cut-insert-clip {
+  background: var(--cf-clip-video);
+}
+
+.cf-cut-timeline .cf-cut-insert-clip:hover {
+  background: var(--cf-clip-video-hover);
+}
+
+.cf-cut-timeline .cf-cut-insert-clip.is-audio {
+  background: var(--cf-clip-audio);
+}
+
+.cf-cut-timeline .cf-cut-insert-clip.is-audio:hover {
+  background: var(--cf-clip-audio-hover);
+}
+
+.cf-cut-timeline .cf-cut-visual-clip.is-active,
+.cf-cut-timeline .cf-cut-insert-clip.is-active {
+  border-color: rgb(255 255 255 / 90%);
+  color: #fff;
 }

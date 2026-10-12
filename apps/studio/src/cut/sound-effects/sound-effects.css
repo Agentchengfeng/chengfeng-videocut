@@ -32,7 +32,7 @@ button.cf-sfx-gutter[aria-pressed="true"] {
 }
 
 .cf-sfx-footer.is-drop {
-  background: rgb(167 139 250 / 8%) !important;
+  background: rgb(79 159 224 / 8%) !important;
 }
 
 .cf-sfx-status {
@@ -75,17 +75,15 @@ button.cf-sfx-gutter[aria-pressed="true"] {
 
 .cf-sfx-cue {
   position: absolute;
-  display: flex;
   overflow: hidden;
-  align-items: center;
   min-width: 5px;
-  padding: 0 8px;
-  border: 1px solid rgb(167 139 250 / 45%);
-  border-radius: 5px;
-  background: rgb(167 139 250 / 14%);
-  color: var(--text-1);
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: var(--cf-clip-audio, #17466f);
+  color: rgb(255 255 255 / 88%);
   cursor: grab;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 400;
   pointer-events: auto;
   text-align: left;
@@ -93,18 +91,38 @@ button.cf-sfx-gutter[aria-pressed="true"] {
   white-space: nowrap;
 }
 
+.cf-sfx-cue-label {
+  position: absolute;
+  top: 5px;
+  right: 6px;
+  left: 6px;
+  overflow: hidden;
+  line-height: 1;
+  text-overflow: ellipsis;
+}
+
+.cf-sfx-wave {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  fill: var(--cf-clip-audio-wave, #4f9fe0);
+  pointer-events: none;
+}
+
 .cf-sfx-cue:hover {
-  background: rgb(167 139 250 / 20%);
+  background: var(--cf-clip-audio-hover, #1c5285);
 }
 
 .cf-sfx-cue.selected {
-  border-color: rgb(167 139 250 / 85%);
-  color: var(--text-0);
+  border-color: rgb(255 255 255 / 90%);
+  color: #fff;
 }
 
 .cf-sfx-cue.moving {
   z-index: 3;
-  background: rgb(167 139 250 / 26%);
+  background: var(--cf-clip-audio-hover, #1c5285);
   cursor: grabbing;
 }
 

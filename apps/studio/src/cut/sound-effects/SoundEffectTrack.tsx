@@ -1,12 +1,27 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRuntimeProtection } from '../../runtime/useRuntimeProtection';
 import type { SoundEffectCue, SoundEffectsDocument } from '@video-workbench/core';
 import './sound-effects.css';
 import { CLIP_Y, GUTTER, TRACK_H, TRACKS_LEFT_PAD } from '../timeline/hyperframes-fork/timelineLayout';
 import { defaultTimelineTheme as theme } from '../timeline/hyperframes-fork/timelineTheme';
 import { layoutSoundTracks, withTrackMove } from './soundEffectTracks';
+import { requestSoundEffectPeaks, waveformAreaPath } from './soundEffectWaveform';
 const FOOTER_H = 28;
 const MAX_ROW = 63;
+const WAVE_H = 22;
+/** The cue's own audio, trimmed to its in/out points, along the bottom of the clip. */
+function CueWaveform({ projectId, cue, width }: { projectId: string; cue: SoundEffectCue; width: number }) {
+  const [peaks, setPeaks] = useState<number[] | null>(null);
+  useEffect(() => {
+    let live = true; setPeaks(null);
+    requestSoundEffectPeaks(projectId, cue.assetId).then((next) => { if (live) setPeaks(next); }).catch(() => {});
+    return () => { live = false; };
+  }, [projectId, cue.assetId]);
+  const pixels = Math.round(width);
+  const path = useMemo(() => (peaks ? waveformAreaPath(peaks, cue.sourceIn, cue.sourceOut, pixels, WAVE_H) : ''), [peaks, cue.sourceIn, cue.sourceOut, pixels]);
+  if (!path) return null;
+  return <svg className="cf-sfx-wave" viewBox={`0 0 ${pixels} ${WAVE_H}`} height={WAVE_H} preserveAspectRatio="none" aria-hidden="true"><path d={path} /></svg>;
+}
 function TrackIcon({ muted }: { muted: boolean }) {
   return (
     <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -112,7 +127,7 @@ export function SoundEffectTrack({projectId,editRevision,time,onSaved,onSeek,pix
      const finish=()=>{element.removeEventListener('pointermove',move);element.removeEventListener('pointerup',finish);element.removeEventListener('pointercancel',cancel);setMove(null);if(nextRow!==row)void save(withTrackMove(cues,c.id,next,nextRow));else if(next!==initial)void save(cues.map(v=>v.id===c.id?{...v,start:next}:v));};
      const cancel=()=>{element.removeEventListener('pointermove',move);element.removeEventListener('pointerup',finish);element.removeEventListener('pointercancel',cancel);setMove(null);};
      element.addEventListener('pointermove',move);element.addEventListener('pointerup',finish,{once:true});element.addEventListener('pointercancel',cancel,{once:true});
-    }}>{c.label}</button>;})}
+    }}><CueWaveform projectId={projectId} cue={c} width={(c.sourceOut-c.sourceIn)*pixelsPerSecond}/><span className="cf-sfx-cue-label">{c.label}</span></button>;})}
   </div>
   <dialog ref={dialog} className="cf-sfx-dialog" aria-label="音效设置" onCancel={()=>editDraft(null)}><form onSubmit={e=>{e.preventDefault();if(draft)saveDialog(cues.map(c=>c.id===draft.id?draft:c));}}>
    <h3>音效设置</h3>{draft&&<><p>{draft.label}</p>{([['start','开始（秒）'],['sourceIn','素材入点（秒）'],['sourceOut','素材出点（秒）'],['gainDb','音量（dB）'],['fadeIn','淡入（秒）'],['fadeOut','淡出（秒）']] as const).map(([key,label])=><label key={key}>{label}<input aria-label={label} type="number" step="0.001" required value={draft[key]} onChange={e=>editDraft({...draft,[key]:e.target.valueAsNumber})}/></label>)}
