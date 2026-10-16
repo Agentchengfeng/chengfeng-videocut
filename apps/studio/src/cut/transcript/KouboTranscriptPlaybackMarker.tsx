@@ -113,6 +113,8 @@ const SEEK_JUMP_SECONDS = 1;
 const SMOOTH_SCROLL_MAX_VIEWPORTS = 1.5;
 // A follow scroll that has not arrived by then no longer explains scroll events.
 const PROGRAMMATIC_SCROLL_STALE_MS = 3000;
+// After arriving, a smooth scroll still reports a settling event or two at the target.
+const PROGRAMMATIC_SCROLL_SETTLE_MS = 400;
 
 /** Where the transcript scroll owner should go to keep `cue` in view; null when it already is. */
 export function followScrollTarget(owner: HTMLElement, cue: HTMLElement): number | null {
@@ -254,7 +256,12 @@ export function KouboTranscriptPlaybackMarker({
         const scrollTop = owner.scrollTop;
         if (isFollowScrollStep(programmatic, scrollTop, performance.now())) {
           programmatic.last = scrollTop;
-          if (Math.abs(scrollTop - programmatic.target) < 2) follow.programmatic = null;
+          if (Math.abs(scrollTop - programmatic.target) < 2) {
+            programmatic.until = Math.min(
+              programmatic.until,
+              performance.now() + PROGRAMMATIC_SCROLL_SETTLE_MS,
+            );
+          }
           return;
         }
         follow.programmatic = null;

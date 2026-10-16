@@ -91,6 +91,10 @@ describe("KouboTranscriptPlaybackMarker", () => {
     const up = { from: 4000, last: 4000, target: 1000, until: 10_000 };
     expect(isFollowScrollStep(up, 2500, 100)).toBe(true);
     expect(isFollowScrollStep(up, 4300, 100)).toBe(false);
+    // Settling events at the target after arrival are still ours.
+    const arrived = { from: 0, last: 500, target: 500, until: 900 };
+    expect(isFollowScrollStep(arrived, 500.5, 800)).toBe(true);
+    expect(isFollowScrollStep(arrived, 500, 901)).toBe(false);
   });
 });
 
