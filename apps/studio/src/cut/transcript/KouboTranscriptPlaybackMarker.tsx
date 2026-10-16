@@ -109,8 +109,10 @@ const FOLLOW_BAND_BOTTOM = 0.72;
 const FOLLOW_ANCHOR = 0.3;
 // A playhead move larger than this between two updates is a seek, not playback.
 const SEEK_JUMP_SECONDS = 1;
-// Scroll events inside this window after our own scroll are ours, not the person's.
-const PROGRAMMATIC_SCROLL_MS = 800;
+// Farther than this (in viewport heights) jumps instantly instead of animating.
+const SMOOTH_SCROLL_MAX_VIEWPORTS = 1.5;
+// A follow scroll that has not arrived by then no longer explains scroll events.
+const PROGRAMMATIC_SCROLL_STALE_MS = 3000;
 
 /** Where the transcript scroll owner should go to keep `cue` in view; null when it already is. */
 export function followScrollTarget(owner: HTMLElement, cue: HTMLElement): number | null {
@@ -136,9 +138,30 @@ function findScrollOwner(root: HTMLElement): HTMLElement | null {
   return root.querySelector<HTMLElement>("[data-cut-transcript-scroll-owner=true]");
 }
 
+interface ProgrammaticScroll {
+  from: number;
+  last: number;
+  target: number;
+  until: number;
+}
+
+/**
+ * Whether a scroll event is our own follow scroll still on its way. Smooth
+ * scrolling can take arbitrarily long (a background tab throttles it), so this
+ * checks direction and destination instead of a time window: anything moving
+ * away from the target, or past it, is the person.
+ */
+export function isFollowScrollStep(scroll: ProgrammaticScroll, scrollTop: number, now: number): boolean {
+  if (now > scroll.until) return false;
+  const down = scroll.target >= scroll.from;
+  return down
+    ? scrollTop >= scroll.last - 1 && scrollTop <= scroll.target + 1
+    : scrollTop <= scroll.last + 1 && scrollTop >= scroll.target - 1;
+}
+
 interface FollowState {
   suspended: boolean;
-  programmaticUntil: number;
+  programmatic: ProgrammaticScroll | null;
   pointerDown: boolean;
   lastTime: number | null;
   owner: HTMLElement | null;
@@ -170,7 +193,7 @@ export function KouboTranscriptPlaybackMarker({
   const markerNodesRef = useRef<MarkerNodes>({ cue: null, word: null });
   const followRef = useRef<FollowState>({
     suspended: false,
-    programmaticUntil: 0,
+    programmatic: null,
     pointerDown: false,
     lastTime: null,
     owner: null,
@@ -197,11 +220,18 @@ export function KouboTranscriptPlaybackMarker({
     if (!cue?.isConnected) return;
     const target = followScrollTarget(owner, cue);
     if (target === null) return;
-    followRef.current.programmaticUntil = performance.now() + PROGRAMMATIC_SCROLL_MS;
+    const from = owner.scrollTop;
+    followRef.current.programmatic = {
+      from,
+      last: from,
+      target,
+      until: performance.now() + PROGRAMMATIC_SCROLL_STALE_MS,
+    };
     const reduceMotion = typeof window.matchMedia === "function"
       && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const far = Math.abs(target - from) > owner.clientHeight * SMOOTH_SCROLL_MAX_VIEWPORTS;
     if (typeof owner.scrollTo === "function") {
-      owner.scrollTo({ top: target, behavior: reduceMotion ? "auto" : "smooth" });
+      owner.scrollTo({ top: target, behavior: reduceMotion || far ? "auto" : "smooth" });
     } else {
       owner.scrollTop = target;
     }
@@ -219,7 +249,16 @@ export function KouboTranscriptPlaybackMarker({
     follow.owner = owner;
     if (!owner) return null;
     const onScroll = () => {
-      if (performance.now() < follow.programmaticUntil) return;
+      const programmatic = follow.programmatic;
+      if (programmatic) {
+        const scrollTop = owner.scrollTop;
+        if (isFollowScrollStep(programmatic, scrollTop, performance.now())) {
+          programmatic.last = scrollTop;
+          if (Math.abs(scrollTop - programmatic.target) < 2) follow.programmatic = null;
+          return;
+        }
+        follow.programmatic = null;
+      }
       // Any scroll we did not start is the person taking over: stop following.
       follow.suspended = true;
       refreshReturn(owner.closest<HTMLElement>("[data-cut-transcript-pane=true]"));

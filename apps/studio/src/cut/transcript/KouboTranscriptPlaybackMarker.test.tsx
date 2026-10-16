@@ -1,7 +1,11 @@
 // @vitest-environment happy-dom
 
 import { afterEach, describe, expect, it } from "vitest";
-import { applyKouboTranscriptPlaybackMarker, followScrollTarget } from "./KouboTranscriptPlaybackMarker";
+import {
+  applyKouboTranscriptPlaybackMarker,
+  followScrollTarget,
+  isFollowScrollStep,
+} from "./KouboTranscriptPlaybackMarker";
 
 function appendCue(root: HTMLElement, cueId: string, wordId: string): void {
   const cue = document.createElement("article");
@@ -72,6 +76,21 @@ describe("KouboTranscriptPlaybackMarker", () => {
     expect(followScrollTarget(end.owner, end.cue)).toBe(2000);
     const atEnd = scrollFixture({ scrollTop: 2000, cueTop: 950, cueHeight: 40, scrollHeight: 3000 });
     expect(followScrollTarget(atEnd.owner, atEnd.cue)).toBeNull();
+  });
+
+  it("treats a slow follow scroll as ours and anything else as the person", () => {
+    const down = { from: 0, last: 0, target: 5000, until: 10_000 };
+    expect(isFollowScrollStep(down, 700, 2_000)).toBe(true);
+    down.last = 700;
+    expect(isFollowScrollStep(down, 5000, 2_500)).toBe(true);
+    // Wheel up in the middle of our scroll down.
+    expect(isFollowScrollStep(down, 300, 2_600)).toBe(false);
+    // Overshoot or a stale marker is not ours either.
+    expect(isFollowScrollStep(down, 5200, 2_600)).toBe(false);
+    expect(isFollowScrollStep(down, 5000, 10_001)).toBe(false);
+    const up = { from: 4000, last: 4000, target: 1000, until: 10_000 };
+    expect(isFollowScrollStep(up, 2500, 100)).toBe(true);
+    expect(isFollowScrollStep(up, 4300, 100)).toBe(false);
   });
 });
 
