@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 import { afterEach, describe, expect, it } from "vitest";
-import { applyKouboTranscriptPlaybackMarker } from "./KouboTranscriptPlaybackMarker";
+import { applyKouboTranscriptPlaybackMarker, followScrollTarget } from "./KouboTranscriptPlaybackMarker";
 
 function appendCue(root: HTMLElement, cueId: string, wordId: string): void {
   const cue = document.createElement("article");
@@ -53,4 +53,43 @@ describe("KouboTranscriptPlaybackMarker", () => {
     expect(secondCue?.classList.contains("is-active")).toBe(true);
     expect(secondWord?.classList.contains("is-current")).toBe(true);
   });
+
+  it("keeps the list still while the playing line is inside the reading band", () => {
+    const { owner, cue } = scrollFixture({ scrollTop: 400, cueTop: 200, cueHeight: 40 });
+    expect(followScrollTarget(owner, cue)).toBeNull();
+  });
+
+  it("brings a line that left the band to about a third of the way down", () => {
+    const below = scrollFixture({ scrollTop: 400, cueTop: 700, cueHeight: 40 });
+    // 400 + 700 - 0.3 * 1000
+    expect(followScrollTarget(below.owner, below.cue)).toBe(800);
+    const above = scrollFixture({ scrollTop: 400, cueTop: -300, cueHeight: 40 });
+    expect(followScrollTarget(above.owner, above.cue)).toBe(0);
+  });
+
+  it("clamps to the end of the transcript and skips no-op scrolls", () => {
+    const end = scrollFixture({ scrollTop: 1900, cueTop: 950, cueHeight: 40, scrollHeight: 3000 });
+    expect(followScrollTarget(end.owner, end.cue)).toBe(2000);
+    const atEnd = scrollFixture({ scrollTop: 2000, cueTop: 950, cueHeight: 40, scrollHeight: 3000 });
+    expect(followScrollTarget(atEnd.owner, atEnd.cue)).toBeNull();
+  });
 });
+
+function scrollFixture({
+  scrollTop,
+  cueTop,
+  cueHeight,
+  scrollHeight = 5000,
+}: { scrollTop: number; cueTop: number; cueHeight: number; scrollHeight?: number }) {
+  const owner = document.createElement("div");
+  const cue = document.createElement("article");
+  owner.append(cue);
+  document.body.append(owner);
+  Object.defineProperty(owner, "clientHeight", { configurable: true, value: 1000 });
+  Object.defineProperty(owner, "scrollHeight", { configurable: true, value: scrollHeight });
+  owner.scrollTop = scrollTop;
+  Object.defineProperty(owner, "scrollTop", { configurable: true, value: scrollTop, writable: true });
+  owner.getBoundingClientRect = () => ({ top: 100, bottom: 1100 }) as DOMRect;
+  cue.getBoundingClientRect = () => ({ top: 100 + cueTop, bottom: 100 + cueTop + cueHeight }) as DOMRect;
+  return { owner, cue };
+}

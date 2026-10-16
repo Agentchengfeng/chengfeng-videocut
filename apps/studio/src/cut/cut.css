@@ -1000,6 +1000,35 @@ select:focus-visible,
   white-space: nowrap;
 }
 
+/* Shown only while the person has scrolled away from the playing line. */
+.cut-transcript-follow {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  z-index: 11;
+  min-height: 28px;
+  padding: 0 12px;
+  border: 1px solid #27272a;
+  border-radius: 999px;
+  background: rgb(24 24 27 / 96%);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 40%);
+  color: var(--mint);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transform: translateX(-50%);
+}
+
+.cut-transcript-follow:hover {
+  background: var(--panel-hover);
+}
+
+.cut-transcript-follow:focus-visible {
+  outline: 2px solid var(--mint);
+  outline-offset: 2px;
+}
+
 .cut-transcript-selection button {
   min-width: 54px;
   min-height: 32px;
