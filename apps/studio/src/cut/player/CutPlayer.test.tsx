@@ -3,7 +3,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CutPlayer } from "./CutPlayer";
+import { CutPlayer, speedMenuPlacement } from "./CutPlayer";
 import { projectCanvasAspect } from "../useContainedPicture";
 import { createTransportVideoRef, type EdlVideoTransport } from "./useAssembledVideoTransport";
 
@@ -488,5 +488,42 @@ describe("CutPlayer controls", () => {
     expect(host.querySelector<HTMLButtonElement>(".cf-cut-play-button")?.disabled).toBe(false);
 
     act(() => root.unmount());
+  });
+
+  it("opens the speed menu right above its button instead of the player's top-right corner", () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    act(() => root.render(
+      <CutPlayer sourceUrl="/video.mp4" transport={transportFixture()} onTimelineTimeCommit={vi.fn()} />,
+    ));
+    const rect = (left: number, top: number, width: number, height: number) =>
+      ({ left, top, width, height, right: left + width, bottom: top + height, x: left, y: top, toJSON: () => ({}) }) as DOMRect;
+    // Player 900x500 at (100, 50); speed button sits in the bottom controls row,
+    // well left of the player's right edge (the volume/loop/fullscreen/tools follow it).
+    vi.spyOn(host.querySelector<HTMLElement>(".cf-cut-player")!, "getBoundingClientRect").mockReturnValue(rect(100, 50, 900, 500));
+    const button = host.querySelector<HTMLButtonElement>('[aria-label="播放速度"]')!;
+    vi.spyOn(button, "getBoundingClientRect").mockReturnValue(rect(700, 510, 36, 28));
+
+    act(() => button.click());
+    const menu = host.querySelector<HTMLElement>(".cf-cut-speed-menu")!;
+    expect(menu.style.getPropertyValue("--cf-cut-speed-menu-right")).toBe("264px");
+    expect(menu.style.getPropertyValue("--cf-cut-speed-menu-bottom")).toBe("46px");
+    expect(menu.style.getPropertyValue("--cf-cut-speed-menu-max-height")).toBe("446px");
+
+    act(() => root.unmount());
+  });
+});
+
+describe("speedMenuPlacement", () => {
+  it("anchors to the button's top-right edge and stays inside the player", () => {
+    const player = { top: 0, right: 800, bottom: 450 };
+    expect(speedMenuPlacement(player, { top: 410, right: 600, bottom: 438 })).toEqual({ right: 200, bottom: 46, maxHeight: 396 });
+    // A button flush with the player's right edge keeps the 8px inset.
+    expect(speedMenuPlacement(player, { top: 410, right: 800, bottom: 438 }).right).toBe(8);
+  });
+
+  it("keeps at least one row when the player leaves almost no room above the button", () => {
+    expect(speedMenuPlacement({ top: 0, right: 320, bottom: 60 }, { top: 10, right: 200, bottom: 38 }).maxHeight).toBe(28);
   });
 });

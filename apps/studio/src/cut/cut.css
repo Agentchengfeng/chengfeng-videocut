@@ -636,6 +636,9 @@ select:focus-visible,
   cursor: grab;
 }
 
+/* Static on purpose: the menu is positioned against .cf-cut-player so the
+   wrapping controls row never clips it; CutPlayer measures the button and
+   feeds the offsets below so the menu still opens right above it. */
 .cf-cut-speed-control {
   position: static;
   flex: 0 0 auto;
@@ -653,11 +656,11 @@ select:focus-visible,
 .cf-cut-speed-menu {
   position: absolute;
   z-index: 50;
-  right: 8px;
-  top: 8px;
+  right: var(--cf-cut-speed-menu-right, 8px);
+  bottom: var(--cf-cut-speed-menu-bottom, 56px);
   min-width: 56px;
   max-width: calc(100% - 16px);
-  max-height: calc(100% - 112px);
+  max-height: var(--cf-cut-speed-menu-max-height, calc(100% - 112px));
   overflow: auto;
   overscroll-behavior: contain;
   border: 1px solid rgb(255 255 255 / 8%);

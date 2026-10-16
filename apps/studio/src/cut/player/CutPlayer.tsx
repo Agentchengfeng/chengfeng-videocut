@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type CSSProperties,
@@ -34,6 +35,26 @@ function clampVolume(value: number): number {
 
 function roundVolume(value: number): number {
   return Math.round(clampVolume(value) * 100) / 100;
+}
+
+const SPEED_MENU_GAP = 6;
+const SPEED_MENU_INSET = 8;
+const SPEED_MENU_MIN_HEIGHT = 28;
+
+type RectEdges = Pick<DOMRect, "top" | "right" | "bottom">;
+
+/**
+ * Opens the speed menu directly above its button, right-aligned to it and
+ * bounded by the player (whose overflow clips anything outside it). The menu is
+ * positioned against the player because the wrapping controls row must not
+ * become the clipping box. Offsets are px from the player's right/bottom edges.
+ */
+export function speedMenuPlacement(player: RectEdges, button: RectEdges) {
+  return {
+    right: Math.max(SPEED_MENU_INSET, player.right - button.right),
+    bottom: Math.max(SPEED_MENU_INSET, player.bottom - button.top + SPEED_MENU_GAP),
+    maxHeight: Math.max(SPEED_MENU_MIN_HEIGHT, button.top - player.top - SPEED_MENU_GAP - SPEED_MENU_INSET),
+  };
 }
 
 export function CutPlayer({
@@ -84,9 +105,11 @@ export function CutPlayer({
         : null;
   const playerRef = useRef<HTMLElement | null>(null);
   const speedMenuRef = useRef<HTMLDivElement | null>(null);
+  const speedButtonRef = useRef<HTMLButtonElement | null>(null);
   const toolsMenuRef = useRef<HTMLDivElement | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [speedMenuOpen, setSpeedMenuOpen] = useState(false);
+  const [speedMenuStyle, setSpeedMenuStyle] = useState<CSSProperties | undefined>(undefined);
   const [toolsMenuOpen, setToolsMenuOpen] = useState(false);
   const [timeDisplayMode, setTimeDisplayMode] = useState<"time" | "frames">("time");
   const [jumpFrame, setJumpFrame] = useState("");
@@ -192,6 +215,34 @@ export function CutPlayer({
       document.removeEventListener("keydown", closeOnEscape);
     };
   }, [speedMenuOpen, toolsMenuOpen]);
+
+  // Measure before paint so the menu never flashes in a stale spot; re-measure
+  // when the player resizes (window, panes, fullscreen) or the controls wrap.
+  useLayoutEffect(() => {
+    if (!speedMenuOpen) return;
+    const place = () => {
+      const player = playerRef.current;
+      const button = speedButtonRef.current;
+      if (!player || !button) return;
+      const { right, bottom, maxHeight } = speedMenuPlacement(
+        player.getBoundingClientRect(),
+        button.getBoundingClientRect(),
+      );
+      setSpeedMenuStyle({
+        "--cf-cut-speed-menu-right": `${right}px`,
+        "--cf-cut-speed-menu-bottom": `${bottom}px`,
+        "--cf-cut-speed-menu-max-height": `${maxHeight}px`,
+      } as CSSProperties);
+    };
+    place();
+    window.addEventListener("resize", place);
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(place);
+    if (playerRef.current) observer?.observe(playerRef.current);
+    return () => {
+      window.removeEventListener("resize", place);
+      observer?.disconnect();
+    };
+  }, [speedMenuOpen]);
 
   const seekToFrame = () => {
     if (controlsDisabled) return;
@@ -384,6 +435,7 @@ export function CutPlayer({
 
         <div ref={speedMenuRef} className="cf-cut-speed-control">
           <button
+            ref={speedButtonRef}
             type="button"
             className="cf-cut-speed-button"
             disabled={controlsDisabled}
@@ -396,7 +448,7 @@ export function CutPlayer({
             {transport.playbackRate === 1 ? "1x" : `${transport.playbackRate}x`}
           </button>
           {speedMenuOpen && (
-            <div className="cf-cut-speed-menu" role="menu" aria-label="选择播放速度">
+            <div className="cf-cut-speed-menu" role="menu" aria-label="选择播放速度" style={speedMenuStyle}>
               {PLAYBACK_RATES.map((rate) => (
                 <button
                   key={rate}
