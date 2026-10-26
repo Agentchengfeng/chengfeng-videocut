@@ -99,6 +99,8 @@ export interface TimelineCanvasProps extends Omit<TimelineLaneBaseProps, "theme"
   seamMarkers?: readonly TimelineSeamMarker[];
   onSeamMarkerClick?: (time: number) => void;
   soundEffectsTrack?: ReactNode;
+  /** The 标记 row: between the ruler and the main lanes. */
+  markersTrack?: ReactNode;
   /** Canonical EDL duration shown by ruler labels and assistive text. */
   rulerDuration: number;
   currentTime: number;

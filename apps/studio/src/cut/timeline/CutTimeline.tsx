@@ -120,6 +120,7 @@ function isInteractiveShortcutTarget(target: EventTarget | null): boolean {
 
 export function CutTimeline({
   soundEffectsTrack,
+  markersTrack,
   projectId,
   editList,
   timelineTime,
@@ -134,6 +135,7 @@ export function CutTimeline({
   seamMarkers,
 }: {
   soundEffectsTrack?: (pixelsPerSecond: number, displayContentWidth: number) => ReactNode;
+  markersTrack?: (pixelsPerSecond: number, displayContentWidth: number) => ReactNode;
   projectId: string;
   editList: ProjectEditListState;
   timelineTime: number;
@@ -887,6 +889,7 @@ export function CutTimeline({
 
       <Timeline
         soundEffectsTrack={soundEffectsTrack?.(pixelsPerSecond, displayContentWidth)}
+        markersTrack={markersTrack?.(pixelsPerSecond, displayContentWidth)}
         scrollRef={scrollRef}
         segments={timelineSegments}
         visualLayers={visualLayers}

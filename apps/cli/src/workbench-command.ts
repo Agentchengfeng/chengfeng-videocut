@@ -46,7 +46,7 @@ async function input(args: ParsedArgs, cwd: string, operation: WorkbenchOperatio
     if (spec.fields.includes("confirmed")) body.confirmed = true;
   }
   for (const key of ["expectedRevision", "expectedEditRevision", "expectedEditListRevision", "expectedTargetRevision", "expectedSourceRevision", "planRevision", "expectedSnapshot", "expectedSourceSha256", "assetId"]) {
-    if (operation === "sound-effects-set" && key === "expectedRevision" && body[key] === null) continue;
+    if ((operation === "sound-effects-set" || operation === "markers-set") && key === "expectedRevision" && body[key] === null) continue;
     if (body[key] !== undefined && (typeof body[key] !== "string" || !(key === "expectedRevision" ? REV : SHA).test(body[key]))) fail("invalid_argument", "Invalid revision or SHA256 field", { field: key });
   }
   for (const key of ["operationId", "jobId"]) if (body[key] !== undefined && (typeof body[key] !== "string" || !ID.test(body[key]))) fail("invalid_argument", "Invalid bounded identifier", { field: key });
@@ -194,10 +194,14 @@ export async function runWorkbenchCommand(args: ParsedArgs, cwd: string): Promis
       }
       if(name === "sound-effects-asset-get") equal(result.manifest?.assetId,body.assetId,"Sound-effect asset ID");
     }
+    if (name === "markers-get" || name === "markers-set") {
+      equal(result.projectId, project, "Project ID");
+      if (result.schemaVersion !== 1 || (result.revision !== null && !SHA.test(result.revision)) || !SHA.test(result.editRevision) || !Array.isArray(result.document?.markers)) fail("workbench_response_invalid", "Invalid markers document response");
+    }
     let readback: Record<string, any> | undefined;
     if (submitted) {
       stage = "readback";
-      if (["sound-effects-set", "cuts-put", "visuals-put", "edit-list-patch", "subtitle-submit"].includes(name)) {
+      if (["sound-effects-set", "markers-set", "cuts-put", "visuals-put", "edit-list-patch", "subtitle-submit"].includes(name)) {
         readback = await read(projectPath(name === "subtitle-submit" ? "subtitles" : spec.resource));
         equal(readback.revision, result.revision, "Committed revision");
         if (name === "cuts-put") {
@@ -251,7 +255,7 @@ export async function runWorkbenchCommand(args: ParsedArgs, cwd: string): Promis
   } catch (error) {
     if (stagedDirectory) await rm(stagedDirectory, { recursive: true, force: true });
     const e = error instanceof WorkbenchError ? error : new WorkbenchError("workbench_request_failed", "Workbench request or candidate validation failed", { cause: sanitized(error instanceof Error ? error.message : "Unknown failure") });
-    const queryOperation = name === "sound-effects-set" ? "sound-effects-get" : name === "sound-effects-import" ? "sound-effects-asset-get" : name === "export-start" ? "job-by-operation" : name === "ingest-start" ? "ingest-status" : name.includes("-commit") || name === "operation-recover" ? "operation-get" : name === "job-cancel" ? "job-get" : name === "media-import" ? "media-get" : name === "config-set" ? "config-get" : name === "subtitle-submit" ? "subtitles-get" : name === "visuals-put" ? "visuals-get" : name === "cuts-put" ? "cuts-get" : name === "edit-list-patch" ? "edit-list-get" : name === "transcript-correct" ? "subtitle-inputs" : "workflow-get";
+    const queryOperation = name === "sound-effects-set" ? "sound-effects-get" : name === "markers-set" ? "markers-get" : name === "sound-effects-import" ? "sound-effects-asset-get" : name === "export-start" ? "job-by-operation" : name === "ingest-start" ? "ingest-status" : name.includes("-commit") || name === "operation-recover" ? "operation-get" : name === "job-cancel" ? "job-get" : name === "media-import" ? "media-get" : name === "config-set" ? "config-get" : name === "subtitle-submit" ? "subtitles-get" : name === "visuals-put" ? "visuals-get" : name === "cuts-put" ? "cuts-get" : name === "edit-list-patch" ? "edit-list-get" : name === "transcript-correct" ? "subtitle-inputs" : "workflow-get";
     fail(submitted ? "workbench_result_unknown" : e.code, submitted ? "Submission may have committed; do not retry, regenerate IDs or substitute revisions. Query the same operation/result on this service." : e.message,
       { ...e.details, causeCode: e.code, stage, submitted: submitted ? "unknown" : false, operation: name, projectId: project, operationId: body.operationId, jobId: body.jobId, ...(submitted ? { recoveryOperation: queryOperation, ...(name === "media-import" ? { assetId: body.expectedSourceSha256 } : {}) } : {}), source: client.source });
   }

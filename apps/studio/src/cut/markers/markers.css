@@ -1,0 +1,62 @@
+.cf-markers {
+  position: relative;
+  flex-shrink: 0;
+  color: rgb(255 255 255 / 55%);
+  font-size: 11px;
+}
+
+.cf-markers-gutter.is-stale {
+  color: #e8b341;
+}
+
+.cf-markers-error {
+  position: sticky;
+  z-index: 2;
+}
+
+/* A marker is a flag: a line at its start and a short label beside it. */
+.cf-marker {
+  position: absolute;
+  max-width: 180px;
+  min-width: 6px;
+  padding: 0 6px 0 5px;
+  border: 0;
+  border-left: 2px solid #e8b341;
+  border-radius: 0 3px 3px 0;
+  background: rgb(232 179 65 / 22%);
+  color: #f3d58c;
+  cursor: grab;
+  font-size: 10px;
+  line-height: 20px;
+  pointer-events: auto;
+  text-align: left;
+  touch-action: none;
+  white-space: nowrap;
+}
+
+.cf-marker.has-span {
+  max-width: none;
+}
+
+.cf-marker:hover,
+.cf-marker.moving {
+  z-index: 3;
+  background: rgb(232 179 65 / 36%);
+}
+
+.cf-marker.selected {
+  z-index: 2;
+  outline: 1px solid rgb(255 255 255 / 90%);
+  color: #fff;
+}
+
+.cf-marker-label {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cf-sfx-dialog textarea {
+  width: 100%;
+  resize: vertical;
+}

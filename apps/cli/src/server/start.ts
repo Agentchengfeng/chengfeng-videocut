@@ -18,6 +18,7 @@ import { createVideocutEditListHandler } from "../../../studio/src/server/videoc
 import { createVideocutSubtitlesHandler } from "../../../studio/src/server/videocutSubtitlesApi";
 import { createVideocutVisualsHandler } from "../../../studio/src/server/videocutVisualsApi";
 import { createSoundEffectsApi } from "./sound-effects-api";
+import { createMarkersApi } from "./markers-api";
 import { createMediaAssetsApi } from "./media-assets-api";
 import { createProjectConfigApi } from "./project-config-api";
 import { createMultisourceApi } from "./multisource-api";
@@ -417,6 +418,8 @@ function healthResponse(
     mediaAssetsApiVersion: 1,
     soundEffectsApiVersion: 1,
     soundEffects: { schemaVersion: 1, managedWav: true, preview: true, export: true, maxCues: 64 },
+    markersApiVersion: 1,
+    markers: { schemaVersion: 1, maxMarkers: 500, preview: false, export: false },
     projectConfigApiVersion: 1,
     projectConfig: { fields: ["aspectRatio", "canvasBackground", "narrationGainDb"] },
     multisourceAudioApiVersion: 1,
@@ -618,6 +621,7 @@ async function startStudioServerInternal(options: StartStudioServerOptions, life
     },
   });
   const soundEffectsApi = createSoundEffectsApi(projectsDir, listenPort, {isBusy: directory => jobs.isProjectBusy(directory), onChanged: id => editPreviewArtifacts.schedule(id)});
+  const markersApi = createMarkersApi(projectsDir, listenPort, { onChanged: projectId => events.publish("file-change", { projectId, path: "markers.json" }) });
   const mediaAssetsApi = createMediaAssetsApi(projectsDir, listenPort);
   const projectConfigApi = createProjectConfigApi({ projectsDir, port: listenPort,
     isBusy: directory => jobs.isProjectBusy(directory),
@@ -712,6 +716,8 @@ async function startStudioServerInternal(options: StartStudioServerOptions, life
         const moduleResponse = await moduleApi(request,bunServer.requestIP(request)?.address);
         const soundEffectsResponse = await soundEffectsApi(request, bunServer.requestIP(request)?.address);
         if (soundEffectsResponse) return soundEffectsResponse;
+        const markersResponse = await markersApi(request, bunServer.requestIP(request)?.address);
+        if (markersResponse) return markersResponse;
         const assetResponse = await mediaAssetsApi(request, bunServer.requestIP(request)?.address);
         const configResponse = await projectConfigApi(request, bunServer.requestIP(request)?.address);
         if (configResponse) return configResponse;

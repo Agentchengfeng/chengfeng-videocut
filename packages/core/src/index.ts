@@ -14,4 +14,5 @@ export * from "./subtitles";
 export * from "./visuals";
 export * from "./canvas";
 export * from './soundEffects';
+export * from './markers';
 export * from './inserts';

@@ -14,6 +14,8 @@ export const WORKBENCH_OPERATIONS = {
   "sound-effects-asset-get": op("sound-effects/assets", "read", ["assetId"], ["assetId"], "soundEffectsApiVersion"),
   "sound-effects-set": op("sound-effects", "write", ["document", "expectedRevision", "expectedEditRevision", "confirmed"], ["document", "expectedRevision", "expectedEditRevision", "confirmed"], "soundEffectsApiVersion", "PUT"),
   "sound-effects-import": op("sound-effects/assets", "write", ["sourcePath", "expectedSourceSha256", "confirmed"], ["sourcePath", "expectedSourceSha256", "confirmed"], "soundEffectsApiVersion"),
+  "markers-get": op("markers", "read", [], [], "markersApiVersion", "GET", true, "Timeline markers (annotations only; never in the preview mix or the exported film). stale:true means the edit list changed since they were written."),
+  "markers-set": op("markers", "write", ["document", "expectedRevision", "expectedEditRevision", "confirmed"], ["document", "expectedRevision", "expectedEditRevision", "confirmed"], "markersApiVersion", "PUT", true, "Full replacement of markers.json {schemaVersion:1, editRevision:<current>, markers:[{id,start,duration,label,note?}]}; seconds on the assembled timeline."),
   connect: op("/api/health", "read", [], [], "", "GET", false, "Read current product/version/PID/build and advertised API capabilities; does not start a service."),
   "workflow-get": op("workflow"),
   "edit-list-get": op("edit-list"),
@@ -59,7 +61,7 @@ export type WorkbenchOperationName = keyof typeof WORKBENCH_OPERATIONS;
 
 export function workbenchCommands() {
   const fieldSchema = (name: string, operation: string): Record<string, unknown> => {
-    if (name === "expectedRevision" && operation === "sound-effects-set") return {type:["string","null"],pattern:"^[a-f0-9]{64}$",description:"Exact sound-effects revision; null only when GET reports no document."};
+    if (name === "expectedRevision" && (operation === "sound-effects-set" || operation === "markers-set")) return {type:["string","null"],pattern:"^[a-f0-9]{64}$",description:"Exact document revision; null only when GET reports no document."};
     if (name === "confirmed") return { type: "boolean", description: "Plan must be false; write must agree with independent --confirmed authorization." };
     if (["document", "operation", "config"].includes(name)) return { type: "object", description: "Existing Runtime HTTP document/operation schema; server remains authoritative." };
     if (["cutWordIds", "wordIds", "clipIds", "removeVisualLayerIds"].includes(name)) return { type: "array", items: { type: "string" }, ...(operation === "targets" ? { minItems: 1, maxItems: 100, uniqueItems: true } : {}), description: "Exact IDs from current Runtime document, not times or regenerated IDs." };

@@ -28,6 +28,7 @@ import { CutPlayer } from "./player/CutPlayer";
 import { useAssembledVideoTransport } from "./player/useAssembledVideoTransport";
 import { previewArtifactUrl, usePreviewArtifact } from "./player/previewArtifact";
 import { SoundEffectTrack } from "./sound-effects/SoundEffectTrack";
+import { MarkerTrack } from "./markers/MarkerTrack";
 import { CutTimeline } from "./timeline/CutTimeline";
 import { KouboTranscriptPlaybackMarker } from "./transcript/KouboTranscriptPlaybackMarker";
 
@@ -708,6 +709,7 @@ export function CutWorkspace({
       />
 
       <CutTimeline
+        markersTrack={(pixelsPerSecond, displayContentWidth) => <MarkerTrack pixelsPerSecond={pixelsPerSecond} displayContentWidth={displayContentWidth} projectId={projectId} editRevision={editList.revision} time={transport.timelineTime} onSeek={seek} />}
         soundEffectsTrack={(pixelsPerSecond, displayContentWidth) => <SoundEffectTrack pixelsPerSecond={pixelsPerSecond} displayContentWidth={displayContentWidth} projectId={projectId} editRevision={editList.revision} time={transport.timelineTime} onSeek={seek} onSaved={artifact.retry} />}
         visualLayers={timelineVisualLayers}
         insertLabels={insertLabels}

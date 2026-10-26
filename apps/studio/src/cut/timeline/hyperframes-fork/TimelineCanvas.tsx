@@ -22,6 +22,7 @@ import { defaultTimelineTheme } from "./timelineTheme";
  */
 export const TimelineCanvas = memo(function TimelineCanvas({
   soundEffectsTrack,
+  markersTrack,
   segments,
   pixelsPerSecond,
   displayContentWidth,
@@ -59,7 +60,7 @@ export const TimelineCanvas = memo(function TimelineCanvas({
     <div
       className="relative"
       style={{
-        ...(soundEffectsTrack ? { minHeight: totalHeight } : { height: totalHeight }),
+        ...(soundEffectsTrack || markersTrack ? { minHeight: totalHeight } : { height: totalHeight }),
         width: GUTTER + TRACKS_LEFT_PAD + displayContentWidth,
       }}
       data-hyperframes-timeline-fork="canvas"
@@ -98,6 +99,8 @@ export const TimelineCanvas = memo(function TimelineCanvas({
           onClick={() => onSeamMarkerClick?.(marker.time)}
         />
       ))}
+
+      {markersTrack}
 
       <TimelineLanes
         segments={segments}
