@@ -75,6 +75,7 @@ vi.mock("./player/CutPlayer", () => ({
   CutPlayer: (props: Record<string, unknown>) => {
     harness.cutPlayerProps.push(props);
     return <section data-testid="cut-player" data-source-url={String(props.sourceUrl ?? "")}>
+      <video data-testid="cut-media" />
       {props.notices as ReactNode}
     </section>;
   },
@@ -86,6 +87,7 @@ vi.mock("./transcript/KouboTranscriptPane", () => ({
     return (
       <aside data-testid="koubo-transcript">
         <button type="button" data-testid="transcript-action">文稿操作</button>
+        <textarea aria-label="文稿未保存草稿" defaultValue="原稿" />
       </aside>
     );
   },
@@ -230,6 +232,12 @@ const halfOpenBoundaryDocument = {
 };
 
 beforeEach(() => {
+  // Workspace seam markers are an independent read. Keep this component suite
+  // isolated from any developer service listening on happy-dom's base URL.
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+    if (String(input).endsWith('/seams')) return new Response(JSON.stringify({ seams: [] }));
+    throw new Error(`Unexpected workspace test request: ${String(input)}`);
+  });
   harness.useProjectVisuals.mockReset();
   harness.useProjectVisuals.mockReturnValue({ document: null, timings: [], moduleUrl: vi.fn() });
   harness.cutPlayerProps = [];
@@ -367,6 +375,12 @@ describe("CutWorkspace single-page layout contract", () => {
       const player = host.querySelector('[data-testid="cut-player"]');
       const timeline = host.querySelector('[data-testid="cut-timeline"]');
       const transcript = host.querySelector('[data-testid="koubo-transcript"]');
+      const video = host.querySelector<HTMLVideoElement>('[data-testid="cut-media"]')!;
+      const draft = host.querySelector<HTMLTextAreaElement>('[aria-label="文稿未保存草稿"]')!;
+      const transcriptPanel = transcript!.closest<HTMLElement>('[role="tabpanel"]')!;
+      video.currentTime = 6.25;
+      draft.value = '未保存修改';
+      transcriptPanel.scrollTop = 191;
       expect(host.querySelector('.cf-cut-compact-switcher')).toBeNull();
       expect(host.querySelector('.cf-cut-workspace')?.hasAttribute('data-compact-view')).toBe(false);
       expect(host.querySelector('.cf-cut-feature-panel')?.parentElement).toBe(player?.parentElement);
@@ -376,9 +390,28 @@ describe("CutWorkspace single-page layout contract", () => {
       expect(subtitleTab.getAttribute('aria-selected')).toBe('true');
       act(() => cutTab.click());
       expect(cutTab.getAttribute('aria-selected')).toBe('true');
+      act(() => cutTab.click());
+      expect(host.querySelector('.cf-cut-workspace')?.getAttribute('data-feature-collapsed')).toBe('true');
+      expect(host.querySelector<HTMLElement>('.cf-cut-feature-body')!.hidden).toBe(true);
+      act(() => cutTab.click());
+      expect(host.querySelector('.cf-cut-workspace')?.getAttribute('data-feature-collapsed')).toBe('false');
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="收起功能面板"]')!.click());
+      expect(host.querySelector<HTMLElement>('.cf-cut-feature-body')!.hidden).toBe(true);
+      act(() => subtitleTab.click());
+      expect(host.querySelector<HTMLElement>('.cf-cut-feature-body')!.hidden).toBe(false);
+      act(() => cutTab.click());
       expect(host.querySelector('[data-testid="cut-player"]')).toBe(player);
       expect(host.querySelector('[data-testid="cut-timeline"]')).toBe(timeline);
       expect(host.querySelector('[data-testid="koubo-transcript"]')).toBe(transcript);
+      expect(host.querySelector('[data-testid="cut-media"]')).toBe(video);
+      expect(video.currentTime).toBe(6.25);
+      expect(host.querySelector('[aria-label="文稿未保存草稿"]')).toBe(draft);
+      expect(draft.value).toBe('未保存修改');
+      expect(transcriptPanel.scrollTop).toBe(191);
+      const transport = harness.useAssembledVideoTransport.mock.results.at(-1)?.value;
+      expect(transport.play).not.toHaveBeenCalled();
+      expect(transport.pause).not.toHaveBeenCalled();
+      expect(transport.seek).not.toHaveBeenCalled();
       expect(harness.patchOperation).not.toHaveBeenCalled();
       expect(harness.useProjectCutSelection.mock.results.at(-1)?.value.updateCutWordIds).not.toHaveBeenCalled();
     } finally { act(() => root.unmount()); host.remove(); }
@@ -418,7 +451,8 @@ describe("CutWorkspace single-page layout contract", () => {
     expect(shell).toContain('grid-template-rows: minmax(0, 1fr) var(--cf-cut-timeline-height)');
     expect(shell).toContain('overflow: hidden');
     const narrow = css.slice(css.indexOf('@media (width < 960px)'), css.indexOf('@media (height < 480px)'));
-    expect(narrow).toContain('grid-template-columns: clamp(120px, 40vw, 320px) minmax(0, 1fr)');
+    expect(narrow).toContain('grid-template-columns: clamp(200px, 42vw, 320px) minmax(0, 1fr)');
+    expect(narrow).toMatch(/\.cf-cut-workspace\[data-feature-collapsed="true"\]\s*\{[^}]*grid-template-columns:\s*var\(--cf-cut-rail-width\) minmax\(0, 1fr\)/);
     expect(narrow).toMatch(/\.cf-cut-workspace > \.cf-cut-feature-panel\s*\{[^}]*grid-column:\s*1;[^}]*grid-row:\s*1;/);
     expect(narrow).toMatch(/\.cf-cut-workspace > \.cf-cut-player\s*\{[^}]*grid-column:\s*2;[^}]*grid-row:\s*1;/);
     expect(narrow).toMatch(/\.cf-cut-workspace > \.cf-cut-timeline\s*\{[^}]*grid-column:\s*1\s*\/\s*-1;[^}]*grid-row:\s*2;/);
@@ -427,15 +461,66 @@ describe("CutWorkspace single-page layout contract", () => {
     expect(css).not.toContain('clamp(140px, 24dvh, 220px)');
   });
 
-  it("lets all three feature tabs wrap without shrinking their strip in narrow content columns", () => {
+  it("keeps the feature rail vertical and scrollable with a smaller width on narrow screens", () => {
     const css = readFileSync('src/cut/cut.css', 'utf8');
     const compactTabs = css.slice(css.indexOf('@media (width < 480px)'), css.indexOf('@media (height < 480px)'));
-    const strip = compactTabs.match(/\.cf-cut-feature-tabs\s*\{([^}]+)\}/)?.[1] ?? '';
-    const tab = compactTabs.match(/\.cf-cut-feature-tab\s*\{([^}]+)\}/)?.[1] ?? '';
-    expect(strip).toContain('flex: 0 0 auto');
-    expect(strip).toContain('flex-wrap: wrap');
+    const strip = css.match(/\.cf-cut-feature-tabs\s*\{([^}]+)\}/)?.[1] ?? '';
+    const tab = css.match(/\.cf-cut-feature-tab\s*\{([^}]+)\}/)?.[1] ?? '';
+    expect(strip).toContain('flex-direction: column');
+    expect(strip).toContain('flex: 0 0 var(--cf-cut-rail-width, 64px)');
+    expect(strip).toContain('overflow-y: auto');
+    expect(strip).not.toContain('flex-wrap: wrap');
     expect(tab).toContain('min-width: 0');
-    expect(tab).toContain('padding: 0 8px');
+    expect(compactTabs).toContain('--cf-cut-rail-width: 56px');
+    expect(compactTabs).toMatch(/\.cf-cut-player-controls\s*\{[^}]*padding:\s*4px;[^}]*gap:\s*4px;/);
+    expect(compactTabs).toMatch(/\.cf-cut-tools-button\s*\{[^}]*height:\s*26px;/);
+    expect(compactTabs).toMatch(/\.cf-cut-time-readout\s*\{[^}]*width:\s*70px;[^}]*flex-basis:\s*70px;/);
+    expect(compactTabs).toMatch(/\.cf-cut-volume-control\s*\{[^}]*width:\s*60px;[^}]*height:\s*26px;/);
+    expect(css).toMatch(/\.cf-cut-workspace\[data-feature-collapsed="true"\]\s*\{[^}]*grid-template-columns:\s*var\(--cf-cut-rail-width\) 0 minmax\(0, 1fr\)/);
+  });
+
+  it("owns canvas settings in the left pane and preserves the ratio draft without reloading on reopening", async () => {
+    const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({
+      projectRevision: revision, config: { aspectRatio: '4:3' },
+    })));
+    const canvasRequests = () => fetcher.mock.calls.filter(([input]) => String(input).endsWith('/project-config'));
+    const host = document.createElement('div'); document.body.append(host);
+    const root = createRoot(host);
+    try {
+      await act(async () => root.render(<CutWorkspace projectId="layout-contract" initialTimelineTime={2.5} onTimelineTimeCommit={vi.fn()} />));
+      const player = host.querySelector('[data-testid="cut-player"]');
+      const canvas = host.querySelector<HTMLElement>('[aria-label="项目画布设置"]')!;
+      const canvasTab = [...host.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find(tab => tab.textContent === '画布')!;
+      const cutTab = [...host.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find(tab => tab.textContent === '剪口播')!;
+      expect(canvas.closest('[data-testid="cut-feature-panel"]')).not.toBeNull();
+      expect(player?.contains(canvas)).toBe(false);
+      expect(harness.cutPlayerProps.at(-1)).not.toHaveProperty('canvasSettings');
+      expect(canvasRequests()).toHaveLength(0);
+      await act(async () => canvasTab.click());
+      expect(canvasRequests()).toHaveLength(1);
+      const input = canvas.querySelector<HTMLInputElement>('[aria-label="自定义画布比例"]')!;
+      expect(input.value).toBe('4:3');
+      act(() => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, '9:16');
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      const pane = canvas.closest<HTMLElement>('[role="tabpanel"]')!;
+      pane.scrollTop = 123;
+      act(() => canvasTab.click());
+      expect(pane.hidden).toBe(true);
+      act(() => cutTab.click());
+      await act(async () => canvasTab.click());
+      expect(pane.hidden).toBe(false);
+      expect(host.querySelector('[aria-label="项目画布设置"]')).toBe(canvas);
+      expect(canvas.querySelector('[aria-label="自定义画布比例"]')).toBe(input);
+      expect(input.value).toBe('9:16');
+      expect(pane.scrollTop).toBe(123);
+      expect(canvasRequests()).toHaveLength(1);
+      expect(canvasRequests()[0]?.[1]).toMatchObject({ method: 'GET' });
+      expect(host.querySelector('[data-testid="cut-player"]')).toBe(player);
+      expect(harness.patchOperation).not.toHaveBeenCalled();
+      expect(harness.cutPlayerProps.at(-1)?.canvasAspectRatio).toBe(4 / 3);
+    } finally { act(() => root.unmount()); host.remove(); }
   });
 
   it("contains orphan notices in the player without activating or deleting the animation", () => {
@@ -1482,7 +1567,7 @@ describe("CutWorkspace single-page layout contract", () => {
     expect(
       Array.from(workspace?.querySelectorAll('.cf-cut-feature-panel [role="tab"]') ?? [])
         .map((tab) => tab.textContent),
-    ).toEqual(["剪口播", "字幕"]);
+    ).toEqual(["剪口播", "字幕", "画布", "音频"]);
     expect(workspace?.querySelector('[role="tabpanel"] [data-testid="koubo-transcript"]')).not.toBeNull();
     expect(harness.patchOperation).not.toHaveBeenCalled();
 
@@ -1548,6 +1633,8 @@ describe("CutWorkspace single-page layout contract", () => {
     const playerBefore = host.querySelector('[data-testid="cut-player"]');
     const timelineBefore = host.querySelector('[data-testid="cut-timeline"]');
     const tabs = Array.from(host.querySelectorAll<HTMLButtonElement>('.cf-cut-feature-panel [role="tab"]'));
+    expect(tabs.map(tab => tab.textContent)).toEqual(["剪口播", "字幕", "字幕样式", "画布", "音频"]);
+    expect(host.querySelector('[role="tablist"]')?.getAttribute('aria-orientation')).toBe('vertical');
     const subtitleStyleTab = tabs.find((tab) => tab.textContent === "字幕样式");
     if (!playerBefore || !timelineBefore || !subtitleStyleTab) {
       throw new Error("Expected the stable player, timeline, and 字幕样式 tab");
@@ -1622,8 +1709,8 @@ describe("CutWorkspace single-page layout contract", () => {
     ));
 
     const tabs = Array.from(host.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
-    expect(tabs.map((tab) => tab.textContent?.trim())).toEqual(["剪口播", "字幕"]);
-    expect(tabs.map((tab) => tab.getAttribute("aria-selected"))).toEqual(["false", "true"]);
+    expect(tabs.map((tab) => tab.textContent?.trim())).toEqual(["剪口播", "字幕", "画布", "音频"]);
+    expect(tabs.map((tab) => tab.getAttribute("aria-selected"))).toEqual(["false", "true", "false", "false"]);
     expect(host.querySelector(".cf-cut-feature-content--subtitle-style")).toBeNull();
     expect(host.querySelector('[data-testid="cut-player"]')).toBe(playerBefore);
     expect(host.querySelector('[data-testid="cut-timeline"]')).toBe(timelineBefore);

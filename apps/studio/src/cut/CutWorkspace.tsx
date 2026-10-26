@@ -236,6 +236,12 @@ export function CutWorkspace({
   const cutSelection = useProjectCutSelection(projectId, transcript.cues);
   const subtitles = useProjectSubtitles(projectId);
   const [featureTab, setFeatureTab] = useState<CutFeatureTab>("koubo");
+  const [featureCollapsed, setFeatureCollapsed] = useState(false);
+  const [audioSettingsTarget, setAudioSettingsTarget] = useState<HTMLDivElement | null>(null);
+  const openAudioSettings = useCallback(() => {
+    setFeatureTab("audio");
+    setFeatureCollapsed(false);
+  }, []);
   const subtitleStyleAvailable = subtitles.document !== null;
   // A subtitle document can disappear after a reload or a project switch.
   // Never keep the person on the now-nonexistent style surface; this leaves
@@ -640,6 +646,7 @@ export function CutWorkspace({
       data-edit-list-save-state={editList.saveState}
       data-cut-selection-save-state={cutSelection.saveState}
       data-transcript-resizing={isResizingTranscript ? "true" : "false"}
+      data-feature-collapsed={featureCollapsed}
     >
       <CutFeaturePanel
         projectId={projectId}
@@ -649,6 +656,8 @@ export function CutWorkspace({
         onSeek={seek}
         activeTab={activeFeatureTab}
         onTabChange={setFeatureTab}
+        collapsed={featureCollapsed}
+        onCollapsedChange={setFeatureCollapsed}
         subtitleProblemCount={subtitles.stale.length}
         subtitleContent={
           <SubtitlePane
@@ -661,6 +670,8 @@ export function CutWorkspace({
         }
         subtitleStyleContent={<SubtitleStyleSection subtitles={subtitles} />}
         subtitleStyleAvailable={subtitleStyleAvailable}
+        canvasContent={<CanvasSettings presentation="panel" active={activeFeatureTab === "canvas" && !featureCollapsed} projectId={projectId} onSaved={() => { void projectWorkflow.refresh(); }} />}
+        audioContent={<div ref={setAudioSettingsTarget} className="cf-cut-audio-settings-target" />}
       />
 
       <SubtitlePlaybackMarker
@@ -694,7 +705,6 @@ export function CutWorkspace({
         </> : null}
         canvasAspectRatio={canvasAspectRatio}
         canvasBackground={parseCanvasBackground(projectWorkflow.workflow?.project.config?.canvasBackground)}
-        canvasControls={<CanvasSettings projectId={projectId} onSaved={() => { void projectWorkflow.refresh(); }} />}
         audioOnly={artifact.state.hasVideo === false && artifact.state.hasAudio === true}
         sourceUrl={activeSource}
         transport={transport}
@@ -710,7 +720,7 @@ export function CutWorkspace({
 
       <CutTimeline
         markersTrack={(pixelsPerSecond, displayContentWidth) => <MarkerTrack pixelsPerSecond={pixelsPerSecond} displayContentWidth={displayContentWidth} projectId={projectId} editRevision={editList.revision} time={transport.timelineTime} onSeek={seek} />}
-        soundEffectsTrack={(pixelsPerSecond, displayContentWidth) => <SoundEffectTrack pixelsPerSecond={pixelsPerSecond} displayContentWidth={displayContentWidth} projectId={projectId} editRevision={editList.revision} time={transport.timelineTime} onSeek={seek} onSaved={artifact.retry} />}
+        soundEffectsTrack={(pixelsPerSecond, displayContentWidth) => <SoundEffectTrack pixelsPerSecond={pixelsPerSecond} displayContentWidth={displayContentWidth} projectId={projectId} editRevision={editList.revision} time={transport.timelineTime} onSeek={seek} onSaved={artifact.retry} settingsTarget={audioSettingsTarget} onOpenSettings={openAudioSettings} />}
         visualLayers={timelineVisualLayers}
         insertLabels={insertLabels}
         soundOnlyInsertIds={soundOnlyInsertIds}

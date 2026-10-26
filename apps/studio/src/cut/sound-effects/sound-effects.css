@@ -175,6 +175,40 @@ button.cf-sfx-gutter[aria-pressed="true"] {
   border-radius: 4px;
 }
 
+/* Controls move to the feature pane; cues and their sole state/write owner
+   remain in the existing multitrack timeline. */
+.cf-sfx-settings {
+  min-width: 0;
+  padding: 14px;
+  color: var(--text-1, #eee);
+  font-size: 12px;
+}
+.cf-sfx-settings button {
+  padding: 6px 9px;
+  border: 1px solid var(--hairline, #3f3f46);
+  border-radius: 6px;
+  background: var(--panel, #17181c);
+  color: inherit;
+}
+.cf-sfx-settings button:disabled { opacity: .4; cursor: not-allowed; }
+.cf-sfx-settings button:focus-visible,
+.cf-sfx-settings input:focus-visible { outline: 2px solid var(--mint, #3ce6ac); outline-offset: 2px; }
+.cf-sfx-settings .cf-sfx-toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.cf-sfx-settings .cf-sfx-toolbar > span { flex-basis: 100%; color: var(--text-3, #999); }
+.cf-sfx-settings .cf-sfx-toolbar select { min-width: 0; max-width: 100%; background: var(--panel, #17181c); color: inherit; }
+.cf-sfx-settings .cf-sfx-error { position: static; width: auto; margin: 8px 0; padding: 0; overflow-wrap: anywhere; }
+.cf-sfx-selection { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; min-width: 0; }
+.cf-sfx-selection button { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; text-align: left; min-width: 0; }
+.cf-sfx-selection button[aria-pressed="true"] { border-color: var(--mint, #3ce6ac); background: rgb(60 230 172 / 9%); }
+.cf-sfx-selection button span { max-width: 100%; overflow-wrap: anywhere; }
+.cf-sfx-selection small,
+.cf-sfx-settings__hint { color: var(--text-3, #999); line-height: 1.6; }
+.cf-sfx-settings h3 { font-size: 13px; font-weight: 600; margin-bottom: 10px; }
+.cf-sfx-settings form > p { overflow-wrap: anywhere; margin-bottom: 12px; }
+.cf-sfx-settings form > label { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 6px; margin: 10px 0; }
+.cf-sfx-settings input[type="number"] { width: 110px; max-width: 100%; min-width: 0; color: inherit; background: #101014; border: 1px solid var(--hairline, #3f3f46); border-radius: 4px; padding: 6px; }
+.cf-sfx-settings .cf-sfx-buttons { flex-wrap: wrap; gap: 6px; }
+
 /* Audio tracks sit below the main lanes; give the pane room to show them together. */
 @media (height >= 480px) {
   .cf-cut-workspace:has([data-sfx-track]) {

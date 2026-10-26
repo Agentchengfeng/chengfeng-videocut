@@ -145,6 +145,7 @@ select:focus-visible,
 /* Shell ----------------------------------------------------------- */
 
 .cf-cut-workspace {
+  --cf-cut-rail-width: 64px;
   --cf-cut-timeline-height: clamp(160px, 30dvh, 300px);
   display: grid;
   grid-template-columns:
@@ -161,6 +162,14 @@ select:focus-visible,
   overflow: hidden;
   overscroll-behavior: contain;
   background: var(--workspace);
+}
+
+.cf-cut-workspace[data-feature-collapsed="true"] {
+  grid-template-columns: var(--cf-cut-rail-width) 0 minmax(0, 1fr);
+}
+
+.cf-cut-workspace[data-feature-collapsed="true"] > .cf-cut-transcript-resizer {
+  display: none;
 }
 
 .cf-cut-workspace > .cf-cut-feature-panel {
@@ -233,56 +242,102 @@ select:focus-visible,
 
 .cf-cut-feature-panel {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   background: var(--panel);
 }
 
 .cf-cut-feature-tabs {
   display: flex;
-  align-items: end;
-  min-height: 38px;
-  flex: 0 0 38px;
-  gap: 2px;
-  padding: 0 10px;
-  border-bottom: 1px solid var(--hairline);
+  flex-direction: column;
+  align-items: stretch;
+  min-height: 0;
+  flex: 0 0 var(--cf-cut-rail-width, 64px);
+  gap: 4px;
+  padding: 8px 4px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  border-right: 1px solid var(--hairline);
   background: #0a0a0b;
 }
 
 .cf-cut-feature-tab {
   position: relative;
-  min-width: 52px;
-  height: 38px;
-  padding: 0 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 62px;
+  gap: 5px;
+  min-width: 0;
+  padding: 6px 0;
   border: 0;
+  border-radius: 6px;
   background: transparent;
   color: var(--text-3);
   cursor: pointer;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 500;
   transition: color 120ms ease;
 }
 
 .cf-cut-feature-tab:hover {
   color: var(--text-1);
+  background: rgb(255 255 255 / 5%);
 }
 
-.cf-cut-feature-tab::after {
-  position: absolute;
-  right: 10px;
-  bottom: -1px;
-  left: 10px;
-  height: 2px;
-  border-radius: 999px;
+.cf-cut-feature-tab svg,
+.cf-cut-feature-heading svg {
+  width: 22px;
+  height: 24px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.cf-cut-feature-tab[aria-expanded="true"] {
+  color: var(--mint);
+  background: rgb(60 230 172 / 9%);
+}
+
+.cf-cut-feature-tab:focus-visible,
+.cf-cut-feature-heading button:focus-visible {
+  outline: 2px solid var(--mint);
+  outline-offset: -2px;
+}
+
+.cf-cut-feature-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.cf-cut-feature-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 0 0 40px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--hairline);
+  color: var(--text-1);
+  font-size: 13px;
+}
+
+.cf-cut-feature-heading button {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 4px;
+  color: var(--text-3);
   background: transparent;
-  content: "";
-}
-
-.cf-cut-feature-tab[aria-selected="true"] {
-  color: var(--text-0);
-}
-
-.cf-cut-feature-tab[aria-selected="true"]::after {
-  background: var(--mint);
+  cursor: pointer;
 }
 
 .cf-cut-feature-content,
@@ -299,9 +354,19 @@ select:focus-visible,
    the author rule above beats it — without this both panels stack up in the
    column and the tab strip does nothing. */
 .cf-cut-feature-content[hidden],
-.cf-cut-feature-tabpanel[hidden] {
+.cf-cut-feature-tabpanel[hidden],
+.cf-cut-feature-body[hidden],
+.cf-canvas-settings--inline[hidden] {
   display: none;
 }
+
+.cf-cut-feature-content--settings {
+  flex-direction: column;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.cf-cut-audio-settings-target { min-width: 0; }
 
 .cf-cut-feature-panel .cut-transcript-pane {
   width: 100%;
@@ -375,6 +440,19 @@ select:focus-visible,
 .cf-canvas-settings__panel [role="status"] { color: #86efac; }
 .cf-canvas-settings__actions { display: flex; gap: 12px; }
 .cf-cut-player-controls .cf-canvas-settings__actions button { padding: 0 10px; background: #27272a; }
+.cf-canvas-settings--inline > .cf-canvas-settings__panel {
+  position: static;
+  width: 100%;
+  max-height: none;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.cf-canvas-settings--inline label { flex-wrap: wrap; justify-content: space-between; }
+.cf-canvas-settings--inline input, .cf-canvas-settings--inline select { max-width: 100%; }
+.cf-canvas-settings--inline .cf-canvas-settings__actions { flex-wrap: wrap; }
+.cf-canvas-settings--inline button { min-height: 30px; padding: 4px 8px; border: 1px solid #52525b; border-radius: 4px; color: #eee; background: #27272a; cursor: pointer; }
+.cf-canvas-settings--inline button:disabled { opacity: .45; cursor: default; }
 
 .cf-cut-player-empty {
   color: var(--text-3);
@@ -1540,11 +1618,16 @@ select:focus-visible,
 /* A plain red count, not a pill: the number is the signal, the box around it
    was decoration. Monospace to match every other count in this app. */
 .cf-cut-feature-tab__badge {
-  margin-left: 5px;
+  position: absolute;
+  top: 3px;
+  right: 2px;
+  min-width: 16px;
+  padding: 1px 3px;
+  border-radius: 8px;
+  background: #3a2021;
   color: #fca5a5;
   font: 400 10px ui-monospace, SFMono-Regular, Menlo, monospace;
   font-variant-numeric: tabular-nums;
-  vertical-align: 1px;
 }
 
 /* Timeline -------------------------------------------------------- */
@@ -2155,7 +2238,11 @@ select:focus-visible,
   .cf-cut-workspace {
     /* Content and preview remain visible together, including narrow windows.
        Scale the split instead of replacing either pane with a view toggle. */
-    grid-template-columns: clamp(120px, 40vw, 320px) minmax(0, 1fr);
+    grid-template-columns: clamp(200px, 42vw, 320px) minmax(0, 1fr);
+  }
+
+  .cf-cut-workspace[data-feature-collapsed="true"] {
+    grid-template-columns: var(--cf-cut-rail-width) minmax(0, 1fr);
   }
 
   .cf-cut-workspace > .cf-cut-feature-panel {
@@ -2206,17 +2293,39 @@ select:focus-visible,
 }
 
 @media (width < 480px) {
-  .cf-cut-feature-tabs {
-    /* A loaded subtitle document adds a third tab. Keep it visible rather
-       than clipping its entry in the narrow content column. */
-    flex: 0 0 auto;
-    flex-wrap: wrap;
-    padding: 0 4px;
+  .cf-cut-workspace {
+    --cf-cut-rail-width: 56px;
   }
 
-  .cf-cut-feature-tab {
-    min-width: 0;
-    padding: 0 8px;
+  /* An expanded left pane leaves a small preview column. Keep the complete
+     transport usable without its wrapping rows consuming the entire stage. */
+  .cf-cut-player-controls {
+    padding: 4px;
+    gap: 4px;
+  }
+
+  .cf-cut-player-controls > button,
+  .cf-cut-player-controls .cf-cut-speed-button,
+  .cf-cut-player-controls .cf-cut-tools-button {
+    height: 26px;
+  }
+
+  .cf-cut-play-button,
+  .cf-cut-player-icon-button {
+    width: 26px;
+    flex-basis: 26px;
+  }
+
+  .cf-cut-player-controls .cf-cut-time-readout {
+    width: 70px;
+    flex-basis: 70px;
+    font-size: 9px;
+  }
+
+  .cf-cut-volume-control {
+    width: 60px;
+    flex: 0 1 60px;
+    height: 26px;
   }
 }
 
